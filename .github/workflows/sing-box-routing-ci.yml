@@ -134,6 +134,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: {submodules: recursive}
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: native/routing/go.mod
+          cache-dependency-path: native/routing/go.sum
       - uses: actions/setup-python@v6
         with: {python-version: '3.14'}
       - uses: jurplel/install-qt-action@v4.3.1

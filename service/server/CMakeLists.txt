@@ -342,13 +342,13 @@ if(APPLE)
 endif()
 
 # install non-linked dependencies
-if(LINUX)
+if(LINUX OR WIN32)
     # This private service child is built from the same pinned routing module;
     # no downloaded routing binary or second in-process Go runtime is used.
     find_program(ROUTING_GO_EXECUTABLE go REQUIRED)
     set(ROUTING_SOURCE_DIR "${CMAKE_SOURCE_DIR}/native/routing")
     file(GLOB_RECURSE ROUTING_GO_SOURCES CONFIGURE_DEPENDS "${ROUTING_SOURCE_DIR}/*.go")
-    set(ROUTING_EXECUTABLE "${CMAKE_CURRENT_BINARY_DIR}/routing/amnezia-routing")
+    set(ROUTING_EXECUTABLE "${CMAKE_CURRENT_BINARY_DIR}/routing/amnezia-routing${CMAKE_EXECUTABLE_SUFFIX}")
     add_custom_command(OUTPUT "${ROUTING_EXECUTABLE}"
         COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/routing"
         COMMAND ${CMAKE_COMMAND} -E env GOTOOLCHAIN=auto
@@ -359,7 +359,7 @@ if(LINUX)
         VERBATIM)
     add_custom_target(amnezia-routing-child DEPENDS "${ROUTING_EXECUTABLE}")
     add_dependencies(${PROJECT} amnezia-routing-child)
-    target_sources(${PROJECT} PRIVATE linuxroutingprocess.cpp linuxroutingprocess.h)
+    target_sources(${PROJECT} PRIVATE desktoproutingprocess.cpp desktoproutingprocess.h)
     list(APPEND CONAN_EXECS "${ROUTING_EXECUTABLE}")
 endif()
 

@@ -7,10 +7,10 @@
 
 // The service owns this child across GUI IPC connections. The child owns the
 // sole TUN reader, DNS link and policy routes for an experimental routed AWG.
-class LinuxRoutingProcess final : public QObject {
+class DesktopRoutingProcess final : public QObject {
     Q_OBJECT
 public:
-    static LinuxRoutingProcess *instance();
+    static DesktopRoutingProcess *instance();
     bool start(const QJsonObject &profile, bool strictKillSwitch);
     void stop(bool notify = true);
     bool isActive() const;
@@ -20,7 +20,7 @@ signals:
     void disconnected();
     void failed();
 private:
-    explicit LinuxRoutingProcess(QObject *parent);
+    explicit DesktopRoutingProcess(QObject *parent);
     void readOutput();
     QProcess m_process;
     QByteArray m_buffer;

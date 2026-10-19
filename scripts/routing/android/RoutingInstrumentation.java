@@ -121,6 +121,9 @@ public final class RoutingInstrumentation extends Instrumentation {
             requireRoute(InetAddress.getByName("10.0.2.2"), "DIRECT");
             control("/peer?state=on", true);
             disconnect(); connect(true);
+            progress("CHECK: inverse restart; verify explicit DIRECT and VPN rules before default policy");
+            requireRoute(dns("direct.ru", 1), "DIRECT");
+            requireRoute(dns("vpn.test", 1), "VPN");
             requireRoute(dns("unlisted.test", 1), "DIRECT");
             requireRoute(dns("vpn.test", 1), "VPN");
             pass("AWG outage fails closed, configured DIRECT remains reachable, inverse default policy");
@@ -153,6 +156,7 @@ public final class RoutingInstrumentation extends Instrumentation {
             StringBuilder stack = new StringBuilder();
             for (StackTraceElement frame : error.getStackTrace()) if (frame.getClassName().startsWith("org.amnezia.routingtest")) stack.append(frame).append("\n");
             result.putString("test_stack", stack.toString());
+            try { result.putString("observers", control("/stats", false).toString()); } catch (Exception ignored) {}
         } finally {
             if (service != null) try { send(DISCONNECT, new Bundle()); send(UNREGISTER, new Bundle()); } catch (Exception ignored) {}
             if (didBind) getTargetContext().unbindService(connection);

@@ -112,7 +112,9 @@ def main():
     def ns_ip(*parts):
         return ip("-n", ns, *parts)
     def application(options):
-        return json.loads(run("ip", "netns", "exec", ns, sys.executable, script, "--probe", json.dumps(options), capture_output=True, text=True).stdout)
+        result = subprocess.run(["ip", "netns", "exec", ns, sys.executable, str(script), "--probe", json.dumps(options)], capture_output=True, text=True)
+        assert result.returncode == 0, result.stderr
+        return json.loads(result.stdout)
     def control(path, post=False):
         connection = http.client.HTTPConnection("127.0.0.1", 18080, timeout=5)
         connection.request("POST" if post else "GET", path)

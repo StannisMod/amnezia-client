@@ -12,8 +12,8 @@
 #include "daemon.h"
 #include "leakdetector.h"
 #include "logger.h"
-#ifdef MZ_LINUX
-#include "linuxroutingprocess.h"
+#if defined(MZ_LINUX) || defined(MZ_WINDOWS)
+#include "desktoproutingprocess.h"
 #include "killswitch.h"
 #endif
 
@@ -41,11 +41,11 @@ DaemonLocalServerConnection::DaemonLocalServerConnection(QObject* parent,
           &DaemonLocalServerConnection::disconnected);
   connect(daemon, &Daemon::backendFailure, this,
           &DaemonLocalServerConnection::backendFailure);
-#ifdef MZ_LINUX
-  auto routing = LinuxRoutingProcess::instance();
-  connect(routing, &LinuxRoutingProcess::connected, this, &DaemonLocalServerConnection::connected);
-  connect(routing, &LinuxRoutingProcess::disconnected, this, &DaemonLocalServerConnection::disconnected);
-  connect(routing, &LinuxRoutingProcess::failed, this, [this] { backendFailure(DaemonError::ERROR_FATAL); });
+#if defined(MZ_LINUX) || defined(MZ_WINDOWS)
+  auto routing = DesktopRoutingProcess::instance();
+  connect(routing, &DesktopRoutingProcess::connected, this, &DaemonLocalServerConnection::connected);
+  connect(routing, &DesktopRoutingProcess::disconnected, this, &DaemonLocalServerConnection::disconnected);
+  connect(routing, &DesktopRoutingProcess::failed, this, [this] { backendFailure(DaemonError::ERROR_FATAL); });
 #endif
 }
 
@@ -114,16 +114,16 @@ void DaemonLocalServerConnection::parseCommand(const QByteArray& data) {
   }
 
   if (type == "activate") {
-#ifdef MZ_LINUX
+#if defined(MZ_LINUX) || defined(MZ_WINDOWS)
     if (obj.contains("routing_profile")) {
       Daemon::instance()->deactivate(false);
-      if (!LinuxRoutingProcess::instance()->start(obj.value("routing_profile").toObject(), KillSwitch::instance()->isStrictKillSwitchEnabled())) {
+      if (!DesktopRoutingProcess::instance()->start(obj.value("routing_profile").toObject(), KillSwitch::instance()->isStrictKillSwitchEnabled())) {
         backendFailure(DaemonError::ERROR_FATAL);
         disconnected();
       }
       return;
     }
-    LinuxRoutingProcess::instance()->stop(false);
+    DesktopRoutingProcess::instance()->stop(false);
 #endif
     InterfaceConfig config;
     if (!Daemon::parseConfig(obj, config)) {
@@ -140,8 +140,8 @@ void DaemonLocalServerConnection::parseCommand(const QByteArray& data) {
   }
 
   if (type == "deactivate") {
-#ifdef MZ_LINUX
-    if (LinuxRoutingProcess::instance()->isActive()) { LinuxRoutingProcess::instance()->stop(); return; }
+#if defined(MZ_LINUX) || defined(MZ_WINDOWS)
+    if (DesktopRoutingProcess::instance()->isActive()) { DesktopRoutingProcess::instance()->stop(); return; }
 #endif
     Daemon::instance()->deactivate(true);
     return;
@@ -149,8 +149,8 @@ void DaemonLocalServerConnection::parseCommand(const QByteArray& data) {
 
   if (type == "status") {
     QJsonObject obj = Daemon::instance()->getStatus();
-#ifdef MZ_LINUX
-    if (LinuxRoutingProcess::instance()->isActive()) obj = LinuxRoutingProcess::instance()->status();
+#if defined(MZ_LINUX) || defined(MZ_WINDOWS)
+    if (DesktopRoutingProcess::instance()->isActive()) obj = DesktopRoutingProcess::instance()->status();
 #endif
     obj.insert("type", "status");
     write(obj);

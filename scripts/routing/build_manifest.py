@@ -43,11 +43,12 @@ def main():
         "host": platform.platform(),
         "client_baseline_compile": status,
         "routing_core_linked_into_client": target == "android" and os.environ.get("ROUTING_PAYLOAD_OUTCOME") == "success",
+        "routing_core_packaged_with_service": target in {"linux", "windows"} and any(root.rglob("amnezia-routing.exe" if target == "windows" else "amnezia-routing")),
         "native_vpn_acceptance": "NOT RUN",
         "installer_smoke_test": "NOT RUN",
         "signing": "BLOCKED" if target == "ios" else "debug" if target == "android" else "unsigned",
         "signing_blocker": "Apple app and Network Extension identities/profiles are required" if target == "ios" else None,
-        "tools": {"cmake": command("cmake", "--version"), "conan": command("conan", "--version")},
+        "tools": {"cmake": command("cmake", "--version"), "conan": command("conan", "--version"), "go": command("go", "version")},
         "artifacts": artifacts,
         "workflow_run": os.environ.get("GITHUB_RUN_ID"),
     }

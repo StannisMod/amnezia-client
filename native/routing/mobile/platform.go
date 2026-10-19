@@ -28,6 +28,10 @@ type Hooks struct {
 	// Open is supplied by packet-flow hosts/tests. Android uses the existing FD.
 	Open             func(*tun.Options) (tun.Tun, error)
 	NetworkExtension bool
+	// Destination-aware native hosts (Windows) protect sockets using the real
+	// per-destination OS route before connect/first datagram. Mobile hosts keep
+	// their existing FD protection callback and leave this unset.
+	Underlay *engine.Underlay
 }
 
 type Platform struct {
@@ -76,6 +80,9 @@ func (p *Platform) AutoDetectInterfaceControl(fd int) error {
 	return p.hooks.Protect(fd)
 }
 func (p *Platform) Underlay() engine.Underlay {
+	if p.hooks.Underlay != nil {
+		return *p.hooks.Underlay
+	}
 	control := func(_, _ string, raw syscall.RawConn) error {
 		var inner error
 		if err := raw.Control(func(fd uintptr) { inner = p.AutoDetectInterfaceControl(int(fd)) }); err != nil {

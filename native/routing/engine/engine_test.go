@@ -40,6 +40,12 @@ func keys(t *testing.T) (string, string) {
 // coverage. Both domains resolve to 10.77.0.2. The test DIRECT socket factory
 // maps that observer to loopback; VPN uses the real AWG stack at 10.77.0.2.
 func TestFakeIPSharedAddressEgress(t *testing.T) {
+	for _, policy := range []rules.Action{rules.VPN, rules.Direct} {
+		t.Run(string(policy), func(t *testing.T) { testFakeIPSharedAddressEgress(t, policy) })
+	}
+}
+
+func testFakeIPSharedAddressEgress(t *testing.T, defaultPolicy rules.Action) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	aPriv, aPub := keys(t)
@@ -89,7 +95,7 @@ func TestFakeIPSharedAddressEgress(t *testing.T) {
 	}
 	go serve(physical, "DIRECT")
 	go serve(virtual, "TUNNEL")
-	route, e := (rules.Config{Version: 1, Default: rules.VPN, Rules: []rules.Rule{{Kind: rules.Suffix, Value: "*.direct.test", Action: rules.Direct}}}).Compile()
+	route, e := (rules.Config{Version: 1, Default: defaultPolicy, Rules: []rules.Rule{{Kind: rules.Suffix, Value: "*.direct.test", Action: rules.Direct}, {Kind: rules.Domain, Value: "b.vpn.test", Action: rules.VPN}}}).Compile()
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -98,7 +104,7 @@ func TestFakeIPSharedAddressEgress(t *testing.T) {
 	routeConfig["default_domain_resolver"] = "real"
 	config := map[string]any{
 		"dns": map[string]any{"servers": []any{
-			map[string]any{"type": "hosts", "tag": "real", "predefined": map[string]any{"a.direct.test": "10.77.0.2", "b.vpn.test": "10.77.0.2"}},
+			map[string]any{"type": "hosts", "tag": "real", "predefined": map[string]any{"a.direct.test": "10.77.0.2", "b.vpn.test": "10.77.0.2", "unlisted.test": "10.77.0.2"}},
 			map[string]any{"type": "fakeip", "tag": "fake", "inet4_range": "198.18.0.0/15", "inet6_range": "fc00::/18"},
 		}, "final": "real", "reverse_mapping": false},
 		"outbounds": []any{map[string]any{"type": "direct", "tag": "direct"}, map[string]any{
@@ -137,7 +143,13 @@ func TestFakeIPSharedAddressEgress(t *testing.T) {
 	}
 	seen := map[string]bool{}
 	var vpnFakeIP netip.Addr
-	for _, v := range []struct{ domain, want string }{{"a.direct.test", "DIRECT"}, {"b.vpn.test", "TUNNEL"}} {
+	defaultObserver := "TUNNEL"
+	expectedDirect := int32(1)
+	if defaultPolicy == rules.Direct {
+		defaultObserver = "DIRECT"
+		expectedDirect++
+	}
+	for _, v := range []struct{ domain, want string }{{"a.direct.test", "DIRECT"}, {"b.vpn.test", "TUNNEL"}, {"unlisted.test", defaultObserver}} {
 		query := new(dns.Msg)
 		query.SetQuestion(dns.Fqdn(v.domain), dns.TypeA)
 		response, e := dnsRouter.Exchange(ctx, query, adapter.DNSQueryOptions{Transport: fake})
@@ -149,7 +161,7 @@ func TestFakeIPSharedAddressEgress(t *testing.T) {
 			t.Fatal("domains received same fake address")
 		}
 		seen[ip] = true
-		if v.want == "TUNNEL" {
+		if v.domain == "b.vpn.test" {
 			vpnFakeIP = netip.MustParseAddr(ip)
 		}
 		app, router := net.Pipe()
@@ -230,7 +242,7 @@ func TestFakeIPSharedAddressEgress(t *testing.T) {
 	if n, _ := app.Read(make([]byte, 16)); n != 0 {
 		t.Fatal("unavailable VPN returned data")
 	}
-	if directConnections.Load() != 1 {
+	if directConnections.Load() != expectedDirect {
 		t.Fatal("VPN failure fell back to DIRECT")
 	}
 }

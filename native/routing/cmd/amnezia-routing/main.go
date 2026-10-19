@@ -1,4 +1,4 @@
-//go:build linux && !android
+//go:build (linux && !android) || windows
 
 // amnezia-routing is a private child of the privileged desktop service.
 // Credentials arrive on stdin, never in command lines or configuration files.
@@ -9,40 +9,26 @@ import (
 	"context"
 	"encoding/json"
 	"flag"
-	"net/netip"
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
 
 	"github.com/StannisMod/amnezia-client/native/routing/desktop"
-	"golang.org/x/sys/unix"
 )
 
 func main() {
 	noDNS := flag.Bool("no-system-dns", false, "isolated namespace test only: caller supplies resolver configuration")
 	recoverOnly := flag.Bool("recover", false, "explicit recovery of recognized fail-closed state after a child crash")
-	cacheDir := flag.String("cache-dir", "/var/lib/amneziavpn/domain-routing", "private service cache directory")
+	cacheDir := flag.String("cache-dir", desktop.DefaultCacheDir(), "private service cache directory")
 	flag.Parse()
-	// A single child owns the OS capture boundary, even across multiple GUI IPC
-	// connections. Fail rather than share or race over routes and the FakeIP DB.
-	if err := os.MkdirAll(*cacheDir, 0700); err != nil {
-		os.Exit(1)
-	}
-	if err := os.Chmod(*cacheDir, 0700); err != nil {
-		os.Exit(1)
-	}
-	lock, err := os.OpenFile(filepath.Join(*cacheDir, "owner.lock"), os.O_CREATE|os.O_RDWR, 0600)
+	lock, err := desktop.PreparePrivateCache(*cacheDir)
 	if err != nil {
 		os.Exit(1)
 	}
 	defer lock.Close()
-	if unix.Flock(int(lock.Fd()), unix.LOCK_EX|unix.LOCK_NB) != nil {
-		os.Exit(1)
-	}
 	if *recoverOnly {
 		if err := desktop.Recover(); err != nil {
 			os.Exit(1)
@@ -63,30 +49,9 @@ func main() {
 		fail(err.Error())
 		return
 	}
-	// The systemd stub is kept local. Calling it as the engine's upstream after
-	// assigning the VPN's DNS link would recurse back into this engine.
-	if config.Resolver.Addr().IsLoopback() {
-		// Snapshot resolved's native upstream before adding the VPN DNS link.
-		// The original stub remains on loopback and receives no gateway route.
-		resolved, readErr := os.ReadFile("/run/systemd/resolve/resolv.conf")
-		var upstream netip.Addr
-		if readErr == nil && config.Resolver.Addr().String() == "127.0.0.53" {
-			for _, line := range strings.Split(string(resolved), "\n") {
-				parts := strings.Fields(line)
-				if len(parts) >= 2 && parts[0] == "nameserver" {
-					candidate, err := netip.ParseAddr(parts[1])
-					if err == nil && !candidate.IsLoopback() {
-						upstream = candidate
-						break
-					}
-				}
-			}
-		}
-		if !upstream.IsValid() {
-			fail("cannot bootstrap a local DNS stub; select a numeric upstream DNS server")
-			return
-		}
-		config.Resolver = netip.AddrPortFrom(upstream, 53)
+	if err := desktop.PrepareResolver(&config); err != nil {
+		fail(err.Error())
+		return
 	}
 	rawConfig, _ := json.Marshal(config)
 	var sessionConfig map[string]any

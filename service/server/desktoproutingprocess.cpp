@@ -1,23 +1,34 @@
-#include "linuxroutingprocess.h"
+#include "desktoproutingprocess.h"
 
 #include <QCoreApplication>
 #include <QDir>
 #include <QJsonDocument>
 #include <QTimer>
 
-LinuxRoutingProcess *LinuxRoutingProcess::instance()
+namespace {
+QString executablePath()
 {
-    static auto instance = new LinuxRoutingProcess(qApp);
+#ifdef Q_OS_WIN
+    return QDir(QCoreApplication::applicationDirPath()).filePath("amnezia-routing.exe");
+#else
+    return QDir(QCoreApplication::applicationDirPath()).filePath("amnezia-routing");
+#endif
+}
+}
+
+DesktopRoutingProcess *DesktopRoutingProcess::instance()
+{
+    static auto instance = new DesktopRoutingProcess(qApp);
     return instance;
 }
 
-LinuxRoutingProcess::LinuxRoutingProcess(QObject *parent) : QObject(parent)
+DesktopRoutingProcess::DesktopRoutingProcess(QObject *parent) : QObject(parent)
 {
     m_status.insert("connected", false);
     // Native diagnostics are intentionally not forwarded to application logs:
     // the child emits only counters/status and sanitized configuration errors.
     m_process.setStandardErrorFile(QProcess::nullDevice());
-    connect(&m_process, &QProcess::readyReadStandardOutput, this, &LinuxRoutingProcess::readOutput);
+    connect(&m_process, &QProcess::readyReadStandardOutput, this, &DesktopRoutingProcess::readOutput);
     connect(&m_process, &QProcess::finished, this, [this](int exitCode, QProcess::ExitStatus exitStatus) {
         m_status.insert("connected", false);
         if (!m_stopping && (exitCode != 0 || exitStatus != QProcess::NormalExit)) emit failed();
@@ -26,10 +37,10 @@ LinuxRoutingProcess::LinuxRoutingProcess(QObject *parent) : QObject(parent)
     connect(qApp, &QCoreApplication::aboutToQuit, this, [this] { stop(false); });
 }
 
-bool LinuxRoutingProcess::isActive() const { return m_owned || m_process.state() != QProcess::NotRunning; }
-QJsonObject LinuxRoutingProcess::status() const { return m_status; }
+bool DesktopRoutingProcess::isActive() const { return m_owned || m_process.state() != QProcess::NotRunning; }
+QJsonObject DesktopRoutingProcess::status() const { return m_status; }
 
-bool LinuxRoutingProcess::start(const QJsonObject &profile, bool strictKillSwitch)
+bool DesktopRoutingProcess::start(const QJsonObject &profile, bool strictKillSwitch)
 {
     // Until the existing firewall/app filters are integrated, fail explicitly
     // rather than silently weaken a selected OS kill-switch or per-app policy.
@@ -41,7 +52,7 @@ bool LinuxRoutingProcess::start(const QJsonObject &profile, bool strictKillSwitc
     m_status = {{"connected", false}, {"deviceIpv4Address", "172.19.0.1"},
                 {"serverIpv4Gateway", "172.19.0.2"}, {"rxBytes", 0}, {"txBytes", 0}};
     m_buffer.clear();
-    m_process.start(QDir(QCoreApplication::applicationDirPath()).filePath("amnezia-routing"), {});
+    m_process.start(executablePath(), {});
     if (!m_process.waitForStarted(5000)) return false;
     m_owned = true;
     const auto bytes = QJsonDocument(profile).toJson(QJsonDocument::Compact) + '\n';
@@ -49,7 +60,7 @@ bool LinuxRoutingProcess::start(const QJsonObject &profile, bool strictKillSwitc
     return true;
 }
 
-void LinuxRoutingProcess::stop(bool notify)
+void DesktopRoutingProcess::stop(bool notify)
 {
     m_stopping = true;
     if (m_process.state() != QProcess::NotRunning) {
@@ -65,7 +76,7 @@ void LinuxRoutingProcess::stop(bool notify)
     if (m_owned) {
         QProcess recovery;
         recovery.setStandardErrorFile(QProcess::nullDevice());
-        recovery.start(QDir(QCoreApplication::applicationDirPath()).filePath("amnezia-routing"), {"--recover"});
+        recovery.start(executablePath(), {"--recover"});
         if (recovery.waitForStarted(3000) && recovery.waitForFinished(8000)
                 && recovery.exitStatus() == QProcess::NormalExit && recovery.exitCode() == 0) m_owned = false;
     }
@@ -74,7 +85,7 @@ void LinuxRoutingProcess::stop(bool notify)
     if (notify) emit disconnected();
 }
 
-void LinuxRoutingProcess::readOutput()
+void DesktopRoutingProcess::readOutput()
 {
     m_buffer += m_process.readAllStandardOutput();
     if (m_buffer.size() > 65536) { stop(false); emit failed(); emit disconnected(); return; }

@@ -29,7 +29,7 @@ import (
 	"github.com/miekg/dns"
 )
 
-const sharedIP = "10.0.2.2" // Android emulator's documented host alias.
+var sharedIP = "10.0.2.2" // Android emulator host alias; Windows uses its native local IP.
 const tcpPort = 18081
 const udpPort = 18082
 
@@ -39,6 +39,7 @@ type fixture struct {
 	closePeer                            []io.Closer
 	server, client                       *ecdh.PrivateKey
 	directTCP, directUDP, vpnTCP, vpnUDP atomic.Int64
+	dnsQueries                           atomic.Int64
 }
 
 // The disposable loopback peer never changes underlay networks. Wrapping the
@@ -124,6 +125,7 @@ func (f *fixture) start() error {
 	}
 	f.closePeer = append(f.closePeer, pc)
 	server := &dns.Server{PacketConn: pc, Handler: dns.HandlerFunc(func(w dns.ResponseWriter, q *dns.Msg) {
+		f.dnsQueries.Add(1)
 		a := new(dns.Msg)
 		a.SetReply(q)
 		for _, question := range q.Question {
@@ -150,6 +152,7 @@ func (f *fixture) start() error {
 }
 
 func main() {
+	flag.StringVar(&sharedIP, "shared-ip", sharedIP, "native host address used by both controlled observers")
 	path := flag.String("config", "", "private output fixture JSON (never upload)")
 	flag.Parse()
 	if *path == "" {
@@ -182,7 +185,7 @@ func main() {
 	go observeUDP(u, "DIRECT", &f.directUDP)
 	control := http.NewServeMux()
 	control.HandleFunc("/stats", func(w http.ResponseWriter, _ *http.Request) {
-		json.NewEncoder(w).Encode(map[string]int64{"direct_tcp": f.directTCP.Load(), "direct_udp": f.directUDP.Load(), "vpn_tcp": f.vpnTCP.Load(), "vpn_udp": f.vpnUDP.Load()})
+		json.NewEncoder(w).Encode(map[string]int64{"direct_tcp": f.directTCP.Load(), "direct_udp": f.directUDP.Load(), "vpn_tcp": f.vpnTCP.Load(), "vpn_udp": f.vpnUDP.Load(), "dns_queries": f.dnsQueries.Load()})
 	})
 	control.HandleFunc("/peer", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {

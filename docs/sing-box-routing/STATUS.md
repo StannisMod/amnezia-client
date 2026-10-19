@@ -253,3 +253,34 @@ packaged test APK only after checking its production Android host sources are
 unchanged from that APK's source SHA. The report identifies both SHAs and the
 native checksum. This incremental APK is emulator-only evidence, not a newly
 compiled Qt client, installer, release artifact or physical-device acceptance.
+
+## Windows source integration and mobile runtime follow-up
+
+The desktop service owner now has a platform-neutral name and is wired into
+the existing Windows service IPC as well as Linux. The Windows helper uses the
+repository's pinned Wintun 0.14.1 dependency and the same routing/AWG module.
+It chooses each destination's native route via GetBestRoute2 across native
+interfaces, compares prefix length plus route/interface metrics, excludes the
+capture adapter, and applies IP_UNICAST_IF/IPV6_UNICAST_IF before TCP connect
+or each UDP send. UDP syscall fast paths are deliberately hidden so that they
+cannot bypass that protection. Loopback retains its native local path.
+
+The helper owns adapter DNS/addresses/routes and a dynamic WFP DNS guard;
+specific native routes receive more-specific capture routes so literal VPN
+destinations cannot escape merely through a pre-existing LAN route. The cache
+directory has an explicit SYSTEM/Administrators ACL and an exclusive file
+lock. Existing per-app routing and OS kill-switch combinations remain gated.
+Windows helper-crash fail-closed policy, installed-service/installer smoke,
+handover and real-device behavior are still unfinished. Source integration
+and a successful Go cross-build do not establish Windows runtime acceptance.
+
+A dedicated Windows CI now exercises the actual route API/ABI, Wintun capture,
+system DNS, DIRECT/AWG TCP/UDP observers, IPv6, loopback, inverse policy and
+100 reconnects with native route/DNS restoration. Results are pending.
+
+Android incremental run `39298167660` confirms the UDP correction under the
+actual APK's AwgService: shared-IP domain separation, TCP/UDP on both paths,
+suffix/exact precedence, CNAME, IPv6 TCP/UDP, system resolver and loopback all
+passed. A later inverse-mode check after peer/session restart timed out, so
+the full Android result remains **FAIL**. Fresh host tests now cover both
+default policies and pass; reconnect/peer recovery remains under investigation.

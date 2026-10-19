@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"os"
 	"os/exec"
 	"sync"
 	"time"
@@ -95,7 +96,7 @@ func Recover() error {
 			if r.Table != routeTable && r.Priority != rulePriority {
 				continue
 			}
-			if r.Table != routeTable || r.Priority != rulePriority || !r.MarkSet || r.Mark != socketMark || r.Mask != int(socketMark) || !r.Invert {
+			if r.Table != routeTable || r.Priority != rulePriority || !r.MarkSet || r.Mark != socketMark || r.Mask != int(socketMark) || !r.Invert || (r.IifName != "" && r.IifName != "lo") {
 				return errors.New("refusing recovery of an unrecognized policy rule")
 			}
 			copy := r
@@ -177,6 +178,12 @@ func Start(ctx context.Context, raw []byte, manageDNS bool) (*Session, error) {
 				t.Close()
 				return nil, err
 			}
+			// Only our TUN needs loose reverse-path checking for proxied replies.
+			// Existing physical-interface rp_filter policy is left untouched.
+			if err = os.WriteFile("/proc/sys/net/ipv4/conf/"+InterfaceName+"/rp_filter", []byte("2"), 0600); err != nil {
+				t.Close()
+				return nil, errors.New("capture reverse-path configuration failed")
+			}
 			for _, p := range append(opts.Inet4Address, opts.Inet6Address...) {
 				address, err := netlink.ParseAddr(p.String())
 				if err != nil {
@@ -228,6 +235,7 @@ func Start(ctx context.Context, raw []byte, manageDNS bool) (*Session, error) {
 		}
 		r := netlink.NewRule()
 		r.Family = family
+		r.IifName = "lo" // locally originated traffic; preserve native input/rp_filter lookups
 		r.Priority = rulePriority
 		r.Table = routeTable
 		r.Mark = socketMark
