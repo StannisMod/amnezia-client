@@ -134,6 +134,13 @@ def main():
         report.update(native_capture="PASS", reconnect_cycles=args.cycles, os_state_restored=True,
                       scenarios=["actual Wintun/gVisor capture", "same-IP domain identity", "native DIRECT and AWG TCP/UDP", "IPv6", "system DNS/FakeIP", "CNAME", "suffix boundaries", "loopback", "AWG loss fails closed", "inverse mode", "FakeIP persistence"])
     finally:
+        try:
+            report["diagnostics"] = {
+                "routes": powershell("Get-NetRoute | Select-Object InterfaceAlias,DestinationPrefix,NextHop,RouteMetric | ConvertTo-Json -Compress"),
+                "observers": control("/stats"),
+            }
+        except Exception:
+            pass
         if child is not None:
             try:
                 stop()

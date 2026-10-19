@@ -67,10 +67,15 @@ def udp(address):
 def probe(options):
     results = {}
     for name, expected, kind in options.get("names", []):
+        print(f"CHECK {name}: {expected}, DNS type {kind}", file=sys.stderr, flush=True)
         address = resolve(name, kind)
-        assert tcp(address) == expected, "wrong TCP observer"
-        assert udp(address) == expected + ":proof", "wrong UDP observer"
+        try:
+            assert tcp(address) == expected, "wrong TCP observer"
+            assert udp(address) == expected + ":proof", "wrong UDP observer"
+        except Exception as error:
+            raise AssertionError(f"{name}: expected {expected} over IPv{ipaddress.ip_address(address).version}: {error}") from error
         results[name] = address
+        print(f"PASS {name}: TCP/UDP over IPv{ipaddress.ip_address(address).version}", file=sys.stderr, flush=True)
     for address in options.get("blocked", []):
         for request in (tcp, udp):
             try:
@@ -206,6 +211,19 @@ def main():
         assert ns_ip("route", "show", "table", "all") == before_routes
         report.update(native_capture="PASS", scenarios=["FakeIP identity/shared real IP", "DIRECT and AWG TCP/UDP", "IPv6", "CNAME", "native policy route", "loopback IPv4/IPv6", "inverse mode", "persistent FakeIP", "AWG loss fails closed", "helper crash fails closed and explicit recovery"], reconnect_cycles=args.cycles, os_state_restored=True)
     finally:
+        # This namespace contains only controlled fixture traffic. Record
+        # interface counters and route decisions, never packet payloads/keys.
+        try:
+            report["diagnostics"] = {
+                "rules": ns_ip("rule", "show"),
+                "ipv6_rules": ns_ip("-6", "rule", "show"),
+                "routes": ns_ip("route", "show", "table", "all"),
+                "ipv6_routes": ns_ip("-6", "route", "show", "table", "all"),
+                "links": ns_ip("-s", "link", "show"),
+                "observers": control("/stats"),
+            }
+        except Exception:
+            pass
         if child is not None:
             child.kill(); child.wait(timeout=10)
         if peer is not None:

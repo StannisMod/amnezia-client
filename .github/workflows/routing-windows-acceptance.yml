@@ -7,6 +7,7 @@ on:
       - native/routing/desktop/**
       - native/routing/cmd/amnezia-routing/**
       - scripts/routing/run_windows_acceptance.py
+      - scripts/routing/run_linux_acceptance.py
   workflow_dispatch:
 permissions:
   contents: read
