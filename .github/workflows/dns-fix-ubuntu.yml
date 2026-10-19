@@ -3,6 +3,9 @@ name: Ubuntu DNS fix
 on:
   push:
     branches: [fix/dns-flush-systemd-race]
+    paths-ignore:
+      - .github/workflows/dns-fix-ubuntu.yml
+      - .github/workflows/publish-dns-fix-release.yml
   workflow_dispatch:
 
 permissions:
