@@ -185,7 +185,7 @@ bool IpSplitTunnelingController::validateHostname(const QString &hostname) const
 
 bool IpSplitTunnelingController::isSingBoxRoutingEnabled() const
 {
-#ifdef Q_OS_ANDROID
+#if defined(Q_OS_ANDROID) || defined(Q_OS_IOS)
     return m_appSettingsRepository->isSingBoxRoutingEnabled();
 #else
     return false;
@@ -194,7 +194,7 @@ bool IpSplitTunnelingController::isSingBoxRoutingEnabled() const
 
 bool IpSplitTunnelingController::setSingBoxRoutingEnabled(bool enabled)
 {
-#ifndef Q_OS_ANDROID
+#if !defined(Q_OS_ANDROID) && !defined(Q_OS_IOS)
     if (enabled) return false;
 #endif
     if (!enabled) {

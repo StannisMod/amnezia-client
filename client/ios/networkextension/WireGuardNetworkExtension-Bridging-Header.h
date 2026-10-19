@@ -1,4 +1,5 @@
 #include "wireguard-go-version.h"
+#include "amnezia_routing.h"
 #include "3rd/amneziawg-apple/Sources/WireGuardKitGo/wireguard.h"
 #include "3rd/amneziawg-apple/Sources/WireGuardKitC/WireGuardKitC.h"
 

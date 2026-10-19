@@ -27,7 +27,7 @@ void IpSplitTunnelingUiController::addSite(QString hostname)
 
 bool IpSplitTunnelingUiController::isSingBoxRoutingAvailable() const
 {
-#ifdef Q_OS_ANDROID
+#if defined(Q_OS_ANDROID) || defined(Q_OS_IOS)
     return true;
 #else
     return false;

@@ -298,6 +298,27 @@ jobs:
         with: {submodules: recursive}
       - uses: maxim-lobanov/setup-xcode@v1
         with: {xcode-version: '26.0'}
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: native/routing/go.mod
+          cache-dependency-path: native/routing/applebridge/module.sum
+      - name: Build unified AWG-XRay-routing archive and typecheck public packet-flow adapter
+        shell: bash
+        env:
+          GOTOOLCHAIN: local
+          GOTELEMETRY: 'off'
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch v3.1.4 https://github.com/amnezia-vpn/amneziawg-apple.git "$RUNNER_TEMP/routing-apple"
+          test "$(git -C "$RUNNER_TEMP/routing-apple" rev-parse HEAD)" = 811f5c8213e6b257e9520fff713ec4d22086e9ac
+          module="$RUNNER_TEMP/routing-apple/Sources/WireGuardKitGo"
+          python3 native/routing/prepare_apple.py --module "$module"
+          make -C "$module" ARCHS=arm64 PLATFORM_NAME=iphoneos
+          nm -g "$module/out/libwg-go.a" > "$RUNNER_TEMP/routing-apple-symbols.txt"
+          for symbol in _AmneziaRoutingStart _AmneziaRoutingFeed _AmneziaRoutingStop _AmneziaRoutingStats _wgTurnOn; do
+            grep -E " T $symbol$" "$RUNNER_TEMP/routing-apple-symbols.txt"
+          done
+          xcrun --sdk iphoneos swiftc -typecheck -target arm64-apple-ios15.0 -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" -import-objc-header "$module/amnezia_routing.h" client/platforms/ios/WGConfig.swift client/platforms/ios/RoutingPacketTunnel.swift
       - uses: actions/setup-python@v6
         with: {python-version: '3.14'}
       - uses: jurplel/install-qt-action@v4.3.1

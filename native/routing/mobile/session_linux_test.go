@@ -84,31 +84,7 @@ func TestOwnedPacketFDManagedDNSAndCleanup(t *testing.T) {
 	if _, e = platform.OpenInterface(&tun.Options{}, option.TunPlatformOptions{}); e == nil {
 		t.Fatal("second packet reader was accepted")
 	}
-	query := new(dns.Msg)
-	query.SetQuestion("packet.test.", dns.TypeA)
-	payload, e := query.Pack()
-	if e != nil {
-		t.Fatal(e)
-	}
-	packet := make([]byte, 28+len(payload))
-	packet[0] = 0x45
-	binary.BigEndian.PutUint16(packet[2:4], uint16(len(packet)))
-	packet[8] = 64
-	packet[9] = 17
-	copy(packet[12:16], net.ParseIP("172.19.0.10").To4())
-	copy(packet[16:20], net.ParseIP("172.19.0.2").To4())
-	binary.BigEndian.PutUint16(packet[20:22], 53000)
-	binary.BigEndian.PutUint16(packet[22:24], 53)
-	binary.BigEndian.PutUint16(packet[24:26], uint16(8+len(payload)))
-	copy(packet[28:], payload)
-	var sum uint32
-	for i := 0; i < 20; i += 2 {
-		sum += uint32(binary.BigEndian.Uint16(packet[i : i+2]))
-	}
-	for sum > 65535 {
-		sum = (sum & 65535) + (sum >> 16)
-	}
-	binary.BigEndian.PutUint16(packet[10:12], ^uint16(sum))
+	packet := dnsPacket(t)
 	app.SetDeadline(time.Now().Add(2 * time.Second))
 	if _, e = app.Write(packet); e != nil {
 		t.Fatal(e)
@@ -168,5 +144,96 @@ func TestFailedStartReleasesCaptureAndHost(t *testing.T) {
 	}
 	if released.Load() != 1 {
 		t.Fatal("failed start leaked host")
+	}
+}
+
+func dnsPacket(t *testing.T) []byte {
+	t.Helper()
+	query := new(dns.Msg)
+	query.SetQuestion("packet.test.", dns.TypeA)
+	payload, e := query.Pack()
+	if e != nil {
+		t.Fatal(e)
+	}
+	packet := make([]byte, 28+len(payload))
+	packet[0] = 0x45
+	binary.BigEndian.PutUint16(packet[2:4], uint16(len(packet)))
+	packet[8] = 64
+	packet[9] = 17
+	copy(packet[12:16], net.ParseIP("172.19.0.10").To4())
+	copy(packet[16:20], net.ParseIP("172.19.0.2").To4())
+	binary.BigEndian.PutUint16(packet[20:22], 53000)
+	binary.BigEndian.PutUint16(packet[22:24], 53)
+	binary.BigEndian.PutUint16(packet[24:26], uint16(8+len(payload)))
+	copy(packet[28:], payload)
+	var sum uint32
+	for i := 0; i < 20; i += 2 {
+		sum += uint32(binary.BigEndian.Uint16(packet[i : i+2]))
+	}
+	for sum > 65535 {
+		sum = (sum & 65535) + (sum >> 16)
+	}
+	binary.BigEndian.PutUint16(packet[10:12], ^uint16(sum))
+	return packet
+}
+
+func TestPublicPacketFlowManagedDNSAndCleanup(t *testing.T) {
+	replies := make(chan []byte, 4)
+	var writes, released atomic.Int32
+	flow, err := NewPacketFlow(1280, func(packet []byte) error {
+		writes.Add(1)
+		replies <- append([]byte(nil), packet...)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	platform, err := New(-1, Hooks{
+		Protect:          func(int) error { return nil },
+		Interfaces:       func() ([]adapter.NetworkInterface, error) { return nil, nil },
+		Open:             func(*tun.Options) (tun.Tun, error) { return flow, nil },
+		Release:          func() { released.Add(1) },
+		NetworkExtension: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := Start(context.Background(), platform, sampleConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	if err = flow.Feed(dnsPacket(t)); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case packet := <-replies:
+		if len(packet) < 28 {
+			t.Fatal("short packet")
+		}
+		var answer dns.Msg
+		if err = answer.Unpack(packet[28:]); err != nil {
+			t.Fatal(err)
+		}
+		if len(answer.Answer) != 1 {
+			t.Fatal("missing FakeIP answer")
+		}
+		addr, ok := answer.Answer[0].(*dns.A)
+		if !ok || !netip.MustParsePrefix("198.18.0.0/15").Contains(netip.MustParseAddr(addr.A.String())) {
+			t.Fatal("public packet flow bypassed managed DNS")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no DNS reply via public packet flow")
+	}
+	session.Close()
+	before := writes.Load()
+	if err = flow.Feed(dnsPacket(t)); err == nil {
+		t.Fatal("accepted packet after stop")
+	}
+	if _, err = flow.Write([]byte{0x45}); err == nil {
+		t.Fatal("native write after stop")
+	}
+	if writes.Load() != before || released.Load() != 1 {
+		t.Fatal("host lifetime violation")
 	}
 }

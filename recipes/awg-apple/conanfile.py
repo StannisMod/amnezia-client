@@ -1,15 +1,18 @@
 from conan import ConanFile
 from conan.errors import ConanInvalidConfiguration
 from conan.tools.layout import basic_layout
-from conan.tools.files import get, copy, collect_libs
+from conan.tools.files import get, copy, collect_libs, chdir
 from conan.tools.apple import is_apple_os
 from conan.tools.gnu import AutotoolsToolchain, Autotools
 
 import os
+import shutil
+import importlib.util
 
 class AwgApple(ConanFile):
     name = "awg-apple"
-    version = "3.1.4"
+    version = "3.1.4-routing.1"
+    _upstream_version = "3.1.4"
     settings = "os", "arch", "compiler"
 
     @property
@@ -38,9 +41,15 @@ class AwgApple(ConanFile):
             )
 
     def source(self):
-        get(self, f"https://github.com/amnezia-vpn/amneziawg-apple/archive/refs/tags/v{self.version}.zip",
-            sha256="09d7b760d18232fdf121ed2286b2f171b501dc31137e5e7d557c1ee3a99ef772", strip_root=True
+        get(self, f"https://github.com/amnezia-vpn/amneziawg-apple/archive/refs/tags/v{self._upstream_version}.zip",
+            sha256="09d7b760d18232fdf121ed2286b2f171b501dc31137e5e7d557c1ee3a99ef772", strip_root=True,
+            destination=os.path.join(self.source_folder, "upstream")
         )
+
+    def export_sources(self):
+        copy(self, "*", src=os.path.join(self.recipe_folder, "..", "..", "native", "routing"),
+             dst=os.path.join(self.export_sources_folder, "routing-core"),
+             excludes=["**/__pycache__/*", "**/*.pyc"])
 
     def generate(self):
         tc = AutotoolsToolchain(self)
@@ -52,14 +61,25 @@ class AwgApple(ConanFile):
         tc.generate()
 
     def build(self):
+        module = os.path.join(self.build_folder, "module")
+        shutil.copytree(os.path.join(self.source_folder, "upstream", "Sources", "WireGuardKitGo"),
+                        module, dirs_exist_ok=True)
+        core = os.path.join(self.source_folder, "routing-core")
+        spec = importlib.util.spec_from_file_location("amnezia_prepare_apple", os.path.join(core, "prepare_apple.py"))
+        prepare = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(prepare)
+        prepare.prepare_module(core, module)
         autotools = Autotools(self)
-        autotools.make()
-        autotools.make("version-header")
+        with chdir(self, module):
+            autotools.make()
+            autotools.make("version-header")
 
     def package(self):
-        copy(self, "wireguard.h", src=self.build_folder, dst=os.path.join(self.package_folder, "include"))
-        copy(self, "*.h", src=os.path.join(self.build_folder, "out"), dst=os.path.join(self.package_folder, "include"))
-        copy(self, "*.a", src=os.path.join(self.build_folder, "out"), dst=os.path.join(self.package_folder, "lib"))
+        module = os.path.join(self.build_folder, "module")
+        copy(self, "wireguard.h", src=module, dst=os.path.join(self.package_folder, "include"))
+        copy(self, "amnezia_routing.h", src=module, dst=os.path.join(self.package_folder, "include"))
+        copy(self, "*.h", src=os.path.join(module, "out"), dst=os.path.join(self.package_folder, "include"))
+        copy(self, "*.a", src=os.path.join(module, "out"), dst=os.path.join(self.package_folder, "lib"))
 
     def package_info(self):
         self.cpp_info.set_property("cmake_target_name", "amnezia::awg-apple")

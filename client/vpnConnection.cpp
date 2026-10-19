@@ -498,7 +498,7 @@ void VpnConnection::appendSplitTunnelingConfig()
     m_vpnConfiguration.insert(configKey::splitTunnelType, routeMode);
     m_vpnConfiguration.insert(configKey::splitTunnelSites, sitesJsonArray);
 
-#ifdef Q_OS_ANDROID
+#if defined(Q_OS_ANDROID) || defined(Q_OS_IOS)
     if (m_appSettingsRepository->isSingBoxRoutingEnabled()
             && protocolName == ProtocolUtils::protoToString(Proto::Awg)) {
         const auto mode = m_appSettingsRepository->routeMode();

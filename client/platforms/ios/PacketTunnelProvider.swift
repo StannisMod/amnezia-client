@@ -38,6 +38,7 @@ struct Constants {
 
 class PacketTunnelProvider: NEPacketTunnelProvider {
     var wgAdapter: WireGuardAdapter?
+    var routedAdapter: RoutingPacketTunnel?
     var ovpnAdapter: OpenVPNAdapter?
     private lazy var openVPNPacketFlowAdapter = PacketTunnelFlowAdapter(flow: packetFlow)
     private let pathMonitorQueue = DispatchQueue(label: Constants.processQueueName + ".path-monitor")
@@ -90,6 +91,11 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
             }
 
             guard hasMeaningfulChange, let proto = self.protoType else { return }
+
+            if proto == .wireguard, let routed = self.routedAdapter {
+                routed.networkChanged()
+                return
+            }
 
             // WireGuard/AWG and OpenVPN manages network changes internally in its own adapter.
             if proto == .wireguard || proto == .openvpn {

@@ -42,7 +42,7 @@ var _ adapter.PlatformInterface = (*Platform)(nil)
 
 // New takes ownership of fd on success. The native caller retains it on error.
 func New(fd int, hooks Hooks) (*Platform, error) {
-	if fd <= 0 || hooks.Protect == nil || hooks.Interfaces == nil {
+	if (fd <= 0 && hooks.Open == nil) || hooks.Protect == nil || hooks.Interfaces == nil {
 		return nil, errors.New("packet tunnel and native socket/interface hooks are required")
 	}
 	return &Platform{fd: fd, hooks: hooks}, nil
@@ -58,7 +58,7 @@ func (p *Platform) Close() error {
 	}
 	p.closed = true
 	var err error
-	if !p.taken {
+	if !p.taken && p.fd >= 0 {
 		err = closeDescriptor(p.fd)
 	}
 	if p.hooks.Release != nil {
