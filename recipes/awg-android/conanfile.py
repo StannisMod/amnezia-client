@@ -117,7 +117,7 @@ class AwgAndroid(ConanFile):
         # Overlay/patch a private copy, never mutate that shared source cache.
         self._native_source = os.path.join(self.build_folder, "native-source")
         shutil.copytree(os.path.join(self.source_folder, "upstream"), self._native_source,
-                        dirs_exist_ok=True, ignore=shutil.ignore_patterns(".git"))
+                        dirs_exist_ok=True, symlinks=True, ignore=shutil.ignore_patterns(".git"))
         self._patch_sources()
 
         core = os.path.join(self.source_folder, "routing-core")

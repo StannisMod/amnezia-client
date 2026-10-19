@@ -501,10 +501,9 @@ void VpnConnection::appendSplitTunnelingConfig()
 #if defined(Q_OS_ANDROID) || defined(Q_OS_IOS)
     if (m_appSettingsRepository->isSingBoxRoutingEnabled()
             && protocolName == ProtocolUtils::protoToString(Proto::Awg)) {
-        const auto mode = m_appSettingsRepository->routeMode();
-        m_vpnConfiguration.insert("sing_box_routing", amnezia::routing::fromLegacySites(
-            m_appSettingsRepository->isSitesSplitTunnelingEnabled(), mode,
-            m_appSettingsRepository->vpnSites(mode)));
+        m_vpnConfiguration.insert("sing_box_routing", m_appSettingsRepository->isSitesSplitTunnelingEnabled()
+            ? m_appSettingsRepository->domainRoutingConfig()
+            : QJsonObject{{"version", 1}, {"default", "vpn"}, {"rules", QJsonArray()}});
         const QHostAddress dns(m_vpnConfiguration.value(configKey::dns1).toString());
         const bool localResolver = dns.isLoopback() || (!m_appSettingsRepository->useAmneziaDns() && dns.isPrivateUse());
         m_vpnConfiguration.insert("sing_box_dns_path", localResolver ? "direct" : "vpn");

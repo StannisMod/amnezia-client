@@ -319,6 +319,8 @@ jobs:
             grep -E " T $symbol$" "$RUNNER_TEMP/routing-apple-symbols.txt"
           done
           xcrun --sdk iphoneos swiftc -typecheck -target arm64-apple-ios15.0 -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" -import-objc-header "$module/amnezia_routing.h" client/platforms/ios/WGConfig.swift client/platforms/ios/RoutingPacketTunnel.swift
+          (cd "$module" && go build -mod=readonly -tags with_gvisor,amnezia_apple_bridge -buildmode=c-shared -o "$RUNNER_TEMP/routing-apple-host.dylib" .)
+          python3 scripts/routing/check_packet_flow_abi.py "$RUNNER_TEMP/routing-apple-host.dylib"
       - uses: actions/setup-python@v6
         with: {python-version: '3.14'}
       - uses: jurplel/install-qt-action@v4.3.1

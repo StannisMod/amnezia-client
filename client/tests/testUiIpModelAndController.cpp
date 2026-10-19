@@ -34,6 +34,32 @@ private:
     }
 
 private slots:
+    void editableDomainRulesPersistAndRestore()
+    {
+        auto repository = m_coreController->m_appSettingsRepository;
+        auto ui = m_coreController->m_ipSplitTunnelingUiController;
+        repository->setRouteMode(RouteMode::VpnAllExceptSites);
+        repository->addVpnSite(RouteMode::VpnAllExceptSites, "legacy.example", {"203.0.113.7"});
+        QCOMPARE(ui->domainRules().size(), 1);
+        QVERIFY(!QJsonDocument(repository->domainRoutingConfig()).toJson().contains("203.0.113.7"));
+        QVERIFY(ui->saveDomainRule(-1, "*.EXAMPLE.org.", "direct", true));
+        QVERIFY(ui->saveDomainRule(-1, "shop.example.org", "vpn", true));
+        QVERIFY(ui->saveDomainRule(-1, "192.168.1.97/24", "direct", true));
+        QVERIFY(!ui->saveDomainRule(-1, "*.example.org", "vpn", true));
+        QVERIFY(ui->saveDomainRule(1, "*.example.org", "direct", false));
+        QVERIFY(ui->domainRules()[1].toMap().value("disabled").toBool());
+        ui->setDomainDefault("direct");
+        const auto saved = repository->domainRoutingConfig();
+        const auto backup = m_settings->backupAppConfig();
+        m_settings->clearSettings();
+        QVERIFY(m_settings->restoreAppConfig(backup));
+        QCOMPARE(repository->domainRoutingConfig(), saved);
+        QCOMPARE(ui->domainDefault(), QString("direct"));
+        ui->removeDomainRule(2);
+        QCOMPARE(ui->domainRules().size(), 3);
+        QVERIFY(ui->saveDomainRule(1, "*.example.org", "vpn", true));
+        QCOMPARE(ui->domainRules()[1].toMap().value("action").toString(), QString("vpn"));
+    }
     void initTestCase()
     {
         QString testOrg = "AmneziaVPN-Test-" + QUuid::createUuid().toString();

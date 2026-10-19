@@ -5,6 +5,8 @@ package engine
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 
 	"github.com/StannisMod/amnezia-client/native/routing/awg"
 	box "github.com/sagernet/sing-box"
@@ -48,10 +50,35 @@ func Context(ctx context.Context, host Underlay) context.Context {
 // disabled unless a future host explicitly installs redacted diagnostics.
 // The host must install sing-box's PlatformInterface in ctx for mobile TUNs.
 func New(ctx context.Context, raw []byte) (*box.Box, error) {
+	return NewWithCache(ctx, raw, "")
+}
+
+// NewWithCache preserves domain/FakeIP identity across transport restarts and
+// process death. Hosts choose an absolute path in their private app storage.
+// Real DNS answers are deliberately not persisted across network changes.
+func NewWithCache(ctx context.Context, raw []byte, cachePath string) (*box.Box, error) {
 	var options option.Options
 	if e := json.UnmarshalContext(ctx, raw, &options); e != nil {
 		return nil, errors.New("invalid routing engine configuration")
 	}
 	options.Log = &option.LogOptions{Disabled: true}
+	if cachePath != "" {
+		if !filepath.IsAbs(cachePath) {
+			return nil, errors.New("routing cache requires private absolute path")
+		}
+		file, err := os.OpenFile(cachePath, os.O_CREATE|os.O_RDWR, 0o600)
+		if err != nil {
+			return nil, errors.New("routing cache unavailable")
+		}
+		err = file.Chmod(0o600)
+		file.Close()
+		if err != nil {
+			return nil, errors.New("routing cache permissions unavailable")
+		}
+		if options.Experimental == nil {
+			options.Experimental = &option.ExperimentalOptions{}
+		}
+		options.Experimental.CacheFile = &option.CacheFileOptions{Enabled: true, Path: cachePath, CacheID: "amnezia-domain-routing-v1", StoreFakeIP: true}
+	}
 	return box.New(box.Options{Context: ctx, Options: options})
 }

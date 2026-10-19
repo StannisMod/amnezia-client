@@ -35,6 +35,10 @@ public:
     bool isSplitTunnelingEnabled() const;
     bool isSingBoxRoutingEnabled() const;
     bool setSingBoxRoutingEnabled(bool enabled);
+    QJsonObject domainRoutingConfig() const;
+    bool saveDomainRule(int index, const QString &destination, const QString &action, bool enabled);
+    void removeDomainRule(int index);
+    void setDomainDefault(const QString &action);
     QVector<QPair<QString, QStringList>> getCurrentSites() const;
 
     bool importSitesFromJson(const QByteArray& jsonData, bool replaceExisting, QString &errorMessage);

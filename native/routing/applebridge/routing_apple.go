@@ -34,7 +34,7 @@ var appleNextRoutingHandle atomic.Int64
 
 //export AmneziaRoutingStart
 func AmneziaRoutingStart(raw *C.char, size C.int32_t, host unsafe.Pointer, writer C.AmneziaPacketWriter, release C.AmneziaHostRelease) C.int64_t {
-	if host == nil || writer == nil || release == nil {
+	if host == nil || release == nil {
 		return -1
 	}
 	owned := true
@@ -43,7 +43,7 @@ func AmneziaRoutingStart(raw *C.char, size C.int32_t, host unsafe.Pointer, write
 			C.amnezia_release_host(release, host)
 		}
 	}()
-	if raw == nil || size <= 0 || size > 4<<20 {
+	if writer == nil || raw == nil || size <= 0 || size > 4<<20 {
 		return -1
 	}
 	flow, err := mobile.NewPacketFlow(1280, func(packet []byte) error {

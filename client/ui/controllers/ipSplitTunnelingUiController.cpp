@@ -45,6 +45,39 @@ void IpSplitTunnelingUiController::setSingBoxRoutingEnabled(bool enabled)
         emit errorOccurred(tr("Remove wildcard destinations before disabling AWG domain routing."));
     }
     emit singBoxRoutingEnabledChanged();
+    emit domainRoutingChanged();
+}
+
+QVariantList IpSplitTunnelingUiController::domainRules() const
+{
+    return m_ipSplitTunnelingController->domainRoutingConfig().value("rules").toArray().toVariantList();
+}
+
+QString IpSplitTunnelingUiController::domainDefault() const
+{
+    return m_ipSplitTunnelingController->domainRoutingConfig().value("default").toString();
+}
+
+bool IpSplitTunnelingUiController::saveDomainRule(int index, const QString &destination, const QString &action, bool enabled)
+{
+    if (!m_ipSplitTunnelingController->saveDomainRule(index, destination, action, enabled)) {
+        emit errorOccurred(tr("Invalid or duplicate rule. Use a domain, *.suffix, IP address or CIDR."));
+        return false;
+    }
+    emit domainRoutingChanged();
+    return true;
+}
+
+void IpSplitTunnelingUiController::removeDomainRule(int index)
+{
+    m_ipSplitTunnelingController->removeDomainRule(index);
+    emit domainRoutingChanged();
+}
+
+void IpSplitTunnelingUiController::setDomainDefault(const QString &action)
+{
+    m_ipSplitTunnelingController->setDomainDefault(action);
+    emit domainRoutingChanged();
 }
 
 void IpSplitTunnelingUiController::removeSite(int index)
@@ -113,4 +146,5 @@ bool IpSplitTunnelingUiController::isSplitTunnelingEnabled() const
 void IpSplitTunnelingUiController::updateModel()
 {
     m_ipSplitTunnelingModel->updateModel(m_ipSplitTunnelingController->getCurrentSites());
+    emit domainRoutingChanged();
 }

@@ -72,6 +72,7 @@ class Awg : Wireguard() {
             ?: throw VpnStartException("Invalid DNS resolver")
         val resolverEndpoint = if (resolverIp.contains(':')) "[$resolverIp]:53" else "$resolverIp:53"
         val session = JSONObject().apply {
+            put("cache_path", java.io.File(context.filesDir, "routing-fakeip-v1.db").absolutePath)
             put("rules", config.getJSONObject("sing_box_routing"))
             put("resolver", resolverEndpoint)
             put("resolver_action", if (resolver.isLoopbackAddress) "direct" else config.optString("sing_box_dns_path", "vpn"))

@@ -4,6 +4,21 @@
 class DomainRoutingConfigTest : public QObject {
     Q_OBJECT
 private slots:
+    void normalizeEditableRules()
+    {
+        using amnezia::routing::destinationRule;
+        const auto suffix = destinationRule("*.EXAMPLE.org.", "direct", false);
+        QCOMPARE(suffix.value("kind").toString(), QString("suffix"));
+        QCOMPARE(suffix.value("value").toString(), QString("example.org"));
+        QVERIFY(suffix.value("disabled").toBool());
+        QCOMPARE(destinationRule("192.168.1.97/24", "direct", true).value("value").toString(), QString("192.168.1.0/24"));
+        QCOMPARE(destinationRule("2001:db8:abcd::1/32", "vpn", true).value("value").toString(), QString("2001:db8::/32"));
+        QCOMPARE(destinationRule("2001:db8::1", "vpn", true).value("value").toString(), QString("2001:db8::1/128"));
+        QCOMPARE(destinationRule(QString::fromUtf8("ПРИМЕР.рф"), "vpn", true).value("value").toString(), QString("xn--e1afmkfd.xn--p1ai"));
+        for (const auto &bad : {"*ru", "a.*.ru", "a..ru", "https://example.org", "1.2.3.4/99", "fe80::1%eth0"})
+            QVERIFY2(destinationRule(bad, "direct", true).isEmpty(), bad);
+        QVERIFY(destinationRule("example.org", "fallback", true).isEmpty());
+    }
     void migrationPreservesNames()
     {
         const QVariantMap sites{{"example.com", QStringList{"203.0.113.7"}},

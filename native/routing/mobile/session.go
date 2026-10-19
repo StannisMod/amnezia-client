@@ -49,7 +49,10 @@ func Start(ctx context.Context, p *Platform, raw []byte) (*Session, error) {
 	if len(raw) > 4<<20 {
 		return nil, errors.New("routing configuration exceeds size limit")
 	}
-	var config engine.SessionConfig
+	var config struct {
+		engine.SessionConfig
+		CachePath string `json:"cache_path,omitempty"`
+	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&config); err != nil {
@@ -65,7 +68,7 @@ func Start(ctx context.Context, p *Platform, raw []byte) (*Session, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	ctx = engine.Context(ctx, p.Underlay())
 	ctx = service.ContextWith[adapter.PlatformInterface](ctx, p)
-	instance, err := engine.New(ctx, compiled)
+	instance, err := engine.NewWithCache(ctx, compiled, config.CachePath)
 	if err != nil {
 		cancel()
 		return nil, errors.New("routing engine initialization failed")

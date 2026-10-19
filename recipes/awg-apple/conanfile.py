@@ -63,7 +63,7 @@ class AwgApple(ConanFile):
     def build(self):
         module = os.path.join(self.build_folder, "module")
         shutil.copytree(os.path.join(self.source_folder, "upstream", "Sources", "WireGuardKitGo"),
-                        module, dirs_exist_ok=True)
+                        module, dirs_exist_ok=True, symlinks=True)
         core = os.path.join(self.source_folder, "routing-core")
         spec = importlib.util.spec_from_file_location("amnezia_prepare_apple", os.path.join(core, "prepare_apple.py"))
         prepare = importlib.util.module_from_spec(spec)

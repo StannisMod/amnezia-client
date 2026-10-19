@@ -10,6 +10,7 @@
 #include <QVector>
 #include <QDateTime>
 #include <QByteArray>
+#include <QJsonObject>
 
 #include "core/utils/routeModes.h"
 #include "core/utils/commonStructs.h"
@@ -51,6 +52,8 @@ public:
     void setSitesSplitTunnelingEnabled(bool enabled);
     bool isSingBoxRoutingEnabled() const;
     void setSingBoxRoutingEnabled(bool enabled);
+    QJsonObject domainRoutingConfig() const;
+    void setDomainRoutingConfig(const QJsonObject &config);
 
     AppsRouteMode appsRouteMode() const;
     void setAppsRouteMode(AppsRouteMode mode);

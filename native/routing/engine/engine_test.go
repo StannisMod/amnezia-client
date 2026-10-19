@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -162,6 +163,22 @@ func TestFakeIPSharedAddressEgress(t *testing.T) {
 		if string(buf) != v.want {
 			t.Fatalf("%s egress: got %q", v.domain, buf)
 		}
+	}
+	// An app may retain a FakeIP whose mapping was removed. Never pass that
+	// literal into DIRECT or AWG; the missing identity must fail at routing.
+	for _, address := range []string{"198.19.255.1", "fc00:3fff::1"} {
+		app, capture := net.Pipe()
+		closed := make(chan error, 1)
+		instance.Router().RouteConnectionEx(ctx, capture, adapter.InboundContext{Inbound: "test-capture", Network: "tcp", Destination: M.Socksaddr{Addr: netip.MustParseAddr(address), Port: port}}, func(err error) { closed <- err })
+		select {
+		case err := <-closed:
+			if err == nil || !strings.Contains(err.Error(), "missing fakeip record") {
+				t.Fatal("unmapped FakeIP was not rejected before egress", err)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("unmapped FakeIP reached an outbound")
+		}
+		app.Close()
 	}
 	// Drop the remote transport, then open a fresh VPN-assigned flow. It must
 	// fail, and must never reach the DIRECT observer.

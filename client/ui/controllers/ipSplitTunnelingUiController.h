@@ -14,6 +14,8 @@ class IpSplitTunnelingUiController : public QObject
     Q_PROPERTY(bool isSplitTunnelingEnabled READ isSplitTunnelingEnabled NOTIFY isSplitTunnelingEnabledChanged)
     Q_PROPERTY(bool singBoxRoutingEnabled READ isSingBoxRoutingEnabled NOTIFY singBoxRoutingEnabledChanged)
     Q_PROPERTY(bool singBoxRoutingAvailable READ isSingBoxRoutingAvailable CONSTANT)
+    Q_PROPERTY(QVariantList domainRules READ domainRules NOTIFY domainRoutingChanged)
+    Q_PROPERTY(QString domainDefault READ domainDefault NOTIFY domainRoutingChanged)
 
 public:
     explicit IpSplitTunnelingUiController(IpSplitTunnelingController* ipSplitTunnelingController,
@@ -33,6 +35,11 @@ public slots:
     bool isSingBoxRoutingEnabled() const;
     bool isSingBoxRoutingAvailable() const;
     void setSingBoxRoutingEnabled(bool enabled);
+    QVariantList domainRules() const;
+    QString domainDefault() const;
+    bool saveDomainRule(int index, const QString &destination, const QString &action, bool enabled);
+    void removeDomainRule(int index);
+    void setDomainDefault(const QString &action);
 
     void updateModel();
 
@@ -40,6 +47,7 @@ signals:
     void routeModeChanged();
     void isSplitTunnelingEnabledChanged();
     void singBoxRoutingEnabledChanged();
+    void domainRoutingChanged();
     void errorOccurred(const QString &errorMessage);
     void finished(const QString &message);
     void saveFile(const QString &fileName, const QString &data);

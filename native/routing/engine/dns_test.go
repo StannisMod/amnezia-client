@@ -3,8 +3,12 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/netip"
+	"os"
+	"path/filepath"
+	"runtime"
 	"sync/atomic"
 	"testing"
 
@@ -104,5 +108,69 @@ func TestManagedDNSUpstreamCNAMECacheAndFakeIP(t *testing.T) {
 	}
 	if requests.Load() != before {
 		t.Fatal("FakeIP query escaped to upstream")
+	}
+}
+
+// App DNS caches can outlive a Go session. Preserve the identity of old FakeIPs.
+func TestFakeIPIdentitySurvivesSessionRestart(t *testing.T) {
+	cachePath := filepath.Join(t.TempDir(), "fakeip.db")
+	priv, pub := keys(t)
+	raw, err := (SessionConfig{Rules: rules.Config{Version: 1, Default: rules.VPN}, AWG: awg.Config{Address: []netip.Addr{netip.MustParseAddr("10.77.0.1")}, PrivateKey: priv, PublicKey: pub, Endpoint: netip.MustParseAddrPort("127.0.0.1:9"), AllowedIPs: []netip.Prefix{netip.MustParsePrefix("0.0.0.0/0")}}, Resolver: netip.MustParseAddrPort("1.1.1.1:53"), ResolverAction: rules.VPN}).Compile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config map[string]any
+	if err = json.Unmarshal(raw, &config); err != nil {
+		t.Fatal(err)
+	}
+	delete(config, "inbounds")
+	raw, _ = json.Marshal(config)
+	var dial net.Dialer
+	var lc net.ListenConfig
+	var previous netip.Addr
+	for round := 0; round < 3; round++ {
+		ctx := Context(context.Background(), Underlay{DialContext: dial.DialContext, ListenPacket: lc.ListenPacket})
+		ctx = service.ContextWith[adapter.PlatformInterface](ctx, loopbackTestPlatform{})
+		instance, err := NewWithCache(ctx, raw, cachePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = instance.Start(); err != nil {
+			t.Fatal(err)
+		}
+		manager := service.FromContext[adapter.DNSTransportManager](ctx)
+		fake, _ := manager.Transport("fake")
+		store := fake.(adapter.FakeIPTransport).Store()
+		if previous.IsValid() {
+			if domain, ok := store.Lookup(previous); !ok || domain != "old.test" {
+				t.Fatal("restart lost domain identity of an app-cached FakeIP")
+			}
+		}
+		address, err := store.Create("old.test", false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if previous.IsValid() && address != previous {
+			t.Fatal("FakeIP changed across restart")
+		}
+		previous = address
+		other, err := store.Create(fmt.Sprintf("other-%d.test", round), false)
+		if err != nil || other == previous {
+			t.Fatal("FakeIP reused for a different domain", err)
+		}
+		address6, err := store.Create("old.test", true)
+		if err != nil || !address6.Is6() {
+			t.Fatal("missing IPv6 FakeIP", err)
+		}
+		if err = instance.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	info, err := os.Stat(cachePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+		t.Fatal("domain cache is not private")
 	}
 }

@@ -142,3 +142,43 @@ implemented and verified. No server or dev-branch changes were made.
 - Full Kotlin/client/payload CI verification has been added. Full client builds
   at the preceding core-only commit passed for Linux and all four Android ABIs;
   those older APKs do not contain the new Android integration.
+
+
+## Update: native mobile integration and editable rules (2026-10-19)
+
+This update supersedes the earlier source/CI statements above where they differ.
+The four-platform mission remains incomplete. No native VPN device acceptance
+has been executed, and desktop routing integration remains open.
+
+- Android: actual Kotlin protocol modules and unified JNI payload compiled on
+  all four ABI CI lanes at `fe9a5a8a`. Full APK packaging reached the modified
+  Conan recipe and exposed a dangling-symlink copy failure. The recipe now
+  preserves symlinks; the corrected APK build still needs to pass.
+- iOS: CI run 39253601451 built the arm64 AWG/XRay/routing c-archive, verified
+  old/new C symbols and typechecked the Swift public PacketTunnelFlow adapter.
+  The complete unsigned app/extension build was still running when recorded.
+  This is compilation evidence, not entitlement/device/underlay proof.
+- The iOS implementation uses public readPackets/writePackets, one packet
+  reader and the existing Go archive. Network changes replace the Go session
+  while retaining that reader and OS capture. includeAllNetworks is rejected;
+  provider-owned BSD sockets require native egress verification on a device.
+- The new Qt editor persists per-rule domain/suffix/CIDR, DIRECT/VPN and
+  enabled/disabled state plus the default route. First activation migrates the
+  active legacy list without resolved IPs. Existing settings backups include
+  the new Conf keys. Legacy lists and other protocols are retained.
+- Both mobile hosts now choose a private persistent FakeIP database. Only
+  domain/FakeIP identities persist; real DNS response caches are fresh on a
+  transport restart. File permissions are restricted to the application user.
+- Local tests passed: real gVisor packet-FD and public packet-flow managed DNS;
+  three restart cycles preserving IPv4/IPv6 FakeIP identity without address
+  reassignment; C ABI failed start, packet DNS/FakeIP, restart, stats and stop
+  lifetime; Go race tests; Qt canonical-rule migration/validation contract.
+  QML parsing passed. Full Qt controller persistence/backup tests are added
+  to the existing UI regression target and need CI execution.
+
+Open acceptance remains: complete feature APK and unsigned iOS app builds,
+Android emulator/device and iOS device network-path verification, stable native
+network handover/100-cycle cleanup, performance, all protocol regressions,
+Linux/Windows service capture and native DIRECT integration, installable desktop
+artifacts containing routing, and signed iOS distribution. Ordinary host builds
+or pre-feature installers must not be reported as feature acceptance.

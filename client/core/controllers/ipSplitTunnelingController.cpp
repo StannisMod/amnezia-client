@@ -1,5 +1,6 @@
 #include "ipSplitTunnelingController.h"
 #include "core/utils/networkUtilities.h"
+#include "core/utils/domainRoutingConfig.h"
 #include <QJsonObject>
 #include <QDebug>
 
@@ -206,7 +207,53 @@ bool IpSplitTunnelingController::setSingBoxRoutingEnabled(bool enabled)
         }
     }
     m_appSettingsRepository->setSingBoxRoutingEnabled(enabled);
+    if (enabled) m_appSettingsRepository->setDomainRoutingConfig(m_appSettingsRepository->domainRoutingConfig());
     return true;
+}
+
+QJsonObject IpSplitTunnelingController::domainRoutingConfig() const
+{
+    return m_appSettingsRepository->domainRoutingConfig();
+}
+
+bool IpSplitTunnelingController::saveDomainRule(int index, const QString &destination, const QString &action, bool enabled)
+{
+    auto config = domainRoutingConfig();
+    auto rules = config.value("rules").toArray();
+    if (index < -1 || index >= rules.size()) return false;
+    const auto rule = amnezia::routing::destinationRule(destination, action, enabled);
+    if (rule.isEmpty()) return false;
+    for (int i = 0; i < rules.size(); ++i) {
+        if (i == index) continue;
+        const auto other = rules[i].toObject();
+        QString text = other.value("value").toString();
+        if (other.value("kind").toString() == "suffix" && !text.startsWith("*.")) text.prepend("*.");
+        const auto normalized = amnezia::routing::destinationRule(text, other.value("action").toString(), !other.value("disabled").toBool());
+        if (normalized.value("kind") == rule.value("kind") && normalized.value("value") == rule.value("value")
+                && enabled && !normalized.value("disabled").toBool()) return false;
+    }
+    if (index == -1) rules.append(rule); else rules[index] = rule;
+    config.insert("rules", rules);
+    m_appSettingsRepository->setDomainRoutingConfig(config);
+    return true;
+}
+
+void IpSplitTunnelingController::removeDomainRule(int index)
+{
+    auto config = domainRoutingConfig();
+    auto rules = config.value("rules").toArray();
+    if (index < 0 || index >= rules.size()) return;
+    rules.removeAt(index);
+    config.insert("rules", rules);
+    m_appSettingsRepository->setDomainRoutingConfig(config);
+}
+
+void IpSplitTunnelingController::setDomainDefault(const QString &action)
+{
+    if (action != "direct" && action != "vpn") return;
+    auto config = domainRoutingConfig();
+    config.insert("default", action);
+    m_appSettingsRepository->setDomainRoutingConfig(config);
 }
 
 

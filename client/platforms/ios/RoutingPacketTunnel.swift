@@ -132,7 +132,22 @@ final class RoutingPacketTunnel {
         var parameters = [String: String]()
         for line in config.settings.components(separatedBy: "\n") {
             let pair = line.components(separatedBy: " = ")
-            if pair.count == 2 { parameters[parameterNames[pair[0]] ?? pair[0].lowercased()] = pair[1] }
+            if pair.count == 2 {
+                let name = parameterNames[pair[0]] ?? pair[0].lowercased()
+                var value = pair[1]
+                if name == "header_protection_key" {
+                    guard let key = Data(base64Encoded: value), key.count == 32 else { throw RoutingError.invalidConfiguration }
+                    value = key.map { String(format: "%02x", $0) }.joined()
+                }
+                if name == "random_trailers" || name == "disable_cookies" {
+                    switch value.lowercased() {
+                    case "on", "true", "1": value = "true"
+                    case "off", "false", "0": value = "false"
+                    default: throw RoutingError.invalidConfiguration
+                    }
+                }
+                parameters[name] = value
+            }
         }
         let addresses = config.clientIP.split(separator: ",").map { String($0).trimmingCharacters(in: .whitespaces).components(separatedBy: "/")[0] }
         var awg: [String: Any] = ["address": addresses, "private_key": config.clientPrivateKey, "public_key": config.serverPublicKey,
@@ -142,7 +157,10 @@ final class RoutingPacketTunnel {
             guard let seconds = UInt16(keepalive) else { throw RoutingError.invalidConfiguration }
             awg["keepalive"] = seconds
         }
+        let support = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+        try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         return try JSONSerialization.data(withJSONObject: ["rules": rules, "awg": awg,
+                    "cache_path": support.appendingPathComponent("routing-fakeip-v1.db").path,
                     "resolver": dns.contains(":") ? "[\(dns)]:53" : "\(dns):53", "resolver_action": config.routingDNSPath ?? "vpn"])
     }
 
