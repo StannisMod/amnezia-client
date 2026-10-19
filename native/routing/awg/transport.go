@@ -101,10 +101,12 @@ func (c Config) uapi() (string, error) {
 }
 
 type Transport struct {
-	Net    *netstack.Net
-	device *device.Device
-	mu     sync.RWMutex
-	closed bool
+	Net      *netstack.Net
+	device   *device.Device
+	mu       sync.RWMutex
+	closed   bool
+	address4 netip.Addr
+	address6 netip.Addr
 }
 
 type Stats struct{ RXBytes, TXBytes, LastHandshake uint64 }
@@ -175,7 +177,16 @@ func New(ctx context.Context, c Config, listen ListenUnderlay) (*Transport, erro
 		d.Close()
 		return nil, errors.New("AWG underlay startup failed")
 	}
-	return &Transport{Net: n, device: d}, nil
+	t := &Transport{Net: n, device: d}
+	for _, a := range c.Address {
+		if a.Is4() && !t.address4.IsValid() {
+			t.address4 = a
+		}
+		if a.Is6() && !t.address6.IsValid() {
+			t.address6 = a
+		}
+	}
+	return t, nil
 }
 
 func (t *Transport) Close() error {
@@ -206,9 +217,12 @@ func (t *Transport) ListenPacket(ctx context.Context, destination netip.Addr) (n
 	if t.closed {
 		return nil, net.ErrClosed
 	}
-	local := netip.IPv4Unspecified()
+	local := t.address4
 	if destination.Is6() {
-		local = netip.IPv6Unspecified()
+		local = t.address6
+	}
+	if !local.IsValid() {
+		return nil, errors.New("AWG has no local address for the UDP destination family")
 	}
 	return t.Net.ListenUDPAddrPort(netip.AddrPortFrom(local, 0))
 }

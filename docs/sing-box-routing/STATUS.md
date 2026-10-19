@@ -182,3 +182,28 @@ network handover/100-cycle cleanup, performance, all protocol regressions,
 Linux/Windows service capture and native DIRECT integration, installable desktop
 artifacts containing routing, and signed iOS distribution. Ordinary host builds
 or pre-feature installers must not be reported as feature acceptance.
+
+## Actual APK acceptance and UDP regression (2026-10-19)
+
+The complete build run `39255117799` at `34ce45ea` passed all four Android
+ABIs, unsigned iOS app/extension, Linux and Windows build lanes, and existing
+Qt persistence/UI tests. Those results supersede earlier pending build entries.
+Desktop artifacts from this run still use the legacy routing backend.
+
+An actual packaged x86_64 APK now runs under its production `AwgService` in a
+disposable Android 35 emulator. Run `39294909757` verified FakeIP DNS, DIRECT
+TCP/UDP and AWG TCP against independent host/netstack observers sharing one
+real IP. AWG UDP **FAILED**. No Android acceptance pass is claimed.
+
+The failure reproduced in a new host test exercising sing-box's UDP router,
+which the earlier connected-UDP transport test did not cover. Binding an
+unconnected AWG UDP flow to the configured tunnel address, rather than an
+explicit wildcard address, fixes the pinned userspace stack's `no route to
+host` error. Both IPv4/IPv6 unconnected UDP and the FakeIP UDP routing
+regression pass locally with race detection. A newly linked APK must still
+pass the emulator matrix before this is marked fixed on Android.
+
+The emulator workflow uses a test-only instrumentation APK and temporary
+signing identity. It re-signs a disposable copy of the feature APK and verifies
+that every native payload byte is preserved; release artifacts are untouched.
+Private fixture keys and fixture-bearing test APKs are never uploaded.

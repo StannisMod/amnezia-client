@@ -160,7 +160,8 @@ func dnsPacket(t *testing.T) []byte {
 	binary.BigEndian.PutUint16(packet[2:4], uint16(len(packet)))
 	packet[8] = 64
 	packet[9] = 17
-	copy(packet[12:16], net.ParseIP("172.19.0.10").To4())
+	// Match the source address actually assigned by Android's VpnService.
+	copy(packet[12:16], net.ParseIP("172.19.0.1").To4())
 	copy(packet[16:20], net.ParseIP("172.19.0.2").To4())
 	binary.BigEndian.PutUint16(packet[20:22], 53000)
 	binary.BigEndian.PutUint16(packet[22:24], 53)

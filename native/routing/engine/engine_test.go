@@ -19,6 +19,7 @@ import (
 	"github.com/miekg/dns"
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-tun"
+	"github.com/sagernet/sing/common/bufio"
 	"github.com/sagernet/sing/common/control"
 	"github.com/sagernet/sing/common/logger"
 	M "github.com/sagernet/sing/common/metadata"
@@ -179,6 +180,43 @@ func TestFakeIPSharedAddressEgress(t *testing.T) {
 			t.Fatal("unmapped FakeIP reached an outbound")
 		}
 		app.Close()
+	}
+	// Exercise the router's UDP copy path, not just Transport.DialContext.
+	// The actual Android APK exposed a timeout here despite passing TCP and
+	// connected-UDP transport tests.
+	udp, e := b.Net.ListenUDPAddrPort(netip.AddrPortFrom(netip.MustParseAddr("10.77.0.2"), port))
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer udp.Close()
+	go func() {
+		p := make([]byte, 1024)
+		for {
+			_, from, err := udp.ReadFrom(p)
+			if err != nil {
+				return
+			}
+			udp.WriteTo([]byte("TUNNEL"), from)
+		}
+	}()
+	udpApp, udpCapture := net.Pipe()
+	udpApp.SetDeadline(time.Now().Add(2 * time.Second))
+	udpDestination := M.Socksaddr{Addr: vpnFakeIP, Port: port}
+	udpClosed := make(chan error, 1)
+	go instance.Router().RoutePacketConnectionEx(ctx, bufio.NewUnbindPacketConnWithAddr(udpCapture, udpDestination), adapter.InboundContext{Inbound: "test-capture", Network: "udp", Destination: udpDestination}, func(err error) { udpClosed <- err })
+	if _, e := udpApp.Write([]byte("UDP")); e != nil {
+		t.Fatal(e)
+	}
+	udpReply := make([]byte, 6)
+	_, e = io.ReadFull(udpApp, udpReply)
+	udpApp.Close()
+	if e != nil || string(udpReply) != "TUNNEL" {
+		select {
+		case err := <-udpClosed:
+			t.Log("UDP close reason", err)
+		default:
+		}
+		t.Fatalf("FakeIP UDP route: %q, %v", udpReply, e)
 	}
 	// Drop the remote transport, then open a fresh VPN-assigned flow. It must
 	// fail, and must never reach the DIRECT observer.

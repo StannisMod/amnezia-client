@@ -100,8 +100,11 @@ func testAWG31TCPUDP(t *testing.T, clientIP, serverIP, mask string) {
 	defer udp.Close()
 	go func() {
 		p := make([]byte, 2048)
-		n, from, e := udp.ReadFrom(p)
-		if e == nil {
+		for i := 0; i < 2; i++ {
+			n, from, e := udp.ReadFrom(p)
+			if e != nil {
+				return
+			}
 			udp.WriteTo(p[:n], from)
 		}
 	}()
@@ -118,6 +121,22 @@ func testAWG31TCPUDP(t *testing.T, clientIP, serverIP, mask string) {
 	}
 	if string(buf[:n]) != "UDP-AWG31" {
 		t.Fatal(string(buf[:n]))
+	}
+	// Flow routing uses an unconnected PacketConn, unlike UDP DialContext.
+	// Binding a wildcard address in the pinned AWG netstack accepted startup
+	// but later failed WriteTo with "no route to host" on actual APK traffic.
+	pc, e := a.ListenPacket(ctx, netip.MustParseAddr(serverIP))
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer pc.Close()
+	pc.SetDeadline(time.Now().Add(3 * time.Second))
+	if _, e = pc.WriteTo([]byte("UDP-AWG31"), net.UDPAddrFromAddrPort(netip.AddrPortFrom(netip.MustParseAddr(serverIP), 8081))); e != nil {
+		t.Fatal(e)
+	}
+	n, _, e = pc.ReadFrom(buf)
+	if e != nil || string(buf[:n]) != "UDP-AWG31" {
+		t.Fatal("unconnected UDP did not round trip", e)
 	}
 	a.Close()
 	if _, e = a.DialContext(ctx, "tcp", net.JoinHostPort(serverIP, "8080")); e == nil {
