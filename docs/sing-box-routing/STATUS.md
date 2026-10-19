@@ -241,3 +241,15 @@ The test-only peer is excluded from Android/iOS package cross-compilation;
 otherwise `go build ./...` would try linking an unrelated host executable with
 CGO disabled. Android CI retries transient failures downloading the same pinned
 NDK version; it does not substitute a different NDK or payload.
+
+Runtime follow-up: the first Linux namespace run (`39297636360`) caught a
+startup route-encoding error: the netlink API requires an explicit default
+destination even when its family is supplied. That source correction is
+pending a rerun; no Linux native PASS is claimed.
+
+The emulator lane now builds the current unified JNI payload with the same
+reproducible script as the full-client lane. It can apply that payload to the
+packaged test APK only after checking its production Android host sources are
+unchanged from that APK's source SHA. The report identifies both SHAs and the
+native checksum. This incremental APK is emulator-only evidence, not a newly
+compiled Qt client, installer, release artifact or physical-device acceptance.

@@ -7,6 +7,7 @@ package desktop
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/netip"
 	"os/exec"
@@ -210,13 +211,18 @@ func Start(ctx context.Context, raw []byte, manageDNS bool) (*Session, error) {
 	}
 	for _, family := range []int{unix.AF_INET, unix.AF_INET6} {
 		// If the helper crashes, its kernel TUN disappears. The lower-priority
+		prefix := "0.0.0.0/0"
+		if family == unix.AF_INET6 {
+			prefix = "::/0"
+		}
+		_, destination, _ := net.ParseCIDR(prefix)
 		// blackhole stays in the owned table, so captured traffic fails closed.
 		for _, route := range []netlink.Route{
-			{Family: family, Table: routeTable, Type: unix.RTN_BLACKHOLE, Priority: 32760, Protocol: unix.RTPROT_STATIC},
-			{Family: family, Table: routeTable, Type: unix.RTN_UNICAST, LinkIndex: link.Attrs().Index, Scope: netlink.SCOPE_LINK, Priority: 1, Protocol: unix.RTPROT_STATIC},
+			{Family: family, Dst: destination, Table: routeTable, Type: unix.RTN_BLACKHOLE, Priority: 32760, Protocol: unix.RTPROT_STATIC},
+			{Family: family, Dst: destination, Table: routeTable, Type: unix.RTN_UNICAST, LinkIndex: link.Attrs().Index, Scope: netlink.SCOPE_LINK, Priority: 1, Protocol: unix.RTPROT_STATIC},
 		} {
 			if err := netlink.RouteAdd(&route); err != nil {
-				return nil, errors.New("capture route installation failed")
+				return nil, fmt.Errorf("capture route installation failed (family %d, type %d): %w", family, route.Type, err)
 			}
 			s.routes = append(s.routes, route)
 		}

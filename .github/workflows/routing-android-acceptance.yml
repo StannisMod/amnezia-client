@@ -8,6 +8,11 @@ on:
       - scripts/routing/android/**
       - scripts/routing/run_android_acceptance.py
       - native/routing/cmd/android-fixture/**
+      - native/routing/awg/**
+      - native/routing/engine/**
+      - native/routing/mobile/**
+      - scripts/routing/build_android_native.sh
+      - scripts/routing/replace_android_native.py
   workflow_dispatch:
     inputs:
       apk_run_id:
@@ -59,6 +64,19 @@ jobs:
           assert candidates, 'No debug APK from the actual client build'
           with open(os.environ['GITHUB_ENV'], 'a') as env: env.write(f'FEATURE_APK={candidates[0].resolve()}\n')
           PY
+      - name: Build the current unified JNI payload for the unchanged packaged host
+        env:
+          ABI: x86_64
+        run: |
+          for attempt in 1 2 3; do
+            if sdkmanager --install 'ndk;27.0.12077973'; then break; fi
+            if test "$attempt" = 3; then exit 1; fi
+          done
+          bash scripts/routing/build_android_native.sh "$RUNNER_TEMP/current-native"
+          baseline=$(python3 -c 'import json; print(json.load(open("tested-apk-source.json"))["head_sha"])')
+          git fetch --depth 1 origin "$baseline"
+          python3 scripts/routing/replace_android_native.py --apk "$FEATURE_APK" --native "$RUNNER_TEMP/current-native/libwg-go.so" --output "$RUNNER_TEMP/current-feature.apk" --baseline-sha "$baseline"
+          echo "FEATURE_APK=$RUNNER_TEMP/current-feature.apk" >> "$GITHUB_ENV"
       - name: Build the disposable AWG peer and independent egress observers
         working-directory: native/routing
         run: go build -mod=readonly -tags with_gvisor -o "$RUNNER_TEMP/android-fixture" ./cmd/android-fixture
@@ -94,6 +112,7 @@ jobs:
           if-no-files-found: error
           path: |
             tested-apk-source.json
+            ${{ runner.temp }}/current-feature.json
             fixture-server.log
             ${{ runner.temp }}/android-acceptance/instrumentation.log
             ${{ runner.temp }}/android-acceptance/android-acceptance.json

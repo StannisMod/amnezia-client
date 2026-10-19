@@ -78,9 +78,12 @@ def main():
         "-keypass", "android", "-dname", "CN=Disposable emulator", "-keyalg", "RSA", "-keysize", "2048", "-validity", "2",
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     def sign(source, target):
+        aligned_source = target.with_name(target.stem + "-aligned-input.apk")
+        run(tools / "zipalign", "-f", "4", source, aligned_source)
         run(tools / "apksigner", "sign", "--ks", key, "--ks-key-alias", "test", "--ks-pass", "pass:android",
-            "--key-pass", "pass:android", "--out", target, source)
+            "--key-pass", "pass:android", "--out", target, aligned_source)
         run(tools / "apksigner", "verify", target)
+        aligned_source.unlink()
     target = work / "feature-test.apk"
     sign(args.apk.resolve(), target)
     assert payload_hashes(target) == payload_hashes(args.apk), "re-sign changed native payload"
