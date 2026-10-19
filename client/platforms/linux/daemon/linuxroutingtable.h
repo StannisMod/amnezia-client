@@ -41,7 +41,7 @@ public:
             const int priority = rule.value("priority").toInt(-1);
             occupied.insert(priority);
             const auto table = rule.value("table");
-            if (table.toString() == "main" || table.toInt() == 254) {
+            if (table.toString() == "main" || table.toString() == "254" || table.toInt() == 254) {
                 if (mainPriority < 0 || priority < mainPriority) mainPriority = priority;
             }
         }
