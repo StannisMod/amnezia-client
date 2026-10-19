@@ -137,6 +137,16 @@ def main():
         report["native_vpn_acceptance"] = "PASS"
     finally:
         (work / "android-acceptance.json").write_text(json.dumps(report, indent=2) + "\n")
+        for label, command in {
+            "routes": ("shell", "ip", "route", "show", "table", "all"),
+            "rules": ("shell", "ip", "rule"),
+            "connectivity": ("shell", "dumpsys", "connectivity"),
+            "service-errors": ("logcat", "-d", "-s", "AndroidRuntime:E", "AmneziaVpnService:E", "Go:E", "libc:F"),
+        }.items():
+            try:
+                (work / (label + ".log")).write_text(adb(*command))
+            except subprocess.CalledProcessError:
+                pass
         adb("shell", "am", "force-stop", PACKAGE)
         # Always remove the throwaway keys and the fixture-bearing test APKs.
         for path in (key, target, instrument, aligned, unsigned):

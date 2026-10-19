@@ -85,7 +85,11 @@ public final class RoutingInstrumentation extends Instrumentation {
             Bundle registration = new Bundle(); registration.putString("CLIENT_NAME", "routing-acceptance");
             send(REGISTER, registration);
             connect(false);
-            InetAddress direct = dns("direct.ru", 1), vpn = dns("vpn.test", 1);
+            progress("CHECK: service CONNECTED; requesting DIRECT FakeIP");
+            InetAddress direct = dns("direct.ru", 1);
+            progress("CHECK: DIRECT FakeIP returned; requesting VPN FakeIP");
+            InetAddress vpn = dns("vpn.test", 1);
+            progress("CHECK: both FakeIPs returned; checking actual TCP+UDP egress");
             require(!direct.equals(vpn) && fake(direct) && fake(vpn), "domains did not receive independent FakeIPs");
             requireRoute(direct, "DIRECT"); requireRoute(vpn, "VPN");
             pass("actual APK/service: independent TCP+UDP egress for two names sharing one real IP");
@@ -146,6 +150,9 @@ public final class RoutingInstrumentation extends Instrumentation {
             // Avoid dumping fixture/keys in an exception or Android log.
             result.putString("routing_result", "FAIL");
             result.putString("failure", error.getClass().getSimpleName() + ": " + error.getMessage());
+            StringBuilder stack = new StringBuilder();
+            for (StackTraceElement frame : error.getStackTrace()) if (frame.getClassName().startsWith("org.amnezia.routingtest")) stack.append(frame).append("\n");
+            result.putString("test_stack", stack.toString());
         } finally {
             if (service != null) try { send(DISCONNECT, new Bundle()); send(UNREGISTER, new Bundle()); } catch (Exception ignored) {}
             if (didBind) getTargetContext().unbindService(connection);
@@ -212,8 +219,10 @@ public final class RoutingInstrumentation extends Instrumentation {
             return new String(reply.getData(), 0, reply.getLength(), StandardCharsets.US_ASCII);
         }
     }
-    private static void requireRoute(InetAddress address, String expected) throws Exception {
+    private void requireRoute(InetAddress address, String expected) throws Exception {
+        progress("CHECK: TCP to " + expected + " observer");
         require(expected.equals(tcp(address)), "TCP reached wrong observer; expected " + expected);
+        progress("CHECK: UDP to " + expected + " observer");
         require((expected + ":route-proof").equals(udp(address)), "UDP reached wrong observer; expected " + expected);
     }
     private static int u16(byte[] b, int i) { return ((b[i] & 255) << 8) | (b[i + 1] & 255); }

@@ -39,6 +39,11 @@ type fixture struct {
 	directTCP, directUDP, vpnTCP, vpnUDP atomic.Int64
 }
 
+// The disposable loopback peer never changes underlay networks. Wrapping the
+// stock bind avoids its optional Linux netlink route watcher, so this fixture
+// also runs in hosts that permit UDP but forbid netlink sockets.
+type fixtureBind struct{ conn.Bind }
+
 func observeTCP(listener net.Listener, label string, count *atomic.Int64) {
 	for {
 		c, err := listener.Accept()
@@ -81,7 +86,7 @@ func (f *fixture) start() error {
 	if err != nil {
 		return err
 	}
-	f.peer = device.NewDevice(t, conn.NewDefaultBind(), device.NewLogger(device.LogLevelSilent, ""))
+	f.peer = device.NewDevice(t, &fixtureBind{conn.NewDefaultBind()}, device.NewLogger(device.LogLevelSilent, ""))
 	cleanup := true
 	defer func() {
 		if cleanup {

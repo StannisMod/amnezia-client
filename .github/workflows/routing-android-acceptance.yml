@@ -97,3 +97,7 @@ jobs:
             fixture-server.log
             ${{ runner.temp }}/android-acceptance/instrumentation.log
             ${{ runner.temp }}/android-acceptance/android-acceptance.json
+            ${{ runner.temp }}/android-acceptance/routes.log
+            ${{ runner.temp }}/android-acceptance/rules.log
+            ${{ runner.temp }}/android-acceptance/connectivity.log
+            ${{ runner.temp }}/android-acceptance/service-errors.log
