@@ -4,6 +4,8 @@
 
 #include "dnsutilslinux.h"
 
+#include <cerrno>
+#include <cstring>
 #include <net/if.h>
 
 #include <QDBusVariant>
@@ -29,6 +31,11 @@ DnsUtilsLinux::DnsUtilsLinux(QObject* parent) : DnsUtils(parent) {
   QDBusConnection conn = QDBusConnection::systemBus();
   m_resolver = new QDBusInterface(DBUS_RESOLVE_SERVICE, DBUS_RESOLVE_PATH,
                                   DBUS_RESOLVE_MANAGER, conn, this);
+  if (!m_resolver->isValid()) {
+    logger.error() << "Unable to initialize systemd-resolved D-Bus interface:"
+                   << m_resolver->lastError().name()
+                   << m_resolver->lastError().message();
+  }
 }
 
 DnsUtilsLinux::~DnsUtilsLinux() {
@@ -54,7 +61,8 @@ bool DnsUtilsLinux::updateResolvers(const QString& ifname,
                                     const QList<QHostAddress>& resolvers) {
   m_ifindex = if_nametoindex(qPrintable(ifname));
   if (m_ifindex <= 0) {
-    logger.error() << "Unable to resolve ifindex for" << ifname;
+    logger.error() << "Unable to resolve ifindex for" << ifname
+                   << QString::fromLocal8Bit(std::strerror(errno));
     return false;
   }
 
@@ -78,6 +86,8 @@ bool DnsUtilsLinux::restoreResolvers() {
         QStringLiteral("RevertLink"), argumentList);
 
     QDBusPendingCallWatcher* watcher = new QDBusPendingCallWatcher(reply, this);
+    watcher->setProperty("dnsMethod", QStringLiteral("RevertLink"));
+    watcher->setProperty("dnsIfindex", m_ifindex);
     QObject::connect(watcher, SIGNAL(finished(QDBusPendingCallWatcher*)), this,
                      SLOT(dnsCallCompleted(QDBusPendingCallWatcher*)));
 
@@ -90,7 +100,10 @@ bool DnsUtilsLinux::restoreResolvers() {
 void DnsUtilsLinux::dnsCallCompleted(QDBusPendingCallWatcher* call) {
   QDBusPendingReply<> reply = *call;
   if (reply.isError()) {
-    logger.error() << "Error received from the DBus service";
+    logger.error() << "DNS D-Bus call failed:"
+                   << call->property("dnsMethod").toString()
+                   << "ifindex" << call->property("dnsIfindex").toString()
+                   << reply.error().name() << reply.error().message();
   }
   delete call;
 }
@@ -115,6 +128,8 @@ void DnsUtilsLinux::setLinkDNS(int ifindex,
       QStringLiteral("SetLinkDNS"), argumentList);
 
   QDBusPendingCallWatcher* watcher = new QDBusPendingCallWatcher(reply, this);
+  watcher->setProperty("dnsMethod", QStringLiteral("SetLinkDNS"));
+  watcher->setProperty("dnsIfindex", ifindex);
   QObject::connect(watcher, SIGNAL(finished(QDBusPendingCallWatcher*)), this,
                    SLOT(dnsCallCompleted(QDBusPendingCallWatcher*)));
 }
@@ -139,6 +154,8 @@ void DnsUtilsLinux::setLinkDomains(int ifindex,
       QStringLiteral("SetLinkDomains"), argumentList);
 
   QDBusPendingCallWatcher* watcher = new QDBusPendingCallWatcher(reply, this);
+  watcher->setProperty("dnsMethod", QStringLiteral("SetLinkDomains"));
+  watcher->setProperty("dnsIfindex", ifindex);
   QObject::connect(watcher, SIGNAL(finished(QDBusPendingCallWatcher*)), this,
                    SLOT(dnsCallCompleted(QDBusPendingCallWatcher*)));
 }
@@ -151,6 +168,8 @@ void DnsUtilsLinux::setLinkDefaultRoute(int ifindex, bool enable) {
       QStringLiteral("SetLinkDefaultRoute"), argumentList);
 
   QDBusPendingCallWatcher* watcher = new QDBusPendingCallWatcher(reply, this);
+  watcher->setProperty("dnsMethod", QStringLiteral("SetLinkDefaultRoute"));
+  watcher->setProperty("dnsIfindex", ifindex);
   QObject::connect(watcher, SIGNAL(finished(QDBusPendingCallWatcher*)), this,
                    SLOT(dnsCallCompleted(QDBusPendingCallWatcher*)));
 }
@@ -175,7 +194,8 @@ void DnsUtilsLinux::updateLinkDomains() {
 void DnsUtilsLinux::dnsDomainsReceived(QDBusPendingCallWatcher* call) {
   QDBusPendingReply<QVariant> reply = *call;
   if (reply.isError()) {
-    logger.error() << "Error retrieving the DNS  domains from the DBus service";
+    logger.error() << "Error retrieving DNS domains from systemd-resolved:"
+                   << reply.error().name() << reply.error().message();
     delete call;
     return;
   }

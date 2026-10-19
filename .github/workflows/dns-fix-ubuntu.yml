@@ -1,0 +1,74 @@
+name: Ubuntu DNS fix
+
+on:
+  push:
+    branches: [fix/dns-flush-systemd-race]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dns-regression-tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install test dependencies
+        run: sudo apt-get update && sudo apt-get install -y qt6-base-dev ninja-build
+      - name: Test DNS cache commands without touching system services
+        run: |
+          cmake -S tests/linux-dns-cache -B build-dns-tests -G Ninja
+          cmake --build build-dns-tests
+          ctest --test-dir build-dns-tests --output-on-failure
+
+  desktop-installer:
+    needs: dns-regression-tests
+    # Match upstream's Linux toolchain. The older glibc baseline supports
+    # Ubuntu 24.04 as well as 22.04.
+    runs-on: ubuntu-22.04
+    env:
+      QT_VERSION: 6.10.1
+      JOBS: 2
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+          fetch-depth: 10
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.14'
+      - uses: jurplel/install-qt-action@v3
+        with:
+          version: '6.10.1'
+          host: linux
+          target: desktop
+          arch: linux_gcc_64
+          modules: qtremoteobjects qt5compat qtshadertools qthttpserver qtwebsockets
+          tools: tools_ifw
+          dir: ${{ runner.temp }}
+          setup-python: false
+          aqtversion: '==3.3.0'
+          py7zrversion: '==0.22.*'
+      - name: Install build dependencies
+        run: |
+          python -m pip install 'conan==2.28.0' ninja
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-x11-0 libsecret-1-dev
+      - name: Build desktop and installer
+        env:
+          QT_INSTALL_DIR: ${{ runner.temp }}
+        run: deploy/build.sh --generator Ninja --installer all
+      - name: Check installer and record checksums
+        run: |
+          test -n "$(find deploy/build -maxdepth 1 -name 'AmneziaVPN_*_linux_x64.run' -print -quit)"
+          sha256sum deploy/build/AmneziaVPN_*_linux_x64.run > deploy/build/SHA256SUMS
+          git rev-parse HEAD > deploy/build/SOURCE_COMMIT
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AmneziaVPN-Ubuntu-dns-fix
+          path: |
+            deploy/build/AmneziaVPN_*_linux_x64.run
+            deploy/build/SHA256SUMS
+            deploy/build/SOURCE_COMMIT
+          if-no-files-found: error
+          retention-days: 30

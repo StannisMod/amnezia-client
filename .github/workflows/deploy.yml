@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - '**'
+      - '!fix/dns-flush-systemd-race'
 
 env:
   QT_MIRROR: https://mirrors.ocf.berkeley.edu/qt/ # https://download.qt.io/static/mirrorlist/
