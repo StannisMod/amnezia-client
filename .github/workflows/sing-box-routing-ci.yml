@@ -91,6 +91,11 @@ jobs:
           sudo apt-get install -y libxkbcommon-x11-0 libsecret-1-dev
           pip install conan==2.28.0
           conan profile detect --force
+      - name: Qt-to-core rule migration contract
+        run: |
+          cmake -S client/tests/routing -B routing-contract-build -DCMAKE_PREFIX_PATH="${{ runner.temp }}/Qt/6.10.1/gcc_64"
+          cmake --build routing-contract-build
+          ctest --test-dir routing-contract-build --output-on-failure
       - name: Build client, service and installer using existing entry point
         id: build
         shell: bash
@@ -105,6 +110,11 @@ jobs:
         env:
           BUILD_OUTCOME: ${{ steps.build.outcome }}
         run: python scripts/routing/build_manifest.py linux
+      - name: Existing settings and rule UI regression tests
+        if: success()
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: ctest --test-dir deploy/build/client/tests --output-on-failure -R 'UiIpModelAndControllerTest|SettingsSignalsTest|BackupExportImportTest|DomainRoutingContractTest'
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -191,7 +201,46 @@ jobs:
         with: {distribution: temurin, java-version: '17'}
       - uses: android-actions/setup-android@v4
         with:
-          packages: 'platform-tools platforms;android-28 platforms;android-36 build-tools;36.0.0 ndk;27.0.11718014'
+          packages: 'platform-tools platforms;android-28 platforms;android-36 build-tools;36.0.0 ndk;27.0.12077973'
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: native/routing/go.mod
+          cache-dependency-path: native/routing/go.sum
+      - name: Compile protocol Kotlin without Qt or Conan
+        run: python scripts/routing/check_android_kotlin.py --build-dir "${{ runner.temp }}/routing-kotlin-check"
+      - name: Build and inspect the unified Go JNI payload
+        shell: bash
+        env:
+          ABI: ${{ matrix.abi }}
+          GOTOOLCHAIN: local
+          GOTELEMETRY: 'off'
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch v3.1.20260814 https://github.com/amnezia-vpn/amneziawg-android.git "$RUNNER_TEMP/routing-awg"
+          test "$(git -C "$RUNNER_TEMP/routing-awg" rev-parse HEAD)" = 5c16489e2cd9ed3a0a7a27c7445bba5238132f86
+          python native/routing/prepare_android.py --module "$RUNNER_TEMP/routing-awg/tunnel/tools/libwg-go" --go-root "$(go env GOROOT)" --patched-go-root "$RUNNER_TEMP/routing-go"
+          export GOROOT="$RUNNER_TEMP/routing-go"
+          export PATH="$GOROOT/bin:$PATH"
+          case "$ABI" in
+            arm64-v8a) export GOARCH=arm64; target=aarch64-linux-android28 ;;
+            armeabi-v7a) export GOARCH=arm GOARM=7; target=armv7a-linux-androideabi28 ;;
+            x86) export GOARCH=386; target=i686-linux-android28 ;;
+            x86_64) export GOARCH=amd64; target=x86_64-linux-android28 ;;
+          esac
+          tools="$ANDROID_HOME/ndk/27.0.12077973/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          export CC="$tools/$target-clang"
+          export CGO_ENABLED=1 GOOS=android
+          export CGO_LDFLAGS='-Wl,-soname=libwg-go.so -Wl,-z,max-page-size=16384'
+          output="$GITHUB_WORKSPACE/deploy/routing-native/$ABI"
+          mkdir -p "$output"
+          (cd "$RUNNER_TEMP/routing-awg/tunnel/tools/libwg-go" && go build -mod=readonly -tags linux,with_gvisor,amnezia_android_bridge -trimpath -buildvcs=false -buildmode=c-shared -o "$output/libwg-go.so" .)
+          "$tools/llvm-readelf" --dyn-syms -W "$output/libwg-go.so" > "$output/symbols.txt"
+          for symbol in Java_org_amnezia_awg_GoBackend_awgTurnOn Java_org_amnezia_awg_RoutingBackend_start Java_org_amnezia_awg_RoutingBackend_stop Java_org_amnezia_awg_RoutingBackend_stats; do
+            rg -F "$symbol" "$output/symbols.txt"
+          done
+          test "$(rg -c '_cgo_topofstack$' "$output/symbols.txt")" = 1
+          "$tools/llvm-readelf" -l -W "$output/libwg-go.so" > "$output/elf-layout.txt"
+          sha256sum "$output/libwg-go.so" > "$output/SHA256SUMS"
       - uses: jurplel/install-qt-action@v4.3.1
         with:
           version: '6.10.1'
@@ -216,15 +265,19 @@ jobs:
           QT_INSTALL_DIR: ${{ runner.temp }}
           CMAKE_BUILD_TYPE: Debug
           ABI: ${{ matrix.abi }}
-          ANDROID_NDK_VERSION: '27.0.11718014'
+          ANDROID_NDK_VERSION: '27.0.12077973'
         run: |
           set -o pipefail
           deploy/build.sh -t android --abi "$ABI" --apk 2>&1 | tee client-build.log
+      - name: Inspect native JNI in the actual APK
+        id: payload
+        run: python scripts/routing/verify_android_payload.py --build-dir deploy/build --readelf "$ANDROID_HOME/ndk/27.0.12077973/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
       - name: Record baseline result
         if: always()
         env:
           BUILD_OUTCOME: ${{ steps.build.outcome }}
           ROUTING_ABI: ${{ matrix.abi }}
+          ROUTING_PAYLOAD_OUTCOME: ${{ steps.payload.outcome }}
         run: python scripts/routing/build_manifest.py android
       - uses: actions/upload-artifact@v4
         if: always()
@@ -234,6 +287,8 @@ jobs:
             client-build.log
             routing-build-manifest.json
             deploy/build/client/android-build/**/*.apk
+            deploy/routing-native/
+            android-routing-payloads.json
 
   client-ios:
     runs-on: macos-15

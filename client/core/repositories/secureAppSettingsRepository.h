@@ -49,6 +49,8 @@ public:
     static QStringList siteIpList(const QVariant &value);
     bool isSitesSplitTunnelingEnabled() const;
     void setSitesSplitTunnelingEnabled(bool enabled);
+    bool isSingBoxRoutingEnabled() const;
+    void setSingBoxRoutingEnabled(bool enabled);
 
     AppsRouteMode appsRouteMode() const;
     void setAppsRouteMode(AppsRouteMode mode);

@@ -1,7 +1,9 @@
 # Shared routing core — experimental source milestone
 
-This module is **not yet linked into the Amnezia clients**. It is not an APK,
-Network Extension, service replacement, or completed four-platform feature.
+Android now has experimental source integration in the existing AWG Go payload,
+Qt rule settings and VpnService protocol dispatch. Native ARM64 compilation and
+packet-FD tests pass; full APK/device acceptance is still pending. iOS, Linux
+and Windows native integrations remain outstanding.
 See `../../docs/sing-box-routing/STATUS.md` for the acceptance gaps.
 
 ## Build and test

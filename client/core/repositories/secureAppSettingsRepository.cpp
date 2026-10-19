@@ -202,6 +202,16 @@ bool SecureAppSettingsRepository::isSitesSplitTunnelingEnabled() const
     return value("Conf/sitesSplitTunnelingEnabled", false).toBool();
 }
 
+bool SecureAppSettingsRepository::isSingBoxRoutingEnabled() const
+{
+    return value("Conf/singBoxRoutingEnabled", false).toBool();
+}
+
+void SecureAppSettingsRepository::setSingBoxRoutingEnabled(bool enabled)
+{
+    setValue("Conf/singBoxRoutingEnabled", enabled);
+}
+
 void SecureAppSettingsRepository::setSitesSplitTunnelingEnabled(bool enabled)
 {
     setValue("Conf/sitesSplitTunnelingEnabled", enabled);

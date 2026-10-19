@@ -65,6 +65,14 @@ func (o *Outbound) get() (*Transport, error) {
 	return o.transport, nil
 }
 
+func (o *Outbound) Stats() (Stats, error) {
+	t, err := o.get()
+	if err != nil {
+		return Stats{}, err
+	}
+	return t.Stats()
+}
+
 func (o *Outbound) addresses(ctx context.Context, d M.Socksaddr) ([]netip.Addr, error) {
 	if d.IsIP() {
 		return []netip.Addr{d.Addr}, nil

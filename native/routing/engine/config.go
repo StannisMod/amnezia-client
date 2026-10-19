@@ -16,10 +16,10 @@ const TUNTag = "amnezia-tun"
 // routes/resolvers after stopping it. The host installs its PlatformInterface
 // to provide the existing VPN descriptor on mobile.
 type SessionConfig struct {
-	Rules          rules.Config
-	AWG            awg.Config
-	Resolver       netip.AddrPort
-	ResolverAction rules.Action
+	Rules          rules.Config   `json:"rules"`
+	AWG            awg.Config     `json:"awg"`
+	Resolver       netip.AddrPort `json:"resolver"`
+	ResolverAction rules.Action   `json:"resolver_action"`
 }
 
 func (c SessionConfig) Compile() ([]byte, error) {

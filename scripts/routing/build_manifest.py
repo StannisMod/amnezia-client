@@ -42,7 +42,7 @@ def main():
         "abi": os.environ.get("ROUTING_ABI", platform.machine()),
         "host": platform.platform(),
         "client_baseline_compile": status,
-        "routing_core_linked_into_client": False,
+        "routing_core_linked_into_client": target == "android" and os.environ.get("ROUTING_PAYLOAD_OUTCOME") == "success",
         "native_vpn_acceptance": "NOT RUN",
         "installer_smoke_test": "NOT RUN",
         "signing": "BLOCKED" if target == "ios" else "debug" if target == "android" else "unsigned",

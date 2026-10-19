@@ -135,6 +135,17 @@ PageType {
                 }
             }
 
+            CheckBox {
+                visible: IpSplitTunnelingController.singBoxRoutingAvailable
+                Layout.fillWidth: true
+                Layout.leftMargin: 16
+                Layout.rightMargin: 16
+                enabled: root.pageEnabled
+                text: qsTr("Experimental AWG domain routing (supports *.ru)")
+                checked: IpSplitTunnelingController.singBoxRoutingEnabled
+                onClicked: IpSplitTunnelingController.setSingBoxRoutingEnabled(checked)
+            }
+
             SegmentedControlType {
                 id: modeSelector
 

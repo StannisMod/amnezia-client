@@ -107,6 +107,40 @@ type Transport struct {
 	closed bool
 }
 
+type Stats struct{ RXBytes, TXBytes, LastHandshake uint64 }
+
+// Stats returns only counters and a timestamp, never private UAPI material.
+func (t *Transport) Stats() (Stats, error) {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	if t.closed {
+		return Stats{}, net.ErrClosed
+	}
+	raw, err := t.device.IpcGet()
+	if err != nil {
+		return Stats{}, errors.New("AWG statistics unavailable")
+	}
+	var stats Stats
+	for _, line := range strings.Split(raw, "\n") {
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		n, _ := strconv.ParseUint(value, 10, 64)
+		switch key {
+		case "rx_bytes":
+			stats.RXBytes += n
+		case "tx_bytes":
+			stats.TXBytes += n
+		case "last_handshake_time_sec":
+			if n > stats.LastHandshake {
+				stats.LastHandshake = n
+			}
+		}
+	}
+	return stats, nil
+}
+
 func New(ctx context.Context, c Config, listen ListenUnderlay) (*Transport, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err

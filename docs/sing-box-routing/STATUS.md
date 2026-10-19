@@ -7,8 +7,8 @@ worktree. All four submodules were initialized at the base's pinned commits.
 No repository AGENTS.md was present.
 
 **The four-platform handoff is not complete. No installable feature client has
-been produced. The new core is not connected to the Qt UI or any native VPN
-host.** Do not enable or advertise it as a client feature.
+been produced. Android now has opt-in Qt/service/JNI source integration and a compiled unified
+native payload. Device validation and full client acceptance are still pending.**
 
 ## Implemented source
 
@@ -78,10 +78,10 @@ installers found elsewhere were not reused or presented as feature artifacts.
 
 | Requirement | Android | iOS | Linux | Windows |
 | --- | --- | --- | --- | --- |
-| Native capture/TUN integration | NOT IMPLEMENTED | NOT IMPLEMENTED | NOT IMPLEMENTED | NOT IMPLEMENTED |
-| Native DIRECT/protection and AWG bootstrap | NOT IMPLEMENTED | NOT IMPLEMENTED | NOT IMPLEMENTED | NOT IMPLEMENTED |
+| Native capture/TUN integration | SOURCE INTEGRATED; FD test PASS | NOT IMPLEMENTED | NOT IMPLEMENTED | NOT IMPLEMENTED |
+| Native DIRECT/protection and AWG bootstrap | SOURCE INTEGRATED; device NOT RUN | NOT IMPLEMENTED | NOT IMPLEMENTED | NOT IMPLEMENTED |
 | DNS/FakeIP under OS capture | NOT RUN | NOT RUN | NOT RUN | NOT RUN |
-| Qt persisted rule editor/profile migration installed | NOT IMPLEMENTED | NOT IMPLEMENTED | NOT IMPLEMENTED | NOT IMPLEMENTED |
+| Qt persisted rule editor/profile migration installed | SOURCE INTEGRATED; client build pending | NOT IMPLEMENTED | NOT IMPLEMENTED | NOT IMPLEMENTED |
 | Reconnect, crash, shutdown, native fail-closed | NOT RUN | NOT RUN | NOT RUN | NOT RUN |
 | Per-app rules and conflict precedence | NOT IMPLEMENTED | NOT IMPLEMENTED | NOT IMPLEMENTED | NOT IMPLEMENTED |
 | Installer/device/extension smoke test | NOT RUN | NOT RUN | NOT RUN | NOT RUN |
@@ -89,8 +89,14 @@ installers found elsewhere were not reused or presented as feature artifacts.
 
 ## Remaining engineering and external assets
 
-Next technical step: create the Android native ABI/build integration and prove
-one Go runtime in the actual service process. The existing AWG Go dependency
+Android integration now overlays the routing bridge into the existing AWG
+Go payload, preserving old JNI entry points. ARM64 c-shared compilation with
+NDK 27.0.12077973 passed; exported old/routed JNI and 16 KB ELF alignment were
+checked. The same native FD adapter passed raw DNS/FakeIP and failed-start/
+shutdown cleanup tests with race detection. Qt migration contract tests passed.
+The next gate is the complete APK compile, payload inspection and device test.
+
+The actual service-process runtime/load behavior still requires device proof. The existing AWG Go dependency
 is linked through CMake; blindly adding another Go shared library is not valid.
 Then replace the AWG packet reader only for the experimental routed session,
 wire persisted rules from Qt, and run a real ARM64 APK against a controlled AWG
@@ -115,3 +121,24 @@ reconnect restoration, QUIC, DoH/DoT fallback, CNAME edge cases, 100-cycle
 resource checks, performance/memory measurements and complete distributable
 license notices. Keep feature activation unavailable until host integration is
 implemented and verified. No server or dev-branch changes were made.
+
+## Android implementation details in this checkpoint
+
+- `Awg.startVpn` selects the routed path only when `sing_box_routing` is present.
+  It retains the legacy AWG/WG JNI functions and does not retry them after a
+  routed-start failure. One app VpnService builder supplies the capture FD.
+- The Go host owns that FD, refuses a second reader and always releases it and
+  its JNI global callback on a failed start or normal stop. Native socket
+  callbacks use `VpnService.protect` before connect/send; counters and handshake
+  status are returned without exposing the private UAPI.
+- Qt adds a persisted, default-off experimental AWG switch on Android. Existing
+  site lists/modes serialize as schema v1 names, without cached DNS IPs. New
+  routed domain entries do not perform `QHostInfo` startup resolution.
+- The capture includes IPv4 and all IPv6, including the FakeIP ULA range.
+  An AWG profile with no IPv6 path cannot fall back to DIRECT for VPN flows.
+- Conan pins AWG Android source commit 5c16489e2cd9ed3a0a7a27c7445bba5238132f86,
+  adds the core to the same `libwg-go.so`, and uses a Go-1.27.1-specific checked
+  CLOCK_BOOTTIME patch to retain suspend-aware mobile timers.
+- Full Kotlin/client/payload CI verification has been added. Full client builds
+  at the preceding core-only commit passed for Linux and all four Android ABIs;
+  those older APKs do not contain the new Android integration.

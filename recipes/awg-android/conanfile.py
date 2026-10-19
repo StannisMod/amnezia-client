@@ -7,11 +7,16 @@ from conan.tools.scm import Git
 
 import os
 import platform
+import importlib.util
+import io
+import shutil
 from pathlib import Path
 
 class AwgAndroid(ConanFile):
     name = "awg-android"
-    version = "3.1.20260814"
+    version = "3.1.20260814-routing.1"
+    _upstream_version = "3.1.20260814"
+    _upstream_sha = "5c16489e2cd9ed3a0a7a27c7445bba5238132f86"
     settings = "os", "arch", "build_type", "compiler"
 
     def configure(self):
@@ -23,9 +28,9 @@ class AwgAndroid(ConanFile):
 
     def build_requirements(self):
         self.tool_requires("cmake/[>=3.4.1 <4]")
+        self.tool_requires("go/1.27.1")
         if platform.system() == "Windows":
             self.tool_requires("ninja/[*]")
-            self.tool_requires("go/[*]")
             if not self.conf.get("tools.microsoft.bash:path", check_type=str):
                 self.tool_requires("msys2/cci.latest")
 
@@ -33,13 +38,21 @@ class AwgAndroid(ConanFile):
         if self.settings.os != "Android":
             raise ConanInvalidConfiguration(f"{self.name} v{self.version} does not support {self.settings.os}")
 
+    def export_sources(self):
+        copy(self, "*", src=os.path.join(self.recipe_folder, "..", "..", "native", "routing"),
+             dst=os.path.join(self.export_sources_folder, "routing-core"),
+             excludes=["**/__pycache__/*", "**/*.pyc"])
+
     def source(self):
         git = Git(self)
         git.clone(
             url="https://github.com/amnezia-vpn/amneziawg-android.git",
-            target=".",
-            args=["--recurse-submodules", "--branch", f"v{self.version}"]
+            target="upstream",
+            args=["--recurse-submodules", "--branch", f"v{self._upstream_version}"]
         )
+        upstream_git = Git(self, folder=os.path.join(self.source_folder, "upstream"))
+        if upstream_git.get_commit() != self._upstream_sha:
+            raise ConanInvalidConfiguration("AWG Android tag does not match the pinned source SHA")
 
     def generate(self):
         VirtualBuildEnv(self).generate()
@@ -54,22 +67,22 @@ class AwgAndroid(ConanFile):
     def _patch_sources(self):
         if platform.system() == 'Darwin':
             replace_in_file(self,
-                os.path.join(self.source_folder, "tunnel", "tools", "libwg-go", "Makefile"),
+                os.path.join(self._native_source, "tunnel", "tools", "libwg-go", "Makefile"),
                 'flock "$@.lock" -c \' \\\n',
                 "",
             )
             replace_in_file(self,
-                os.path.join(self.source_folder, "tunnel", "tools", "libwg-go", "Makefile"),
+                os.path.join(self._native_source, "tunnel", "tools", "libwg-go", "Makefile"),
                 'mv "$@.tmp" "$@"\'',
                 'mv "$@.tmp" "$@"',
             )
             replace_in_file(self,
-                os.path.join(self.source_folder, "tunnel", "tools", "libwg-go", "Makefile"),
+                os.path.join(self._native_source, "tunnel", "tools", "libwg-go", "Makefile"),
                 'touch "$@"\'',
                 'touch "$@"',
             )
             replace_in_file(self,
-                os.path.join(self.source_folder, "tunnel", "tools", "libwg-go", "Makefile"),
+                os.path.join(self._native_source, "tunnel", "tools", "libwg-go", "Makefile"),
                 'sha256sum -c',
                 'shasum -a 256 -c'
             )
@@ -77,7 +90,7 @@ class AwgAndroid(ConanFile):
             # elf-cleaner uses sys/mman.h (POSIX only) and cannot be built on Windows;
             # skip it — DT_FLAGS_1 warnings only affect Android < 6.0
             replace_in_file(self,
-                os.path.join(self.source_folder, "tunnel", "tools", "CMakeLists.txt"),
+                os.path.join(self._native_source, "tunnel", "tools", "CMakeLists.txt"),
                 '# Strip unwanted ELF sections to prevent DT_FLAGS_1 warnings on old Android versions\n'
                 'file(GLOB ELF_CLEANER_SOURCES elf-cleaner/*.c elf-cleaner/*.cpp)\n'
                 'add_custom_target(elf-cleaner COMMENT "Building elf-cleaner" VERBATIM COMMAND cc\n'
@@ -94,16 +107,46 @@ class AwgAndroid(ConanFile):
             )
             # patch Makefile: skip Go download, use 'go' already in PATH from tool_requires
             replace_in_file(self,
-                os.path.join(self.source_folder, "tunnel", "tools", "libwg-go", "Makefile"),
+                os.path.join(self._native_source, "tunnel", "tools", "libwg-go", "Makefile"),
                 '$(DESTDIR)/libwg-go.so: export PATH := $(BUILDDIR)/go-$(GO_VERSION)/bin/:$(PATH)\n$(DESTDIR)/libwg-go.so: $(BUILDDIR)/go-$(GO_VERSION)/.prepared go.mod',
                 '$(DESTDIR)/libwg-go.so: go.mod',
             )
 
     def build(self):
+        # Conan source folders are shared between ABI/configuration builds.
+        # Overlay/patch a private copy, never mutate that shared source cache.
+        self._native_source = os.path.join(self.build_folder, "native-source")
+        shutil.copytree(os.path.join(self.source_folder, "upstream"), self._native_source,
+                        dirs_exist_ok=True, ignore=shutil.ignore_patterns(".git"))
         self._patch_sources()
+
+        core = os.path.join(self.source_folder, "routing-core")
+        spec = importlib.util.spec_from_file_location("amnezia_prepare_android", os.path.join(core, "prepare_android.py"))
+        prepare = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(prepare)
+        module = os.path.join(self._native_source, "tunnel", "tools", "libwg-go")
+        prepare.prepare_module(core, module)
+
+        go_root = io.StringIO()
+        self.run("go env GOROOT", stdout=go_root)
+        patched_go = str(prepare.prepare_runtime(go_root.getvalue().strip(), os.path.join(self.build_folder, "routing-go")))
+
+        makefile = Path(module) / "Makefile"
+        contents = makefile.read_text()
+        contents = contents.replace("$(DESTDIR)/libwg-go.so: export PATH := $(BUILDDIR)/go-$(GO_VERSION)/bin/:$(PATH)\n", "")
+        contents = contents.replace("$(DESTDIR)/libwg-go.so: $(BUILDDIR)/go-$(GO_VERSION)/.prepared go.mod", "$(DESTDIR)/libwg-go.so: go.mod")
+        contents = contents.replace("go build -tags linux ", "go build -mod=readonly -tags linux,with_gvisor,amnezia_android_bridge ")
+        makefile.write_text(contents)
+
         cmake = CMake(self)
-        cmake.configure(build_script_folder=os.path.join(self.source_folder, "tunnel", "tools"))
-        cmake.build(target=["libwg-go.so", "libwg.so", "libwg-quick.so"])
+        env = Environment()
+        env.define("GOROOT", patched_go)
+        env.prepend_path("PATH", os.path.join(patched_go, "bin"))
+        env.define("GOTOOLCHAIN", "local")
+        env.define("GOTELEMETRY", "off")
+        with env.vars(self).apply():
+            cmake.configure(build_script_folder=os.path.join(self._native_source, "tunnel", "tools"))
+            cmake.build(target=["libwg-go.so", "libwg.so", "libwg-quick.so"])
 
     def package(self):
         copy(self, "libwg-go.h", src=os.path.join(self.build_folder, "out"), dst=os.path.join(self.package_folder, "include"))

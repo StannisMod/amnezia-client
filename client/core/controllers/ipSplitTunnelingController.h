@@ -33,6 +33,8 @@ public:
 
     RouteMode getRouteMode() const;
     bool isSplitTunnelingEnabled() const;
+    bool isSingBoxRoutingEnabled() const;
+    bool setSingBoxRoutingEnabled(bool enabled);
     QVector<QPair<QString, QStringList>> getCurrentSites() const;
 
     bool importSitesFromJson(const QByteArray& jsonData, bool replaceExisting, QString &errorMessage);

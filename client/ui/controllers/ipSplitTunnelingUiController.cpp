@@ -20,7 +20,31 @@ void IpSplitTunnelingUiController::addSite(QString hostname)
 {
     if (m_ipSplitTunnelingController->addSite(hostname)) {
         emit finished(tr("New site added: %1").arg(hostname));
+    } else {
+        emit errorOccurred(tr("Invalid or duplicate destination. Wildcards require experimental AWG domain routing."));
     }
+}
+
+bool IpSplitTunnelingUiController::isSingBoxRoutingAvailable() const
+{
+#ifdef Q_OS_ANDROID
+    return true;
+#else
+    return false;
+#endif
+}
+
+bool IpSplitTunnelingUiController::isSingBoxRoutingEnabled() const
+{
+    return m_ipSplitTunnelingController->isSingBoxRoutingEnabled();
+}
+
+void IpSplitTunnelingUiController::setSingBoxRoutingEnabled(bool enabled)
+{
+    if (!m_ipSplitTunnelingController->setSingBoxRoutingEnabled(enabled)) {
+        emit errorOccurred(tr("Remove wildcard destinations before disabling AWG domain routing."));
+    }
+    emit singBoxRoutingEnabledChanged();
 }
 
 void IpSplitTunnelingUiController::removeSite(int index)

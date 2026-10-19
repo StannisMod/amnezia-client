@@ -31,6 +31,7 @@
 #endif
 
 #include "core/utils/networkUtilities.h"
+#include "core/utils/domainRoutingConfig.h"
 #include "core/utils/serverConfigUtils.h"
 #include "vpnConnection.h"
 
@@ -496,6 +497,26 @@ void VpnConnection::appendSplitTunnelingConfig()
 
     m_vpnConfiguration.insert(configKey::splitTunnelType, routeMode);
     m_vpnConfiguration.insert(configKey::splitTunnelSites, sitesJsonArray);
+
+#ifdef Q_OS_ANDROID
+    if (m_appSettingsRepository->isSingBoxRoutingEnabled()
+            && protocolName == ProtocolUtils::protoToString(Proto::Awg)) {
+        const auto mode = m_appSettingsRepository->routeMode();
+        m_vpnConfiguration.insert("sing_box_routing", amnezia::routing::fromLegacySites(
+            m_appSettingsRepository->isSitesSplitTunnelingEnabled(), mode,
+            m_appSettingsRepository->vpnSites(mode)));
+        const QHostAddress dns(m_vpnConfiguration.value(configKey::dns1).toString());
+        const bool localResolver = dns.isLoopback() || (!m_appSettingsRepository->useAmneziaDns() && dns.isPrivateUse());
+        m_vpnConfiguration.insert("sing_box_dns_path", localResolver ? "direct" : "vpn");
+        // Only the flow engine applies destinations. The OS captures all flows
+        // selected by the existing per-application VPN scope.
+        m_vpnConfiguration.insert(configKey::splitTunnelType, amnezia::RouteMode::VpnAllSites);
+        m_vpnConfiguration.insert(configKey::splitTunnelSites, QJsonArray());
+    } else {
+        m_vpnConfiguration.remove("sing_box_routing");
+        m_vpnConfiguration.remove("sing_box_dns_path");
+    }
+#endif
 
     amnezia::AppsRouteMode appsRouteMode = amnezia::AppsRouteMode::VpnAllApps;
     QJsonArray appsJsonArray;

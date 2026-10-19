@@ -80,6 +80,11 @@ bool IpSplitTunnelingController::addSite(const QString &hostname)
     if (!validateHostname(normalizedHostname)) {
         return false;
     }
+
+    if (isSingBoxRoutingEnabled()) {
+        // Domain rules reach managed DNS as names, not startup DNS snapshots.
+        return addSiteInternal(normalizedHostname, {});
+    }
     
     if (NetworkUtilities::ipAddressWithSubnetRegExp().exactMatch(normalizedHostname)) {
         processSite(normalizedHostname, {});
@@ -168,9 +173,39 @@ bool IpSplitTunnelingController::validateHostname(const QString &hostname) const
     if (hostname.isEmpty()) {
         return false;
     }
+    if (hostname.contains('*') && (!isSingBoxRoutingEnabled() || !hostname.startsWith("*.")
+            || hostname.mid(2).contains('*') || hostname.size() <= 2)) {
+        return false;
+    }
     if (!hostname.contains(".") && !NetworkUtilities::ipAddressWithSubnetRegExp().exactMatch(hostname)) {
         return false;
     }
+    return true;
+}
+
+bool IpSplitTunnelingController::isSingBoxRoutingEnabled() const
+{
+#ifdef Q_OS_ANDROID
+    return m_appSettingsRepository->isSingBoxRoutingEnabled();
+#else
+    return false;
+#endif
+}
+
+bool IpSplitTunnelingController::setSingBoxRoutingEnabled(bool enabled)
+{
+#ifndef Q_OS_ANDROID
+    if (enabled) return false;
+#endif
+    if (!enabled) {
+        for (auto mode : {RouteMode::VpnOnlyForwardSites, RouteMode::VpnAllExceptSites}) {
+            const auto sites = m_appSettingsRepository->vpnSites(mode);
+            for (auto it = sites.cbegin(); it != sites.cend(); ++it) {
+                if (it.key().contains('*')) return false;
+            }
+        }
+    }
+    m_appSettingsRepository->setSingBoxRoutingEnabled(enabled);
     return true;
 }
 
