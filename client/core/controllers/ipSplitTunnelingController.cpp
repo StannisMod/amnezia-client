@@ -186,7 +186,7 @@ bool IpSplitTunnelingController::validateHostname(const QString &hostname) const
 
 bool IpSplitTunnelingController::isSingBoxRoutingEnabled() const
 {
-#if defined(Q_OS_ANDROID) || defined(Q_OS_IOS)
+#if defined(Q_OS_ANDROID) || defined(Q_OS_IOS) || defined(Q_OS_LINUX)
     return m_appSettingsRepository->isSingBoxRoutingEnabled();
 #else
     return false;
@@ -195,8 +195,12 @@ bool IpSplitTunnelingController::isSingBoxRoutingEnabled() const
 
 bool IpSplitTunnelingController::setSingBoxRoutingEnabled(bool enabled)
 {
-#if !defined(Q_OS_ANDROID) && !defined(Q_OS_IOS)
+#if !defined(Q_OS_ANDROID) && !defined(Q_OS_IOS) && !defined(Q_OS_LINUX)
     if (enabled) return false;
+#endif
+#if defined(Q_OS_LINUX) && !defined(Q_OS_ANDROID)
+    if (enabled && (m_appSettingsRepository->isKillSwitchEnabled()
+                    || m_appSettingsRepository->isAppsSplitTunnelingEnabled())) return false;
 #endif
     if (!enabled) {
         for (auto mode : {RouteMode::VpnOnlyForwardSites, RouteMode::VpnAllExceptSites}) {

@@ -12,6 +12,10 @@
 #include "daemon.h"
 #include "leakdetector.h"
 #include "logger.h"
+#ifdef MZ_LINUX
+#include "linuxroutingprocess.h"
+#include "killswitch.h"
+#endif
 
 namespace {
 Logger logger("DaemonLocalServerConnection");
@@ -37,6 +41,12 @@ DaemonLocalServerConnection::DaemonLocalServerConnection(QObject* parent,
           &DaemonLocalServerConnection::disconnected);
   connect(daemon, &Daemon::backendFailure, this,
           &DaemonLocalServerConnection::backendFailure);
+#ifdef MZ_LINUX
+  auto routing = LinuxRoutingProcess::instance();
+  connect(routing, &LinuxRoutingProcess::connected, this, &DaemonLocalServerConnection::connected);
+  connect(routing, &LinuxRoutingProcess::disconnected, this, &DaemonLocalServerConnection::disconnected);
+  connect(routing, &LinuxRoutingProcess::failed, this, [this] { backendFailure(DaemonError::ERROR_FATAL); });
+#endif
 }
 
 DaemonLocalServerConnection::~DaemonLocalServerConnection() {
@@ -104,6 +114,17 @@ void DaemonLocalServerConnection::parseCommand(const QByteArray& data) {
   }
 
   if (type == "activate") {
+#ifdef MZ_LINUX
+    if (obj.contains("routing_profile")) {
+      Daemon::instance()->deactivate(false);
+      if (!LinuxRoutingProcess::instance()->start(obj.value("routing_profile").toObject(), KillSwitch::instance()->isStrictKillSwitchEnabled())) {
+        backendFailure(DaemonError::ERROR_FATAL);
+        disconnected();
+      }
+      return;
+    }
+    LinuxRoutingProcess::instance()->stop(false);
+#endif
     InterfaceConfig config;
     if (!Daemon::parseConfig(obj, config)) {
       logger.error() << "Invalid configuration";
@@ -119,12 +140,18 @@ void DaemonLocalServerConnection::parseCommand(const QByteArray& data) {
   }
 
   if (type == "deactivate") {
+#ifdef MZ_LINUX
+    if (LinuxRoutingProcess::instance()->isActive()) { LinuxRoutingProcess::instance()->stop(); return; }
+#endif
     Daemon::instance()->deactivate(true);
     return;
   }
 
   if (type == "status") {
     QJsonObject obj = Daemon::instance()->getStatus();
+#ifdef MZ_LINUX
+    if (LinuxRoutingProcess::instance()->isActive()) obj = LinuxRoutingProcess::instance()->status();
+#endif
     obj.insert("type", "status");
     write(obj);
     return;

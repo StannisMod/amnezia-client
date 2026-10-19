@@ -27,7 +27,7 @@ void IpSplitTunnelingUiController::addSite(QString hostname)
 
 bool IpSplitTunnelingUiController::isSingBoxRoutingAvailable() const
 {
-#if defined(Q_OS_ANDROID) || defined(Q_OS_IOS)
+#if defined(Q_OS_ANDROID) || defined(Q_OS_IOS) || defined(Q_OS_LINUX)
     return true;
 #else
     return false;
@@ -42,7 +42,9 @@ bool IpSplitTunnelingUiController::isSingBoxRoutingEnabled() const
 void IpSplitTunnelingUiController::setSingBoxRoutingEnabled(bool enabled)
 {
     if (!m_ipSplitTunnelingController->setSingBoxRoutingEnabled(enabled)) {
-        emit errorOccurred(tr("Remove wildcard destinations before disabling AWG domain routing."));
+        emit errorOccurred(enabled
+            ? tr("AWG domain routing is unavailable with the current platform, kill-switch or application routing settings.")
+            : tr("Remove wildcard destinations before disabling AWG domain routing."));
     }
     emit singBoxRoutingEnabledChanged();
     emit domainRoutingChanged();

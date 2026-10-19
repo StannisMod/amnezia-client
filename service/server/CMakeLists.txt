@@ -342,6 +342,27 @@ if(APPLE)
 endif()
 
 # install non-linked dependencies
+if(LINUX)
+    # This private service child is built from the same pinned routing module;
+    # no downloaded routing binary or second in-process Go runtime is used.
+    find_program(ROUTING_GO_EXECUTABLE go REQUIRED)
+    set(ROUTING_SOURCE_DIR "${CMAKE_SOURCE_DIR}/native/routing")
+    file(GLOB_RECURSE ROUTING_GO_SOURCES CONFIGURE_DEPENDS "${ROUTING_SOURCE_DIR}/*.go")
+    set(ROUTING_EXECUTABLE "${CMAKE_CURRENT_BINARY_DIR}/routing/amnezia-routing")
+    add_custom_command(OUTPUT "${ROUTING_EXECUTABLE}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/routing"
+        COMMAND ${CMAKE_COMMAND} -E env GOTOOLCHAIN=auto
+            "${ROUTING_GO_EXECUTABLE}" build -mod=readonly -trimpath -buildvcs=false
+            -tags with_gvisor -o "${ROUTING_EXECUTABLE}" ./cmd/amnezia-routing
+        WORKING_DIRECTORY "${ROUTING_SOURCE_DIR}"
+        DEPENDS ${ROUTING_GO_SOURCES} "${ROUTING_SOURCE_DIR}/go.mod" "${ROUTING_SOURCE_DIR}/go.sum"
+        VERBATIM)
+    add_custom_target(amnezia-routing-child DEPENDS "${ROUTING_EXECUTABLE}")
+    add_dependencies(${PROJECT} amnezia-routing-child)
+    target_sources(${PROJECT} PRIVATE linuxroutingprocess.cpp linuxroutingprocess.h)
+    list(APPEND CONAN_EXECS "${ROUTING_EXECUTABLE}")
+endif()
+
 if(WIN32)
     find_package(awg-windows REQUIRED)
     list(APPEND CONAN_EXECS $<TARGET_FILE:amnezia::awg-windows>)

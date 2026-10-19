@@ -1,3 +1,5 @@
+//go:build !android && !ios
+
 // android-fixture is a disposable emulator peer, never a production server.
 // Two observers share one destination IP/port: the host and AWG netstack.
 package main

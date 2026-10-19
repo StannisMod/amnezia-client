@@ -207,3 +207,37 @@ The emulator workflow uses a test-only instrumentation APK and temporary
 signing identity. It re-signs a disposable copy of the feature APK and verifies
 that every native payload byte is preserved; release artifacts are untouched.
 Private fixture keys and fixture-bearing test APKs are never uploaded.
+
+## Linux service integration checkpoint (native runtime verification pending)
+
+- The persisted experimental editor and routing profile now reach the existing
+  desktop service IPC on Linux. The service launches and owns a private Go
+  child, packaged beside it through CMake and built from the pinned module.
+  Credentials cross stdin, not command lines or configuration files.
+- The child owns one TUN and gVisor reader. A dedicated capture table and one
+  inverse-mark rule per family capture ordinary flows after the local table.
+  Protected DIRECT/AWG sockets skip only this capture rule and continue through
+  native OS policy; no default gateway is forced. Occupied reserved state or
+  overlapping mark policies cause startup rejection, never replacement.
+- Startup, shutdown and partial-start rollback track exact owned routes/rules.
+  A helper crash leaves a lower-priority blackhole until explicit recovery by
+  the service. Recovery recognizes exact owned entries and refuses foreign
+  policy state; it never flushes a shared table.
+- systemd-resolved receives DNS on the new VPN link and is reverted on stop.
+  The local `127.0.0.53` stub is never routed to a router. If selected as the
+  engine resolver, its numeric upstream is snapshotted before VPN DNS changes.
+- Per-app desktop routing and the existing OS/strict kill switch are explicitly
+  gated rather than silently bypassed. Their integration is still unfinished.
+- Local checks: native helper compilation; AWG profile/parameter conversion and
+  rejection tests with race detection; Go vet; Qt domain contract; syntax check
+  of the new C++ child owner; workflow/Python checks. These are not native VPN
+  acceptance. A real network-namespace CI checks capture, independent TCP/UDP
+  observers, native policy routing, IPv6, CNAME, loopback, AWG/helper loss,
+  inverse mode, FakeIP persistence, 100 reconnects and exact route restoration.
+  Installed Qt-service, systemd-resolved, installer and network handover tests
+  remain separate requirements.
+
+The test-only peer is excluded from Android/iOS package cross-compilation;
+otherwise `go build ./...` would try linking an unrelated host executable with
+CGO disabled. Android CI retries transient failures downloading the same pinned
+NDK version; it does not substitute a different NDK or payload.

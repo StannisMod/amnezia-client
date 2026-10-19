@@ -77,6 +77,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: {submodules: recursive}
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: native/routing/go.mod
+          cache-dependency-path: native/routing/go.sum
       - uses: actions/setup-python@v6
         with: {python-version: '3.14'}
       - uses: jurplel/install-qt-action@v4.3.1
@@ -201,7 +205,13 @@ jobs:
         with: {distribution: temurin, java-version: '17'}
       - uses: android-actions/setup-android@v4
         with:
-          packages: 'platform-tools platforms;android-28 platforms;android-36 build-tools;36.0.0 ndk;27.0.12077973'
+          packages: 'platform-tools platforms;android-28 platforms;android-36 build-tools;36.0.0'
+      - name: Install pinned NDK (retry transient SDK archive failures)
+        run: |
+          for attempt in 1 2 3; do
+            if sdkmanager --install 'ndk;27.0.12077973'; then exit 0; fi
+          done
+          exit 1
       - uses: actions/setup-go@v5
         with:
           go-version-file: native/routing/go.mod
