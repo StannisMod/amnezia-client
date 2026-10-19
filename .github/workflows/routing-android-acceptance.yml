@@ -1,0 +1,99 @@
+name: Android routed VPN acceptance
+
+on:
+  push:
+    branches: [feature/sing-box-routing]
+    paths:
+      - .github/workflows/routing-android-acceptance.yml
+      - scripts/routing/android/**
+      - scripts/routing/run_android_acceptance.py
+      - native/routing/cmd/android-fixture/**
+  workflow_dispatch:
+    inputs:
+      apk_run_id:
+        description: Successful routing build run containing the x86_64 feature APK
+        default: '39255117799'
+        required: true
+      cycles:
+        description: Reconnect cycles (100 for acceptance)
+        default: '100'
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  actual-apk-service:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: native/routing/go.mod
+          cache-dependency-path: native/routing/go.sum
+      - uses: actions/setup-java@v4
+        with: {distribution: temurin, java-version: '17'}
+      - uses: android-actions/setup-android@v4
+        with:
+          packages: 'platform-tools platforms;android-36 build-tools;36.0.0'
+      - uses: actions/download-artifact@v4
+        with:
+          name: routing-client-android-x86_64-baseline
+          run-id: ${{ inputs.apk_run_id || '39255117799' }}
+          github-token: ${{ github.token }}
+          path: downloaded-apk
+      - name: Record tested source and select packaged feature APK
+        env:
+          APK_RUN: ${{ inputs.apk_run_id || '39255117799' }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, urllib.request
+          req = urllib.request.Request(f"https://api.github.com/repos/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['APK_RUN']}", headers={'Authorization': f"Bearer {os.environ['GH_TOKEN']}"})
+          with urllib.request.urlopen(req) as stream: source = json.load(stream)
+          assert source['conclusion'] == 'success' and source['head_repository']['full_name'] == os.environ['GITHUB_REPOSITORY']
+          pathlib.Path('tested-apk-source.json').write_text(json.dumps({k: source[k] for k in ('id', 'head_sha', 'html_url')}, indent=2))
+          candidates = sorted(pathlib.Path('downloaded-apk').rglob('*debug.apk'))
+          assert candidates, 'No debug APK from the actual client build'
+          with open(os.environ['GITHUB_ENV'], 'a') as env: env.write(f'FEATURE_APK={candidates[0].resolve()}\n')
+          PY
+      - name: Build the disposable AWG peer and independent egress observers
+        working-directory: native/routing
+        run: go build -mod=readonly -tags with_gvisor -o "$RUNNER_TEMP/android-fixture" ./cmd/android-fixture
+      - name: Enable KVM for the disposable emulator
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Actual APK, VpnService capture, protected sockets and 100-cycle acceptance
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          cores: 2
+          ram-size: 3072M
+          heap-size: 512M
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          script: |
+            "$RUNNER_TEMP/android-fixture" --config "$RUNNER_TEMP/fixture.json" > fixture-server.log 2>&1 & echo $! > "$RUNNER_TEMP/fixture.pid"
+            for i in $(seq 1 30); do test -s "$RUNNER_TEMP/fixture.json" && break; sleep 1; done
+            python3 scripts/routing/run_android_acceptance.py --apk "$FEATURE_APK" --fixture "$RUNNER_TEMP/fixture.json" --work "$RUNNER_TEMP/android-acceptance" --cycles "${{ inputs.cycles || '100' }}"
+      - name: Stop the local peer and remove ephemeral private configuration
+        if: always()
+        run: |
+          if test -f "$RUNNER_TEMP/fixture.pid"; then kill "$(cat "$RUNNER_TEMP/fixture.pid")" || true; fi
+          rm -f "$RUNNER_TEMP/fixture.json"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: android-actual-apk-acceptance
+          if-no-files-found: error
+          path: |
+            tested-apk-source.json
+            fixture-server.log
+            ${{ runner.temp }}/android-acceptance/instrumentation.log
+            ${{ runner.temp }}/android-acceptance/android-acceptance.json
