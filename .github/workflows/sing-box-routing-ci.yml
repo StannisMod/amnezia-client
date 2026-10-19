@@ -1,0 +1,306 @@
+name: Sing-box routing checks
+
+on:
+  push:
+    branches: [feature/sing-box-routing]
+  pull_request:
+    branches: [dev]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: routing-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  core-tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-2022, macos-15]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: native/routing
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: native/routing/go.mod
+          cache-dependency-path: native/routing/go.sum
+      - name: Unit and local network integration tests
+        shell: bash
+        run: |
+          set -o pipefail
+          go test -mod=readonly -tags with_gvisor -race -count=3 -json ./... | tee test-results.jsonl
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: routing-tests-${{ matrix.os }}
+          path: native/routing/test-results.jsonl
+          if-no-files-found: error
+
+  core-cross-compile:
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {goos: android, goarch: arm64}
+          - {goos: android, goarch: arm, goarm: '7'}
+          - {goos: android, goarch: '386'}
+          - {goos: android, goarch: amd64}
+          - {goos: ios, goarch: arm64}
+          - {goos: windows, goarch: amd64}
+          - {goos: linux, goarch: amd64}
+          - {goos: darwin, goarch: arm64}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: native/routing/go.mod
+          cache-dependency-path: native/routing/go.sum
+      - name: Compile Go packages only (no native linking or device claim)
+        working-directory: native/routing
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          GOARM: ${{ matrix.goarm }}
+          CGO_ENABLED: '0'
+        run: go build -mod=readonly -tags with_gvisor ./...
+
+  client-linux:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with: {submodules: recursive}
+      - uses: actions/setup-python@v6
+        with: {python-version: '3.14'}
+      - uses: jurplel/install-qt-action@v4.3.1
+        with:
+          version: '6.10.1'
+          arch: linux_gcc_64
+          modules: qtremoteobjects qt5compat qtshadertools qthttpserver qtwebsockets
+          tools: tools_ifw
+          dir: ${{ runner.temp }}
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-x11-0 libsecret-1-dev
+          pip install conan==2.28.0
+          conan profile detect --force
+      - name: Build client, service and installer using existing entry point
+        id: build
+        shell: bash
+        env:
+          QT_INSTALL_DIR: ${{ runner.temp }}
+          AMNEZIA_BUILD_TESTS: 'ON'
+        run: |
+          set -o pipefail
+          deploy/build.sh --generator Ninja --installer all 2>&1 | tee client-build.log
+      - name: Record baseline result
+        if: always()
+        env:
+          BUILD_OUTCOME: ${{ steps.build.outcome }}
+        run: python scripts/routing/build_manifest.py linux
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: routing-client-linux-baseline
+          path: |
+            client-build.log
+            routing-build-manifest.json
+            deploy/build/AmneziaVPN_*_linux_x64.run
+
+  client-windows:
+    runs-on: windows-2022
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with: {submodules: recursive}
+      - uses: actions/setup-python@v6
+        with: {python-version: '3.14'}
+      - uses: jurplel/install-qt-action@v4.3.1
+        with:
+          version: '6.10.1'
+          arch: win64_msvc2022_64
+          modules: qtremoteobjects qt5compat qtshadertools qthttpserver qtwebsockets
+          tools: tools_ifw
+          dir: ${{ runner.temp }}
+      - uses: ilammy/msvc-dev-cmd@v1
+        with: {arch: x64}
+      - uses: actions/setup-dotnet@v4
+        with: {dotnet-version: '8.0.x'}
+      - name: Dependencies (same WiX version as deploy.yml)
+        shell: pwsh
+        run: |
+          dotnet tool install --global wix --version 4.0.6
+          wix extension add -g WixToolset.UI.wixext/4.0.6
+          wix extension add -g WixToolset.Util.wixext/4.0.6
+          pip install conan==2.28.0
+          conan profile detect --force
+      - name: Build client, service and both installers
+        id: build
+        shell: cmd
+        env:
+          QT_INSTALL_DIR: ${{ runner.temp }}
+          AMNEZIA_BUILD_TESTS: 'ON'
+        run: |
+          set WIX_ROOT_PATH=%USERPROFILE%\.dotnet\tools
+          call deploy\build.bat --installer all > client-build.log 2>&1
+          set BUILD_RESULT=%ERRORLEVEL%
+          type client-build.log
+          exit /b %BUILD_RESULT%
+      - name: Record baseline result
+        if: always()
+        env:
+          BUILD_OUTCOME: ${{ steps.build.outcome }}
+        run: python scripts/routing/build_manifest.py windows
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: routing-client-windows-baseline
+          path: |
+            client-build.log
+            routing-build-manifest.json
+            deploy/build/AmneziaVPN_*_windows_x64.exe
+            deploy/build/AmneziaVPN_*_windows_x64.msi
+
+  client-android:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {abi: arm64-v8a, qt_arch: android_arm64_v8a}
+          - {abi: armeabi-v7a, qt_arch: android_armv7}
+          - {abi: x86_64, qt_arch: android_x86_64}
+          - {abi: x86, qt_arch: android_x86}
+    env:
+      APP_ANDROID_MIN_SDK: '28'
+      ANDROID_PLATFORM: android-28
+    steps:
+      - uses: actions/checkout@v4
+        with: {submodules: recursive}
+      - uses: actions/setup-python@v6
+        with: {python-version: '3.14'}
+      - uses: actions/setup-java@v4
+        with: {distribution: temurin, java-version: '17'}
+      - uses: android-actions/setup-android@v4
+        with:
+          packages: 'platform-tools platforms;android-28 platforms;android-36 build-tools;36.0.0 ndk;27.0.11718014'
+      - uses: jurplel/install-qt-action@v4.3.1
+        with:
+          version: '6.10.1'
+          arch: linux_gcc_64
+          modules: qtremoteobjects qt5compat qtimageformats qtshadertools
+          dir: ${{ runner.temp }}
+      - uses: jurplel/install-qt-action@v4.3.1
+        with:
+          version: '6.10.1'
+          host: all_os
+          target: android
+          arch: ${{ matrix.qt_arch }}
+          modules: qtremoteobjects qt5compat qtimageformats qtshadertools
+          dir: ${{ runner.temp }}
+      - run: |
+          pip install conan==2.28.0
+          conan profile detect --force
+      - name: Build debug-signed APK with existing script
+        id: build
+        shell: bash
+        env:
+          QT_INSTALL_DIR: ${{ runner.temp }}
+          CMAKE_BUILD_TYPE: Debug
+          ABI: ${{ matrix.abi }}
+          ANDROID_NDK_VERSION: '27.0.11718014'
+        run: |
+          set -o pipefail
+          deploy/build.sh -t android --abi "$ABI" --apk 2>&1 | tee client-build.log
+      - name: Record baseline result
+        if: always()
+        env:
+          BUILD_OUTCOME: ${{ steps.build.outcome }}
+          ROUTING_ABI: ${{ matrix.abi }}
+        run: python scripts/routing/build_manifest.py android
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: routing-client-android-${{ matrix.abi }}-baseline
+          path: |
+            client-build.log
+            routing-build-manifest.json
+            deploy/build/client/android-build/**/*.apk
+
+  client-ios:
+    runs-on: macos-15
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with: {submodules: recursive}
+      - uses: maxim-lobanov/setup-xcode@v1
+        with: {xcode-version: '26.0'}
+      - uses: actions/setup-python@v6
+        with: {python-version: '3.14'}
+      - uses: jurplel/install-qt-action@v4.3.1
+        with:
+          version: '6.10.1'
+          host: mac
+          target: desktop
+          arch: clang_64
+          modules: qtremoteobjects qt5compat qtshadertools qtmultimedia
+          dir: ${{ runner.temp }}
+      - uses: jurplel/install-qt-action@v4.3.1
+        with:
+          version: '6.10.1'
+          host: mac
+          target: ios
+          modules: qtremoteobjects qt5compat qtshadertools qtmultimedia
+          dir: ${{ runner.temp }}
+      - run: |
+          pip install conan==2.28.0 jsonschema jinja2
+          conan profile detect --force
+      - name: Compile app and packet tunnel without distribution signing
+        id: build
+        shell: bash
+        env:
+          QT_INSTALL_DIR: ${{ runner.temp }}
+          IOS_UNSIGNED_BUILD: '1'
+        run: |
+          set -o pipefail
+          deploy/build.sh -t ios 2>&1 | tee client-build.log
+      - name: Record baseline result (signed IPA remains blocked)
+        if: always()
+        env:
+          BUILD_OUTCOME: ${{ steps.build.outcome }}
+        run: python scripts/routing/build_manifest.py ios
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: routing-client-ios-unsigned-baseline
+          path: |
+            client-build.log
+            routing-build-manifest.json
+            deploy/build/client/Release-iphoneos/*.app
+
+  build-gate:
+    if: always()
+    needs: [core-tests, core-cross-compile, client-linux, client-windows, client-android, client-ios]
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Fail for any failed, cancelled or skipped required lane
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          python - <<'PY'
+          import json, os
+          results = json.loads(os.environ['RESULTS'])
+          for name, job in results.items():
+              print(name, job['result'])
+          if any(job['result'] != 'success' for job in results.values()):
+              raise SystemExit(1)
+          print('Compilation/test gate only; native VPN acceptance is still outstanding.')
+          PY
