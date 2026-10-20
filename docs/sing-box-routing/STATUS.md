@@ -7,12 +7,12 @@ build success are separate from native runtime acceptance.
 
 | Check | Latest verified result |
 | --- | --- |
-| Full Android/iOS/Linux/Windows client builds | PASS at `6767d516`, run `39301511270`; current preflight source is rebuilding |
-| Windows native Wintun/helper | PASS at `afa7f399`, run `39371691099`, including 100 reconnects and native route/DNS restoration |
-| Linux native TUN/helper | PASS at `2a46d327`, run `39373901624`, including 100 reconnects, crash recovery and exact native-route restoration; new flow adapter rerunning |
-| Android packaged service | Traffic and 100 reconnects pass; descriptors stable 93 -> 93; invalid-profile recovery rerunning with preflight |
-| iOS | Unsigned application/extension built; signed-device runtime not executed |
-| QUIC | Host AWG transport test passes for inner IPv4/IPv6; native app/TUN QUIC not executed |
+| Full client builds | PASS at `f7847c02`, run `39375044626`: four Android ABI APKs, Linux installer, Windows EXE/MSI and unsigned iOS application/extension; aggregate build gate PASS |
+| Windows native Wintun/helper | PASS at `f7847c02`, run `39375044707`: 100 reconnects and native route/DNS restoration |
+| Linux native TUN/helper | PASS at `f7847c02`, run `39375044711`: 100 reconnects, crash recovery and exact native-route restoration |
+| Android packaged service | PASS in `39376118150`: matching full APK host, preflight rejection/recovery and 100 reconnects; FD 93 -> 93 and eventfd 5 -> 5 |
+| iOS | Unsigned application and PacketTunnel extension PASS at `f7847c02`; signed-device runtime not executed |
+| Core race tests / QUIC | Linux, Windows and macOS count=3 suites PASS at `f7847c02`; QUIC/TLS host transport passes for inner IPv4/IPv6; native app/TUN QUIC unrun |
 
 Installed desktop service/installer smoke, physical mobile devices, iOS memory
 limits, network handover, always-on/lockdown, full performance comparison and
@@ -21,6 +21,8 @@ remaining OS kill-switch/per-app combinations are not accepted as complete.
 Historical checkpoints below preserve the evidence and failures that led to
 the current implementation; later entries supersede earlier source status.
 
+
+## Historical implementation checkpoints
 
 2026-10-19. Branch: `feature/sing-box-routing`.
 Verified base: `ddde43635e957ebf042d92787489da72d3394019` (`origin/dev`).
@@ -428,3 +430,58 @@ The Windows core runner also rejected the fixture's fixed outer UDP port
 system-selected port, records it in its private generated profile, and retains
 it across restart. Fixed inner observer ports remain inside the userspace AWG
 stack. Native acceptance must rerun because the owned flow adapter changed.
+
+
+## Native acceptance passed on the owned flow stack
+
+At source `f7847c02`, Linux run `39375044711` and Windows run `39375044707`
+report native_capture=PASS, reconnect_cycles=100 and os_state_restored=true.
+Linux also proves the helper-crash blackhole and explicit recovery. These are
+helper tests on disposable hosts; the Linux namespace deliberately uses
+--no-system-dns and does not establish installed-service/systemd-resolved
+acceptance. Windows installed Qt-service, installer smoke and helper-crash
+fail-closed policy remain outside that pass.
+
+Android run `39376118150` at CI-only source `d75d1850` **PASSED**. It used the
+full x86_64 APK host built from `f7847c02`, with identical production Android
+host sources and a freshly linked unified JNI payload. Both SHAs/checksums are
+in its artifact. It verifies shared-IP domain identity, DIRECT/AWG TCP/UDP,
+suffix/exact precedence, CNAME, inner IPv6, system DNS, loopback, AWG outage,
+inverse mode, persisted FakeIP, 100 reconnects, and invalid-profile preflight
+rejection followed by a successful valid start. The preflight case does not
+claim every possible post-establish native-failure path was tested.
+
+The same service PID (3624) stayed alive throughout: descriptors **93 -> 93**,
+eventfds **5 -> 5**, and capture descriptors **0 -> 0** at disconnected
+checkpoints. Threads were 31 -> 35; RSS was 157648 -> 168520 KiB. RSS is a
+measurement, not a leak/performance acceptance threshold. Physical devices,
+handover, always-on/lockdown and native application QUIC remain unrun.
+
+The compatible APK job can pass before other platform jobs finish. Emulator CI
+verifies that specific job, source SHA and host compatibility; the separate
+full build gate still requires every platform. CI-only follow-ups leave the
+in-progress full source build running.
+
+Native acceptance reports/artifacts:
+
+- [Linux run 39375044711](https://github.com/StannisMod/amnezia-client/actions/runs/39375044711), artifact `12243097357`.
+- [Windows run 39375044707](https://github.com/StannisMod/amnezia-client/actions/runs/39375044707), artifact `12243108193`.
+- [Android run 39376118150](https://github.com/StannisMod/amnezia-client/actions/runs/39376118150), artifact `12242654376`.
+
+No dev merge, release publication or production-server change was performed.
+
+## Final source build verification
+
+[Full source matrix 39375044626](https://github.com/StannisMod/amnezia-client/actions/runs/39375044626)
+completed successfully at `f7847c02895d5c3e356811b7d0d03e3927f42eeb`.
+All four Android ABI APK jobs, Linux application/service/installer, Windows
+application/service/EXE/MSI installers, unsigned iOS application/PacketTunnel
+extension, three desktop race-test jobs (count=3), eight package cross-compiles
+and the aggregate build gate passed. Windows artifact: `12245266425`; unsigned
+iOS artifact: `12244427896`; Linux artifact: `12243950123`.
+
+Later commits only adjust CI/reporting; shipping source remains the verified
+`f7847c02` source. Android native acceptance uses the compatible full APK host
+from that same matrix. A build PASS is not installed-client acceptance, signed
+iOS device acceptance or release approval. The feature remains experimental
+and off by default, with the limitations listed at the top of this report.
