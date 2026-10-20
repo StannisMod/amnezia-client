@@ -22,6 +22,7 @@ const InterfaceName = "AmneziaDomainRouting"
 type Session struct {
 	core     *mobile.Session
 	underlay windowsUnderlay
+	guard    *windowsGuard
 	once     sync.Once
 }
 
@@ -56,6 +57,9 @@ func nativeInterfaces() ([]adapter.NetworkInterface, error) {
 }
 
 func Start(ctx context.Context, raw []byte, manageDNS bool) (*Session, error) {
+	if err := mobile.Validate(raw); err != nil {
+		return nil, err
+	}
 	if _, err := net.InterfaceByName(InterfaceName); err == nil {
 		return nil, errors.New("routing adapter already exists; recovery is required")
 	}
@@ -64,6 +68,16 @@ func Start(ctx context.Context, raw []byte, manageDNS bool) (*Session, error) {
 		return nil, err
 	}
 	s := new(Session)
+	s.guard, err = newWindowsGuard()
+	if err != nil {
+		return nil, err
+	}
+	ok := false
+	defer func() {
+		if !ok {
+			s.Close()
+		}
+	}()
 	underlay := s.underlay.factories()
 	var luid uint64
 	hooks := mobile.Hooks{
@@ -88,6 +102,10 @@ func Start(ctx context.Context, raw []byte, manageDNS bool) (*Session, error) {
 				return nil, errors.New("native Wintun adapter configuration failed")
 			}
 			luid = t.(*tun.NativeTun).LUID()
+			if err := s.guard.allowCapture(luid); err != nil {
+				t.Close()
+				return nil, err
+			}
 			return t, nil
 		},
 	}
@@ -101,9 +119,9 @@ func Start(ctx context.Context, raw []byte, manageDNS bool) (*Session, error) {
 		return nil, err
 	}
 	if err = captureSpecificRoutes(rows, luid); err != nil {
-		s.Close()
 		return nil, err
 	}
+	ok = true
 	return s, nil
 }
 
@@ -115,17 +133,19 @@ func (s *Session) Close() error {
 		if s.core != nil {
 			err = s.core.Close()
 		}
+		if s.guard != nil {
+			err = errors.Join(err, s.guard.close())
+		}
 	})
 	return err
 }
 
-// The native adapter and dynamic WFP DNS session belong to the child process.
-// Closing the final Wintun handle removes its routes/addresses/DNS. Never delete
-// an adapter that may belong to another owner merely because its name matches.
+// The non-dynamic crash guard survives the adapter/DNS session. Keep it until
+// all Wintun handles are gone, then remove only our exact private filter keys.
 func Recover() error {
 	for i := 0; i < 30; i++ {
 		if _, err := net.InterfaceByName(InterfaceName); err != nil {
-			return nil
+			return recoverWindowsGuard()
 		}
 		time.Sleep(100 * time.Millisecond)
 	}

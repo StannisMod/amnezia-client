@@ -2,6 +2,9 @@
 
 ## Current verification — 2026-10-20
 
+A new Windows crash-guard change is pending native CI acceptance; the PASS
+results below describe the previous verified source, not this new change.
+
 The feature remains experimental and off by default. Source integration and
 build success are separate from native runtime acceptance.
 
@@ -485,3 +488,19 @@ Later commits only adjust CI/reporting; shipping source remains the verified
 from that same matrix. A build PASS is not installed-client acceptance, signed
 iOS device acceptance or release approval. The feature remains experimental
 and off by default, with the limitations listed at the top of this report.
+
+## Windows helper-crash guard — pending native acceptance
+
+The private helper now installs a separate non-dynamic WFP sublayer before
+capture. Its default outbound IPv4/IPv6 block survives helper termination;
+only the helper executable, captured interface LUID, native loopback and DHCP
+are permitted. Graceful shutdown removes the exact owned filters after closing
+the engine. An unclean session refuses restart until explicit recovery removes
+its private keys, transactionally, without flushing other firewall policies.
+This protection lasts until explicit recovery or BFE restart; it is not a
+boot-time filter and does not yet integrate the existing strict kill switch.
+
+The Windows native suite now forcibly kills the helper, checks that Wintun is
+gone while native outbound UDP is denied by WFP (WSAEACCES), rejects a stale
+restart without losing protection, recovers, and reconnects. This new suite
+must pass before helper-crash protection is marked accepted.

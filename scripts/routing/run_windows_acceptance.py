@@ -41,7 +41,7 @@ def main():
     args = parser.parse_args()
     assert os.name == "nt" and ctypes.windll.shell32.IsUserAnAdmin(), "an elevated disposable Windows host is required"
     assert 1 <= args.cycles <= 1000
-    report = {"native_capture": "FAIL", "not_run": ["installed Qt service", "EXE/MSI installation", "physical machine", "Wi-Fi/Ethernet handover", "OS kill switch", "per-app routing", "helper-crash fail-closed policy"]}
+    report = {"native_capture": "FAIL", "not_run": ["installed Qt service", "EXE/MSI installation", "physical machine", "Wi-Fi/Ethernet handover", "OS kill switch", "per-app routing", "BFE restart/boot-time protection"]}
     helper = args.helper.resolve(); peer = child = None
     messages = queue.Queue()
     def control(path, post=False):
@@ -58,7 +58,15 @@ def main():
             assert child.wait(timeout=20) == 0
             child = None
     temporary = tempfile.TemporaryDirectory()
+    cache = Path(temporary.name) / "private-cache"
+    def native_udp():
+        # No public service response is required: an ordinary outbound UDP
+        # send is permitted before capture/recovery and denied by WFP after
+        # the helper is forcibly killed. The destination is not loopback.
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            return sock.sendto(b"amnezia-routing-guard-probe", ("1.1.1.1", 9))
     try:
+        assert native_udp() > 0
         # Existing native local IPv4 is reachable outside the captured adapter.
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as selection:
             selection.connect(("1.1.1.1", 53)); shared = selection.getsockname()[0]
@@ -122,6 +130,35 @@ def main():
             assert tcp(resolve("vpn.test")) == "VPN"
             if (cycle + 1) % 10 == 0:
                 print("PASS reconnect cycles:", cycle + 1, flush=True)
+        child.kill(); child.wait(timeout=20); child = None
+        # Wait for the last Wintun handle to disappear. The separately owned
+        # crash policy must remain after the captured adapter is gone.
+        for _ in range(30):
+            if powershell("@(Get-NetAdapter -IncludeHidden | Where-Object Name -eq 'AmneziaDomainRouting').Count") == "0":
+                break
+            time.sleep(0.2)
+        else:
+            raise AssertionError("crashed Wintun adapter did not disappear")
+        for _ in range(3):
+            try:
+                native_udp()
+            except OSError as error:
+                assert error.winerror == 10013, f"expected WFP access denial, got {error}"
+            else:
+                raise AssertionError("native traffic escaped after helper crash")
+        # A new start must not silently discard the stale crash guard.
+        stale = subprocess.Popen([str(helper), "--cache-dir", str(cache)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        output, _ = stale.communicate(json.dumps(profile) + "\n", timeout=20)
+        assert any(json.loads(line).get("type") == "error" for line in output.splitlines()), "stale guard was silently replaced"
+        try:
+            native_udp()
+        except OSError as error:
+            assert error.winerror == 10013
+        else:
+            raise AssertionError("rejected restart removed crash protection")
+        subprocess.run([str(helper), "--cache-dir", str(cache), "--recover"], check=True, timeout=20)
+        assert native_udp() > 0
+        start(); assert tcp(resolve("vpn.test")) == "VPN"
         stop()
         subprocess.run([str(helper), "--cache-dir", str(cache), "--recover"], check=True)
         # Give Windows' adapter-removal notification a bounded settling period.
@@ -131,8 +168,8 @@ def main():
                 break
             time.sleep(0.2)
         assert after == before, "native routes/DNS did not return to their original state"
-        report.update(native_capture="PASS", reconnect_cycles=args.cycles, os_state_restored=True,
-                      scenarios=["actual Wintun/gVisor capture", "same-IP domain identity", "native DIRECT and AWG TCP/UDP", "IPv6", "system DNS/FakeIP", "CNAME", "suffix boundaries", "loopback", "AWG loss fails closed", "inverse mode", "FakeIP persistence"])
+        report.update(native_capture="PASS", reconnect_cycles=args.cycles, os_state_restored=True, helper_crash_fail_closed=True,
+                      scenarios=["actual Wintun/gVisor capture", "same-IP domain identity", "native DIRECT and AWG TCP/UDP", "IPv6", "system DNS/FakeIP", "CNAME", "suffix boundaries", "loopback", "AWG loss fails closed", "inverse mode", "FakeIP persistence", "forced helper termination retains WFP guard", "stale guard rejects restart", "explicit recovery permits native traffic and reconnect"])
     finally:
         try:
             report["diagnostics"] = {
@@ -148,6 +185,7 @@ def main():
                 child.kill(); child.wait(timeout=15)
         if peer is not None:
             peer.terminate(); peer.wait(timeout=15)
+        subprocess.run([str(helper), "--cache-dir", str(cache), "--recover"], timeout=20, check=True)
         temporary.cleanup()
         args.report.write_text(json.dumps(report, indent=2) + "\n")
 
