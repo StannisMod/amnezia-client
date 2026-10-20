@@ -181,6 +181,15 @@ def main():
                 child = subprocess.Popen(["ip", "netns", "exec", ns, str(helper), "--no-system-dns", "--cache-dir", directory], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)
                 child.stdin.write(json.dumps(profile) + "\n"); child.stdin.flush()
                 await_message("ready"); await_message("connected")
+            # RuleList in the pinned netlink library does not populate its
+            # MarkSet flag. A foreign policy using our bit must still block
+            # startup, without modifying any existing native rule.
+            ns_ip("rule", "add", "pref", "99", "fwmark", "0x40000000/0x40000000", "lookup", "main")
+            occupied = ns_ip("rule", "show")
+            refused = subprocess.run(["ip", "netns", "exec", ns, str(helper), "--no-system-dns", "--cache-dir", directory], input=json.dumps(profile) + "\n", capture_output=True, text=True, timeout=10)
+            assert "native mark policy uses the reserved VPN exemption bit" in refused.stdout
+            assert ns_ip("rule", "show") == occupied, "conflict rejection modified native policy"
+            ns_ip("rule", "del", "pref", "99", "fwmark", "0x40000000/0x40000000", "lookup", "main")
             start()
             identities = application({"names": [["direct.ru", "DIRECT", 1], ["vpn.test", "VPN", 1], ["cname.test", "VPN", 1], ["ipv6.test", "VPN", 28]], "direct": ["203.0.113.20"], "loopback": ["127.0.0.1", "::1"]})
             assert identities["direct.ru"] != identities["vpn.test"]

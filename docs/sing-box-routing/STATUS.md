@@ -313,3 +313,13 @@ Linux capture also matches a clear socket-exemption bit directly. Inverting a
 rule would invert its entire selector, including iif lo, and could capture
 native input lookups. Explicit recovery recognizes both the new owned rule and
 the previous owned form. The actual namespace test remains the deciding check.
+
+Native Linux run `39371691161` progressed through real TUN TCP/UDP, IPv6,
+CNAME, native policy routing, loopback, AWG outage, inverse mode, FakeIP
+persistence and 100 reconnects after the startup fix. It then failed explicit
+recovery after the forced helper crash. The pinned netlink decoder restores
+Mark/Mask but never MarkSet; recovery must identify the exact owned mask/value
+instead of relying on that flag, and explicitly encode MarkSet on deletion.
+The same correction makes preflight detect foreign mark policies. A new native
+conflict-rejection scenario verifies those rules remain untouched. The entire
+Linux acceptance result remains FAIL until recovery/restoration also passes.

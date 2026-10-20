@@ -61,7 +61,9 @@ func preflight() error {
 			if r.Priority == rulePriority || r.Table == routeTable {
 				return errors.New("reserved routing rule is occupied; explicit recovery is required")
 			}
-			if r.MarkSet {
+			// The pinned netlink RuleList decoder restores Mark/Mask but does
+			// not set MarkSet. A decoded mask still identifies a mark policy.
+			if r.MarkSet || r.Mask >= 0 || r.Mark != 0 {
 				mask := uint32(0xffffffff)
 				if r.Mask >= 0 {
 					mask = uint32(r.Mask)
@@ -98,10 +100,11 @@ func Recover() error {
 			}
 			legacy := r.Mark == socketMark && r.Invert && (r.IifName == "" || r.IifName == "lo")
 			current := r.Mark == 0 && !r.Invert && r.IifName == "lo"
-			if r.Table != routeTable || r.Priority != rulePriority || !r.MarkSet || r.Mask != int(socketMark) || (!legacy && !current) {
+			if r.Table != routeTable || r.Priority != rulePriority || r.Mask != int(socketMark) || (!legacy && !current) {
 				return errors.New("refusing recovery of an unrecognized policy rule")
 			}
 			copy := r
+			copy.MarkSet = true // encode the restored zero/nonzero mark on delete
 			ownedRules = append(ownedRules, &copy)
 		}
 		routes, err := netlink.RouteListFiltered(family, &netlink.Route{Table: routeTable}, netlink.RT_FILTER_TABLE)
