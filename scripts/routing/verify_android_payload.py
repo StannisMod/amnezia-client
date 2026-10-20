@@ -27,7 +27,7 @@ def main():
                     binary = Path(directory) / "libwg-go.so"
                     binary.write_bytes(payload)
                     symbols = subprocess.check_output([str(args.readelf), "--dyn-syms", "-W", str(binary)], text=True)
-                    expected = ["Java_org_amnezia_awg_GoBackend_awgTurnOn", "Java_org_amnezia_awg_RoutingBackend_start", "Java_org_amnezia_awg_RoutingBackend_stop", "Java_org_amnezia_awg_RoutingBackend_stats"]
+                    expected = ["Java_org_amnezia_awg_GoBackend_awgTurnOn", "Java_org_amnezia_awg_RoutingBackend_validate", "Java_org_amnezia_awg_RoutingBackend_start", "Java_org_amnezia_awg_RoutingBackend_stop", "Java_org_amnezia_awg_RoutingBackend_stats"]
                     for symbol in expected:
                         if not re.search(r"\b" + re.escape(symbol) + r"$", symbols, re.M):
                             raise SystemExit(f"Missing {symbol} in {apk}:{name}")
