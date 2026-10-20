@@ -27,7 +27,7 @@ export CGO_LDFLAGS='-Wl,-soname=libwg-go.so -Wl,-z,max-page-size=16384'
 mkdir -p "$output"
 (cd "$RUNNER_TEMP/routing-awg/tunnel/tools/libwg-go" && go build -mod=readonly -tags linux,with_gvisor,amnezia_android_bridge -trimpath -buildvcs=false -buildmode=c-shared -o "$output/libwg-go.so" .)
 "$tools/llvm-readelf" --dyn-syms -W "$output/libwg-go.so" > "$output/symbols.txt"
-for symbol in Java_org_amnezia_awg_GoBackend_awgTurnOn Java_org_amnezia_awg_RoutingBackend_start Java_org_amnezia_awg_RoutingBackend_stop Java_org_amnezia_awg_RoutingBackend_stats; do
+for symbol in Java_org_amnezia_awg_GoBackend_awgTurnOn Java_org_amnezia_awg_RoutingBackend_validate Java_org_amnezia_awg_RoutingBackend_start Java_org_amnezia_awg_RoutingBackend_stop Java_org_amnezia_awg_RoutingBackend_stats; do
   grep -F "$symbol" "$output/symbols.txt"
 done
 test "$(grep -c '_cgo_topofstack$' "$output/symbols.txt")" = 1

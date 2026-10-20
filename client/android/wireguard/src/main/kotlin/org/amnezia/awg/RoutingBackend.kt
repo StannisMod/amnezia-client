@@ -8,6 +8,8 @@ import org.json.JSONObject
 // Implemented inside the existing libwg-go.so. Never load a second Go library.
 @Keep
 object RoutingBackend {
+    external fun validate(config: ByteArray): Boolean
+
     // Native code consumes tunFd on success and on every failed-start path.
     external fun start(tunFd: Int, config: ByteArray, host: RoutingHost): Long
     external fun stop(handle: Long)

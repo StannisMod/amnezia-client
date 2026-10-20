@@ -4,6 +4,7 @@
 This does not claim installed Qt-service, systemd-resolved or installer proof.
 """
 import argparse
+import difflib
 import http.client
 import ipaddress
 import json
@@ -160,11 +161,22 @@ def main():
         ns_ip("link", "set", "lo", "up")
         ns_ip("addr", "add", "10.0.2.15/24", "dev", "eth0")
         ns_ip("link", "set", "eth0", "up")
+        # IPv6 DAD adds the namespace's native link-local route asynchronously.
+        # Snapshot the native baseline after it settles, so normal kernel
+        # initialization is not misreported as a VPN cleanup change.
+        for _ in range(50):
+            native_ipv6 = ns_ip("-6", "addr", "show", "dev", "eth0")
+            if "scope link" in native_ipv6 and "tentative" not in native_ipv6:
+                break
+            time.sleep(0.1)
+        else:
+            raise AssertionError("native IPv6 address initialization did not settle")
         ns_ip("route", "add", "default", "via", "10.0.2.2")
         ns_ip("route", "add", "203.0.113.0/24", "via", "10.0.2.2", "table", "222")
         ns_ip("rule", "add", "pref", "100", "to", "203.0.113.0/24", "lookup", "222")
         before_rules = ns_ip("rule", "show")
         before_routes = ns_ip("route", "show", "table", "all")
+        report["native_routes_before"] = before_routes
         peer = subprocess.Popen([str(args.peer.resolve()), "--config", str(args.fixture)], stdout=subprocess.PIPE, text=True)
         assert select.select([peer.stdout], [], [], 10)[0] and peer.stdout.readline().startswith("READY")
         profile = json.loads(args.fixture.read_text())
@@ -217,7 +229,8 @@ def main():
             assert before["direct_tcp"] == after["direct_tcp"] and before["direct_udp"] == after["direct_udp"]
             run("ip", "netns", "exec", ns, helper, "--cache-dir", directory, "--recover")
         assert ns_ip("rule", "show") == before_rules
-        assert ns_ip("route", "show", "table", "all") == before_routes
+        restored_routes = ns_ip("route", "show", "table", "all")
+        assert restored_routes == before_routes, "native route restoration differs:\n" + "".join(difflib.unified_diff(before_routes.splitlines(True), restored_routes.splitlines(True), fromfile="before", tofile="after"))
         report.update(native_capture="PASS", scenarios=["FakeIP identity/shared real IP", "DIRECT and AWG TCP/UDP", "IPv6", "CNAME", "native policy route", "loopback IPv4/IPv6", "inverse mode", "persistent FakeIP", "AWG loss fails closed", "helper crash fails closed and explicit recovery"], reconnect_cycles=args.cycles, os_state_restored=True)
     finally:
         # This namespace contains only controlled fixture traffic. Record

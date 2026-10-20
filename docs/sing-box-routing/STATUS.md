@@ -353,3 +353,32 @@ removed its rules, then failed deleting dumped default blackhole routes because
 the pinned encoder also requires an explicit destination for deletion. Recovery
 now restores the correct family-specific /0 destination before deleting the
 exact owned route. The next native run must prove complete restoration.
+
+## Android preflight and final native-test refinements
+
+Android run `39372709101` at `1cdf51cf` confirmed the descriptor fix: **93 -> 93**
+in the same service PID over 100 reconnects (threads 28 -> 34, RSS 155008 ->
+167040 KiB). Traffic, inverse mode and FakeIP persistence passed again. The
+complete result remains **FAIL**: DNS timed out on the valid connection after
+an intentionally invalid profile. Unsupported routing schema was still being
+rejected only after Builder.establish had created a transient Android VPN.
+
+The host now calls shared native schema/routing validation before establishing
+or replacing the OS interface; Start repeats the same validation defensively.
+The new JNI method is part of the existing unified Go library. Tests verify
+preflight rejects unsupported rules without creating capture/cache resources.
+Because production Kotlin changed, emulator CI now waits for this exact
+source commit's successful full-client build instead of applying JNI to an
+incompatible older APK. Failure diagnostics snapshot live routing before test
+cleanup disconnects the VPN. Native recovery verification is still pending.
+
+Linux run `39372709136` completed explicit recovery and removed owned capture
+rules/blackholes, then failed its final native-route text comparison. The test
+now waits for native IPv6 DAD/link-local initialization before taking the
+baseline, records that baseline, and prints a precise restoration diff. Native
+route restoration is not marked PASS until the revised run completes.
+
+A real QUIC/TLS host test now transfers a segmented stream through AWG at MTU
+1280, verifies its digest and covers inner IPv4 and IPv6. It passes locally
+with race detection using the already-pinned QUIC dependency. This is flow
+transport evidence; native application/TUN QUIC acceptance remains unrun.

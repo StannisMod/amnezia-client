@@ -16,9 +16,8 @@ on:
   workflow_dispatch:
     inputs:
       apk_run_id:
-        description: Successful routing build run containing the x86_64 feature APK
-        default: '39301511270'
-        required: true
+        description: Optional compatible full-client build run; auto-select when empty
+        required: false
       cycles:
         description: Reconnect cycles (100 for acceptance)
         default: '100'
@@ -43,15 +42,44 @@ jobs:
       - uses: android-actions/setup-android@v4
         with:
           packages: 'platform-tools platforms;android-36 build-tools;36.0.0'
+      - name: Select an APK with compatible production Android host sources
+        env:
+          GH_TOKEN: ${{ github.token }}
+          APK_OVERRIDE: ${{ inputs.apk_run_id }}
+        run: |
+          python3 - <<'PYSELECT'
+          import json, os, pathlib, subprocess, time, urllib.request
+          repo = os.environ['GITHUB_REPOSITORY']
+          def api(path):
+              req = urllib.request.Request(f'https://api.github.com/repos/{repo}/{path}', headers={'Authorization': f"Bearer {os.environ['GH_TOKEN']}"})
+              with urllib.request.urlopen(req, timeout=30) as stream: return json.load(stream)
+          selected = os.environ.get('APK_OVERRIDE') or '39301511270'
+          base = api(f'actions/runs/{selected}')
+          subprocess.run(['git', 'fetch', '--depth', '1', 'origin', base['head_sha']], check=True)
+          changed = subprocess.run(['git', 'diff', '--quiet', base['head_sha'], 'HEAD', '--', 'client/android', 'client/platforms/android']).returncode
+          assert changed in (0, 1), 'Android host comparison failed'
+          if changed and not os.environ.get('APK_OVERRIDE'):
+              print('Android host changed; waiting for the full-client build of this source commit', flush=True)
+              deadline = time.monotonic() + 35 * 60
+              while time.monotonic() < deadline:
+                  runs = api(f"actions/runs?head_sha={os.environ['GITHUB_SHA']}&event=push&per_page=20")['workflow_runs']
+                  builds = [r for r in runs if r['name'] == 'Sing-box routing checks' and r['head_sha'] == os.environ['GITHUB_SHA']]
+                  if builds and builds[0]['status'] == 'completed':
+                      assert builds[0]['conclusion'] == 'success', 'Full-client build failed; do not test an incompatible old APK'
+                      selected = str(builds[0]['id'])
+                      break
+                  time.sleep(15)
+              else: raise TimeoutError('Compatible full-client build did not finish within 35 minutes')
+          with open(os.environ['GITHUB_ENV'], 'a') as stream: stream.write(f'APK_RUN={selected}\n')
+          PYSELECT
       - uses: actions/download-artifact@v4
         with:
           name: routing-client-android-x86_64-baseline
-          run-id: ${{ inputs.apk_run_id || '39301511270' }}
+          run-id: ${{ env.APK_RUN }}
           github-token: ${{ github.token }}
           path: downloaded-apk
       - name: Record tested source and select packaged feature APK
         env:
-          APK_RUN: ${{ inputs.apk_run_id || '39301511270' }}
           GH_TOKEN: ${{ github.token }}
         run: |
           python3 - <<'PY'
@@ -120,3 +148,4 @@ jobs:
             ${{ runner.temp }}/android-acceptance/rules.log
             ${{ runner.temp }}/android-acceptance/connectivity.log
             ${{ runner.temp }}/android-acceptance/service-errors.log
+            ${{ runner.temp }}/android-acceptance/failure-*.log

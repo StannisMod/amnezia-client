@@ -67,6 +67,16 @@ void amnezia_routing_release(uintptr_t token) {
     free(host);
 }
 
+JNIEXPORT jboolean JNICALL Java_org_amnezia_awg_RoutingBackend_validate(JNIEnv *env, jobject self, jbyteArray config) {
+    if (!config) return JNI_FALSE;
+    jsize len = (*env)->GetArrayLength(env, config);
+    jbyte *bytes = (*env)->GetByteArrayElements(env, config, NULL);
+    if (!bytes) return JNI_FALSE;
+    jboolean valid = RoutingValidate((GoString){(const char *)bytes, len}) ? JNI_TRUE : JNI_FALSE;
+    (*env)->ReleaseByteArrayElements(env, config, bytes, JNI_ABORT);
+    return valid;
+}
+
 JNIEXPORT jlong JNICALL Java_org_amnezia_awg_RoutingBackend_start(JNIEnv *env, jobject self, jint fd, jbyteArray config, jobject callback) {
     if (!config || !callback) { if (fd >= 0) close(fd); return -1; }
     struct routing_host *host = calloc(1, sizeof(*host));

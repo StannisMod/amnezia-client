@@ -157,6 +157,9 @@ public final class RoutingInstrumentation extends Instrumentation {
             for (StackTraceElement frame : error.getStackTrace()) if (frame.getClassName().startsWith("org.amnezia.routingtest")) stack.append(frame).append("\n");
             result.putString("test_stack", stack.toString());
             try { result.putString("observers", control("/stats", false).toString()); } catch (Exception ignored) {}
+            // Let the rooted driver snapshot the failed session before the
+            // finally block disconnects it and removes its capture routes.
+            progress("RESOURCE_CHECKPOINT failure"); SystemClock.sleep(3000);
         } finally {
             if (service != null) try { send(DISCONNECT, new Bundle()); send(UNREGISTER, new Bundle()); } catch (Exception ignored) {}
             if (didBind) getTargetContext().unbindService(connection);

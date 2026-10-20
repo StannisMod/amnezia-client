@@ -89,6 +89,10 @@ class Awg : Wireguard() {
             })
         }.toString().toByteArray(Charsets.UTF_8)
 
+        if (!RoutingBackend.validate(session)) {
+            throw VpnStartException("Domain routing rules or resolver configuration are invalid")
+        }
+
         val capture = ProtocolConfig.build(blockingMode = false) {
             addAddress(InetNetwork("172.19.0.1", 30))
             addAddress(InetNetwork("fdfe:dcba:9876::1", 126))

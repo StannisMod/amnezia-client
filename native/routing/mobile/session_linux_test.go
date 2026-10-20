@@ -287,3 +287,30 @@ func TestCaptureReconnectDoesNotLeakEventFD(t *testing.T) {
 		t.Fatalf("capture eventfds grew across 10 reconnects: %d -> %d", before, after)
 	}
 }
+
+func TestValidationDoesNotCreateCaptureOrCache(t *testing.T) {
+	var config map[string]any
+	if err := json.Unmarshal(sampleConfig(t), &config); err != nil {
+		t.Fatal(err)
+	}
+	path := t.TempDir() + "/not-created/fakeip.db"
+	config["cache_path"] = path
+	raw, err := json.Marshal(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = Validate(raw); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = os.Stat(path); !os.IsNotExist(err) {
+		t.Fatal("preflight touched the cache", err)
+	}
+	config["rules"].(map[string]any)["version"] = 99
+	raw, err = json.Marshal(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = Validate(raw); err == nil {
+		t.Fatal("preflight accepted unsupported rule schema")
+	}
+}

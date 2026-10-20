@@ -32,6 +32,14 @@ var routedSessions = struct {
 }{sessions: make(map[int64]*mobile.Session)}
 var nextRoutedHandle atomic.Int64
 
+//export RoutingValidate
+func RoutingValidate(raw string) int32 {
+	if mobile.Validate([]byte(raw)) != nil {
+		return 0
+	}
+	return 1
+}
+
 //export RoutingStart
 func RoutingStart(fd int32, raw string, host C.uintptr_t) int64 {
 	hooks := mobile.Hooks{

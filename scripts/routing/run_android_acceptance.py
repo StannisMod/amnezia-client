@@ -53,7 +53,10 @@ def snapshot():
     assert len(pid) == 1 and pid[0].isdigit(), "real service process is missing or duplicated"
     status = adb("shell", "cat", f"/proc/{pid[0]}/status")
     descriptors = adb("shell", "ls", f"/proc/{pid[0]}/fd").split()
+    targets = adb("shell", f'for fd in /proc/{pid[0]}/fd/*; do readlink "$fd" || true; done').splitlines()
     return {"pid": int(pid[0]), "fd_count": len(descriptors),
+            "eventfds": targets.count("anon_inode:[eventfd]"),
+            "capture_fds": sum(target in ("/dev/tun", "/dev/net/tun", "anon_inode:[tun]") for target in targets),
             "threads": int(re.search(r"^Threads:\s+(\d+)", status, re.M)[1]),
             "rss_kib": int(re.search(r"^VmRSS:\s+(\d+)", status, re.M)[1])}
 
@@ -127,6 +130,13 @@ def main():
                 if "RESOURCE_CHECKPOINT " in line:
                     label = line.strip().split("RESOURCE_CHECKPOINT ", 1)[1]
                     report["resources"][label] = snapshot()
+                    if label == "failure":
+                        for name, command in {
+                            "routes": ("shell", "ip", "route", "show", "table", "all"),
+                            "rules": ("shell", "ip", "rule"),
+                            "connectivity": ("shell", "dumpsys", "connectivity"),
+                        }.items():
+                            (work / ("failure-" + name + ".log")).write_text(adb(*command))
                 if time.monotonic() - started > 2400:
                     process.kill(); raise TimeoutError("Android acceptance exceeded 40 minutes")
             assert process.wait(timeout=15) == 0
