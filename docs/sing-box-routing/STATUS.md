@@ -284,3 +284,32 @@ suffix/exact precedence, CNAME, IPv6 TCP/UDP, system resolver and loopback all
 passed. A later inverse-mode check after peer/session restart timed out, so
 the full Android result remains **FAIL**. Fresh host tests now cover both
 default policies and pass; reconnect/peer recovery remains under investigation.
+
+
+## 2026-10-20: full builds passed; first-packet race reproduced and corrected
+
+Full CI run `39301511270`, source `6767d516`, passed all four Android ABI APKs,
+unsigned iOS application/extension, Linux installer, Windows EXE/MSI, and core
+race tests on Linux, Windows and macOS. This confirms desktop service packaging
+and compilation; it does not establish native runtime acceptance.
+
+Native runs `39301511519` (Linux), `39301511380` (Windows), and `39300503667`
+(Android) still failed. A local regression using real UDP DNS through AWG,
+rather than a hosts-only DNS backend, reproduced the shared startup failure.
+AWG snapshots S4 before entering its first blocking TUN read; applying UAPI
+after device construction could leave that read using the old padding offset.
+The first data packet was then rejected as an unknown message. Parallel A/AAAA
+queries and peer/session restarts made the packet loss visible.
+
+The shared flow-device constructor now suppresses eager EventUp and completes
+that initial read without consuming a packet after UAPI application. Its next
+iteration reloads the configured padding before traffic starts. The disposable
+peer uses the same constructor. First-flight DNS burst and real upstream DNS /
+DIRECT / AWG restart regressions pass repeatedly; the complete local Go race
+suite passes. Native reruns remain required before upgrading any acceptance
+status. The Android lane now uses the latest successful full APK as its host.
+
+Linux capture also matches a clear socket-exemption bit directly. Inverting a
+rule would invert its entire selector, including iif lo, and could capture
+native input lookups. Explicit recovery recognizes both the new owned rule and
+the previous owned form. The actual namespace test remains the deciding check.

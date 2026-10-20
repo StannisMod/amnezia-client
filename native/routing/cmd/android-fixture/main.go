@@ -23,6 +23,7 @@ import (
 	"sync/atomic"
 	"syscall"
 
+	"github.com/StannisMod/amnezia-client/native/routing/awg"
 	"github.com/amnezia-vpn/amneziawg-go/v3/conn"
 	"github.com/amnezia-vpn/amneziawg-go/v3/device"
 	"github.com/amnezia-vpn/amneziawg-go/v3/tun/netstack"
@@ -89,7 +90,7 @@ func (f *fixture) start() error {
 	if err != nil {
 		return err
 	}
-	f.peer = device.NewDevice(t, &fixtureBind{conn.NewDefaultBind()}, device.NewLogger(device.LogLevelSilent, ""))
+
 	cleanup := true
 	defer func() {
 		if cleanup {
@@ -99,10 +100,7 @@ func (f *fixture) start() error {
 	// Omit endpoint on the server: authenticate then learn the emulator's NAT
 	// source port. Production outbound endpoint pinning is left unchanged.
 	ipc := fmt.Sprintf("private_key=%s\nlisten_port=51820\njc=3\njmin=40\njmax=80\ns1=16\ns2=24\ns3=8\ns4=8\nh1=1001\nh2=1002\nh3=1003\nh4=1004\nreplace_peers=true\npublic_key=%s\nreplace_allowed_ips=true\nallowed_ip=10.77.0.1/32\nallowed_ip=fd77::1/128\n", hex.EncodeToString(f.server.Bytes()), hex.EncodeToString(f.client.PublicKey().Bytes()))
-	if err = f.peer.IpcSet(ipc); err != nil {
-		return err
-	}
-	if err = f.peer.Up(); err != nil {
+	if f.peer, err = awg.NewConfiguredDevice(t, &fixtureBind{conn.NewDefaultBind()}, ipc); err != nil {
 		return err
 	}
 	for _, ip := range []string{sharedIP, "fd77::2"} {

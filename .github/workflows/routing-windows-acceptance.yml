@@ -4,8 +4,7 @@ on:
     branches: [feature/sing-box-routing]
     paths:
       - .github/workflows/routing-windows-acceptance.yml
-      - native/routing/desktop/**
-      - native/routing/cmd/amnezia-routing/**
+      - native/routing/**
       - scripts/routing/run_windows_acceptance.py
       - scripts/routing/run_linux_acceptance.py
   workflow_dispatch:

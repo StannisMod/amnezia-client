@@ -96,7 +96,9 @@ func Recover() error {
 			if r.Table != routeTable && r.Priority != rulePriority {
 				continue
 			}
-			if r.Table != routeTable || r.Priority != rulePriority || !r.MarkSet || r.Mark != socketMark || r.Mask != int(socketMark) || !r.Invert || (r.IifName != "" && r.IifName != "lo") {
+			legacy := r.Mark == socketMark && r.Invert && (r.IifName == "" || r.IifName == "lo")
+			current := r.Mark == 0 && !r.Invert && r.IifName == "lo"
+			if r.Table != routeTable || r.Priority != rulePriority || !r.MarkSet || r.Mask != int(socketMark) || (!legacy && !current) {
 				return errors.New("refusing recovery of an unrecognized policy rule")
 			}
 			copy := r
@@ -238,10 +240,11 @@ func Start(ctx context.Context, raw []byte, manageDNS bool) (*Session, error) {
 		r.IifName = "lo" // locally originated traffic; preserve native input/rp_filter lookups
 		r.Priority = rulePriority
 		r.Table = routeTable
-		r.Mark = socketMark
+		// Match a clear exemption bit directly. Invert would negate the whole
+		// selector (including iif lo), incorrectly capturing native input too.
+		r.Mark = 0
 		r.MarkSet = true
 		r.Mask = int(socketMark)
-		r.Invert = true
 		if err := netlink.RuleAdd(r); err != nil {
 			return nil, errors.New("capture policy installation failed")
 		}

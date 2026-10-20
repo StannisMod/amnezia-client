@@ -106,7 +106,7 @@ func testFakeIPSharedAddressEgress(t *testing.T, defaultPolicy rules.Action) {
 		"dns": map[string]any{"servers": []any{
 			map[string]any{"type": "hosts", "tag": "real", "predefined": map[string]any{"a.direct.test": "10.77.0.2", "b.vpn.test": "10.77.0.2", "unlisted.test": "10.77.0.2"}},
 			map[string]any{"type": "fakeip", "tag": "fake", "inet4_range": "198.18.0.0/15", "inet6_range": "fc00::/18"},
-		}, "final": "real", "reverse_mapping": false},
+		}, "rules": []any{map[string]any{"inbound": []string{"test-capture"}, "query_type": []string{"A", "AAAA"}, "action": "route", "server": "fake"}}, "final": "real", "reverse_mapping": false},
 		"outbounds": []any{map[string]any{"type": "direct", "tag": "direct"}, map[string]any{
 			"type": "amneziawg", "tag": "vpn", "address": []string{"10.77.0.1"}, "private_key": aPriv, "public_key": bPub, "endpoint": netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), bPort).String(), "listen_port": aPort, "allowed_ips": []string{"10.77.0.2/32"}, "parameters": params,
 		}}, "route": routeConfig,

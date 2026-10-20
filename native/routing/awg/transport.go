@@ -168,14 +168,9 @@ func New(ctx context.Context, c Config, listen ListenUnderlay) (*Transport, erro
 		return nil, errors.New("create AWG flow stack failed")
 	}
 	bind := &packetBind{ctx: ctx, listen: listen, endpoint: c.Endpoint}
-	d := device.NewDevice(tun, bind, device.NewLogger(device.LogLevelSilent, ""))
-	if e = d.IpcSet(ipc); e != nil {
-		d.Close()
-		return nil, errors.New("AWG configuration rejected")
-	}
-	if e = d.Up(); e != nil {
-		d.Close()
-		return nil, errors.New("AWG underlay startup failed")
+	d, e := NewConfiguredDevice(tun, bind, ipc)
+	if e != nil {
+		return nil, errors.New("AWG configuration or underlay startup failed")
 	}
 	t := &Transport{Net: n, device: d}
 	for _, a := range c.Address {

@@ -17,7 +17,7 @@ on:
     inputs:
       apk_run_id:
         description: Successful routing build run containing the x86_64 feature APK
-        default: '39255117799'
+        default: '39301511270'
         required: true
       cycles:
         description: Reconnect cycles (100 for acceptance)
@@ -46,12 +46,12 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: routing-client-android-x86_64-baseline
-          run-id: ${{ inputs.apk_run_id || '39255117799' }}
+          run-id: ${{ inputs.apk_run_id || '39301511270' }}
           github-token: ${{ github.token }}
           path: downloaded-apk
       - name: Record tested source and select packaged feature APK
         env:
-          APK_RUN: ${{ inputs.apk_run_id || '39255117799' }}
+          APK_RUN: ${{ inputs.apk_run_id || '39301511270' }}
           GH_TOKEN: ${{ github.token }}
         run: |
           python3 - <<'PY'
