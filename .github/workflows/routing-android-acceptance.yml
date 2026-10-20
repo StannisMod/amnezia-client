@@ -35,7 +35,7 @@ concurrency:
 jobs:
   actual-apk-service:
     runs-on: ubuntu-22.04
-    timeout-minutes: 60
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -58,23 +58,29 @@ jobs:
           def api(path):
               req = urllib.request.Request(f'https://api.github.com/repos/{repo}/{path}', headers={'Authorization': f"Bearer {os.environ['GH_TOKEN']}"})
               with urllib.request.urlopen(req, timeout=30) as stream: return json.load(stream)
-          selected = os.environ.get('APK_OVERRIDE') or '39301511270'
+          selected = os.environ.get('APK_OVERRIDE') or '39375044626'
           base = api(f'actions/runs/{selected}')
           subprocess.run(['git', 'fetch', '--depth', '1', 'origin', base['head_sha']], check=True)
           changed = subprocess.run(['git', 'diff', '--quiet', base['head_sha'], 'HEAD', '--', 'client/android', 'client/platforms/android']).returncode
           assert changed in (0, 1), 'Android host comparison failed'
           if changed and not os.environ.get('APK_OVERRIDE'):
               print('Android host changed; waiting for the full-client build of this source commit', flush=True)
-              deadline = time.monotonic() + 35 * 60
+              deadline = time.monotonic() + 125 * 60
               while time.monotonic() < deadline:
                   runs = api(f"actions/runs?head_sha={os.environ['GITHUB_SHA']}&event=push&per_page=20")['workflow_runs']
                   builds = [r for r in runs if r['name'] == 'Sing-box routing checks' and r['head_sha'] == os.environ['GITHUB_SHA']]
-                  if builds and builds[0]['status'] == 'completed':
-                      assert builds[0]['conclusion'] == 'success', 'Full-client build failed; do not test an incompatible old APK'
-                      selected = str(builds[0]['id'])
-                      break
+                  if builds:
+                      candidate = builds[0]
+                      jobs = api(f"actions/runs/{candidate['id']}/jobs?per_page=100")['jobs']
+                      android = [j for j in jobs if j['name'] == 'client-android (x86_64, android_x86_64)']
+                      if android and android[0]['status'] == 'completed':
+                          assert android[0]['conclusion'] == 'success', 'Compatible Android full-client build failed'
+                          artifacts = api(f"actions/runs/{candidate['id']}/artifacts?per_page=100")['artifacts']
+                          if any(a['name'] == 'routing-client-android-x86_64-baseline' and not a['expired'] for a in artifacts):
+                              selected = str(candidate['id'])
+                              break
                   time.sleep(15)
-              else: raise TimeoutError('Compatible full-client build did not finish within 35 minutes')
+              else: raise TimeoutError('Compatible Android full-client build did not finish within its build budget')
           with open(os.environ['GITHUB_ENV'], 'a') as stream: stream.write(f'APK_RUN={selected}\n')
           PYSELECT
       - uses: actions/download-artifact@v4
@@ -91,8 +97,17 @@ jobs:
           import json, os, pathlib, urllib.request
           req = urllib.request.Request(f"https://api.github.com/repos/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['APK_RUN']}", headers={'Authorization': f"Bearer {os.environ['GH_TOKEN']}"})
           with urllib.request.urlopen(req) as stream: source = json.load(stream)
-          assert source['conclusion'] == 'success' and source['head_repository']['full_name'] == os.environ['GITHUB_REPOSITORY']
-          pathlib.Path('tested-apk-source.json').write_text(json.dumps({k: source[k] for k in ('id', 'head_sha', 'html_url')}, indent=2))
+          assert source['head_repository']['full_name'] == os.environ['GITHUB_REPOSITORY']
+          req = urllib.request.Request(f"https://api.github.com/repos/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['APK_RUN']}/jobs?per_page=100", headers={'Authorization': f"Bearer {os.environ['GH_TOKEN']}"})
+          with urllib.request.urlopen(req) as stream: jobs = json.load(stream)['jobs']
+          android = [j for j in jobs if j['name'] == 'client-android (x86_64, android_x86_64)']
+          assert len(android) == 1 and android[0]['conclusion'] == 'success', 'APK job must have passed'
+          # Other platforms remain independently required by the full build gate;
+          # they need not block native testing of an already-built compatible APK.
+          source['android_job_id'] = android[0]['id']
+          source['full_matrix_status'] = source['status']
+          source['full_matrix_conclusion'] = source['conclusion']
+          pathlib.Path('tested-apk-source.json').write_text(json.dumps({k: source[k] for k in ('id', 'head_sha', 'html_url', 'android_job_id', 'full_matrix_status', 'full_matrix_conclusion')}, indent=2))
           candidates = sorted(pathlib.Path('downloaded-apk').rglob('*debug.apk'))
           assert candidates, 'No debug APK from the actual client build'
           with open(os.environ['GITHUB_ENV'], 'a') as env: env.write(f'FEATURE_APK={candidates[0].resolve()}\n')
