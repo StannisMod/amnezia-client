@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -31,6 +32,7 @@ func main() {
 	defer lock.Close()
 	if *recoverOnly {
 		if err := desktop.Recover(); err != nil {
+			fmt.Fprintln(os.Stderr, "routing recovery failed:", err)
 			os.Exit(1)
 		}
 		return

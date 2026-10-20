@@ -238,3 +238,52 @@ func TestPublicPacketFlowManagedDNSAndCleanup(t *testing.T) {
 		t.Fatal("host lifetime violation")
 	}
 }
+
+// FD ownership alone misses auxiliary descriptors allocated by the capture
+// endpoint. Reconnect in one process, as Android does, and count eventfds too.
+func TestCaptureReconnectDoesNotLeakEventFD(t *testing.T) {
+	eventfds := func() int {
+		rows, err := os.ReadDir("/proc/self/fd")
+		if err != nil {
+			t.Fatal(err)
+		}
+		n := 0
+		for _, r := range rows {
+			target, _ := os.Readlink("/proc/self/fd/" + r.Name())
+			if target == "anon_inode:[eventfd]" {
+				n++
+			}
+		}
+		return n
+	}
+	cycle := func() {
+		pair, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_DGRAM, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer unix.Close(pair[1])
+		p, err := New(pair[0], Hooks{Protect: func(int) error { return nil }, Interfaces: func() ([]adapter.NetworkInterface, error) {
+			return []adapter.NetworkInterface{{Interface: control.Interface{Index: 1, Name: "lo", Flags: net.FlagUp | net.FlagLoopback, Addresses: []netip.Prefix{netip.MustParsePrefix("127.0.0.1/8")}}}}, nil
+		}})
+		if err != nil {
+			unix.Close(pair[0])
+			t.Fatal(err)
+		}
+		s, err := Start(context.Background(), p, sampleConfig(t))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = s.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cycle() // initialize the process-wide Go poller before taking the baseline
+	before := eventfds()
+	for i := 0; i < 10; i++ {
+		cycle()
+	}
+	after := eventfds()
+	if after > before {
+		t.Fatalf("capture eventfds grew across 10 reconnects: %d -> %d", before, after)
+	}
+}

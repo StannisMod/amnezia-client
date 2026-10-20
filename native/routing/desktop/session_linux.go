@@ -119,6 +119,15 @@ func Recover() error {
 			if r.Type != unix.RTN_BLACKHOLE || r.Priority != 32760 || r.Protocol != unix.RTPROT_STATIC || prefix != 0 {
 				return errors.New("refusing recovery of an unrecognized routing entry")
 			}
+			// Kernel dumps omit RTA_DST for a default route, but this pinned
+			// netlink encoder requires an explicit destination even on delete.
+			if r.Dst == nil {
+				destination := "0.0.0.0/0"
+				if family == unix.AF_INET6 {
+					destination = "::/0"
+				}
+				_, r.Dst, _ = net.ParseCIDR(destination)
+			}
 			ownedRoutes = append(ownedRoutes, r)
 		}
 	}

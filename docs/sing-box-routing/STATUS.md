@@ -323,3 +323,33 @@ instead of relying on that flag, and explicitly encode MarkSet on deletion.
 The same correction makes preflight detect foreign mark policies. A new native
 conflict-rejection scenario verifies those rules remain untouched. The entire
 Linux acceptance result remains FAIL until recovery/restoration also passes.
+
+## Native follow-up: Windows pass and Android resource cleanup
+
+Windows native run `39371691099` at `afa7f399` **PASSED** actual Wintun capture,
+independent DIRECT/AWG TCP/UDP, IPv6, managed/system DNS, CNAME/suffix rules,
+loopback, AWG outage without DIRECT fallback, inverse mode, persisted FakeIP,
+100 reconnects, and exact native route/DNS restoration. This is disposable-host
+helper acceptance; installed Qt service, installer smoke, handover, helper-crash
+policy and the gated OS kill-switch/per-app combinations remain unverified.
+
+Android run `39371691061` passed all traffic scenarios and 100 reconnects,
+including inverse mode and persisted FakeIP, but the complete result **FAILED**.
+The expected failed-start test had an IPC ordering race: DISCONNECTED precedes
+ERROR, so the test must consume both before starting the replacement session.
+It also measured descriptor growth from 95 to 196 in the same service process
+(threads 31 to 34, RSS 154724 to 165324 KiB). A new local repeated-capture test
+reproduced one leaked eventfd per reconnect in the pinned gVisor fdbased endpoint.
+
+Descriptor capture now uses the existing packet-flow channel endpoint with a
+single Go pollable-file reader and nonblocking native writes. It closes that
+reader and the capture descriptor explicitly, avoids dependency-internal access
+or patches, and passes the local eventfd regression and complete Go race suite.
+Native emulator resource verification and throughput measurements remain
+required; packet-copy overhead must not be inferred from compilation success.
+
+Linux run `39372104523` again completed traffic and 100 reconnects. Recovery
+removed its rules, then failed deleting dumped default blackhole routes because
+the pinned encoder also requires an explicit destination for deletion. Recovery
+now restores the correct family-specific /0 destination before deleting the
+exact owned route. The next native run must prove complete restoration.

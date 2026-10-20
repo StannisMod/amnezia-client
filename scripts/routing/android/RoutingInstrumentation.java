@@ -174,8 +174,11 @@ public final class RoutingInstrumentation extends Instrumentation {
     private void awaitState(int wanted, boolean allowError) throws Exception {
         long end = SystemClock.elapsedRealtime() + 30000;
         synchronized (lock) {
-            while (state != wanted && (allowError || !serviceError) && SystemClock.elapsedRealtime() < end) lock.wait(100);
-            require(state == wanted && (allowError || !serviceError), "service failed to reach state " + wanted);
+            // A rejected start emits DISCONNECTED and ERROR separately. Consume
+            // both before starting the next session, so the previous error
+            // cannot be misattributed to its successful replacement.
+            while ((state != wanted || (allowError && !serviceError)) && (allowError || !serviceError) && SystemClock.elapsedRealtime() < end) lock.wait(100);
+            require(state == wanted && (allowError ? serviceError : !serviceError), "service failed to reach state " + wanted);
         }
     }
     private void connect(boolean inverse) throws Exception {
