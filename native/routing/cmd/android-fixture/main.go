@@ -23,6 +23,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"syscall"
+	"time"
 
 	"github.com/StannisMod/amnezia-client/native/routing/awg"
 	"github.com/amnezia-vpn/amneziawg-go/v3/conn"
@@ -169,7 +170,33 @@ func (f *fixture) start() error {
 func main() {
 	flag.StringVar(&sharedIP, "shared-ip", sharedIP, "native host address used by both controlled observers")
 	path := flag.String("config", "", "private output fixture JSON (never upload)")
+	probeTCP := flag.String("probe-tcp", "", "native application TCP observer probe")
+	probeUDP := flag.String("probe-udp", "", "native application UDP observer probe")
 	flag.Parse()
+	if *probeTCP != "" || *probeUDP != "" {
+		network, address := "tcp", *probeTCP
+		if *probeUDP != "" {
+			network, address = "udp", *probeUDP
+		}
+		c, err := net.DialTimeout(network, address, 5*time.Second)
+		if err != nil {
+			panic(err)
+		}
+		defer c.Close()
+		c.SetDeadline(time.Now().Add(5 * time.Second))
+		if network == "udp" {
+			if _, err = c.Write([]byte("proof")); err != nil {
+				panic(err)
+			}
+		}
+		b := make([]byte, 128)
+		n, err := c.Read(b)
+		if err != nil {
+			panic(err)
+		}
+		fmt.Print(string(b[:n]))
+		return
+	}
 	if *path == "" {
 		panic("--config is required")
 	}

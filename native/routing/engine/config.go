@@ -16,10 +16,11 @@ const TUNTag = "amnezia-tun"
 // routes/resolvers after stopping it. The host installs its PlatformInterface
 // to provide the existing VPN descriptor on mobile.
 type SessionConfig struct {
-	Rules          rules.Config   `json:"rules"`
-	AWG            awg.Config     `json:"awg"`
-	Resolver       netip.AddrPort `json:"resolver"`
-	ResolverAction rules.Action   `json:"resolver_action"`
+	Rules          rules.Config      `json:"rules"`
+	AWG            awg.Config        `json:"awg"`
+	Resolver       netip.AddrPort    `json:"resolver"`
+	ResolverAction rules.Action      `json:"resolver_action"`
+	Applications   *ApplicationScope `json:"applications,omitempty"`
 }
 
 func (c SessionConfig) Compile() ([]byte, error) {
@@ -42,7 +43,11 @@ func (c SessionConfig) Compile() ([]byte, error) {
 	}
 	route["default_domain_resolver"] = "upstream"
 	userRules := route["rules"].([]any)
-	route["rules"] = append([]any{map[string]any{"inbound": []string{TUNTag}, "port": 53, "action": "hijack-dns"}}, userRules...)
+	scopeRules, e := c.Applications.compile()
+	if e != nil {
+		return nil, e
+	}
+	route["rules"] = append(append([]any{map[string]any{"inbound": []string{TUNTag}, "port": 53, "action": "hijack-dns"}}, scopeRules...), userRules...)
 	awgBytes, e := json.Marshal(c.AWG)
 	if e != nil {
 		return nil, errors.New("invalid AWG configuration")

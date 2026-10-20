@@ -73,6 +73,12 @@ def probe(options):
         try:
             assert tcp(address) == expected, "wrong TCP observer"
             assert udp(address) == expected + ":proof", "wrong UDP observer"
+            if options.get("other_process"):
+                other = options["other_expected"]
+                for protocol, port, marker in (("tcp", 18081, other), ("udp", 18082, other + ":proof")):
+                    destination = f"[{address}]:{port}" if ":" in address else f"{address}:{port}"
+                    output = subprocess.check_output([options["other_process"], "--probe-" + protocol, destination], text=True, timeout=10)
+                    assert output.strip() == marker, "wrong observer for independent executable"
         except Exception as error:
             raise AssertionError(f"{name}: expected {expected} over IPv{ipaddress.ip_address(address).version}: {error}") from error
         results[name] = address
@@ -112,7 +118,7 @@ def main():
     helper = args.helper.resolve(); script = Path(__file__).resolve()
     child = peer = None
     child_buffer = b""
-    report = {"native_capture": "FAIL", "not_run": ["installed Qt service", "systemd-resolved integration", "installer", "OS kill switch", "application rules", "network handover"]}
+    report = {"native_capture": "FAIL", "not_run": ["installed Qt service", "systemd-resolved integration", "installer", "OS kill switch", "network handover"]}
     def ip(*parts):
         return run("ip", *parts, capture_output=True, text=True).stdout
     def ns_ip(*parts):
@@ -217,6 +223,16 @@ def main():
             stop(); start()
             again = application({"names": [["vpn.test", "VPN", 1]]})
             assert again["vpn.test"] == identities["vpn.test"]
+            # Distinct Python/Go executables share identical destinations but
+            # must follow their application scope before domain routing.
+            for mode, selected, other in ((2, "DIRECT", "VPN"), (1, "VPN", "DIRECT")):
+                stop()
+                profile["appSplitTunnelType"] = mode
+                profile["splitTunnelApps"] = [str(Path(sys.executable).resolve())]
+                start()
+                application({"names": [["vpn.test", selected, 1]], "other_process": str(args.peer.resolve()), "other_expected": other})
+                application({"names": [["direct.ru", "DIRECT", 1]]})
+            stop(); profile.pop("appSplitTunnelType"); profile.pop("splitTunnelApps"); start()
             for cycle in range(args.cycles):
                 stop(); start(bool(cycle & 1))
                 application({"names": [["vpn.test", "VPN", 1]]})
@@ -231,7 +247,7 @@ def main():
         assert ns_ip("rule", "show") == before_rules
         restored_routes = ns_ip("route", "show", "table", "all")
         assert restored_routes == before_routes, "native route restoration differs:\n" + "".join(difflib.unified_diff(before_routes.splitlines(True), restored_routes.splitlines(True), fromfile="before", tofile="after"))
-        report.update(native_capture="PASS", scenarios=["FakeIP identity/shared real IP", "DIRECT and AWG TCP/UDP", "IPv6", "CNAME", "native policy route", "loopback IPv4/IPv6", "inverse mode", "persistent FakeIP", "AWG loss fails closed", "helper crash fails closed and explicit recovery"], reconnect_cycles=args.cycles, os_state_restored=True)
+        report.update(native_capture="PASS", scenarios=["FakeIP identity/shared real IP", "DIRECT and AWG TCP/UDP", "IPv6", "CNAME", "native policy route", "loopback IPv4/IPv6", "inverse mode", "persistent FakeIP", "application include/exclude with independent executables and domain precedence", "AWG loss fails closed", "helper crash fails closed and explicit recovery"], reconnect_cycles=args.cycles, os_state_restored=True)
     finally:
         # This namespace contains only controlled fixture traffic. Record
         # interface counters and route decisions, never packet payloads/keys.

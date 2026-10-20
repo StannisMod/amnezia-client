@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/netip"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -29,7 +30,8 @@ func text(v any) string {
 
 // ProfileSession converts the same native AWG profile used by the Qt client.
 // No resolved legacy site addresses or raw backend configuration is accepted.
-// Desktop per-app and OS kill-switch integration are still gated explicitly.
+// Desktop app scope precedes domain routing; OS kill-switch integration is
+// checked independently by the service.
 func ProfileSession(raw []byte) (engine.SessionConfig, error) {
 	var profile struct {
 		Protocol   string         `json:"protocol"`
@@ -38,6 +40,7 @@ func ProfileSession(raw []byte) (engine.SessionConfig, error) {
 		Rules      rules.Config   `json:"sing_box_routing"`
 		AWG        map[string]any `json:"awg_config_data"`
 		AppScope   int            `json:"appSplitTunnelType"`
+		Apps       []string       `json:"splitTunnelApps"`
 		KillSwitch any            `json:"killSwitchOption"`
 	}
 	if len(raw) > 4<<20 {
@@ -48,9 +51,6 @@ func ProfileSession(raw []byte) (engine.SessionConfig, error) {
 	if err := d.Decode(&profile); err != nil || profile.Protocol != "awg" {
 		return engine.SessionConfig{}, errors.New("routed desktop sessions require an AWG profile")
 	}
-	if profile.AppScope != 0 {
-		return engine.SessionConfig{}, errors.New("desktop domain routing with application exclusions is not yet supported")
-	}
 	if text(profile.KillSwitch) == "true" || text(profile.KillSwitch) == "1" {
 		return engine.SessionConfig{}, errors.New("desktop domain routing with the OS kill switch is not yet supported")
 	}
@@ -59,6 +59,30 @@ func ProfileSession(raw []byte) (engine.SessionConfig, error) {
 		return engine.SessionConfig{}, errors.New("a numeric DNS resolver is required")
 	}
 	config := engine.SessionConfig{Rules: profile.Rules, Resolver: netip.AddrPortFrom(resolver, 53), ResolverAction: profile.DNSPath}
+	if profile.AppScope < 0 || profile.AppScope > 2 {
+		return config, errors.New("invalid desktop application scope")
+	}
+	if profile.AppScope != 0 {
+		mode := "include"
+		if profile.AppScope == 2 {
+			mode = "exclude"
+		}
+		paths := make([]string, 0, len(profile.Apps))
+		for _, path := range profile.Apps {
+			if !filepath.IsAbs(path) {
+				return config, errors.New("application scope requires absolute executable paths")
+			}
+			// Linux desktop entries often contain symlinks; kernel ownership
+			// reports the actual executable. Preserve an absent absolute path
+			// for applications that may be installed after this profile is saved.
+			path = filepath.Clean(path)
+			if actual, err := filepath.EvalSymlinks(path); err == nil {
+				path = actual
+			}
+			paths = append(paths, path)
+		}
+		config.Applications = &engine.ApplicationScope{Mode: mode, Paths: paths}
+	}
 	if config.ResolverAction == "" {
 		config.ResolverAction = rules.VPN
 	}

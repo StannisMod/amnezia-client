@@ -14,6 +14,7 @@ from pathlib import Path
 import queue
 import socket
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -41,7 +42,7 @@ def main():
     args = parser.parse_args()
     assert os.name == "nt" and ctypes.windll.shell32.IsUserAnAdmin(), "an elevated disposable Windows host is required"
     assert 1 <= args.cycles <= 1000
-    report = {"native_capture": "FAIL", "not_run": ["installed Qt service", "EXE/MSI installation", "physical machine", "Wi-Fi/Ethernet handover", "OS kill switch", "per-app routing", "BFE restart/boot-time protection"]}
+    report = {"native_capture": "FAIL", "not_run": ["installed Qt service", "EXE/MSI installation", "physical machine", "Wi-Fi/Ethernet handover", "OS kill switch", "BFE restart/boot-time protection"]}
     helper = args.helper.resolve(); peer = child = None
     messages = queue.Queue()
     def control(path, post=False):
@@ -59,14 +60,14 @@ def main():
             child = None
     temporary = tempfile.TemporaryDirectory()
     cache = Path(temporary.name) / "private-cache"
-    def native_udp():
-        # No public service response is required: an ordinary outbound UDP
-        # send is permitted before capture/recovery and denied by WFP after
-        # the helper is forcibly killed. The destination is not loopback.
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-            return sock.sendto(b"amnezia-routing-guard-probe", ("1.1.1.1", 9))
+    def native_connect():
+        # UDP sendto can report success before WFP asynchronously drops the
+        # datagram. TCP connect reports ALE authorization denial synchronously.
+        # Prove this native destination is reachable before and after capture.
+        with socket.create_connection(("1.1.1.1", 443), timeout=5):
+            pass
     try:
-        assert native_udp() > 0
+        native_connect()
         # Existing native local IPv4 is reachable outside the captured adapter.
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as selection:
             selection.connect(("1.1.1.1", 53)); shared = selection.getsockname()[0]
@@ -125,6 +126,14 @@ def main():
         stop(); start(True)
         probe({"names": [["unlisted.test", "DIRECT", 1], ["vpn.test", "VPN", 1]]})
         assert resolve("vpn.test") == vpn
+        for mode, selected, other in ((2, "DIRECT", "VPN"), (1, "VPN", "DIRECT")):
+            stop()
+            profile["appSplitTunnelType"] = mode
+            profile["splitTunnelApps"] = [str(Path(sys.executable).resolve())]
+            start()
+            probe({"names": [["vpn.test", selected, 1]], "other_process": str(args.peer.resolve()), "other_expected": other})
+            probe({"names": [["direct.ru", "DIRECT", 1]]})
+        stop(); profile.pop("appSplitTunnelType"); profile.pop("splitTunnelApps"); start()
         for cycle in range(args.cycles):
             stop(); start(bool(cycle & 1))
             assert tcp(resolve("vpn.test")) == "VPN"
@@ -141,7 +150,7 @@ def main():
             raise AssertionError("crashed Wintun adapter did not disappear")
         for _ in range(3):
             try:
-                native_udp()
+                native_connect()
             except OSError as error:
                 assert error.winerror == 10013, f"expected WFP access denial, got {error}"
             else:
@@ -151,13 +160,13 @@ def main():
         output, _ = stale.communicate(json.dumps(profile) + "\n", timeout=20)
         assert any(json.loads(line).get("type") == "error" for line in output.splitlines()), "stale guard was silently replaced"
         try:
-            native_udp()
+            native_connect()
         except OSError as error:
             assert error.winerror == 10013
         else:
             raise AssertionError("rejected restart removed crash protection")
         subprocess.run([str(helper), "--cache-dir", str(cache), "--recover"], check=True, timeout=20)
-        assert native_udp() > 0
+        native_connect()
         start(); assert tcp(resolve("vpn.test")) == "VPN"
         stop()
         subprocess.run([str(helper), "--cache-dir", str(cache), "--recover"], check=True)
@@ -169,7 +178,7 @@ def main():
             time.sleep(0.2)
         assert after == before, "native routes/DNS did not return to their original state"
         report.update(native_capture="PASS", reconnect_cycles=args.cycles, os_state_restored=True, helper_crash_fail_closed=True,
-                      scenarios=["actual Wintun/gVisor capture", "same-IP domain identity", "native DIRECT and AWG TCP/UDP", "IPv6", "system DNS/FakeIP", "CNAME", "suffix boundaries", "loopback", "AWG loss fails closed", "inverse mode", "FakeIP persistence", "forced helper termination retains WFP guard", "stale guard rejects restart", "explicit recovery permits native traffic and reconnect"])
+                      scenarios=["actual Wintun/gVisor capture", "same-IP domain identity", "native DIRECT and AWG TCP/UDP", "IPv6", "system DNS/FakeIP", "CNAME", "suffix boundaries", "loopback", "AWG loss fails closed", "inverse mode", "FakeIP persistence", "application include/exclude with independent executables and domain precedence", "forced helper termination retains WFP guard", "stale guard rejects restart", "explicit recovery permits native traffic and reconnect"])
     finally:
         try:
             report["diagnostics"] = {

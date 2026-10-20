@@ -42,10 +42,9 @@ QJsonObject DesktopRoutingProcess::status() const { return m_status; }
 
 bool DesktopRoutingProcess::start(const QJsonObject &profile, bool strictKillSwitch)
 {
-    // Until the existing firewall/app filters are integrated, fail explicitly
-    // rather than silently weaken a selected OS kill-switch or per-app policy.
+    // Application scope is enforced by the engine's native process lookup,
+    // before domain rules. Keep rejecting an unintegrated OS kill switch.
     if (strictKillSwitch
-            || profile.value("appSplitTunnelType").toInt() != 0
             || profile.value("killSwitchOption").toString() == "true") return false;
     stop(false);
     if (isActive()) return false;

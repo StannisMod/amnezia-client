@@ -501,6 +501,33 @@ This protection lasts until explicit recovery or BFE restart; it is not a
 boot-time filter and does not yet integrate the existing strict kill switch.
 
 The Windows native suite now forcibly kills the helper, checks that Wintun is
-gone while native outbound UDP is denied by WFP (WSAEACCES), rejects a stale
+gone while native outbound TCP connect is denied by WFP (WSAEACCES), rejects a stale
 restart without losing protection, recovers, and reconnects. This new suite
 must pass before helper-crash protection is marked accepted.
+
+## Desktop application scope — pending native acceptance
+
+Desktop profiles now translate application include/exclude lists into process
+path rules before destination rules, with anchored literal-path matching and
+case-insensitive Windows identity. Linux symlinks are normalized to the kernel
+executable path when present. Shared DNS is captured first; unidentifiable
+non-DNS process owners are rejected. A process selected for VPN still follows
+its domain DIRECT/VPN rules; an app outside the selected scope uses DIRECT.
+Mobile application scope remains owned by its native platform service.
+
+Actual pinned sing-box parser/matcher tests cover include/exclude precedence,
+unknown owner rejection, DNS capture, path metacharacters and Windows casing.
+The local complete race suite passes count=3. Linux and Windows native suites
+now compare separate Python/Go executables against the same FakeIP destination
+for both TCP and UDP. Those new native cases have not passed yet.
+
+Windows run `39395467839` passed traffic and 100 reconnects, then failed the
+first crash assertion. Unconnected UDP sendto may return before WFP drops a
+packet, so that API return value is not packet-delivery evidence. The revised
+suite verifies surviving WFP objects directly and checks synchronous TCP
+connect denial, with native reachability checks before capture/after recovery.
+No crash protection PASS is claimed from the failed run.
+
+A later reporting-only matrix `39380227075` exposed a macOS fixture timeout
+in TestEngineRealDNSAndPeerRestart. The prior verified source matrix remains
+historical evidence; repeatability on macOS is still under investigation.

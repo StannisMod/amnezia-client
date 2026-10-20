@@ -39,6 +39,8 @@ jobs:
           Copy-Item "$env:RUNNER_TEMP/wintun/wintun/bin/amd64/wintun.dll" "$env:RUNNER_TEMP/wintun.dll"
       - name: Native Windows route API, socket protection and ABI checks
         working-directory: native/routing
+        env:
+          AMNEZIA_NATIVE_WFP_TEST: '1'
         run: go test -mod=readonly -tags with_gvisor -race ./desktop
       - name: Real Wintun, DNS and independent DIRECT/AWG observations
         shell: pwsh

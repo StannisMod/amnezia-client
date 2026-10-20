@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -52,6 +53,8 @@ func TestNativeAWGProfilePreservesParametersAndDomainRules(t *testing.T) {
 func TestRejectUnsupportedDesktopPoliciesAndInvalidAWG(t *testing.T) {
 	for _, mutate := range []func(map[string]any){
 		func(p map[string]any) { p["appSplitTunnelType"] = 1 },
+		func(p map[string]any) { p["appSplitTunnelType"] = 3 },
+		func(p map[string]any) { p["appSplitTunnelType"] = 2; p["splitTunnelApps"] = []string{"relative.exe"} },
 		func(p map[string]any) { p["killSwitchOption"] = "true" },
 		func(p map[string]any) { p["protocol"] = "wireguard" },
 		func(p map[string]any) { p["awg_config_data"].(map[string]any)["hostName"] = "bootstrap.invalid" },
@@ -65,6 +68,27 @@ func TestRejectUnsupportedDesktopPoliciesAndInvalidAWG(t *testing.T) {
 		raw, _ := json.Marshal(profile)
 		if _, err := ProfileSession(raw); err == nil {
 			t.Fatal("accepted an unsupported policy or malformed profile")
+		}
+	}
+}
+
+func TestDesktopApplicationScopeUsesExecutableIdentity(t *testing.T) {
+	for _, mode := range []int{1, 2} {
+		profile := testProfile(t)
+		profile["appSplitTunnelType"] = mode
+		path := filepath.Join(t.TempDir(), "app.[x]")
+		profile["splitTunnelApps"] = []string{path}
+		raw, _ := json.Marshal(profile)
+		config, err := ProfileSession(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := "include"
+		if mode == 2 {
+			want = "exclude"
+		}
+		if config.Applications == nil || config.Applications.Mode != want || config.Applications.Paths[0] != path {
+			t.Fatal("application scope lost during profile conversion")
 		}
 	}
 }
