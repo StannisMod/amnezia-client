@@ -8,6 +8,8 @@ on:
       - scripts/routing/android/**
       - scripts/routing/run_android_acceptance.py
       - native/routing/cmd/android-fixture/**
+      - native/routing/cmd/traffic-probe/**
+      - native/routing/internal/fixturequic/**
       - native/routing/awg/**
       - native/routing/engine/**
       - native/routing/mobile/**
@@ -125,6 +127,15 @@ jobs:
           git fetch --depth 1 origin "$baseline"
           python3 scripts/routing/replace_android_native.py --apk "$FEATURE_APK" --native "$RUNNER_TEMP/current-native/libwg-go.so" --output "$RUNNER_TEMP/current-feature.apk" --baseline-sha "$baseline"
           echo "FEATURE_APK=$RUNNER_TEMP/current-feature.apk" >> "$GITHUB_ENV"
+      - name: Build separate native Android QUIC probe
+        working-directory: native/routing
+        env:
+          GOOS: android
+          GOARCH: amd64
+          CGO_ENABLED: "1"
+        run: |
+          export CC="$ANDROID_HOME/ndk/27.0.12077973/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android28-clang"
+          go build -mod=readonly -tags amnezia_android_probe -buildmode=pie -o "$RUNNER_TEMP/android-traffic-probe" ./cmd/traffic-probe
       - name: Build the disposable AWG peer and independent egress observers
         working-directory: native/routing
         run: go build -mod=readonly -tags with_gvisor -o "$RUNNER_TEMP/android-fixture" ./cmd/android-fixture
@@ -145,9 +156,9 @@ jobs:
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           script: |
-            "$RUNNER_TEMP/android-fixture" --config "$RUNNER_TEMP/fixture.json" > fixture-server.log 2>&1 & echo $! > "$RUNNER_TEMP/fixture.pid"
+            "$RUNNER_TEMP/android-fixture" --config "$RUNNER_TEMP/fixture.json" --quic-ca "$RUNNER_TEMP/quic.der" > fixture-server.log 2>&1 & echo $! > "$RUNNER_TEMP/fixture.pid"
             for i in $(seq 1 30); do test -s "$RUNNER_TEMP/fixture.json" && break; sleep 1; done
-            python3 scripts/routing/run_android_acceptance.py --apk "$FEATURE_APK" --fixture "$RUNNER_TEMP/fixture.json" --work "$RUNNER_TEMP/android-acceptance" --cycles "${{ inputs.cycles || '100' }}"
+            python3 scripts/routing/run_android_acceptance.py --apk "$FEATURE_APK" --fixture "$RUNNER_TEMP/fixture.json" --quic-probe "$RUNNER_TEMP/android-traffic-probe" --quic-ca "$RUNNER_TEMP/quic.der" --work "$RUNNER_TEMP/android-acceptance" --cycles "${{ inputs.cycles || '100' }}"
       - name: Stop the local peer and remove ephemeral private configuration
         if: always()
         run: |

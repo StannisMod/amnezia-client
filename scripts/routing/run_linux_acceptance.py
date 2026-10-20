@@ -90,6 +90,12 @@ def probe(options):
             except OSError:
                 continue
             raise AssertionError("traffic reached an observer while the assigned VPN was unavailable")
+    for name, expected, kind in options.get("quic_names", []):
+        address = resolve(name, kind)
+        destination = f"[{address}]:18443" if ":" in address else f"{address}:18443"
+        output = subprocess.check_output([options["quic_probe"], "--quic", destination, "--ca", options["quic_ca"]], text=True, timeout=20)
+        assert output.strip() == expected, "wrong native QUIC observer"
+        print(f"PASS native QUIC/TLS digest: {name} -> {expected}", file=sys.stderr, flush=True)
     for address in options.get("direct", []):
         assert tcp(address) == "DIRECT" and udp(address) == "DIRECT:proof"
     for ip in options.get("loopback", []):
@@ -112,6 +118,7 @@ def main():
     parser.add_argument("--peer", type=Path, required=True)
     parser.add_argument("--report", type=Path, required=True)
     parser.add_argument("--cycles", type=int, default=100)
+    parser.add_argument("--quic-probe", type=Path, required=True)
     args = parser.parse_args()
     ns = "amnezia-routing-test"
     host = "amnrtest-host"
@@ -183,7 +190,8 @@ def main():
         before_rules = ns_ip("rule", "show")
         before_routes = ns_ip("route", "show", "table", "all")
         report["native_routes_before"] = before_routes
-        peer = subprocess.Popen([str(args.peer.resolve()), "--config", str(args.fixture)], stdout=subprocess.PIPE, text=True)
+        ca = args.fixture.with_suffix(".quic.der")
+        peer = subprocess.Popen([str(args.peer.resolve()), "--config", str(args.fixture), "--quic-ca", str(ca)], stdout=subprocess.PIPE, text=True)
         assert select.select([peer.stdout], [], [], 10)[0] and peer.stdout.readline().startswith("READY")
         profile = json.loads(args.fixture.read_text())
         profile["sing_box_routing"] = {"version": 1, "default": "vpn", "rules": [
@@ -211,6 +219,7 @@ def main():
             start()
             identities = application({"names": [["direct.ru", "DIRECT", 1], ["vpn.test", "VPN", 1], ["cname.test", "VPN", 1], ["ipv6.test", "VPN", 28]], "direct": ["203.0.113.20"], "loopback": ["127.0.0.1", "::1"]})
             assert identities["direct.ru"] != identities["vpn.test"]
+            application({"quic_probe":str(args.quic_probe.resolve()), "quic_ca":str(ca), "quic_names":[["direct.ru","DIRECT",1],["vpn.test","VPN",1],["ipv6.test","VPN",28]]})
             marked = ns_ip("route", "get", "203.0.113.20", "mark", "0x40000000")
             assert "table 222" in marked and "via 10.0.2.2" in marked, "DIRECT did not preserve the native policy rule"
             before = control("/stats"); control("/peer?state=off", True)
@@ -274,6 +283,7 @@ def main():
         subprocess.run(["ip", "link", "del", host], capture_output=True)
         subprocess.run(["ip", "netns", "del", ns], capture_output=True)
         args.fixture.unlink(missing_ok=True)
+        args.fixture.with_suffix(".quic.der").unlink(missing_ok=True)
         args.report.write_text(json.dumps(report, indent=2) + "\n")
 
 

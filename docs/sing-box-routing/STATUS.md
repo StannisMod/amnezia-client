@@ -2,9 +2,9 @@
 
 ## Current verification — 2026-10-20
 
-New desktop application-scope, strict-switch and crash-state changes await
-native and installed-service acceptance. The PASS results below describe the
-previous verified source, not the current changes.
+Desktop application-scope and crash-state changes passed native acceptance at
+`6d111d66`. Installed-service and strict-switch acceptance remains pending in
+full matrix `39449842520`. Native QUIC/TLS probes are newly added and await CI.
 
 The feature remains experimental and off by default. Source integration and
 build success are separate from native runtime acceptance.
@@ -12,9 +12,9 @@ build success are separate from native runtime acceptance.
 | Check | Latest verified result |
 | --- | --- |
 | Full client builds | PASS at `f7847c02`, run `39375044626`: four Android ABI APKs, Linux installer, Windows EXE/MSI and unsigned iOS application/extension; aggregate build gate PASS |
-| Windows native Wintun/helper | PASS at `f7847c02`, run `39375044707`: 100 reconnects and native route/DNS restoration |
-| Linux native TUN/helper | PASS at `f7847c02`, run `39375044711`: 100 reconnects, crash recovery and exact native-route restoration |
-| Android packaged service | PASS in `39376118150`: matching full APK host, preflight rejection/recovery and 100 reconnects; FD 93 -> 93 and eventfd 5 -> 5 |
+| Windows native Wintun/helper | PASS at `6d111d66`, run `39449842545`: app include/exclude TCP/UDP, 100 reconnects, pipe-loss and hard-kill fail-closed recovery, exact route/DNS restoration |
+| Linux native TUN/helper | PASS at `6d111d66`, run `39449842500`: app include/exclude TCP/UDP, 100 reconnects, pipe-loss and hard-kill recovery, exact native-route restoration |
+| Android packaged service | PASS in `39449842506`: compatible full APK host with current unified JNI, preflight rejection/recovery and 100 reconnects |
 | iOS | Unsigned application and PacketTunnel extension PASS at `f7847c02`; signed-device runtime not executed |
 | Core race tests / QUIC | Linux, Windows and macOS count=3 suites PASS at `f7847c02`; QUIC/TLS host transport passes for inner IPv4/IPv6; native app/TUN QUIC unrun |
 
@@ -567,3 +567,23 @@ units pass syntax checking. Native Windows ABI/guard-lifetime checks passed in
 run 39396896294 before that run stopped at the application-scope rejection.
 Correctness TCP deadlines now allow the existing AWG/TCP retry timers on loaded
 CI hosts; the independent first-flight A/AAAA UDP burst still has a 2s deadline.
+
+
+## Native application scope and crash acceptance passed; QUIC probes added
+
+At `6d111d66`, Linux `39449842500`, Windows `39449842545` and Android
+`39449842506` passed their complete native suites. The desktop suites include
+separate executable owners, include/exclude TCP/UDP, retained protection after
+service-pipe loss and forced helper termination, explicit recovery, 100
+reconnects and native-state restoration. Windows additionally checks native
+WFP ABI/object lifetime and TCP WSAEACCES after termination. Installed Qt service
+and strict-switch acceptance remain pending in full matrix `39449842520`.
+
+The new disposable `traffic-probe` verifies TLS 1.3 against an ephemeral fixture
+certificate and a 64 KiB stream digest using ordinary native UDP sockets.
+Linux/Windows namespace/Wintun and Android actual-service suites now request
+DIRECT IPv4 and VPN IPv4/IPv6 QUIC probes. Android packages the probe executable
+in the throwaway instrumentation APK and executes it in a separate process
+with the instrumented app UID; the production APK and its single Go runtime
+are unchanged. Local race tests verify both observer labels and rejection of
+a different CA. Native QUIC results are still pending and are not claimed PASS.

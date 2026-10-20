@@ -71,8 +71,9 @@ boundaries. Case, a trailing ASCII dot, and Unicode IDNs are canonicalized.
 Disabled rules are persisted and validated but do not match. Inverse mode uses
 `"default": "direct"` with explicit `"action": "vpn"` rules.
 
-There is no application-rule implementation yet. Native per-app capture
-exclusions and their precedence must be added before feature activation.
+Desktop application include/exclude scope is evaluated by executable path
+before domain rules; unknown process owners are rejected and DNS stays captured.
+Native platform services own mobile app capture scope.
 `rules.FromLegacy` is a callable conversion function, not an installed profile
 migration. It uses domain keys and deliberately discards their cached DNS IPs;
 the original profile and all unrelated settings must be retained by its caller.

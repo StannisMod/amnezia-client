@@ -29,6 +29,8 @@ jobs:
           go build -mod=readonly -tags with_gvisor -o "$env:RUNNER_TEMP/amnezia-routing.exe" ./cmd/amnezia-routing
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           go build -mod=readonly -tags with_gvisor -o "$env:RUNNER_TEMP/android-fixture.exe" ./cmd/android-fixture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          go build -mod=readonly -o "$env:RUNNER_TEMP/traffic-probe.exe" ./cmd/traffic-probe
           exit $LASTEXITCODE
       - name: Verify pinned Wintun dependency (same hash as the repository recipe)
         shell: pwsh
@@ -45,7 +47,7 @@ jobs:
       - name: Real Wintun, DNS and independent DIRECT/AWG observations
         shell: pwsh
         run: |
-          python scripts/routing/run_windows_acceptance.py --helper "$env:RUNNER_TEMP/amnezia-routing.exe" --peer "$env:RUNNER_TEMP/android-fixture.exe" --report windows-native-acceptance.json --cycles 100
+          python scripts/routing/run_windows_acceptance.py --helper "$env:RUNNER_TEMP/amnezia-routing.exe" --peer "$env:RUNNER_TEMP/android-fixture.exe" --report windows-native-acceptance.json --quic-probe "$env:RUNNER_TEMP/traffic-probe.exe" --cycles 100
           exit $LASTEXITCODE
       - uses: actions/upload-artifact@v4
         if: always()

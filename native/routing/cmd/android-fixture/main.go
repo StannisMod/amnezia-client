@@ -7,6 +7,7 @@ package main
 import (
 	"crypto/ecdh"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -26,6 +27,7 @@ import (
 	"time"
 
 	"github.com/StannisMod/amnezia-client/native/routing/awg"
+	"github.com/StannisMod/amnezia-client/native/routing/internal/fixturequic"
 	"github.com/amnezia-vpn/amneziawg-go/v3/conn"
 	"github.com/amnezia-vpn/amneziawg-go/v3/device"
 	"github.com/miekg/dns"
@@ -43,6 +45,7 @@ type fixture struct {
 	server, client                       *ecdh.PrivateKey
 	directTCP, directUDP, vpnTCP, vpnUDP atomic.Int64
 	dnsQueries                           atomic.Int64
+	quicCertificate                      tls.Certificate
 }
 
 // The disposable loopback peer never changes underlay networks. Wrapping the
@@ -88,6 +91,13 @@ func (f *fixture) start() error {
 	if f.peer != nil {
 		return nil
 	}
+	if len(f.quicCertificate.Certificate) == 0 {
+		var err error
+		f.quicCertificate, err = fixturequic.Certificate()
+		if err != nil {
+			return err
+		}
+	}
 	t, stack, err := awg.NewFlowTUN([]netip.Addr{netip.MustParseAddr("10.77.0.2"), netip.MustParseAddr("fd77::2"), netip.MustParseAddr(sharedIP)}, 1280)
 	if err != nil {
 		return err
@@ -122,6 +132,16 @@ func (f *fixture) start() error {
 		return fmt.Errorf("fixture peer did not bind a UDP port")
 	}
 	for _, ip := range []string{sharedIP, "fd77::2"} {
+		quicUDP, e := stack.ListenUDPAddrPort(netip.AddrPortFrom(netip.MustParseAddr(ip), fixturequic.Port))
+		if e != nil {
+			return e
+		}
+		f.closePeer = append(f.closePeer, quicUDP)
+		quicServer, e := fixturequic.Serve(quicUDP, f.quicCertificate, "VPN")
+		if e != nil {
+			return e
+		}
+		f.closePeer = append(f.closePeer, quicServer)
 		l, e := stack.ListenTCPAddrPort(netip.AddrPortFrom(netip.MustParseAddr(ip), tcpPort))
 		if e != nil {
 			return e
@@ -170,6 +190,7 @@ func (f *fixture) start() error {
 func main() {
 	flag.StringVar(&sharedIP, "shared-ip", sharedIP, "native host address used by both controlled observers")
 	path := flag.String("config", "", "private output fixture JSON (never upload)")
+	quicCA := flag.String("quic-ca", "", "public disposable QUIC certificate output")
 	probeTCP := flag.String("probe-tcp", "", "native application TCP observer probe")
 	probeUDP := flag.String("probe-udp", "", "native application UDP observer probe")
 	flag.Parse()
@@ -213,6 +234,21 @@ func main() {
 		panic(err)
 	}
 	defer f.stop()
+	if *quicCA != "" {
+		if err = os.WriteFile(*quicCA, f.quicCertificate.Certificate[0], 0644); err != nil {
+			panic(err)
+		}
+	}
+	quicUDP, err := net.ListenPacket("udp4", ":18443")
+	if err != nil {
+		panic(err)
+	}
+	defer quicUDP.Close()
+	quicServer, err := fixturequic.Serve(quicUDP, f.quicCertificate, "DIRECT")
+	if err != nil {
+		panic(err)
+	}
+	defer quicServer.Close()
 	l, err := net.Listen("tcp4", ":18081")
 	if err != nil {
 		panic(err)

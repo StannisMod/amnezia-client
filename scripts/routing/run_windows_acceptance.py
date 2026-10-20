@@ -39,6 +39,7 @@ def main():
     parser.add_argument("--peer", type=Path, required=True)
     parser.add_argument("--report", type=Path, required=True)
     parser.add_argument("--cycles", type=int, default=100)
+    parser.add_argument("--quic-probe", type=Path, required=True)
     args = parser.parse_args()
     assert os.name == "nt" and ctypes.windll.shell32.IsUserAnAdmin(), "an elevated disposable Windows host is required"
     assert 1 <= args.cycles <= 1000
@@ -75,7 +76,8 @@ def main():
         before = network_state()
         directory = temporary.name
         fixture = Path(directory) / "fixture.json"
-        peer = subprocess.Popen([str(args.peer.resolve()), "--shared-ip", shared, "--config", str(fixture)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        ca = Path(directory) / "quic.der"
+        peer = subprocess.Popen([str(args.peer.resolve()), "--shared-ip", shared, "--config", str(fixture), "--quic-ca", str(ca)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         ready = queue.Queue()
         threading.Thread(target=lambda: ready.put(peer.stdout.readline()), daemon=True).start()
         assert ready.get(timeout=15).startswith("READY"), "AWG fixture failed to start"
@@ -106,6 +108,7 @@ def main():
         start()
         direct, vpn = resolve("direct.ru"), resolve("vpn.test")
         assert direct != vpn
+        probe({"quic_probe":str(args.quic_probe.resolve()), "quic_ca":str(ca), "quic_names":[["direct.ru","DIRECT",1],["vpn.test","VPN",1],["ipv6.test","VPN",28]]})
         probe({"names": [["direct.ru", "DIRECT", 1], ["vpn.test", "VPN", 1], ["shop.direct.ru", "DIRECT", 1], ["notdirect.ru.test", "VPN", 1], ["cname.test", "VPN", 1], ["ipv6.test", "VPN", 28]], "loopback": ["127.0.0.1", "::1"]})
         # Query through Windows' configured system resolver as well as the
         # explicit UDP capture address used by the shared probes.

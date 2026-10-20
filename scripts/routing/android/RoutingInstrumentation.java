@@ -16,6 +16,9 @@ import android.os.SystemClock;
 import org.json.JSONArray;
 import org.json.JSONObject;
 import java.io.BufferedReader;
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
@@ -30,7 +33,8 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
 /** Tests the installed production service over its existing Messenger API.
- * No alternate VpnService, TUN fixture, native library or production test hook.
+ * No alternate VpnService, TUN fixture or production test hook.
+ * The QUIC probe runs as a separate executable with the instrumented app UID.
  * IPC numbers below are checked against source by the host driver.
  */
 public final class RoutingInstrumentation extends Instrumentation {
@@ -101,6 +105,8 @@ public final class RoutingInstrumentation extends Instrumentation {
             InetAddress six = dns("ipv6.test", 28);
             require(six.getAddress().length == 16 && fake(six), "AAAA did not return IPv6 FakeIP");
             requireRoute(six, "VPN"); pass("IPv6 FakeIP and real inner IPv6 TCP+UDP through AWG");
+            quic(direct, "DIRECT"); quic(vpn, "VPN"); quic(six, "VPN");
+            pass("native QUIC/TLS: DIRECT IPv4 and AWG IPv4/IPv6, verified 64 KiB digest");
             InetAddress[] system = InetAddress.getAllByName("system.direct.ru");
             InetAddress four = null;
             for (InetAddress address : system) if (address.getAddress().length == 4) four = address;
@@ -234,6 +240,32 @@ public final class RoutingInstrumentation extends Instrumentation {
         require(expected.equals(tcp(address)), "TCP reached wrong observer; expected " + expected);
         progress("CHECK: UDP to " + expected + " observer");
         require((expected + ":route-proof").equals(udp(address)), "UDP reached wrong observer; expected " + expected);
+    }
+    private void quic(InetAddress address, String expected) throws Exception {
+        File ca = new File(getTargetContext().getCacheDir(), "routing-quic-ca.der");
+        try (InputStream input = getContext().getAssets().open("quic-ca.der");
+             FileOutputStream output = new FileOutputStream(ca)) {
+            byte[] buffer = new byte[4096]; int count;
+            while ((count = input.read(buffer)) != -1) output.write(buffer, 0, count);
+        }
+        File executable = new File(getContext().getApplicationInfo().nativeLibraryDir, "libtrafficprobe.so");
+        String host = address.getHostAddress();
+        if (address.getAddress().length == 16) host = "[" + host + "]";
+        Process process = new ProcessBuilder(executable.getAbsolutePath(), "--quic", host + ":18443", "--ca", ca.getAbsolutePath())
+                .redirectErrorStream(true).start();
+        try {
+            require(process.waitFor(25, TimeUnit.SECONDS), "native QUIC probe timeout");
+            StringBuilder result = new StringBuilder();
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream(), StandardCharsets.US_ASCII))) {
+                String line;
+                while ((line = reader.readLine()) != null && result.length() < 4096) result.append(line).append('\n');
+            }
+            require(process.exitValue() == 0 && result.toString().trim().endsWith(expected),
+                    "native QUIC expected " + expected + ": " + result);
+        } finally {
+            if (process.isAlive()) process.destroyForcibly();
+            ca.delete();
+        }
     }
     private static int u16(byte[] b, int i) { return ((b[i] & 255) << 8) | (b[i + 1] & 255); }
     private static int skipName(byte[] b, int i) {
