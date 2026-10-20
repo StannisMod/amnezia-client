@@ -55,7 +55,6 @@ func TestRejectUnsupportedDesktopPoliciesAndInvalidAWG(t *testing.T) {
 		func(p map[string]any) { p["appSplitTunnelType"] = 1 },
 		func(p map[string]any) { p["appSplitTunnelType"] = 3 },
 		func(p map[string]any) { p["appSplitTunnelType"] = 2; p["splitTunnelApps"] = []string{"relative.exe"} },
-		func(p map[string]any) { p["killSwitchOption"] = "true" },
 		func(p map[string]any) { p["protocol"] = "wireguard" },
 		func(p map[string]any) { p["awg_config_data"].(map[string]any)["hostName"] = "bootstrap.invalid" },
 		func(p map[string]any) { p["awg_config_data"].(map[string]any)["port"] = 70000 },

@@ -68,7 +68,7 @@ func main() {
 		return
 	}
 	defer session.Close()
-	write(map[string]any{"type": "ready", "interface": desktop.InterfaceName})
+	write(map[string]any{"type": "ready", "interface": desktop.InterfaceName, "capture_id": session.CaptureID()})
 	commands := make(chan string)
 	go func() {
 		defer close(commands)
@@ -82,15 +82,21 @@ func main() {
 	for {
 		select {
 		case <-ctx.Done():
+			session.Abort()
 			return
 		case command, ok := <-commands:
-			if !ok || command == "stop" {
+			if !ok {
+				session.Abort()
+				return
+			}
+			if command == "stop" {
 				return
 			}
 		case <-ticker.C:
 			stats, err := session.Stats()
 			if err != nil {
 				fail("routing statistics unavailable")
+				session.Abort()
 				return
 			}
 			if !connected && stats.LastHandshake > 0 {

@@ -32,14 +32,18 @@ type Hooks struct {
 	// per-destination OS route before connect/first datagram. Mobile hosts keep
 	// their existing FD protection callback and leave this unset.
 	Underlay *engine.Underlay
+	// Desktop hosts provide a static native inventory and no Go interface
+	// monitor. Seed the manager so it recognizes locally owned source sockets.
+	InitializeInterfaces bool
 }
 
 type Platform struct {
-	mu     sync.RWMutex
-	hooks  Hooks
-	fd     int
-	taken  bool
-	closed bool
+	mu        sync.RWMutex
+	hooks     Hooks
+	fd        int
+	taken     bool
+	closed    bool
+	addresses []netip.Addr
 }
 
 var _ adapter.PlatformInterface = (*Platform)(nil)
@@ -123,10 +127,21 @@ func (p *Platform) OpenInterface(opts *tun.Options, _ option.TunPlatformOptions)
 	}
 	if err == nil {
 		p.taken = true
+		for _, prefix := range opts.Inet4Address {
+			p.addresses = append(p.addresses, prefix.Addr())
+		}
+		for _, prefix := range opts.Inet6Address {
+			p.addresses = append(p.addresses, prefix.Addr())
+		}
 	}
 	return t, err
 }
-func (p *Platform) Initialize(adapter.NetworkManager) error                { return nil }
+func (p *Platform) Initialize(manager adapter.NetworkManager) error {
+	if p.hooks.InitializeInterfaces {
+		return manager.UpdateInterfaces()
+	}
+	return nil
+}
 func (p *Platform) UsePlatformAutoDetectInterfaceControl() bool            { return true }
 func (p *Platform) UsePlatformInterface() bool                             { return true }
 func (p *Platform) ProcessPlatformOptions(option.TunPlatformOptions) error { return nil }
@@ -147,11 +162,15 @@ func (p *Platform) UsePlatformConnectionOwnerFinder() bool          { return fal
 func (p *Platform) FindConnectionOwner(*adapter.FindConnectionOwnerRequest) (*adapter.ConnectionOwner, error) {
 	return nil, unsupported
 }
-func (p *Platform) UsePlatformWIFIMonitor() bool                              { return false }
-func (p *Platform) UsePlatformNotification() bool                             { return false }
-func (p *Platform) SendNotification(*adapter.Notification) error              { return unsupported }
-func (p *Platform) CancelNotification(string, int32) error                    { return unsupported }
-func (p *Platform) MyInterfaceAddress() []netip.Addr                          { return nil }
+func (p *Platform) UsePlatformWIFIMonitor() bool                 { return false }
+func (p *Platform) UsePlatformNotification() bool                { return false }
+func (p *Platform) SendNotification(*adapter.Notification) error { return unsupported }
+func (p *Platform) CancelNotification(string, int32) error       { return unsupported }
+func (p *Platform) MyInterfaceAddress() []netip.Addr {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return append([]netip.Addr(nil), p.addresses...)
+}
 func (p *Platform) UsePlatformNeighborResolver() bool                         { return false }
 func (p *Platform) StartNeighborMonitor(adapter.NeighborUpdateListener) error { return unsupported }
 func (p *Platform) CloseNeighborMonitor(adapter.NeighborUpdateListener) error { return nil }

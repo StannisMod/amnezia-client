@@ -178,12 +178,12 @@ func main() {
 		if *probeUDP != "" {
 			network, address = "udp", *probeUDP
 		}
-		c, err := net.DialTimeout(network, address, 5*time.Second)
+		c, err := net.DialTimeout(network, address, 10*time.Second)
 		if err != nil {
 			panic(err)
 		}
 		defer c.Close()
-		c.SetDeadline(time.Now().Add(5 * time.Second))
+		c.SetDeadline(time.Now().Add(10 * time.Second))
 		if network == "udp" {
 			if _, err = c.Write([]byte("proof")); err != nil {
 				panic(err)

@@ -155,7 +155,8 @@ func Start(ctx context.Context, raw []byte, manageDNS bool) (*Session, error) {
 	}
 	s := &Session{manageDNS: manageDNS}
 	hooks := mobile.Hooks{
-		Protect: func(fd int) error { return unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_MARK, int(socketMark)) },
+		InitializeInterfaces: true,
+		Protect:              func(fd int) error { return unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_MARK, int(socketMark)) },
 		Interfaces: func() ([]adapter.NetworkInterface, error) {
 			rows, err := net.Interfaces()
 			if err != nil {
@@ -274,8 +275,18 @@ func Start(ctx context.Context, raw []byte, manageDNS bool) (*Session, error) {
 }
 
 func (s *Session) Stats() (awg.Stats, error) { return s.core.Stats() }
+func (s *Session) CaptureID() string         { return InterfaceName }
 
 func (s *Session) Close() error {
+	return s.close(false)
+}
+
+// Abort closes the engine/TUN but keeps the owned blackhole/rules after the
+// service's command pipe disappears unexpectedly. Only an explicit recovery
+// may release that state.
+func (s *Session) Abort() error { return s.close(true) }
+
+func (s *Session) close(preserve bool) error {
 	var errs []error
 	s.once.Do(func() {
 		if s.manageDNS {
@@ -283,6 +294,9 @@ func (s *Session) Close() error {
 		}
 		if s.core != nil {
 			errs = append(errs, s.core.Close())
+		}
+		if preserve {
+			return
 		}
 		// Do not remove native policies or flush shared tables. These exact
 		// entries were added by this successful/partially-started session only.

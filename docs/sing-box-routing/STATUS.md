@@ -2,8 +2,9 @@
 
 ## Current verification — 2026-10-20
 
-A new Windows crash-guard change is pending native CI acceptance; the PASS
-results below describe the previous verified source, not this new change.
+New desktop application-scope, strict-switch and crash-state changes await
+native and installed-service acceptance. The PASS results below describe the
+previous verified source, not the current changes.
 
 The feature remains experimental and off by default. Source integration and
 build success are separate from native runtime acceptance.
@@ -531,3 +532,38 @@ No crash protection PASS is claimed from the failed run.
 A later reporting-only matrix `39380227075` exposed a macOS fixture timeout
 in TestEngineRealDNSAndPeerRestart. The prior verified source matrix remains
 historical evidence; repeatability on macOS is still under investigation.
+
+## Strict-switch service integration and installed-package acceptance — pending
+
+The Qt service now owns narrow firewall exceptions for the protected routing
+helper and the captured interface. Windows uses a separate owned filter group,
+IPv4/IPv6 app identity and capture LUID; Linux validates and owns a two-rule
+iptables/ip6tables chain for its reserved socket mark and capture interface.
+The existing strict policy remains blocked between sessions; live toggles
+reapply the owned exceptions. Cleanup restores the strict state before the
+native child releases capture. Domain DIRECT rules and application scope are
+still evaluated by the shared engine, rather than legacy IP-filter rules.
+
+Unexpected service-pipe EOF, signals and runtime statistics failure now close
+the engine but retain native fail-closed policy. Explicit stop/recovery releases
+that owned policy. Both native suites check pipe-loss recovery as well as hard
+termination. This guard is not boot/BFE-restart protection.
+
+The first application-scope native runs rejected unknown owners. Desktop hosts
+with no Go network monitor had not seeded sing-box's interface inventory, and
+newly captured source addresses were absent from that pre-TUN snapshot. The
+host now initializes its native inventory and reports its assigned capture
+addresses through the platform API. Unknown ownership remains rejected.
+
+Full CI now builds a small client of the real QtRO switch API, installs the
+Linux RUN package and both Windows MSI/EXE packages, then tests the installed
+service's actual child, system resolver (including systemd-resolved), live
+strict-switch changes, application scope, IPC reconnect, helper crash/recovery
+and OS-state restoration. These are new tests, not yet PASS evidence.
+
+Local Go race suites pass count=3; the DNS/restart regression passes count=30.
+The real QtRO probe compiles/links, and the edited Linux C++ service/firewall
+units pass syntax checking. Native Windows ABI/guard-lifetime checks passed in
+run 39396896294 before that run stopped at the application-scope rejection.
+Correctness TCP deadlines now allow the existing AWG/TCP retry timers on loaded
+CI hosts; the independent first-flight A/AAAA UDP burst still has a 2s deadline.

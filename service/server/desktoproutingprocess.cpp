@@ -5,6 +5,8 @@
 #include <QJsonDocument>
 #include <QTimer>
 
+#include "killswitch.h"
+
 namespace {
 QString executablePath()
 {
@@ -42,18 +44,16 @@ QJsonObject DesktopRoutingProcess::status() const { return m_status; }
 
 bool DesktopRoutingProcess::start(const QJsonObject &profile, bool strictKillSwitch)
 {
-    // Application scope is enforced by the engine's native process lookup,
-    // before domain rules. Keep rejecting an unintegrated OS kill switch.
-    if (strictKillSwitch
-            || profile.value("killSwitchOption").toString() == "true") return false;
+    Q_UNUSED(strictKillSwitch); // persistent strict state is owned by KillSwitch
     stop(false);
     if (isActive()) return false;
     m_status = {{"connected", false}, {"deviceIpv4Address", "172.19.0.1"},
                 {"serverIpv4Gateway", "172.19.0.2"}, {"rxBytes", 0}, {"txBytes", 0}};
     m_buffer.clear();
+    if (!KillSwitch::instance()->beginRoutedSession(executablePath())) return false;
+    m_owned = true; // includes service firewall exceptions before spawn
     m_process.start(executablePath(), {});
-    if (!m_process.waitForStarted(5000)) return false;
-    m_owned = true;
+    if (!m_process.waitForStarted(5000)) { stop(false); return false; }
     const auto bytes = QJsonDocument(profile).toJson(QJsonDocument::Compact) + '\n';
     if (m_process.write(bytes) != bytes.size()) { stop(false); return false; }
     return true;
@@ -62,6 +62,13 @@ bool DesktopRoutingProcess::start(const QJsonObject &profile, bool strictKillSwi
 void DesktopRoutingProcess::stop(bool notify)
 {
     m_stopping = true;
+    // Restore the existing strict firewall before the child releases its
+    // capture/crash guard; a disconnect must have no unprotected interval.
+    if (!KillSwitch::instance()->endRoutedSession()) {
+        m_stopping = false;
+        emit failed();
+        return;
+    }
     if (m_process.state() != QProcess::NotRunning) {
         m_process.write("stop\n");
         m_process.closeWriteChannel();
@@ -86,6 +93,7 @@ void DesktopRoutingProcess::stop(bool notify)
 
 void DesktopRoutingProcess::readOutput()
 {
+    if (m_stopping) { m_process.readAllStandardOutput(); m_buffer.clear(); return; }
     m_buffer += m_process.readAllStandardOutput();
     if (m_buffer.size() > 65536) { stop(false); emit failed(); emit disconnected(); return; }
     int newline;
@@ -93,7 +101,11 @@ void DesktopRoutingProcess::readOutput()
         const auto row = QJsonDocument::fromJson(m_buffer.left(newline)).object();
         m_buffer.remove(0, newline + 1);
         const auto type = row.value("type").toString();
-        if (type == "status") {
+        if (type == "ready") {
+            if (!KillSwitch::instance()->routedInterfaceReady(row.value("capture_id").toString())) {
+                stop(false); emit failed(); emit disconnected(); return;
+            }
+        } else if (type == "status") {
             m_status = row;
             m_status.insert("date", QDateTime::currentDateTime().toString());
         } else if (type == "connected") {

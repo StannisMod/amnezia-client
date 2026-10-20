@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net"
 	"net/netip"
+	"strconv"
 	"sync"
 	"time"
 
@@ -23,6 +24,7 @@ type Session struct {
 	core     *mobile.Session
 	underlay windowsUnderlay
 	guard    *windowsGuard
+	luid     uint64
 	once     sync.Once
 }
 
@@ -81,6 +83,7 @@ func Start(ctx context.Context, raw []byte, manageDNS bool) (*Session, error) {
 	underlay := s.underlay.factories()
 	var luid uint64
 	hooks := mobile.Hooks{
+		InitializeInterfaces: true,
 		// Any accidental use of a destination-less default socket path must
 		// fail. DIRECT and AWG use the destination-aware factories above.
 		Protect:    func(int) error { return errors.New("Windows sockets require destination-aware native protection") },
@@ -121,12 +124,18 @@ func Start(ctx context.Context, raw []byte, manageDNS bool) (*Session, error) {
 	if err = captureSpecificRoutes(rows, luid); err != nil {
 		return nil, err
 	}
+	s.luid = luid
 	ok = true
 	return s, nil
 }
 
 func (s *Session) Stats() (awg.Stats, error) { return s.core.Stats() }
+func (s *Session) CaptureID() string         { return strconv.FormatUint(s.luid, 10) }
 func (s *Session) Close() error {
+	return s.close(false)
+}
+func (s *Session) Abort() error { return s.close(true) }
+func (s *Session) close(preserve bool) error {
 	var err error
 	s.once.Do(func() {
 		s.underlay.closed.Store(true)
@@ -134,7 +143,11 @@ func (s *Session) Close() error {
 			err = s.core.Close()
 		}
 		if s.guard != nil {
-			err = errors.Join(err, s.guard.close())
+			if preserve {
+				s.guard.release()
+			} else {
+				err = errors.Join(err, s.guard.close())
+			}
 		}
 	})
 	return err

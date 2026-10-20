@@ -121,6 +121,29 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
         run: ctest --test-dir deploy/build/client/tests --output-on-failure -R 'UiIpModelAndControllerTest|SettingsSignalsTest|BackupExportImportTest|DomainRoutingContractTest'
+      - name: Build installed-service IPC probe and disposable peer
+        run: |
+          cmake -S scripts/routing/service-probe -B routing-service-probe-build -DCMAKE_PREFIX_PATH="${{ runner.temp }}/Qt/6.10.1/gcc_64"
+          cmake --build routing-service-probe-build
+          cd native/routing
+          go build -mod=readonly -tags with_gvisor -o "$RUNNER_TEMP/installed-routing-peer" ./cmd/android-fixture
+      - name: Install RUN package and verify actual Qt service and system resolver
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          set -euo pipefail
+          packages=(deploy/build/AmneziaVPN_*_linux_x64.run)
+          chmod +x "${packages[0]}"
+          sudo env QT_QPA_PLATFORM=offscreen "${packages[0]}" --root /opt/AmneziaVPN --accept-licenses --default-answer --confirm-command install
+          sudo systemctl daemon-reload
+          sudo systemctl restart AmneziaVPN
+          sudo python3 scripts/routing/run_service_acceptance.py --peer "$RUNNER_TEMP/installed-routing-peer" --qt-probe "$GITHUB_WORKSPACE/routing-service-probe-build/routing-service-probe" --report "$GITHUB_WORKSPACE/linux-installed-service.json"
+      - name: Remove installed test package
+        if: always()
+        run: |
+          if [ -x /opt/AmneziaVPN/maintenancetool ]; then
+            sudo env QT_QPA_PLATFORM=offscreen /opt/AmneziaVPN/maintenancetool --default-answer --confirm-command purge
+          fi
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -129,6 +152,7 @@ jobs:
             client-build.log
             routing-build-manifest.json
             deploy/build/AmneziaVPN_*_linux_x64.run
+            linux-installed-service.json
 
   client-windows:
     runs-on: windows-2022
@@ -178,6 +202,55 @@ jobs:
         env:
           BUILD_OUTCOME: ${{ steps.build.outcome }}
         run: python scripts/routing/build_manifest.py windows
+      - name: Build installed-service IPC probe and disposable peer
+        shell: pwsh
+        run: |
+          cmake -S scripts/routing/service-probe -B routing-service-probe-build -DCMAKE_PREFIX_PATH="$env:RUNNER_TEMP/Qt/6.10.1/msvc2022_64"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build routing-service-probe-build --config Release
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Set-Location native/routing
+          go build -mod=readonly -tags with_gvisor -o "$env:RUNNER_TEMP/installed-routing-peer.exe" ./cmd/android-fixture
+          exit $LASTEXITCODE
+      - name: Install MSI and verify actual LocalSystem Qt service
+        shell: pwsh
+        run: |
+          $msi = (Get-ChildItem deploy/build/AmneziaVPN_*_windows_x64.msi | Select-Object -First 1).FullName
+          $p = Start-Process msiexec.exe -ArgumentList @('/i', "`"$msi`"", '/qn', '/norestart', '/l*v', 'routing-msi-install.log') -Wait -PassThru
+          if ($p.ExitCode -notin @(0,3010)) { throw "MSI installation failed: $($p.ExitCode)" }
+          Start-Service AmneziaVPN-service
+          (Get-Service AmneziaVPN-service).WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
+          python scripts/routing/run_service_acceptance.py --peer "$env:RUNNER_TEMP/installed-routing-peer.exe" --qt-probe "$env:GITHUB_WORKSPACE/routing-service-probe-build/Release/routing-service-probe.exe" --report windows-installed-service.json
+          exit $LASTEXITCODE
+      - name: Remove installed MSI
+        if: always()
+        shell: pwsh
+        run: |
+          $msi = Get-ChildItem deploy/build/AmneziaVPN_*_windows_x64.msi -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($msi) {
+            $p = Start-Process msiexec.exe -ArgumentList @('/x', "`"$($msi.FullName)`"", '/qn', '/norestart') -Wait -PassThru
+            if ($p.ExitCode -notin @(0,1605,3010)) { throw "MSI cleanup failed: $($p.ExitCode)" }
+          }
+      - name: Install EXE and verify packaged service
+        shell: pwsh
+        run: |
+          $exe = (Get-ChildItem deploy/build/AmneziaVPN_*_windows_x64.exe | Select-Object -First 1).FullName
+          $target = "$env:ProgramFiles/AmneziaVPN"
+          $p = Start-Process $exe -ArgumentList @('--root', "`"$target`"", '--accept-licenses', '--default-answer', '--confirm-command', 'install') -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "EXE installation failed: $($p.ExitCode)" }
+          Start-Service AmneziaVPN-service
+          (Get-Service AmneziaVPN-service).WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
+          python scripts/routing/run_service_acceptance.py --peer "$env:RUNNER_TEMP/installed-routing-peer.exe" --qt-probe "$env:GITHUB_WORKSPACE/routing-service-probe-build/Release/routing-service-probe.exe" --report windows-exe-installed-service.json
+          exit $LASTEXITCODE
+      - name: Remove installed EXE package
+        if: always()
+        shell: pwsh
+        run: |
+          $maintenance = "$env:ProgramFiles/AmneziaVPN/maintenancetool.exe"
+          if (Test-Path $maintenance) {
+            $p = Start-Process $maintenance -ArgumentList @('--default-answer', '--confirm-command', 'purge') -Wait -PassThru
+            if ($p.ExitCode -ne 0) { throw "EXE cleanup failed: $($p.ExitCode)" }
+          }
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -187,6 +260,9 @@ jobs:
             routing-build-manifest.json
             deploy/build/AmneziaVPN_*_windows_x64.exe
             deploy/build/AmneziaVPN_*_windows_x64.msi
+            windows-installed-service.json
+            windows-exe-installed-service.json
+            routing-msi-install.log
 
   client-android:
     runs-on: ubuntu-22.04

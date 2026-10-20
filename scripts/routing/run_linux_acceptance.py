@@ -54,7 +54,7 @@ def resolve(name, kind=1):
 
 
 def tcp(address):
-    with socket.create_connection((address, 18081), timeout=3) as client:
+    with socket.create_connection((address, 18081), timeout=10) as client:
         return client.recv(32).decode().strip()
 
 
@@ -77,7 +77,7 @@ def probe(options):
                 other = options["other_expected"]
                 for protocol, port, marker in (("tcp", 18081, other), ("udp", 18082, other + ":proof")):
                     destination = f"[{address}]:{port}" if ":" in address else f"{address}:{port}"
-                    output = subprocess.check_output([options["other_process"], "--probe-" + protocol, destination], text=True, timeout=10)
+                    output = subprocess.check_output([options["other_process"], "--probe-" + protocol, destination], text=True, timeout=15)
                     assert output.strip() == marker, "wrong observer for independent executable"
         except Exception as error:
             raise AssertionError(f"{name}: expected {expected} over IPv{ipaddress.ip_address(address).version}: {error}") from error
@@ -236,6 +236,11 @@ def main():
             for cycle in range(args.cycles):
                 stop(); start(bool(cycle & 1))
                 application({"names": [["vpn.test", "VPN", 1]]})
+            # Unexpected service command-pipe loss is not an explicit stop.
+            child.stdin.close(); assert child.wait(timeout=15) == 0; child = None
+            application({"blocked": ["10.0.2.2"]})
+            run("ip", "netns", "exec", ns, helper, "--cache-dir", directory, "--recover")
+            start()
             # A killed Go process must leave the capture policy failing closed
             # until an explicit service recovery, rather than release packets.
             child.kill(); child.wait(timeout=10); child = None

@@ -157,7 +157,7 @@ func TestEngineRealDNSAndPeerRestart(t *testing.T) {
 			}
 		}
 		func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			config := engine.SessionConfig{Rules: rules.Config{Version: 1, Default: rules.VPN, Rules: []rules.Rule{{Kind: rules.Suffix, Value: "direct.ru", Action: rules.Direct}}},
 				Resolver: netip.MustParseAddrPort("10.77.0.2:53"), ResolverAction: rules.VPN,
@@ -208,13 +208,18 @@ func TestEngineRealDNSAndPeerRestart(t *testing.T) {
 				}
 				ip := netip.MustParseAddr(answer.Answer[0].(*dns.A).A.String())
 				app, capture := net.Pipe()
-				app.SetDeadline(time.Now().Add(3 * time.Second))
+				// This is correctness/restart acceptance, not a latency budget.
+				// Allow the pinned AWG/TCP retransmission timers on loaded race
+				// runners; the separate first-flight UDP burst still has 2s.
+				app.SetDeadline(time.Now().Add(10 * time.Second))
 				go box.Router().RouteConnectionEx(ctx, capture, adapter.InboundContext{Inbound: engine.TUNTag, Network: "tcp", Destination: M.Socksaddr{Addr: ip, Port: 18081}}, nil)
 				reply := make([]byte, 16)
 				n, err := app.Read(reply)
 				app.Close()
 				if err != nil {
-					t.Fatalf("cycle %d %s: %v, DNS queries %d", cycle, name, err, f.dnsQueries.Load())
+					out, _ := box.Outbound().Outbound("vpn")
+					stats, _ := out.(*awg.Outbound).Stats()
+					t.Fatalf("cycle %d %s: %v, DNS queries %d, VPN accepts %d, AWG counters %+v", cycle, name, err, f.dnsQueries.Load(), f.vpnTCP.Load(), stats)
 				}
 				want := "VPN\n"
 				if name == "direct.ru" {

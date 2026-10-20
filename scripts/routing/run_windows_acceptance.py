@@ -139,6 +139,15 @@ def main():
             assert tcp(resolve("vpn.test")) == "VPN"
             if (cycle + 1) % 10 == 0:
                 print("PASS reconnect cycles:", cycle + 1, flush=True)
+        child.stdin.close(); assert child.wait(timeout=20) == 0; child = None
+        try:
+            native_connect()
+        except OSError as error:
+            assert error.winerror == 10013
+        else:
+            raise AssertionError("service pipe loss released crash protection")
+        subprocess.run([str(helper), "--cache-dir", str(cache), "--recover"], check=True, timeout=20)
+        native_connect(); start()
         child.kill(); child.wait(timeout=20); child = None
         # Wait for the last Wintun handle to disappear. The separately owned
         # crash policy must remain after the captured adapter is gone.

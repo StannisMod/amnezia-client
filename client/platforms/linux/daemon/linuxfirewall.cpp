@@ -418,6 +418,53 @@ void LinuxFirewall::setAnchorEnabled(LinuxFirewall::IPVersion ip, const QString 
     }
 }
 
+bool LinuxFirewall::setDomainRoutingAllowed(bool enabled)
+{
+    const QString chain = QStringLiteral("amnrouting.session");
+    auto apply = [&](const QString &program, bool enable) {
+        auto invoke = [&](QStringList args, QByteArray *output = nullptr) {
+            QProcess p;
+            args.prepend("5"); args.prepend("-w");
+            p.start(program, args);
+            if (!p.waitForStarted(3000) || !p.waitForFinished(8000)) return false;
+            if (output) *output = p.readAllStandardOutput();
+            return p.exitStatus() == QProcess::NormalExit && p.exitCode() == 0;
+        };
+        const QStringList capture {"-o", "amnrouting0", "-j", "ACCEPT"};
+        const QStringList underlay {"-m", "mark", "--mark", "0x40000000/0x40000000", "-j", "ACCEPT"};
+        QByteArray existing;
+        bool present = invoke({"-S", chain}, &existing);
+        if (present) {
+            // Adopt only our exact two-rule chain after a service restart.
+            // Never flush a foreign policy merely because its name matches.
+            if (existing.trimmed().split('\n').size() != 3
+                    || !invoke(QStringList{"-C", chain} + capture)
+                    || !invoke(QStringList{"-C", chain} + underlay)) return false;
+        } else if (enable) {
+            if (!invoke({"-N", chain})) return false;
+            if (!invoke(QStringList{"-A", chain} + capture)
+                    || !invoke(QStringList{"-A", chain} + underlay)) {
+                invoke({"-F", chain}); invoke({"-X", chain}); return false;
+            }
+        } else {
+            return true;
+        }
+        // Exact owned jump only. Reinsert ahead of a refreshed legacy strict
+        // root so the protected helper and captured packets remain usable.
+        for (int i = 0; invoke({"-C", "OUTPUT", "-j", chain}); ++i) {
+            if (i >= 16 || !invoke({"-D", "OUTPUT", "-j", chain})) return false;
+        }
+        if (enable) return invoke({"-I", "OUTPUT", "1", "-j", chain});
+        return invoke({"-F", chain}) && invoke({"-X", chain});
+    };
+    if (!apply("iptables", enabled)) return false;
+    if (!apply("ip6tables", enabled)) {
+        if (enabled) apply("iptables", false);
+        return false;
+    }
+    return true;
+}
+
 void LinuxFirewall::updateDNSServers(const QStringList& servers)
 {
     static QStringList existingServers {};

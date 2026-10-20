@@ -34,14 +34,13 @@ func text(v any) string {
 // checked independently by the service.
 func ProfileSession(raw []byte) (engine.SessionConfig, error) {
 	var profile struct {
-		Protocol   string         `json:"protocol"`
-		DNS        string         `json:"dns1"`
-		DNSPath    rules.Action   `json:"sing_box_dns_path"`
-		Rules      rules.Config   `json:"sing_box_routing"`
-		AWG        map[string]any `json:"awg_config_data"`
-		AppScope   int            `json:"appSplitTunnelType"`
-		Apps       []string       `json:"splitTunnelApps"`
-		KillSwitch any            `json:"killSwitchOption"`
+		Protocol string         `json:"protocol"`
+		DNS      string         `json:"dns1"`
+		DNSPath  rules.Action   `json:"sing_box_dns_path"`
+		Rules    rules.Config   `json:"sing_box_routing"`
+		AWG      map[string]any `json:"awg_config_data"`
+		AppScope int            `json:"appSplitTunnelType"`
+		Apps     []string       `json:"splitTunnelApps"`
 	}
 	if len(raw) > 4<<20 {
 		return engine.SessionConfig{}, errors.New("routing profile exceeds size limit")
@@ -50,9 +49,6 @@ func ProfileSession(raw []byte) (engine.SessionConfig, error) {
 	d.UseNumber()
 	if err := d.Decode(&profile); err != nil || profile.Protocol != "awg" {
 		return engine.SessionConfig{}, errors.New("routed desktop sessions require an AWG profile")
-	}
-	if text(profile.KillSwitch) == "true" || text(profile.KillSwitch) == "1" {
-		return engine.SessionConfig{}, errors.New("desktop domain routing with the OS kill switch is not yet supported")
 	}
 	resolver, err := netip.ParseAddr(profile.DNS)
 	if err != nil {
