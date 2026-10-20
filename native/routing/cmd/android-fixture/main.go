@@ -18,6 +18,7 @@ import (
 	"net/netip"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -26,7 +27,6 @@ import (
 	"github.com/StannisMod/amnezia-client/native/routing/awg"
 	"github.com/amnezia-vpn/amneziawg-go/v3/conn"
 	"github.com/amnezia-vpn/amneziawg-go/v3/device"
-	"github.com/amnezia-vpn/amneziawg-go/v3/tun/netstack"
 	"github.com/miekg/dns"
 )
 
@@ -37,6 +37,7 @@ const udpPort = 18082
 type fixture struct {
 	mu                                   sync.Mutex
 	peer                                 *device.Device
+	listenPort                           uint16
 	closePeer                            []io.Closer
 	server, client                       *ecdh.PrivateKey
 	directTCP, directUDP, vpnTCP, vpnUDP atomic.Int64
@@ -86,7 +87,7 @@ func (f *fixture) start() error {
 	if f.peer != nil {
 		return nil
 	}
-	t, stack, err := netstack.CreateNetTUN([]netip.Addr{netip.MustParseAddr("10.77.0.2"), netip.MustParseAddr("fd77::2"), netip.MustParseAddr(sharedIP)}, nil, 1280)
+	t, stack, err := awg.NewFlowTUN([]netip.Addr{netip.MustParseAddr("10.77.0.2"), netip.MustParseAddr("fd77::2"), netip.MustParseAddr(sharedIP)}, 1280)
 	if err != nil {
 		return err
 	}
@@ -99,9 +100,25 @@ func (f *fixture) start() error {
 	}()
 	// Omit endpoint on the server: authenticate then learn the emulator's NAT
 	// source port. Production outbound endpoint pinning is left unchanged.
-	ipc := fmt.Sprintf("private_key=%s\nlisten_port=51820\njc=3\njmin=40\njmax=80\ns1=16\ns2=24\ns3=8\ns4=8\nh1=1001\nh2=1002\nh3=1003\nh4=1004\nreplace_peers=true\npublic_key=%s\nreplace_allowed_ips=true\nallowed_ip=10.77.0.1/32\nallowed_ip=fd77::1/128\n", hex.EncodeToString(f.server.Bytes()), hex.EncodeToString(f.client.PublicKey().Bytes()))
+	ipc := fmt.Sprintf("private_key=%s\nlisten_port=%d\njc=3\njmin=40\njmax=80\ns1=16\ns2=24\ns3=8\ns4=8\nh1=1001\nh2=1002\nh3=1003\nh4=1004\nreplace_peers=true\npublic_key=%s\nreplace_allowed_ips=true\nallowed_ip=10.77.0.1/32\nallowed_ip=fd77::1/128\n", hex.EncodeToString(f.server.Bytes()), f.listenPort, hex.EncodeToString(f.client.PublicKey().Bytes()))
 	if f.peer, err = awg.NewConfiguredDevice(t, &fixtureBind{conn.NewDefaultBind()}, ipc); err != nil {
 		return err
+	}
+	ipcStatus, err := f.peer.IpcGet()
+	if err != nil {
+		return err
+	}
+	for _, line := range strings.Split(ipcStatus, "\n") {
+		if value, ok := strings.CutPrefix(line, "listen_port="); ok {
+			port, err := strconv.ParseUint(value, 10, 16)
+			if err != nil {
+				return err
+			}
+			f.listenPort = uint16(port)
+		}
+	}
+	if f.listenPort == 0 {
+		return fmt.Errorf("fixture peer did not bind a UDP port")
 	}
 	for _, ip := range []string{sharedIP, "fd77::2"} {
 		l, e := stack.ListenTCPAddrPort(netip.AddrPortFrom(netip.MustParseAddr(ip), tcpPort))
@@ -209,7 +226,7 @@ func main() {
 		"protocol": "awg", "description": "Disposable routing fixture", "dns1": "10.77.0.2", "sing_box_dns_path": "vpn",
 		"awg_config_data": map[string]any{
 			"client_ip": "10.77.0.1/32, fd77::1/128", "client_priv_key": base64.StdEncoding.EncodeToString(clientKey.Bytes()),
-			"server_pub_key": base64.StdEncoding.EncodeToString(serverKey.PublicKey().Bytes()), "hostName": sharedIP, "port": 51820,
+			"server_pub_key": base64.StdEncoding.EncodeToString(serverKey.PublicKey().Bytes()), "hostName": sharedIP, "port": f.listenPort,
 			"allowed_ips": []string{"0.0.0.0/0", "::/0"}, "persistent_keep_alive": "1", "mtu": "1280",
 			"Jc": "3", "Jmin": "40", "Jmax": "80", "S1": "16", "S2": "24", "S3": "8", "S4": "8", "H1": "1001", "H2": "1002", "H3": "1003", "H4": "1004",
 		},

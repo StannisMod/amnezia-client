@@ -16,7 +16,6 @@ import (
 	"sync"
 
 	"github.com/amnezia-vpn/amneziawg-go/v3/device"
-	"github.com/amnezia-vpn/amneziawg-go/v3/tun/netstack"
 )
 
 type Config struct {
@@ -101,7 +100,7 @@ func (c Config) uapi() (string, error) {
 }
 
 type Transport struct {
-	Net      *netstack.Net
+	Net      *FlowStack
 	device   *device.Device
 	mu       sync.RWMutex
 	closed   bool
@@ -163,7 +162,7 @@ func New(ctx context.Context, c Config, listen ListenUnderlay) (*Transport, erro
 	if c.MTU < 1280 || c.MTU > 65535 {
 		return nil, errors.New("AWG MTU outside supported range")
 	}
-	tun, n, e := netstack.CreateNetTUN(c.Address, c.DNS, c.MTU)
+	tun, n, e := NewFlowTUN(c.Address, c.MTU)
 	if e != nil {
 		return nil, errors.New("create AWG flow stack failed")
 	}
@@ -219,7 +218,11 @@ func (t *Transport) ListenPacket(ctx context.Context, destination netip.Addr) (n
 	if !local.IsValid() {
 		return nil, errors.New("AWG has no local address for the UDP destination family")
 	}
-	return t.Net.ListenUDPAddrPort(netip.AddrPortFrom(local, 0))
+	conn, err := t.Net.ListenUDPAddrPort(netip.AddrPortFrom(local, 0))
+	if err != nil {
+		return nil, err
+	}
+	return conn, nil
 }
 
 // LocalPort supports diagnostics/tests without exposing the private UAPI.

@@ -41,7 +41,7 @@ func TestEmulatorPeerLearnsEndpointAndServesIPv4IPv6(t *testing.T) {
 	transport, err := awg.New(ctx, awg.Config{
 		Address:    []netip.Addr{netip.MustParseAddr("10.77.0.1"), netip.MustParseAddr("fd77::1")},
 		PrivateKey: base64.StdEncoding.EncodeToString(client.Bytes()), PublicKey: base64.StdEncoding.EncodeToString(server.PublicKey().Bytes()),
-		Endpoint: netip.MustParseAddrPort("127.0.0.1:51820"), AllowedIPs: []netip.Prefix{netip.MustParsePrefix("0.0.0.0/0"), netip.MustParsePrefix("::/0")},
+		Endpoint: netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), f.listenPort), AllowedIPs: []netip.Prefix{netip.MustParsePrefix("0.0.0.0/0"), netip.MustParsePrefix("::/0")},
 		Parameters: map[string]string{"jc": "3", "jmin": "40", "jmax": "80", "s1": "16", "s2": "24", "s3": "8", "s4": "8", "h1": "1001", "h2": "1002", "h3": "1003", "h4": "1004"},
 	}, func(ctx context.Context, network, address string) (net.PacketConn, error) {
 		var lc net.ListenConfig
@@ -163,7 +163,7 @@ func TestEngineRealDNSAndPeerRestart(t *testing.T) {
 				Resolver: netip.MustParseAddrPort("10.77.0.2:53"), ResolverAction: rules.VPN,
 				AWG: awg.Config{Address: []netip.Addr{netip.MustParseAddr("10.77.0.1"), netip.MustParseAddr("fd77::1")},
 					PrivateKey: base64.StdEncoding.EncodeToString(client.Bytes()), PublicKey: base64.StdEncoding.EncodeToString(server.PublicKey().Bytes()),
-					Endpoint: netip.MustParseAddrPort("127.0.0.1:51820"), AllowedIPs: []netip.Prefix{netip.MustParsePrefix("0.0.0.0/0"), netip.MustParsePrefix("::/0")},
+					Endpoint: netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), f.listenPort), AllowedIPs: []netip.Prefix{netip.MustParsePrefix("0.0.0.0/0"), netip.MustParsePrefix("::/0")},
 					Parameters: map[string]string{"jc": "3", "jmin": "40", "jmax": "80", "s1": "16", "s2": "24", "s3": "8", "s4": "8", "h1": "1001", "h2": "1002", "h3": "1003", "h4": "1004"}}}
 			raw, err := config.Compile()
 			if err != nil {
