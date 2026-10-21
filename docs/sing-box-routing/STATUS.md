@@ -3,9 +3,10 @@
 ## Current verification — 2026-10-21
 
 Resumed from `ff86843cbe35e7e8bc9fbcdec0d4a627cf425e57` on the existing
-`feature/sing-box-routing` branch. Its verified base remains
-`ddde43635e957ebf042d92787489da72d3394019` (`dev`). No dev merge or release
-publication was performed.
+`feature/sing-box-routing` branch. Verified base:
+`ddde43635e957ebf042d92787489da72d3394019` (`dev`).
+Production fixes in this continuation: `e455c6a9`, `ff7016b9`, `ab782ce1`, `18efe265`.
+No dev merge, server modification or release publication was performed.
 
 The feature remains experimental and off by default. Source integration,
 compilation, controlled native tests and physical-device acceptance are separate
@@ -13,21 +14,52 @@ claims. The four-platform handoff is **incomplete**.
 
 | Check | Latest verified result |
 | --- | --- |
-| Android packaged service | PASS at `ff86843c`, [run 39451549933](https://github.com/StannisMod/amnezia-client/actions/runs/39451549933): controlled emulator/native service acceptance including QUIC/TLS; no physical-device claim |
-| Linux native TUN/helper | PASS at `ff86843c`, [run 39451550008](https://github.com/StannisMod/amnezia-client/actions/runs/39451550008): independent DIRECT/AWG fixture observations and native lifecycle coverage |
-| Windows native Wintun/helper | PASS at `ff86843c`, [run 39451549932](https://github.com/StannisMod/amnezia-client/actions/runs/39451549932): independent DIRECT/AWG fixture observations and native lifecycle coverage |
-| Installed Linux client/service | PASS at `ff86843c`, job 118782856575 in [run 39451549808](https://github.com/StannisMod/amnezia-client/actions/runs/39451549808): RUN installer, system resolver, strict-switch toggles, app scope, IPC reconnect, helper crash recovery and OS-state restoration |
-| Full client build baseline | Prior aggregate PASS at `f7847c02`, run 39375044626: four Android ABI APKs, Linux RUN, Windows EXE/MSI, unsigned iOS app + extension |
-| New UI/persistence changes | Implemented at `e455c6a9`; full client/UI gate running in [run 39554676452](https://github.com/StannisMod/amnezia-client/actions/runs/39554676452). Pending is not PASS |
-| Shared-core tests | PASS at `e455c6a9` on Linux/Windows/macOS in run 39554676452; all eight package-only cross-compiles PASS. Local Go 1.27.1 race suite count=3, vet and module verification PASS |
+| Android APKs | PASS at `18efe265`, [run 39583806899](https://github.com/StannisMod/amnezia-client/actions/runs/39583806899): all four ABIs, including JNI payload inspection |
+| iOS unsigned app + extension | PASS at `ff7016b9`, run 39555388790. No signed IPA or device acceptance |
+| Linux app/service/RUN + Qt regressions | PASS at `18efe265`, run 39583806899, and rebuilt/tested again at `395c491f` in [run 39584835912](https://github.com/StannisMod/amnezia-client/actions/runs/39584835912). All five settings/rule/application regression targets PASS |
+| Windows app/service/EXE/MSI + Qt regressions | PASS at `ff7016b9`, run 39555388790. MSI log confirms installation success (exit 0). The subsequent installed-service step hung until the 120-minute job limit; EXE installed-service check was not reached |
+| Installed Linux service | Five complete repetitions PASS with the unchanged `ff7016b9` installer in [run 39557237846](https://github.com/StannisMod/amnezia-client/actions/runs/39557237846): system resolver, strict switch, both app scopes, IPC reconnect, child crash recovery and exact OS-state restoration |
+| Linux resolver stress | FAIL with the unchanged installer in [run 39558268939](https://github.com/StannisMod/amnezia-client/actions/runs/39558268939). A newly created TUN retained `~.` but lost its DNS server after reconnect; resolved reported no DNS scope and no route to host. The earlier isolated timeout is therefore not dismissed as an environment-only flake |
+| Resolver correction | Source implemented at `ab782ce1`: D-Bus ownership/reconciliation of only the private TUN's DNS/domain/default-route state, change signals + periodic health checks, monitor shutdown before resolver rollback and fail-closed errors |
+| Corrected Linux installed-package acceptance | PASS at `395c491f` in [run 39584835912](https://github.com/StannisMod/amnezia-client/actions/runs/39584835912): newly rebuilt RUN, clean installation, 20 resolver connect cycles, forced DNS-list reset recovery, cached FakeIP route identity, strict switch, both app scopes, IPC/crash recovery, exact OS-state restoration and package removal. Artifact: [routing-linux-verified-package](https://github.com/StannisMod/amnezia-client/actions/runs/39584835912/artifacts/12340530783). The earlier hybrid helper/service test at `ab782ce1` passed 100 cycles in run 39580790352 but was followed by an activation failure in another run; it is historical evidence, not the final stability gate |
+| Windows installed MSI/EXE acceptance | PASS, including actual package uninstall, in [run 39584348717](https://github.com/StannisMod/amnezia-client/actions/runs/39584348717) and repeated PASS in [run 39584836050](https://github.com/StannisMod/amnezia-client/actions/runs/39584836050). Both reuse the verified `ff7016b9` installers. Reports cover DIRECT/VPN TCP/UDP, IPv6, system resolver, strict switch, both app scopes, IPC reconnect, child crash recovery and exact OS-state restoration. Earlier jobs failed at a separate SCM stop before uninstall; `60145bd9` exercises the package's own removal operations and asserts its service registration is gone. Overlapped raw pipe I/O fixes the acceptance client's deadlock |
+| Core tests | Local Go 1.27.1 complete race suite and vet PASS after `18efe265`. Native Linux namespace acceptance PASS in [run 39583807024](https://github.com/StannisMod/amnezia-client/actions/runs/39583807024); native Windows acceptance PASS in [run 39583807047](https://github.com/StannisMod/amnezia-client/actions/runs/39583807047) |
 | iOS device/runtime | NOT RUN; signed app/extension provisioning and a compatible device are required. Unsigned compilation is not device acceptance |
 
-The old matrix at `ff86843c` failed downloading a pinned Go dependency for
-Android x86 (`proxy.golang.org` HTTP/2 INTERNAL_ERROR). That exact package-only
-lane passed on retry. Windows/iOS jobs in that run were superseded/cancelled by
-the new source build; no installed-Windows or new-iOS PASS is inferred from them.
-The new workflow retries module acquisition up to three times, verifies pinned
-checksums, and still fails if all acquisition attempts fail.
+The `ab782ce1` matrix [run 39580790455](https://github.com/StannisMod/amnezia-client/actions/runs/39580790455)
+confirmed Android APK builds (four ABIs) and Linux app/service/RUN. The later source
+fix superseded that run before iOS/Windows completion; cancellation is not PASS.
+The current full matrix is [run 39583806899](https://github.com/StannisMod/amnezia-client/actions/runs/39583806899).
+Observe its actual result before marking the final source build gate PASS.
+Focused helper/package tests do not replace final full-client builds.
+
+An intermediate publication mistake at `df43f0b8` created an incomplete Git tree.
+`ab782ce1` restores the full verified `61596aba` base tree and applies only the
+intended eight changed/added files; comparison against `61596aba` has **zero
+removed files**. Local source was retained, and no branch reset/force-push was
+used. The failed diagnostic run at that incomplete intermediate commit never
+reached resolver verification and is not acceptance evidence.
+
+A further resolver stress repetition [run 39582872546](https://github.com/StannisMod/amnezia-client/actions/runs/39582872546)
+failed during a later session activation after successfully recovering a forced DNS reset.
+Do not treat the earlier 100-cycle PASS as proof of stable activation. `18efe265`
+adds bounded startup waiting specifically for resolved's `NoSuchLink` while its
+netlink event is still being processed; other bus/permission/configuration errors
+remain immediate failures. Failure-event details are retained in test reports.
+The freshly rebuilt `b099c757` RUN in [run 39583024531](https://github.com/StannisMod/amnezia-client/actions/runs/39583024531)
+also failed a later activation after its 20 resolver cycles and app-scope probes.
+Its successful compilation and Qt regressions are not package-runtime acceptance.
+The startup-wait correction was added later at `18efe265`. The failed runs did not
+retain the native error category, so `NoSuchLink` is a plausible startup race,
+not a conclusively proven cause of those particular failures. The corrected
+fresh package now passes the complete 20-cycle installed-service test. The
+expanded five-by-20 diagnostic run [39585281916](https://github.com/StannisMod/amnezia-client/actions/runs/39585281916)
+is still running at this checkpoint and is not marked PASS.
+Full fresh Linux packaging is checked independently, including installation and
+system-resolver stress; installer artifacts require a PASS report before acceptance.
+Linux installer/test/removal commands are bounded, Python emits periodic stalled-thread
+stacks, and focused native diagnostics retain only fixed allowlisted error categories;
+raw syscall traces and fixture profiles/keys are never persisted as artifacts.
 
 ### Resumed desktop product fixes
 

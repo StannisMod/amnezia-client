@@ -1,10 +1,13 @@
 # Shared routing core — experimental source milestone
 
-Android now has experimental source integration in the existing AWG Go payload,
-Qt rule settings and VpnService protocol dispatch. Native ARM64 compilation and
-packet-FD tests pass; full APK/device acceptance is still pending. iOS, Linux
-and Windows native integrations remain outstanding.
-See `../../docs/sing-box-routing/STATUS.md` for the acceptance gaps.
+The shared sing-box/AWG core has source integration in Android's existing
+VpnService/JNI payload, iOS's existing Network Extension, and the Linux/Windows
+privileged service. It remains an experimental opt-in feature.
+
+Current build, native fixture and installed-package evidence, unresolved DNS
+stress failures and device/signing gaps are tracked in
+[`../../docs/sing-box-routing/STATUS.md`](../../docs/sing-box-routing/STATUS.md).
+Do not infer physical-device or Internet-egress acceptance from compilation.
 
 ## Build and test
 
@@ -114,8 +117,9 @@ explicit cache clear, and captured A-to-FakeIP without an upstream query.
 4. Managed DNS queries must enter through the capture tag. Internal real-domain
    resolution uses the explicit upstream detour and does not use reverse-IP
    identity guessing. A loopback resolver cannot be configured through AWG.
-5. Always close the engine before restoring native routes and DNS. Handle native
-   startup rollback, kill switches and lock-down constraints in the host.
+5. Stop platform DNS-state monitors before restoring owned resolver settings.
+   Close the engine/TUN before releasing owned capture and crash policies.
+   Handle startup rollback, kill switches and lock-down constraints in the host.
 
 Default logs are disabled, including the AWG device logger. UAPI rejection
 returns generic errors, without keys, configuration text or hostnames.
@@ -128,5 +132,6 @@ is in `licenses/amneziawg-go-LICENSE`. These are the direct engine/transport
 notices, **not a complete distributable's transitive license bundle**. Before
 shipping, collect notices for the selected module graph (including both gVisor
 modules), the existing app dependencies and any embedded runtime/toolchain
-components, and supply corresponding source where required. No distributable
-binary is produced by this milestone.
+components, and supply corresponding source where required. Experimental CI
+artifacts are produced; completing the distributable license bundle remains a
+separate delivery requirement.
