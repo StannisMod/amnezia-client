@@ -52,7 +52,9 @@ jobs:
           sudo env QT_QPA_PLATFORM=offscreen "${packages[0]}" --root /opt/AmneziaVPN --accept-licenses --default-answer --confirm-command install
           sudo systemctl daemon-reload
           sudo systemctl restart AmneziaVPN
-          sudo python3 scripts/routing/run_service_acceptance.py --peer "$RUNNER_TEMP/installed-routing-peer" --qt-probe "$GITHUB_WORKSPACE/routing-service-probe-build/routing-service-probe" --report "$GITHUB_WORKSPACE/linux-resolver-diagnostics.json"
+          for attempt in 1 2 3 4 5; do
+            sudo python3 scripts/routing/run_service_acceptance.py --peer "$RUNNER_TEMP/installed-routing-peer" --qt-probe "$GITHUB_WORKSPACE/routing-service-probe-build/routing-service-probe" --report "$GITHUB_WORKSPACE/linux-resolver-diagnostics-$attempt.json"
+          done
       - name: Remove installed package
         if: always()
         run: |
@@ -63,5 +65,5 @@ jobs:
         if: always()
         with:
           name: linux-installed-resolver-diagnostics
-          path: linux-resolver-diagnostics.json
+          path: linux-resolver-diagnostics-*.json
           if-no-files-found: error

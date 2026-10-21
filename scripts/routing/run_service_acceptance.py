@@ -101,7 +101,7 @@ def main():
         if stream is not None:
             stream.close(); stream = None
 
-    def resolver_diagnostics():
+    def resolver_diagnostics(include_query=True):
         if win:
             return {}
         result = {}
@@ -111,6 +111,8 @@ def main():
             ("rules", ["ip", "rule", "show"]),
             ("capture_routes", ["ip", "route", "show", "table", "20313"]),
         ):
+            if label == "query" and not include_query:
+                continue
             try:
                 row = subprocess.run(argv, capture_output=True, text=True, timeout=15)
                 result[label] = {"exit_code": row.returncode, "stdout": row.stdout, "stderr": row.stderr}
@@ -137,6 +139,7 @@ def main():
             command("systemctl", "is-active", "--quiet", "systemd-resolved")
         toggle(False)
         before = snapshot()
+        report["resolver_before"] = resolver_diagnostics(include_query=False)
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
             s.connect(("1.1.1.1", 53)); shared = s.getsockname()[0]
         fixture = Path(temporary.name) / "fixture.json"
