@@ -122,10 +122,11 @@ def main():
     args = parser.parse_args()
     ns = "amnezia-routing-test"
     host = "amnrtest-host"
+    backup = "amnrtest-backup"
     helper = args.helper.resolve(); script = Path(__file__).resolve()
     child = peer = None
     child_buffer = b""
-    report = {"native_capture": "FAIL", "not_run": ["installed Qt service", "systemd-resolved integration", "installer", "OS kill switch", "network handover"]}
+    report = {"native_capture": "FAIL", "not_run": ["installed Qt service", "systemd-resolved integration", "installer", "OS kill switch", "physical Wi-Fi/Ethernet handover", "GUI network-change callback"]}
     def ip(*parts):
         return run("ip", *parts, capture_output=True, text=True).stdout
     def ns_ip(*parts):
@@ -174,11 +175,16 @@ def main():
         ns_ip("link", "set", "lo", "up")
         ns_ip("addr", "add", "10.0.2.15/24", "dev", "eth0")
         ns_ip("link", "set", "eth0", "up")
+        ip("link", "add", backup, "type", "veth", "peer", "name", "eth1", "netns", ns)
+        ip("addr", "add", "10.0.3.2/24", "dev", backup)
+        ip("link", "set", backup, "up")
+        ns_ip("addr", "add", "10.0.3.15/24", "dev", "eth1")
+        ns_ip("link", "set", "eth1", "up")
         # IPv6 DAD adds the namespace's native link-local route asynchronously.
         # Snapshot the native baseline after it settles, so normal kernel
         # initialization is not misreported as a VPN cleanup change.
         for _ in range(50):
-            native_ipv6 = ns_ip("-6", "addr", "show", "dev", "eth0")
+            native_ipv6 = ns_ip("-6", "addr", "show")
             if "scope link" in native_ipv6 and "tentative" not in native_ipv6:
                 break
             time.sleep(0.1)
@@ -242,6 +248,35 @@ def main():
                 application({"names": [["vpn.test", selected, 1]], "other_process": str(args.peer.resolve()), "other_expected": other})
                 application({"names": [["direct.ru", "DIRECT", 1]]})
             stop(); profile.pop("appSplitTunnelType"); profile.pop("splitTunnelApps"); start()
+            # Move the real underlay to a second interface while the same
+            # helper and TUN stay alive. New flows must use that native route.
+            # This is virtual NIC failover, not a GUI/Wi-Fi hardware claim.
+            active_pid = child.pid
+            ns_ip("route", "replace", "default", "via", "10.0.3.2", "dev", "eth1")
+            ns_ip("route", "add", "10.0.2.2/32", "via", "10.0.3.2", "dev", "eth1")
+            ns_ip("link", "set", "eth0", "down")
+            decision = ns_ip("route", "get", "10.0.2.2", "mark", "0x40000000")
+            assert "dev eth1" in decision and "src 10.0.3.15" in decision, decision
+            application({"names": [["direct.ru", "DIRECT", 1], ["vpn.test", "VPN", 1]]})
+            assert child.pid == active_pid and child.poll() is None
+            # With no live uplink, assigned VPN traffic must not escape DIRECT.
+            ns_ip("link", "set", "eth1", "down")
+            counts_before_loss = control("/stats")
+            application({"blocked": [identities["vpn.test"]]})
+            counts_after_loss = control("/stats")
+            assert counts_after_loss["direct_tcp"] == counts_before_loss["direct_tcp"]
+            assert counts_after_loss["direct_udp"] == counts_before_loss["direct_udp"]
+            ns_ip("link", "set", "eth0", "up")
+            ns_ip("route", "del", "10.0.2.2/32")
+            ns_ip("route", "replace", "default", "via", "10.0.2.2", "dev", "eth0")
+            ns_ip("link", "set", "eth1", "up")
+            application({"names": [["direct.ru", "DIRECT", 1], ["vpn.test", "VPN", 1]]})
+            for _ in range(50):
+                if "tentative" not in ns_ip("-6", "addr", "show"):
+                    break
+                time.sleep(0.1)
+            report["virtual_uplink_failover"] = "PASS"
+            report["uplink_loss_fail_closed_and_recovery"] = "PASS"
             for cycle in range(args.cycles):
                 stop(); start(bool(cycle & 1))
                 application({"names": [["vpn.test", "VPN", 1]]})
@@ -280,6 +315,7 @@ def main():
             child.kill(); child.wait(timeout=10)
         if peer is not None:
             peer.terminate(); peer.wait(timeout=10)
+        subprocess.run(["ip", "link", "del", backup], capture_output=True)
         subprocess.run(["ip", "link", "del", host], capture_output=True)
         subprocess.run(["ip", "netns", "del", ns], capture_output=True)
         args.fixture.unlink(missing_ok=True)
