@@ -43,7 +43,7 @@ def main():
     win = os.name == "nt"
     report = {"installed_service": "FAIL", "not_run": ["physical host", "full GUI interaction", "network handover", "performance parity"]}
     peer = stream = sock = None
-    reader_thread = reader_stop = None
+    reader_thread = reader_stop = reader_stream = None
     temporary = tempfile.TemporaryDirectory()
     events = queue.Queue()
 
@@ -63,8 +63,10 @@ def main():
         raise AssertionError("service response timed out: " + kind)
 
     def connect():
+        print("STAGE activating routed session", flush=True)
         send({"type": "activate", "routing_profile": profile})
         wait("connected")
+        print("STAGE routed session connected", flush=True)
 
     def disconnect():
         send({"type": "deactivate"}); wait("disconnected")
@@ -77,16 +79,20 @@ def main():
         return data
 
     def open_channel():
-        nonlocal stream, sock, events, reader_thread, reader_stop
+        nonlocal stream, sock, events, reader_thread, reader_stop, reader_stream
         print("STAGE opening service IPC", flush=True)
         events = queue.Queue()
         reader_stop = threading.Event()
         if win:
             stream = open(r"\\.\pipe\amneziavpn", "r+b", buffering=0)
+            # Windows CRT serializes _read/_write on one descriptor. A blocked
+            # reader must not hold the descriptor needed to send activation.
+            reader_stream = os.fdopen(os.dup(stream.fileno()), "rb", buffering=0)
         else:
             sock = socket.socket(socket.AF_UNIX)
             sock.settimeout(20); sock.connect("/var/run/amneziavpn/daemon.socket")
             sock.settimeout(None); stream = sock.makefile("rwb", buffering=0)
+            reader_stream = stream
         def reader(source, destination, stopped):
             try:
                 while not stopped.is_set():
@@ -97,12 +103,12 @@ def main():
             except (OSError, ValueError):
                 pass
             destination.put({"type": "exited"})
-        reader_thread = threading.Thread(target=reader, args=(stream, events, reader_stop), daemon=True)
+        reader_thread = threading.Thread(target=reader, args=(reader_stream, events, reader_stop), daemon=True)
         reader_thread.start()
         print("STAGE service IPC open", flush=True)
 
     def close_channel():
-        nonlocal stream, sock
+        nonlocal stream, sock, reader_stream
         print("STAGE closing service IPC", flush=True)
         if reader_stop is not None:
             reader_stop.set()
@@ -113,7 +119,7 @@ def main():
             cancel = ctypes.WinDLL("kernel32", use_last_error=True).CancelIoEx
             cancel.argtypes = [wintypes.HANDLE, wintypes.LPVOID]
             cancel.restype = wintypes.BOOL
-            handle = msvcrt.get_osfhandle(stream.fileno())
+            handle = msvcrt.get_osfhandle(reader_stream.fileno())
             # A pending synchronous ReadFile in the reader must finish before
             # closing its Python stream. Repeated cancellation closes the small
             # check/read race without leaving a blocked reader on the old pipe.
@@ -129,6 +135,9 @@ def main():
             except OSError:
                 pass
             sock.close(); sock = None
+        if reader_stream is not None and reader_stream is not stream:
+            reader_stream.close()
+        reader_stream = None
         if stream is not None:
             stream.close(); stream = None
         print("STAGE service IPC closed", flush=True)
