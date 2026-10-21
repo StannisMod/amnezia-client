@@ -5,10 +5,12 @@
 package main
 
 import (
+	"bytes"
 	"crypto/ecdh"
 	"crypto/rand"
 	"crypto/tls"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"flag"
@@ -33,6 +35,8 @@ import (
 	"github.com/miekg/dns"
 )
 
+var bulkEnabled bool
+
 var sharedIP = "10.0.2.2" // Android emulator host alias; Windows uses its native local IP.
 const tcpPort = 18081
 const udpPort = 18082
@@ -52,6 +56,40 @@ type fixture struct {
 // stock bind avoids its optional Linux netlink route watcher, so this fixture
 // also runs in hosts that permit UDP but forbid netlink sockets.
 type fixtureBind struct{ conn.Bind }
+
+// Optional bounded stream observer used only by the comparative CI benchmark.
+func observeBulk(listener net.Listener, label string) {
+	for {
+		c, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		go func() {
+			defer c.Close()
+			c.SetDeadline(time.Now().Add(120 * time.Second))
+			var size uint32
+			if binary.Read(c, binary.BigEndian, &size) != nil || size > 64<<20 {
+				return
+			}
+			if _, err := fmt.Fprintln(c, label); err != nil {
+				return
+			}
+			chunk := bytes.Repeat([]byte{'Z'}, 32<<10)
+			left := int(size)
+			for left > 0 {
+				want := len(chunk)
+				if left < want {
+					want = left
+				}
+				n, err := c.Write(chunk[:want])
+				if err != nil || n == 0 {
+					return
+				}
+				left -= n
+			}
+		}()
+	}
+}
 
 func observeTCP(listener net.Listener, label string, count *atomic.Int64) {
 	for {
@@ -132,6 +170,14 @@ func (f *fixture) start() error {
 		return fmt.Errorf("fixture peer did not bind a UDP port")
 	}
 	for _, ip := range []string{sharedIP, "10.77.0.2", "fd77::2"} {
+		if bulkEnabled {
+			listener, e := stack.ListenTCPAddrPort(netip.AddrPortFrom(netip.MustParseAddr(ip), 18444))
+			if e != nil {
+				return e
+			}
+			f.closePeer = append(f.closePeer, listener)
+			go observeBulk(listener, "VPN")
+		}
 		quicUDP, e := stack.ListenUDPAddrPort(netip.AddrPortFrom(netip.MustParseAddr(ip), fixturequic.Port))
 		if e != nil {
 			return e
@@ -188,6 +234,7 @@ func (f *fixture) start() error {
 }
 
 func main() {
+	flag.BoolVar(&bulkEnabled, "bulk", false, "enable bounded performance-test stream observers")
 	flag.StringVar(&sharedIP, "shared-ip", sharedIP, "native host address used by both controlled observers")
 	path := flag.String("config", "", "private output fixture JSON (never upload)")
 	quicCA := flag.String("quic-ca", "", "public disposable QUIC certificate output")

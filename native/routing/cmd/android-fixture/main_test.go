@@ -3,10 +3,13 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"crypto/ecdh"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"io"
 	"net"
@@ -29,6 +32,8 @@ import (
 // Verify the fixture peer really learns an authenticated ephemeral endpoint;
 // production's pinned-endpoint outbound is unchanged by the test server.
 func TestEmulatorPeerLearnsEndpointAndServesIPv4IPv6(t *testing.T) {
+	bulkEnabled = true
+	t.Cleanup(func() { bulkEnabled = false })
 	server, _ := ecdh.X25519().GenerateKey(rand.Reader)
 	client, _ := ecdh.X25519().GenerateKey(rand.Reader)
 	f := &fixture{server: server, client: client}
@@ -51,6 +56,26 @@ func TestEmulatorPeerLearnsEndpointAndServesIPv4IPv6(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer transport.Close()
+	t.Run("bulk benchmark is authenticated and byte exact", func(t *testing.T) {
+		connection, err := transport.DialContext(ctx, "tcp", "10.77.0.2:18444")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer connection.Close()
+		connection.SetDeadline(time.Now().Add(10 * time.Second))
+		if err := binary.Write(connection, binary.BigEndian, uint32(1<<20)); err != nil {
+			t.Fatal(err)
+		}
+		reader := bufio.NewReader(connection)
+		label, err := reader.ReadString('\n')
+		if err != nil || label != "VPN\n" {
+			t.Fatalf("bulk observer: %q, %v", label, err)
+		}
+		data, err := io.ReadAll(io.LimitReader(reader, (1<<20)+1))
+		if err != nil || !bytes.Equal(data, bytes.Repeat([]byte{'Z'}, 1<<20)) {
+			t.Fatal("bulk payload differs", err)
+		}
+	})
 	c0, err := transport.DialContext(ctx, "udp", "10.77.0.2:53")
 	if err != nil {
 		t.Fatal(err)

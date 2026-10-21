@@ -125,6 +125,7 @@ def main():
     backup = "amnrtest-backup"
     helper = args.helper.resolve(); script = Path(__file__).resolve()
     child = peer = None
+    headers = None
     observer_owned = False
     observer = "198.51.100.2"
     child_buffer = b""
@@ -208,6 +209,30 @@ def main():
         peer = subprocess.Popen([str(args.peer.resolve()), "--shared-ip", observer, "--config", str(args.fixture), "--quic-ca", str(ca)], stdout=subprocess.PIPE, text=True)
         assert select.select([peer.stdout], [], [], 10)[0] and peer.stdout.readline().startswith("READY")
         profile = json.loads(args.fixture.read_text())
+        # Header-only diagnostics for this disposable fixture port. Never log
+        # payloads, encrypted datagrams, credentials or unrelated host traffic.
+        headers = socket.socket(socket.AF_PACKET, socket.SOCK_DGRAM, socket.htons(0x0800))
+        headers.settimeout(0.2)
+        report["fixture_udp_headers"] = []
+        def record_headers():
+            while headers.fileno() >= 0:
+                try:
+                    packet, address = headers.recvfrom(60)
+                except socket.timeout:
+                    continue
+                except OSError:
+                    return
+                if len(packet) < 28 or packet[9] != 17:
+                    continue
+                offset = (packet[0] & 15) * 4
+                if len(packet) < offset + 8:
+                    continue
+                source, destination, size = struct.unpack_from("!HHH", packet, offset)
+                if profile["awg_config_data"]["port"] not in (source, destination):
+                    continue
+                if len(report["fixture_udp_headers"]) < 60:
+                    report["fixture_udp_headers"].append({"interface": address[0], "source": socket.inet_ntoa(packet[12:16]), "destination": socket.inet_ntoa(packet[16:20]), "source_port": source, "destination_port": destination, "udp_length": size})
+        threading.Thread(target=record_headers, daemon=True).start()
         profile["sing_box_routing"] = {"version": 1, "default": "vpn", "rules": [
             {"kind": "suffix", "value": "direct.ru", "action": "direct"},
             {"kind": "domain", "value": "vpn.test", "action": "vpn"},
@@ -337,6 +362,8 @@ def main():
             pass
         if child is not None:
             child.kill(); child.wait(timeout=10)
+        if headers is not None:
+            headers.close()
         if peer is not None:
             peer.terminate(); peer.wait(timeout=10)
         if observer_owned:
