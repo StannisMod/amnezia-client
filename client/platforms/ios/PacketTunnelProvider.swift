@@ -93,7 +93,9 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
             guard hasMeaningfulChange, let proto = self.protoType else { return }
 
             if proto == .wireguard, let routed = self.routedAdapter {
-                routed.networkChanged()
+                // Preserve capture/fail-closed state while no usable uplink
+                // exists. Recreate transport sockets only on a satisfied path.
+                if path.status == .satisfied { routed.networkChanged() }
                 return
             }
 

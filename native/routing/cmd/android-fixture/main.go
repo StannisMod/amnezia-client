@@ -131,7 +131,7 @@ func (f *fixture) start() error {
 	if f.listenPort == 0 {
 		return fmt.Errorf("fixture peer did not bind a UDP port")
 	}
-	for _, ip := range []string{sharedIP, "fd77::2"} {
+	for _, ip := range []string{sharedIP, "10.77.0.2", "fd77::2"} {
 		quicUDP, e := stack.ListenUDPAddrPort(netip.AddrPortFrom(netip.MustParseAddr(ip), fixturequic.Port))
 		if e != nil {
 			return e

@@ -126,6 +126,10 @@ target_link_libraries(${CLIENT_IOS_NE_TARGET_NAME} PRIVATE amnezia::openvpnadapt
 
 find_package(awg-apple REQUIRED)
 target_link_libraries(${CLIENT_IOS_NE_TARGET_NAME} PRIVATE amnezia::awg-apple)
+set(ROUTING_NOTICES "${AMNEZIA_ROUTING_LICENSE_DIR}/inventory.json" "${AMNEZIA_ROUTING_LICENSE_DIR}/THIRD_PARTY_NOTICES.txt")
+set_source_files_properties(${ROUTING_NOTICES} PROPERTIES MACOSX_PACKAGE_LOCATION "Resources/routing-licenses")
+target_sources(${CLIENT_IOS_NE_TARGET_NAME} PRIVATE ${ROUTING_NOTICES})
+
 
 find_package(hev-socks5-tunnel REQUIRED)
 # FIXME(ygurov): https://github.com/conan-io/conan/issues/20034

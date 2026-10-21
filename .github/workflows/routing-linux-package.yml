@@ -75,7 +75,7 @@ jobs:
         if: success()
         env:
           QT_QPA_PLATFORM: offscreen
-        run: ctest --test-dir deploy/build/client/tests --output-on-failure -R 'UiIpModelAndControllerTest|UiAppSTModelAndControllerTest|SettingsSignalsTest|BackupExportImportTest|DomainRoutingContractTest'
+        run: ctest --test-dir deploy/build/client/tests -V --timeout 120 --output-junit qt-regression.xml
       - name: Build installed-service IPC probe and disposable peer
         run: |
           cmake -S scripts/routing/service-probe -B routing-service-probe-build -DCMAKE_PREFIX_PATH="${{ runner.temp }}/Qt/6.10.1/gcc_64"
@@ -92,7 +92,7 @@ jobs:
           sudo timeout --signal=INT --kill-after=30s 180s env QT_QPA_PLATFORM=offscreen "${packages[0]}" --root /opt/AmneziaVPN --accept-licenses --default-answer --confirm-command install
           sudo systemctl daemon-reload
           sudo systemctl restart AmneziaVPN
-          sudo timeout --signal=INT --kill-after=30s 600s python3 -u scripts/routing/run_service_acceptance.py --peer "$RUNNER_TEMP/installed-routing-peer" --qt-probe "$GITHUB_WORKSPACE/routing-service-probe-build/routing-service-probe" --report "$GITHUB_WORKSPACE/linux-installed-service.json" --resolver-cycles 20
+          sudo timeout --signal=INT --kill-after=30s 600s python3 -u scripts/routing/run_service_acceptance.py --require-notices --peer "$RUNNER_TEMP/installed-routing-peer" --qt-probe "$GITHUB_WORKSPACE/routing-service-probe-build/routing-service-probe" --report "$GITHUB_WORKSPACE/linux-installed-service.json" --resolver-cycles 100
       - name: Remove installed test package
         if: always()
         run: |
@@ -106,6 +106,8 @@ jobs:
           path: |
             client-build.log
             routing-build-manifest.json
+            deploy/build/client/tests/qt-regression.xml
+            deploy/build/client/tests/Testing/Temporary/LastTest.log
             deploy/build/AmneziaVPN_*_linux_x64.run
             linux-installed-service.json
 

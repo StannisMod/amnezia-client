@@ -154,6 +154,17 @@ public final class RoutingInstrumentation extends Instrumentation {
             awaitState(DISCONNECTED, true);
             connect(false); requireRoute(dns("vpn.test", 1), "VPN"); disconnect();
             pass("failed engine start releases resources and a subsequent valid start succeeds");
+            // Switch the real service to its unchanged legacy AWG backend,
+            // then back to routed AWG. Use an inner literal IPv4 observer:
+            // legacy profiles deliberately have no FakeIP/domain guarantee.
+            JSONObject legacy = configuration(false);
+            legacy.remove("sing_box_routing");
+            startService(legacy); awaitState(CONNECTED, false);
+            requireRoute(InetAddress.getByName("10.77.0.2"), "VPN");
+            quic(InetAddress.getByName("10.77.0.2"), "VPN");
+            disconnect(); connect(false);
+            requireRoute(dns("vpn.test", 1), "VPN"); disconnect();
+            pass("legacy AWG TCP/UDP/QUIC and routed-to-legacy-to-routed service transition");
             result.putString("routing_result", "PASS"); code = 0;
         } catch (Throwable error) {
             // Avoid dumping fixture/keys in an exception or Android log.

@@ -86,6 +86,7 @@ def main():
     parser.add_argument("--qt-probe", type=Path, required=True)
     parser.add_argument("--report", type=Path, required=True)
     parser.add_argument("--resolver-cycles", type=int, default=1)
+    parser.add_argument("--require-notices", action="store_true")
     args = parser.parse_args()
     faulthandler.dump_traceback_later(120, repeat=True)
     if not 1 <= args.resolver_cycles <= 100:
@@ -203,6 +204,15 @@ def main():
             result[path] = {"target": str(Path(path).resolve()), "text": Path(path).read_text()}
         return result
 
+    def service_resources():
+        if win:
+            row = json.loads(ps("$s=Get-CimInstance Win32_Service -Filter \"Name='AmneziaVPN-service'\"; $p=Get-Process -Id $s.ProcessId; @{pid=$p.Id;handles=$p.HandleCount;threads=$p.Threads.Count;rss_bytes=$p.WorkingSet64} | ConvertTo-Json -Compress"))
+            return row
+        pid = int(subprocess.check_output(["systemctl", "show", "AmneziaVPN", "--property=MainPID", "--value"], text=True, timeout=10))
+        status = dict(line.split(":", 1) for line in Path(f"/proc/{pid}/status").read_text().splitlines() if ":" in line)
+        return {"pid": pid, "handles": len(list(Path(f"/proc/{pid}/fd").iterdir())),
+                "threads": int(status["Threads"]), "rss_bytes": int(status["VmRSS"].split()[0]) * 1024}
+
     def snapshot():
         if win:
             from run_windows_acceptance import network_state
@@ -212,6 +222,12 @@ def main():
                 "dns": subprocess.check_output(["resolvectl", "dns"], text=True)}
 
     try:
+        if args.require_notices:
+            from verify_notices import directory
+            installed = Path(os.environ["ProgramFiles"]) / "AmneziaVPN" if win else Path("/opt/AmneziaVPN")
+            inventories = list(installed.rglob("routing-licenses/inventory.json"))
+            assert len(inventories) == 1, "installed routing notices missing or duplicated"
+            report["packaged_routing_notices"] = directory(inventories[0].parent)
         native_connect()
         if win:
             assert ps("(Get-Service -Name 'AmneziaVPN-service').Status") == "Running"
@@ -254,6 +270,7 @@ def main():
                 assert time.monotonic() < deadline, "owned resolver did not recover an external DNS reset"
                 time.sleep(0.05)
             report["external_dns_reset_recovery"] = "PASS"
+        resources_before = service_resources()
         for cycle in range(1, args.resolver_cycles):
             disconnect(); connect()
             # A cached libc/system-resolver result must retain its domain route
@@ -264,6 +281,14 @@ def main():
             assert rows and all(ipaddress.ip_address(row[4][0]) in ipaddress.ip_network("198.18.0.0/15") for row in rows)
             previous_fake = rows[0][4][0]
             assert tcp(previous_fake) == "DIRECT"
+        resources_after = service_resources()
+        assert resources_before["pid"] == resources_after["pid"], "service restart hid resource growth"
+        max_handles = 32 if win else 8
+        assert resources_after["handles"] <= resources_before["handles"] + max_handles, "installed service handle growth"
+        assert resources_after["threads"] <= resources_before["threads"] + 8, "installed service thread growth"
+        report["service_resources"] = {"before": resources_before, "after": resources_after,
+                                       "max_handle_growth": max_handles, "max_thread_growth": 8,
+                                       "rss": "measurement only, no parity or leak threshold claim"}
         report["system_resolver_connect_cycles"] = args.resolver_cycles
         # Strict state can change live. It must coexist with DIRECT/VPN rules,
         # stay blocked after disconnect, and release only on explicit disable.

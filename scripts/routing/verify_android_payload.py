@@ -15,12 +15,14 @@ def main():
     parser.add_argument("--build-dir", type=Path, required=True)
     parser.add_argument("--readelf", type=Path, required=True)
     args = parser.parse_args()
+    from verify_notices import apk as verify_notices
     records = []
     for apk in sorted(args.build_dir.rglob("*.apk")):
         with zipfile.ZipFile(apk) as archive:
             libraries = [name for name in archive.namelist() if name.endswith("/libwg-go.so")]
             if not libraries:
                 continue
+            notice_result = verify_notices(apk)
             for name in libraries:
                 payload = archive.read(name)
                 with tempfile.TemporaryDirectory() as directory:
@@ -37,7 +39,7 @@ def main():
                     loads = [line for line in layout.splitlines() if line.strip().startswith("LOAD")]
                     if not loads or any(int(line.split()[-1], 0) < 16384 for line in loads):
                         raise SystemExit("AWG payload is not aligned for Android 16 KB pages")
-                records.append({"apk": str(apk), "library": name, "sha256": hashlib.sha256(payload).hexdigest(), "bytes": len(payload)})
+                records.append({"apk": str(apk), "library": name, "sha256": hashlib.sha256(payload).hexdigest(), "bytes": len(payload), "routing_notices": notice_result})
     if not records:
         raise SystemExit("No packaged AWG native library found in the built APKs")
     Path("android-routing-payloads.json").write_text(json.dumps(records, indent=2) + "\n")

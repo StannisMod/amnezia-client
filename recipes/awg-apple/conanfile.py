@@ -11,7 +11,7 @@ import importlib.util
 
 class AwgApple(ConanFile):
     name = "awg-apple"
-    version = "3.1.4-routing.1"
+    version = "3.1.4-routing.2"
     _upstream_version = "3.1.4"
     settings = "os", "arch", "compiler"
 
@@ -74,6 +74,11 @@ class AwgApple(ConanFile):
             autotools.make()
             autotools.make("version-header")
 
+        notice_spec = importlib.util.spec_from_file_location("amnezia_routing_notices", os.path.join(core, "licenses", "generate.py"))
+        notices = importlib.util.module_from_spec(notice_spec)
+        notice_spec.loader.exec_module(notices)
+        notices.generate(module, os.path.join(self.build_folder, "routing-licenses"), host_root=os.path.join(self.source_folder, "upstream"))
+
     def package(self):
         module = os.path.join(self.build_folder, "module")
         copy(self, "wireguard.h", src=module, dst=os.path.join(self.package_folder, "include"))
@@ -81,6 +86,11 @@ class AwgApple(ConanFile):
         copy(self, "*.h", src=os.path.join(module, "out"), dst=os.path.join(self.package_folder, "include"))
         copy(self, "*.a", src=os.path.join(module, "out"), dst=os.path.join(self.package_folder, "lib"))
 
+        copy(self, "*", src=os.path.join(self.build_folder, "routing-licenses"), dst=os.path.join(self.package_folder, "licenses", "routing"))
+
     def package_info(self):
         self.cpp_info.set_property("cmake_target_name", "amnezia::awg-apple")
         self.cpp_info.libs = collect_libs(self)
+        self.cpp_info.set_property("cmake_extra_variables", {
+            "AMNEZIA_ROUTING_LICENSE_DIR": os.path.join(self.package_folder, "licenses", "routing").replace(os.sep, "/"),
+        })

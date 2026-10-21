@@ -357,7 +357,16 @@ if(LINUX OR WIN32)
         WORKING_DIRECTORY "${ROUTING_SOURCE_DIR}"
         DEPENDS ${ROUTING_GO_SOURCES} "${ROUTING_SOURCE_DIR}/go.mod" "${ROUTING_SOURCE_DIR}/go.sum"
         VERBATIM)
-    add_custom_target(amnezia-routing-child DEPENDS "${ROUTING_EXECUTABLE}")
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    set(ROUTING_LICENSE_DIR "${CMAKE_CURRENT_BINARY_DIR}/routing-licenses")
+    add_custom_command(OUTPUT "${ROUTING_LICENSE_DIR}/inventory.json" "${ROUTING_LICENSE_DIR}/THIRD_PARTY_NOTICES.txt"
+        COMMAND "${Python3_EXECUTABLE}" "${ROUTING_SOURCE_DIR}/licenses/generate.py"
+            --go "${ROUTING_GO_EXECUTABLE}" --module "${ROUTING_SOURCE_DIR}" --output "${ROUTING_LICENSE_DIR}"
+        DEPENDS "${ROUTING_SOURCE_DIR}/licenses/generate.py" "${ROUTING_SOURCE_DIR}/go.mod" "${ROUTING_SOURCE_DIR}/go.sum"
+        VERBATIM)
+    add_custom_target(amnezia-routing-child DEPENDS "${ROUTING_EXECUTABLE}"
+        "${ROUTING_LICENSE_DIR}/inventory.json" "${ROUTING_LICENSE_DIR}/THIRD_PARTY_NOTICES.txt")
+    install(DIRECTORY "${ROUTING_LICENSE_DIR}/" DESTINATION "${CMAKE_INSTALL_BINDIR}/routing-licenses" COMPONENT AmneziaVPN)
     add_dependencies(${PROJECT} amnezia-routing-child)
     target_sources(${PROJECT} PRIVATE desktoproutingprocess.cpp desktoproutingprocess.h)
     list(APPEND CONAN_EXECS "${ROUTING_EXECUTABLE}")

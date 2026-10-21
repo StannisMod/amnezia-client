@@ -14,7 +14,7 @@ from pathlib import Path
 
 class AwgAndroid(ConanFile):
     name = "awg-android"
-    version = "3.1.20260814-routing.1"
+    version = "3.1.20260814-routing.2"
     _upstream_version = "3.1.20260814"
     _upstream_sha = "5c16489e2cd9ed3a0a7a27c7445bba5238132f86"
     settings = "os", "arch", "build_type", "compiler"
@@ -148,16 +148,25 @@ class AwgAndroid(ConanFile):
             cmake.configure(build_script_folder=os.path.join(self._native_source, "tunnel", "tools"))
             cmake.build(target=["libwg-go.so", "libwg.so", "libwg-quick.so"])
 
+        notice_spec = importlib.util.spec_from_file_location("amnezia_routing_notices", os.path.join(core, "licenses", "generate.py"))
+        notices = importlib.util.module_from_spec(notice_spec)
+        notice_spec.loader.exec_module(notices)
+        with env.vars(self).apply():
+            notices.generate(module, os.path.join(self.build_folder, "routing-licenses"), host_root=os.path.join(self.source_folder, "upstream"))
+
     def package(self):
         copy(self, "libwg-go.h", src=os.path.join(self.build_folder, "out"), dst=os.path.join(self.package_folder, "include"))
         copy(self, "libwg-go.so", src=os.path.join(self.build_folder, "out"), dst=os.path.join(self.package_folder, "lib"))
         copy(self, "libwg.so", src=os.path.join(self.build_folder, "out"), dst=os.path.join(self.package_folder, "bin"))
         copy(self, "libwg-quick.so", src=os.path.join(self.build_folder, "out"), dst=os.path.join(self.package_folder, "bin"))
 
+        copy(self, "*", src=os.path.join(self.build_folder, "routing-licenses"), dst=os.path.join(self.package_folder, "licenses", "routing"))
+
     def package_info(self):
         self.cpp_info.set_property("cmake_target_name", "amnezia::awg-android")
         self.cpp_info.libs = [ "wg-go" ]
         self.cpp_info.set_property("cmake_extra_variables", {
+            "AMNEZIA_ROUTING_LICENSE_DIR": Path(os.path.join(self.package_folder, "licenses", "routing")).as_posix(),
             "AMNEZIA_ANDROID_LIBWG_PATH": Path(os.path.join(self.package_folder, "bin", "libwg.so")).as_posix(),
             "AMNEZIA_ANDROID_LIBWG_QUICK_PATH": Path(os.path.join(self.package_folder, "bin", "libwg-quick.so")).as_posix(),
         })

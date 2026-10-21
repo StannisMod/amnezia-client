@@ -248,17 +248,19 @@ def main():
                 application({"names": [["vpn.test", selected, 1]], "other_process": str(args.peer.resolve()), "other_expected": other})
                 application({"names": [["direct.ru", "DIRECT", 1]]})
             stop(); profile.pop("appSplitTunnelType"); profile.pop("splitTunnelApps"); start()
-            # Move the real underlay to a second interface while the same
-            # helper and TUN stay alive. New flows must use that native route.
-            # This is virtual NIC failover, not a GUI/Wi-Fi hardware claim.
+            # Move the real underlay, then recreate the session as native
+            # host network-change callbacks do. Transport/DNS sockets must not
+            # retain the old interface. This tests virtual NIC failover and
+            # session recovery, not GUI callbacks or physical Wi-Fi hardware.
             active_pid = child.pid
             ns_ip("route", "replace", "default", "via", "10.0.3.2", "dev", "eth1")
             ns_ip("route", "add", "10.0.2.2/32", "via", "10.0.3.2", "dev", "eth1")
             ns_ip("link", "set", "eth0", "down")
             decision = ns_ip("route", "get", "10.0.2.2", "mark", "0x40000000")
             assert "dev eth1" in decision and "src 10.0.3.15" in decision, decision
+            stop(); start()
             application({"names": [["direct.ru", "DIRECT", 1], ["vpn.test", "VPN", 1]]})
-            assert child.pid == active_pid and child.poll() is None
+            assert child.pid != active_pid and child.poll() is None
             # With no live uplink, assigned VPN traffic must not escape DIRECT.
             ns_ip("link", "set", "eth1", "down")
             counts_before_loss = control("/stats")
@@ -270,6 +272,7 @@ def main():
             ns_ip("route", "del", "10.0.2.2/32")
             ns_ip("route", "replace", "default", "via", "10.0.2.2", "dev", "eth0")
             ns_ip("link", "set", "eth1", "up")
+            stop(); start()
             application({"names": [["direct.ru", "DIRECT", 1], ["vpn.test", "VPN", 1]]})
             for _ in range(50):
                 if "tentative" not in ns_ip("-6", "addr", "show"):

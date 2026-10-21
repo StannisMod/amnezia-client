@@ -3,6 +3,11 @@ name: Sing-box routing checks
 on:
   push:
     branches: [feature/sing-box-routing]
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
+      - 'scripts/routing/**'
+      - '.github/workflows/routing-*.yml'
   pull_request:
     branches: [dev]
   workflow_dispatch:
@@ -156,7 +161,7 @@ jobs:
         if: success()
         env:
           QT_QPA_PLATFORM: offscreen
-        run: ctest --test-dir deploy/build/client/tests --output-on-failure -R 'UiIpModelAndControllerTest|UiAppSTModelAndControllerTest|SettingsSignalsTest|BackupExportImportTest|DomainRoutingContractTest'
+        run: ctest --test-dir deploy/build/client/tests -V --timeout 120 --output-junit qt-regression.xml
       - name: Build installed-service IPC probe and disposable peer
         run: |
           cmake -S scripts/routing/service-probe -B routing-service-probe-build -DCMAKE_PREFIX_PATH="${{ runner.temp }}/Qt/6.10.1/gcc_64"
@@ -173,7 +178,7 @@ jobs:
           sudo env QT_QPA_PLATFORM=offscreen "${packages[0]}" --root /opt/AmneziaVPN --accept-licenses --default-answer --confirm-command install
           sudo systemctl daemon-reload
           sudo systemctl restart AmneziaVPN
-          sudo python3 scripts/routing/run_service_acceptance.py --peer "$RUNNER_TEMP/installed-routing-peer" --qt-probe "$GITHUB_WORKSPACE/routing-service-probe-build/routing-service-probe" --report "$GITHUB_WORKSPACE/linux-installed-service.json"
+          sudo python3 scripts/routing/run_service_acceptance.py --require-notices --peer "$RUNNER_TEMP/installed-routing-peer" --qt-probe "$GITHUB_WORKSPACE/routing-service-probe-build/routing-service-probe" --report "$GITHUB_WORKSPACE/linux-installed-service.json" --resolver-cycles 100
       - name: Remove installed test package
         if: always()
         run: |
@@ -187,6 +192,8 @@ jobs:
           path: |
             client-build.log
             routing-build-manifest.json
+            deploy/build/client/tests/qt-regression.xml
+            deploy/build/client/tests/Testing/Temporary/LastTest.log
             deploy/build/AmneziaVPN_*_linux_x64.run
             linux-installed-service.json
 
@@ -248,7 +255,7 @@ jobs:
       - name: Windows settings and application-scope regression tests
         env:
           QT_QPA_PLATFORM: offscreen
-        run: ctest --test-dir deploy/build/client/tests -C Release --output-on-failure -R 'UiIpModelAndControllerTest|UiAppSTModelAndControllerTest|SettingsSignalsTest|BackupExportImportTest'
+        run: ctest --test-dir deploy/build/client/tests -C Release -V --timeout 120 --output-junit qt-regression.xml
       - name: Record baseline result
         if: always()
         env:
@@ -272,7 +279,7 @@ jobs:
           ./scripts/routing/run_windows_installer.ps1 -Kind msi -Package $msi
           Start-Service AmneziaVPN-service
           (Get-Service AmneziaVPN-service).WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
-          python -u scripts/routing/run_service_acceptance.py --peer "$env:RUNNER_TEMP/installed-routing-peer.exe" --qt-probe "$env:GITHUB_WORKSPACE/routing-service-probe-build/Release/routing-service-probe.exe" --report windows-installed-service.json
+          python -u scripts/routing/run_service_acceptance.py --require-notices --peer "$env:RUNNER_TEMP/installed-routing-peer.exe" --qt-probe "$env:GITHUB_WORKSPACE/routing-service-probe-build/Release/routing-service-probe.exe" --report windows-installed-service.json
           exit $LASTEXITCODE
       - name: Remove installed MSI
         if: always()
@@ -291,7 +298,7 @@ jobs:
           ./scripts/routing/run_windows_installer.ps1 -Kind exe -Package $exe
           Start-Service AmneziaVPN-service
           (Get-Service AmneziaVPN-service).WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
-          python -u scripts/routing/run_service_acceptance.py --peer "$env:RUNNER_TEMP/installed-routing-peer.exe" --qt-probe "$env:GITHUB_WORKSPACE/routing-service-probe-build/Release/routing-service-probe.exe" --report windows-exe-installed-service.json
+          python -u scripts/routing/run_service_acceptance.py --require-notices --peer "$env:RUNNER_TEMP/installed-routing-peer.exe" --qt-probe "$env:GITHUB_WORKSPACE/routing-service-probe-build/Release/routing-service-probe.exe" --report windows-exe-installed-service.json
           exit $LASTEXITCODE
       - name: Remove installed EXE package
         if: always()
@@ -308,6 +315,8 @@ jobs:
           path: |
             client-build.log
             routing-build-manifest.json
+            deploy/build/client/tests/qt-regression.xml
+            deploy/build/client/tests/Testing/Temporary/LastTest.log
             deploy/build/AmneziaVPN_*_windows_x64.exe
             deploy/build/AmneziaVPN_*_windows_x64.msi
             windows-installed-service.json
@@ -398,6 +407,17 @@ jobs:
         run: |
           set -o pipefail
           deploy/build.sh -t android --abi "$ABI" --apk 2>&1 | tee client-build.log
+      - name: Android network callback lifecycle unit tests
+        if: matrix.abi == 'x86_64'
+        run: |
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          import subprocess
+          candidates = sorted(p for p in Path('deploy/build/client').rglob('gradlew') if (p.parent / 'utils').is_dir())
+          assert candidates, 'Generated Android Gradle project missing'
+          wrapper = candidates[0].resolve()
+          subprocess.run([str(wrapper), ':utils:testDebugUnitTest', '--no-daemon'], cwd=wrapper.parent, check=True, timeout=300)
+          PYCODE
       - name: Inspect native JNI in the actual APK
         id: payload
         run: python scripts/routing/verify_android_payload.py --build-dir deploy/build --readelf "$ANDROID_HOME/ndk/27.0.12077973/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
@@ -415,9 +435,12 @@ jobs:
           path: |
             client-build.log
             routing-build-manifest.json
+            deploy/build/client/tests/qt-regression.xml
+            deploy/build/client/tests/Testing/Temporary/LastTest.log
             deploy/build/client/android-build/**/*.apk
             deploy/routing-native/
             android-routing-payloads.json
+            deploy/build/client/**/utils/build/test-results/**/*.xml
 
   client-ios:
     runs-on: macos-15
@@ -491,6 +514,8 @@ jobs:
           path: |
             client-build.log
             routing-build-manifest.json
+            deploy/build/client/tests/qt-regression.xml
+            deploy/build/client/tests/Testing/Temporary/LastTest.log
             deploy/build/client/Release-iphoneos/*.app
 
   build-gate:

@@ -35,8 +35,17 @@ def main():
                     for block in iter(lambda: stream.read(1024 * 1024), b""):
                         digest.update(block)
                 artifacts.append({"path": path.as_posix(), "sha256": digest.hexdigest(), "bytes": path.stat().st_size})
+    notice_results = []
+    if target == "ios" and status == "PASS":
+        from verify_notices import directory
+        for app in root.glob('client/Release-iphoneos/*.app'):
+            for extension in app.rglob('*.appex'):
+                for inventory in extension.rglob('routing-licenses/inventory.json'):
+                    notice_results.append(directory(inventory.parent))
+        assert notice_results, 'routing notices missing from final iOS extension'
     report = {
         "schema_version": 1,
+        "routing_notices": notice_results,
         "source_sha": command("git", "rev-parse", "HEAD"),
         "platform": target,
         "abi": os.environ.get("ROUTING_ABI", platform.machine()),
