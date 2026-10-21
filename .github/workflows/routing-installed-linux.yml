@@ -58,6 +58,14 @@ jobs:
           test "${#helpers[@]}" -eq 1
           sudo install -m 0755 "$RUNNER_TEMP/current-routing-helper" "${helpers[0]}"
           sudo systemctl restart AmneziaVPN
+          sudo apt-get update
+          sudo apt-get install -y strace
+          # Filter in memory; raw syscall traces can contain fixture credentials
+          # and must never be written or uploaded.
+          parent=$(systemctl show AmneziaVPN --property=MainPID --value)
+          sudo strace -f -e trace=write -s 512 -p "$parent" 2> >(python3 -u scripts/routing/trace_helper_errors.py > linux-helper-errors.jsonl) &
+          tracer=$!
+          trap 'sudo kill "$tracer" 2>/dev/null || true; wait "$tracer" || true' EXIT
           for attempt in 1 2 3 4 5; do
             sudo timeout --signal=INT --kill-after=30s 600s python3 -u scripts/routing/run_service_acceptance.py --peer "$RUNNER_TEMP/installed-routing-peer" --qt-probe "$GITHUB_WORKSPACE/routing-service-probe-build/routing-service-probe" --report "$GITHUB_WORKSPACE/linux-resolver-diagnostics-$attempt.json" --resolver-cycles 20
           done
@@ -71,5 +79,7 @@ jobs:
         if: always()
         with:
           name: linux-installed-resolver-diagnostics
-          path: linux-resolver-diagnostics-*.json
+          path: |
+            linux-resolver-diagnostics-*.json
+            linux-helper-errors.jsonl
           if-no-files-found: error
