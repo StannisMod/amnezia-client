@@ -165,6 +165,17 @@ def main():
         assert rows and all(ipaddress.ip_address(row[4][0]) in ipaddress.ip_network("198.18.0.0/15") for row in rows)
         assert tcp(rows[0][4][0]) == "DIRECT"
         previous_fake = rows[0][4][0]
+        if not win and args.resolver_cycles > 1:
+            # Reproduce the observed reset: DNS disappeared while ~. remained.
+            # The owned-link monitor must repair it, without editing libc/NSS.
+            command("busctl", "call", "org.freedesktop.resolve1", "/org/freedesktop/resolve1",
+                    "org.freedesktop.resolve1.Manager", "SetLinkDNS", "ia(iay)",
+                    str(socket.if_nametoindex("amnrouting0")), "0")
+            deadline = time.monotonic() + 5
+            while "172.19.0.2" not in subprocess.check_output(["resolvectl", "dns", "amnrouting0"], text=True):
+                assert time.monotonic() < deadline, "owned resolver did not recover an external DNS reset"
+                time.sleep(0.05)
+            report["external_dns_reset_recovery"] = "PASS"
         for cycle in range(1, args.resolver_cycles):
             disconnect(); connect()
             # A cached libc/system-resolver result must retain its domain route

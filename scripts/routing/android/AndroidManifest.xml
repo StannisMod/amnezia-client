@@ -1,7 +1,0 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="org.amnezia.routingtest">
-    <uses-sdk android:minSdkVersion="28" android:targetSdkVersion="28" />
-    <uses-permission android:name="android.permission.INTERNET" />
-    <application android:label="Disposable routing acceptance" android:debuggable="true" android:extractNativeLibs="true" android:usesCleartextTraffic="true" />
-    <instrumentation android:name="org.amnezia.routingtest.RoutingInstrumentation"
-        android:targetPackage="org.amnezia.vpn" android:functionalTest="true" />
-</manifest>

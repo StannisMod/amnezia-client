@@ -34,6 +34,7 @@ type Session struct {
 	routes    []netlink.Route
 	rules     []*netlink.Rule
 	manageDNS bool
+	dns       *resolvedLink
 	once      sync.Once
 }
 
@@ -264,18 +265,24 @@ func Start(ctx context.Context, raw []byte, manageDNS bool) (*Session, error) {
 		s.rules = append(s.rules, r)
 	}
 	if manageDNS {
-		for _, args := range [][]string{{"dns", InterfaceName, "172.19.0.2"}, {"domain", InterfaceName, "~."}, {"default-route", InterfaceName, "yes"}} {
-			if err := command(ctx, args...); err != nil {
-				return nil, err
-			}
+		s.dns, err = startResolvedLink(ctx, link.Attrs().Index)
+		if err != nil {
+			return nil, err
 		}
 	}
 	ok = true
 	return s, nil
 }
 
-func (s *Session) Stats() (awg.Stats, error) { return s.core.Stats() }
-func (s *Session) CaptureID() string         { return InterfaceName }
+func (s *Session) Stats() (awg.Stats, error) {
+	if s.dns != nil {
+		if err := s.dns.Err(); err != nil {
+			return awg.Stats{}, err
+		}
+	}
+	return s.core.Stats()
+}
+func (s *Session) CaptureID() string { return InterfaceName }
 
 func (s *Session) Close() error {
 	return s.close(false)
@@ -289,6 +296,9 @@ func (s *Session) Abort() error { return s.close(true) }
 func (s *Session) close(preserve bool) error {
 	var errs []error
 	s.once.Do(func() {
+		if s.dns != nil {
+			s.dns.Close()
+		}
 		if s.manageDNS {
 			errs = append(errs, command(context.Background(), "revert", InterfaceName))
 		}

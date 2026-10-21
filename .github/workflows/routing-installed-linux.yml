@@ -4,6 +4,7 @@ on:
     branches: [feature/sing-box-routing]
     paths:
       - .github/workflows/routing-installed-linux.yml
+      - native/routing/**
       - scripts/routing/run_service_acceptance.py
   workflow_dispatch:
 permissions:
@@ -44,13 +45,18 @@ jobs:
           cmake --build routing-service-probe-build
           cd native/routing
           go build -mod=readonly -tags with_gvisor -o "$RUNNER_TEMP/installed-routing-peer" ./cmd/android-fixture
-      - name: Install and exercise actual system resolver without altering NSS
+          go build -mod=readonly -tags with_gvisor -o "$RUNNER_TEMP/current-routing-helper" ./cmd/amnezia-routing
+      - name: Test current helper with the verified ff7016b9 Qt service (not a rebuilt installer)
         run: |
           set -euo pipefail
           packages=(installed-fixture/deploy/build/AmneziaVPN_*_linux_x64.run)
           chmod +x "${packages[0]}"
           sudo env QT_QPA_PLATFORM=offscreen "${packages[0]}" --root /opt/AmneziaVPN --accept-licenses --default-answer --confirm-command install
           sudo systemctl daemon-reload
+          sudo systemctl stop AmneziaVPN
+          mapfile -t helpers < <(find /opt/AmneziaVPN -type f -name amnezia-routing)
+          test "${#helpers[@]}" -eq 1
+          sudo install -m 0755 "$RUNNER_TEMP/current-routing-helper" "${helpers[0]}"
           sudo systemctl restart AmneziaVPN
           for attempt in 1 2 3 4 5; do
             sudo python3 scripts/routing/run_service_acceptance.py --peer "$RUNNER_TEMP/installed-routing-peer" --qt-probe "$GITHUB_WORKSPACE/routing-service-probe-build/routing-service-probe" --report "$GITHUB_WORKSPACE/linux-resolver-diagnostics-$attempt.json" --resolver-cycles 20
