@@ -36,7 +36,10 @@ def main():
     parser.add_argument("--peer", type=Path, required=True)
     parser.add_argument("--qt-probe", type=Path, required=True)
     parser.add_argument("--report", type=Path, required=True)
+    parser.add_argument("--resolver-cycles", type=int, default=1)
     args = parser.parse_args()
+    if not 1 <= args.resolver_cycles <= 100:
+        parser.error("--resolver-cycles must be between 1 and 100")
     win = os.name == "nt"
     report = {"installed_service": "FAIL", "not_run": ["physical host", "full GUI interaction", "network handover", "performance parity"]}
     peer = stream = sock = None
@@ -161,6 +164,18 @@ def main():
         rows = socket.getaddrinfo("service.direct.ru", 18081, socket.AF_INET, socket.SOCK_STREAM)
         assert rows and all(ipaddress.ip_address(row[4][0]) in ipaddress.ip_network("198.18.0.0/15") for row in rows)
         assert tcp(rows[0][4][0]) == "DIRECT"
+        previous_fake = rows[0][4][0]
+        for cycle in range(1, args.resolver_cycles):
+            disconnect(); connect()
+            # A cached libc/system-resolver result must retain its domain route
+            # after a native helper restart, even without a new DNS query.
+            assert tcp(previous_fake) == "DIRECT", "cached FakeIP identity changed after reconnect"
+            name = f"reconnect-{cycle}.direct.ru"
+            rows = socket.getaddrinfo(name, 18081, socket.AF_INET, socket.SOCK_STREAM)
+            assert rows and all(ipaddress.ip_address(row[4][0]) in ipaddress.ip_network("198.18.0.0/15") for row in rows)
+            previous_fake = rows[0][4][0]
+            assert tcp(previous_fake) == "DIRECT"
+        report["system_resolver_connect_cycles"] = args.resolver_cycles
         # Strict state can change live. It must coexist with DIRECT/VPN rules,
         # stay blocked after disconnect, and release only on explicit disable.
         toggle(True)
