@@ -126,13 +126,11 @@ void IpSplitTunnelingUiController::exportSites(const QString &fileName)
 void IpSplitTunnelingUiController::toggleSplitTunneling(bool enabled)
 {
     m_ipSplitTunnelingController->toggleSplitTunneling(enabled);
-    emit isSplitTunnelingEnabledChanged();
 }
 
 void IpSplitTunnelingUiController::setRouteMode(int routeMode)
 {
     m_ipSplitTunnelingController->setRouteMode(static_cast<amnezia::RouteMode>(routeMode));
-    emit routeModeChanged();
 }
 
 int IpSplitTunnelingUiController::getRouteMode() const
@@ -148,5 +146,8 @@ bool IpSplitTunnelingUiController::isSplitTunnelingEnabled() const
 void IpSplitTunnelingUiController::updateModel()
 {
     m_ipSplitTunnelingModel->updateModel(m_ipSplitTunnelingController->getCurrentSites());
+    emit routeModeChanged();
+    emit isSplitTunnelingEnabledChanged();
+    emit singBoxRoutingEnabledChanged();
     emit domainRoutingChanged();
 }

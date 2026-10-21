@@ -1,26 +1,56 @@
 # Implementation checkpoint — incomplete
 
-## Current verification — 2026-10-20
+## Current verification — 2026-10-21
 
-Desktop application-scope and crash-state changes passed native acceptance at
-`6d111d66`. Installed-service and strict-switch acceptance remains pending in
-full matrix `39449842520`. Native QUIC/TLS probes are newly added and await CI.
+Resumed from `ff86843cbe35e7e8bc9fbcdec0d4a627cf425e57` on the existing
+`feature/sing-box-routing` branch. Its verified base remains
+`ddde43635e957ebf042d92787489da72d3394019` (`dev`). No dev merge or release
+publication was performed.
 
-The feature remains experimental and off by default. Source integration and
-build success are separate from native runtime acceptance.
+The feature remains experimental and off by default. Source integration,
+compilation, controlled native tests and physical-device acceptance are separate
+claims. The four-platform handoff is **incomplete**.
 
 | Check | Latest verified result |
 | --- | --- |
-| Full client builds | PASS at `f7847c02`, run `39375044626`: four Android ABI APKs, Linux installer, Windows EXE/MSI and unsigned iOS application/extension; aggregate build gate PASS |
-| Windows native Wintun/helper | PASS at `6d111d66`, run `39449842545`: app include/exclude TCP/UDP, 100 reconnects, pipe-loss and hard-kill fail-closed recovery, exact route/DNS restoration |
-| Linux native TUN/helper | PASS at `6d111d66`, run `39449842500`: app include/exclude TCP/UDP, 100 reconnects, pipe-loss and hard-kill recovery, exact native-route restoration |
-| Android packaged service | PASS in `39449842506`: compatible full APK host with current unified JNI, preflight rejection/recovery and 100 reconnects |
-| iOS | Unsigned application and PacketTunnel extension PASS at `f7847c02`; signed-device runtime not executed |
-| Core race tests / QUIC | Linux, Windows and macOS count=3 suites PASS at `f7847c02`; QUIC/TLS host transport passes for inner IPv4/IPv6; native app/TUN QUIC unrun |
+| Android packaged service | PASS at `ff86843c`, [run 39451549933](https://github.com/StannisMod/amnezia-client/actions/runs/39451549933): controlled emulator/native service acceptance including QUIC/TLS; no physical-device claim |
+| Linux native TUN/helper | PASS at `ff86843c`, [run 39451550008](https://github.com/StannisMod/amnezia-client/actions/runs/39451550008): independent DIRECT/AWG fixture observations and native lifecycle coverage |
+| Windows native Wintun/helper | PASS at `ff86843c`, [run 39451549932](https://github.com/StannisMod/amnezia-client/actions/runs/39451549932): independent DIRECT/AWG fixture observations and native lifecycle coverage |
+| Installed Linux client/service | PASS at `ff86843c`, job 118782856575 in [run 39451549808](https://github.com/StannisMod/amnezia-client/actions/runs/39451549808): RUN installer, system resolver, strict-switch toggles, app scope, IPC reconnect, helper crash recovery and OS-state restoration |
+| Full client build baseline | Prior aggregate PASS at `f7847c02`, run 39375044626: four Android ABI APKs, Linux RUN, Windows EXE/MSI, unsigned iOS app + extension |
+| New UI/persistence changes | Implemented at `e455c6a9`; full client/UI gate running in [run 39554676452](https://github.com/StannisMod/amnezia-client/actions/runs/39554676452). Pending is not PASS |
+| Shared-core tests | PASS at `e455c6a9` on Linux/Windows/macOS in run 39554676452; all eight package-only cross-compiles PASS. Local Go 1.27.1 race suite count=3, vet and module verification PASS |
+| iOS device/runtime | NOT RUN; signed app/extension provisioning and a compatible device are required. Unsigned compilation is not device acceptance |
 
-Installed desktop service/installer smoke, physical mobile devices, iOS memory
-limits, network handover, always-on/lockdown, full performance comparison and
-remaining OS kill-switch/per-app combinations are not accepted as complete.
+The old matrix at `ff86843c` failed downloading a pinned Go dependency for
+Android x86 (`proxy.golang.org` HTTP/2 INTERNAL_ERROR). That exact package-only
+lane passed on retry. Windows/iOS jobs in that run were superseded/cancelled by
+the new source build; no installed-Windows or new-iOS PASS is inferred from them.
+The new workflow retries module acquisition up to three times, verifies pinned
+checksums, and still fails if all acquisition attempts fail.
+
+### Resumed desktop product fixes
+
+- Linux exposes app split tunneling when the routed engine is enabled and
+  provides an executable-file selector. Windows/Linux expose both app modes
+  with that engine; legacy Windows retains its exclusion-only UI.
+- Enabling domain routing no longer rejects desktop app scope or kill switch:
+  the existing native/service integration implements those combinations.
+- Restoring a routed Windows backup retains include mode. Linux restores the
+  application mode/list/enabled state through the existing controller signals.
+- UI models notify property bindings on repository-driven changes, including
+  backup restoration, without double-emitting explicit setter notifications.
+- A nonempty desktop app scope that requires the routed engine is rejected
+  before starting an incompatible legacy transport; its saved rules are not
+  silently ignored. Empty app lists retain existing all-app behavior.
+- Regression tests exercise independent include/exclude lists, restored scope,
+  live-editor notifications and rejection of unsupported legacy app scope.
+  Linux and Windows CI run the settings/application UI regression targets.
+
+Still unaccepted: physical mobile devices, signed iOS packet-flow/egress and
+memory limits, native network handover, always-on/lockdown combinations,
+performance measurements, complete protocol regression and full GUI interaction.
+Keep these requirements open; successful builds do not close them.
 
 Historical checkpoints below preserve the evidence and failures that led to
 the current implementation; later entries supersede earlier source status.

@@ -245,6 +245,10 @@ jobs:
           set BUILD_RESULT=%ERRORLEVEL%
           type client-build.log
           exit /b %BUILD_RESULT%
+      - name: Windows settings and application-scope regression tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: ctest --test-dir deploy/build/client/tests -C Release --output-on-failure -R 'UiIpModelAndControllerTest|UiAppSTModelAndControllerTest|SettingsSignalsTest|BackupExportImportTest'
       - name: Record baseline result
         if: always()
         env:

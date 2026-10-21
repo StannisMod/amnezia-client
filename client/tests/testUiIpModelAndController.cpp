@@ -47,6 +47,20 @@ private slots:
 #endif
     }
 
+    void restoredRoutingNotifiesLiveEditor()
+    {
+        auto repo = m_coreController->m_appSettingsRepository;
+        auto ui = m_coreController->m_ipSplitTunnelingUiController;
+        if (!ui->isSingBoxRoutingAvailable()) QSKIP("Routing is unavailable on this platform");
+        repo->setSingBoxRoutingEnabled(true);
+        const auto backup = m_coreController->m_settingsController->backupAppConfig();
+        repo->setSingBoxRoutingEnabled(false);
+        QSignalSpy enabledSpy(ui, &IpSplitTunnelingUiController::singBoxRoutingEnabledChanged);
+        QCOMPARE(m_coreController->m_settingsController->restoreAppConfigFromData(backup), ErrorCode::NoError);
+        QVERIFY(!enabledSpy.isEmpty());
+        QVERIFY(ui->isSingBoxRoutingEnabled());
+    }
+
     void editableDomainRulesPersistAndRestore()
     {
         auto repository = m_coreController->m_appSettingsRepository;
