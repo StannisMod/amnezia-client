@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 
 
 def command(go, module, *args):
@@ -42,7 +43,7 @@ def generate(module, output, go='go', host_root=None):
     if output == module or module in output.parents:
         # Reproducible inventories must never recursively include their output.
         raise ValueError('license output must be outside the source module')
-    print('Resolving pinned module notices', flush=True)
+    print('Resolving pinned module notices', flush=True, file=sys.stderr)
     command(go, module, 'mod', 'download')
     command(go, module, 'mod', 'verify')
     required = json.loads(command(go, module, 'mod', 'edit', '-json')).get('Require', [])
@@ -64,7 +65,7 @@ def generate(module, output, go='go', host_root=None):
             if original['Path'] != 'github.com/StannisMod/amnezia-client/native/routing':
                 raise ValueError('unrecognized local replacement: ' + original['Path'])
             continue
-        print('Notice: ' + row['Path'] + '@' + row['Version'], flush=True)
+        print('Notice: ' + row['Path'] + '@' + row['Version'], flush=True, file=sys.stderr)
         downloaded = json.loads(command(go, module, 'mod', 'download', '-json', row['Path'] + '@' + row['Version']))
         if downloaded.get('Error') or not downloaded.get('Sum'):
             raise ValueError('unverified module: ' + row['Path'])
@@ -102,7 +103,7 @@ def generate(module, output, go='go', host_root=None):
     bundle.write_text('\n'.join(lines) + '\n')
     manifest['bundle_sha256'] = hashlib.sha256(bundle.read_bytes()).hexdigest()
     (output / 'inventory.json').write_text(json.dumps(manifest, indent=2, sort_keys=True) + '\n')
-    print(json.dumps({'modules': len(inventory), 'unique_notices': len(texts), 'missing_notices': missing}))
+    print(json.dumps({'modules': len(inventory), 'unique_notices': len(texts), 'missing_notices': missing}), file=sys.stderr)
 
 
 if __name__ == '__main__':

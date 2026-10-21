@@ -55,11 +55,18 @@ jobs:
           APK_OVERRIDE: ${{ inputs.apk_run_id }}
         run: |
           python3 - <<'PYSELECT'
-          import json, os, pathlib, subprocess, time, urllib.request
+          import json, os, pathlib, subprocess, time, urllib.error, urllib.request
           repo = os.environ['GITHUB_REPOSITORY']
           def api(path):
               req = urllib.request.Request(f'https://api.github.com/repos/{repo}/{path}', headers={'Authorization': f"Bearer {os.environ['GH_TOKEN']}"})
-              with urllib.request.urlopen(req, timeout=30) as stream: return json.load(stream)
+              for attempt in range(4):
+                  try:
+                      with urllib.request.urlopen(req, timeout=30) as stream: return json.load(stream)
+                  except urllib.error.HTTPError as error:
+                      if error.code not in (429, 500, 502, 503, 504) or attempt == 3: raise
+                  except urllib.error.URLError:
+                      if attempt == 3: raise
+                  time.sleep(2 ** attempt)
           override = os.environ.get('APK_OVERRIDE')
           compatibility = {}
           def compatible(sha):

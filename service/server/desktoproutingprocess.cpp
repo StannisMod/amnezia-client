@@ -113,6 +113,19 @@ void DesktopRoutingProcess::readOutput()
             m_status.insert("date", QDateTime::currentDateTime().toString());
             emit connected(row.value("pubkey").toString());
         } else if (type == "error") {
+            // Forward only fixed categories, never arbitrary native text/profile data.
+            const auto message = row.value("message").toString();
+            const QStringList categories = {
+                "native TUN creation failed", "routing interface already exists",
+                "systemd-resolved link configuration failed", "system resolver bus unavailable",
+                "system resolver link configuration failed", "system resolver link configuration lost",
+                "routing statistics unavailable", "capture policy installation failed",
+                "capture reverse-path configuration failed", "native policy routing inventory unavailable"
+            };
+            QString category = categories.contains(message) ? message : "native backend failure";
+            if (message.startsWith("capture route installation failed (family ")) category = "capture route installation failed";
+            if (message.startsWith("reserved routing ")) category = "reserved routing state is occupied";
+            m_status.insert("routingError", category);
             // Do not substitute the legacy backend after a routed failure.
             emit failed();
         }

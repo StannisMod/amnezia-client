@@ -190,6 +190,11 @@ void DaemonLocalServerConnection::backendFailure(DaemonError err) {
   QJsonObject obj;
   obj.insert("type", "backendFailure");
   obj.insert("errorCode", static_cast<int>(err));
+#if defined(MZ_LINUX) || defined(MZ_WINDOWS)
+  auto routing = DesktopRoutingProcess::instance();
+  if (routing->isActive() && routing->status().contains("routingError"))
+    obj.insert("routingError", routing->status().value("routingError"));
+#endif
   write(obj);
 }
 
