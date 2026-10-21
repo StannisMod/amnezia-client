@@ -77,7 +77,7 @@ jobs:
           if (Test-Path $probe) { & $probe off }
           $service = Get-Service AmneziaVPN-service -ErrorAction SilentlyContinue
           if ($service) {
-            $service.Stop()
+            Stop-Service -Name AmneziaVPN-service -Force
             $service.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
           }
           $helper = Get-ChildItem "$env:ProgramFiles/AmneziaVPN" -Filter amnezia-routing.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1

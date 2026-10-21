@@ -51,7 +51,23 @@ func startResolvedLink(ctx context.Context, index int) (*resolvedLink, error) {
 	setupCtx, setupCancel := context.WithTimeout(runCtx, 5*time.Second)
 	defer setupCancel()
 	var path dbus.ObjectPath
-	err = r.manager.CallWithContext(setupCtx, resolvedManager+".GetLink", 0, r.index).Store(&path)
+	// resolved consumes link creation asynchronously. A fresh kernel TUN can
+	// exist before its resolver object is exported; wait only for NoSuchLink,
+	// never retry permission/bus/configuration failures or DNS queries.
+	for {
+		err = r.manager.CallWithContext(setupCtx, resolvedManager+".GetLink", 0, r.index).Store(&path)
+		var busError dbus.Error
+		if !errors.As(err, &busError) || busError.Name != resolvedService+".NoSuchLink" {
+			break
+		}
+		select {
+		case <-setupCtx.Done():
+			err = setupCtx.Err()
+		case <-time.After(20 * time.Millisecond):
+			continue
+		}
+		break
+	}
 	if err == nil {
 		r.link = conn.Object(resolvedService, path)
 		err = conn.AddMatchSignalContext(setupCtx, dbus.WithMatchObjectPath(path), dbus.WithMatchInterface("org.freedesktop.DBus.Properties"), dbus.WithMatchMember("PropertiesChanged"))

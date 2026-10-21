@@ -105,7 +105,7 @@ def main():
         end = time.monotonic() + timeout
         while time.monotonic() < end:
             row = events.get(timeout=max(0.1, end - time.monotonic()))
-            assert row.get("type") not in ("error", "backendFailure", "exited"), "installed service/child failed"
+            assert row.get("type") not in ("error", "backendFailure", "exited"), "installed service/child failed: " + json.dumps(row)
             if row.get("type") == kind:
                 return row
         raise AssertionError("service response timed out: " + kind)
@@ -146,8 +146,9 @@ def main():
                     if not line:
                         break
                     destination.put(json.loads(line))
-            except (OSError, ValueError):
-                pass
+            except (OSError, ValueError, RuntimeError) as error:
+                if not stopped.is_set():
+                    destination.put({"type": "error", "message": "IPC reader failed", "exception": type(error).__name__})
             destination.put({"type": "exited"})
         reader_thread = threading.Thread(target=reader, args=(reader_stream, events, reader_stop), daemon=True)
         reader_thread.start()
@@ -316,7 +317,8 @@ def main():
         after = snapshot()
         assert after == before, "installed-service route/DNS restoration differed"
         report.update(installed_service="PASS", strict_kill_switch="PASS", system_resolver="PASS", application_scope="PASS", ipc_reconnect="PASS", helper_crash_recovery="PASS", observers=counts, os_state_restored=True)
-    except Exception:
+    except Exception as error:
+        report["failure"] = str(error)
         # Retain the failed state before teardown; explicit DNS probes can pass
         # while libc/NSS uses a different resolver path. Never convert failure
         # into PASS or rewrite the runner's resolver as a diagnostic shortcut.
