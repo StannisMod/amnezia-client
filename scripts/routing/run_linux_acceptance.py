@@ -125,6 +125,8 @@ def main():
     backup = "amnrtest-backup"
     helper = args.helper.resolve(); script = Path(__file__).resolve()
     child = peer = None
+    observer_owned = False
+    observer = "198.51.100.2"
     child_buffer = b""
     report = {"native_capture": "FAIL", "not_run": ["installed Qt service", "systemd-resolved integration", "installer", "OS kill switch", "physical Wi-Fi/Ethernet handover", "GUI network-change callback"]}
     def ip(*parts):
@@ -167,6 +169,8 @@ def main():
             assert child.wait(timeout=15) == 0
             child = None
     try:
+        ip("addr", "add", observer + "/32", "dev", "lo")
+        observer_owned = True
         ip("netns", "add", ns)
         ip("link", "add", host, "type", "veth", "peer", "name", "eth0", "netns", ns)
         ip("addr", "add", "10.0.2.2/24", "dev", host)
@@ -197,7 +201,7 @@ def main():
         before_routes = ns_ip("route", "show", "table", "all")
         report["native_routes_before"] = before_routes
         ca = args.fixture.with_suffix(".quic.der")
-        peer = subprocess.Popen([str(args.peer.resolve()), "--config", str(args.fixture), "--quic-ca", str(ca)], stdout=subprocess.PIPE, text=True)
+        peer = subprocess.Popen([str(args.peer.resolve()), "--shared-ip", observer, "--config", str(args.fixture), "--quic-ca", str(ca)], stdout=subprocess.PIPE, text=True)
         assert select.select([peer.stdout], [], [], 10)[0] and peer.stdout.readline().startswith("READY")
         profile = json.loads(args.fixture.read_text())
         profile["sing_box_routing"] = {"version": 1, "default": "vpn", "rules": [
@@ -254,10 +258,12 @@ def main():
             # session recovery, not GUI callbacks or physical Wi-Fi hardware.
             active_pid = child.pid
             ns_ip("route", "replace", "default", "via", "10.0.3.2", "dev", "eth1")
-            ns_ip("route", "add", "10.0.2.2/32", "via", "10.0.3.2", "dev", "eth1")
             ns_ip("link", "set", "eth0", "down")
-            decision = ns_ip("route", "get", "10.0.2.2", "mark", "0x40000000")
+            decision = ns_ip("route", "get", observer, "mark", "0x40000000")
             assert "dev eth1" in decision and "src 10.0.3.15" in decision, decision
+            physical_probe = "import socket; s=socket.socket(); s.setsockopt(socket.SOL_SOCKET,socket.SO_MARK,0x40000000); s.settimeout(5); s.connect(('198.51.100.2',18081)); assert s.recv(32).strip()==b'DIRECT'; s.close()"
+            run("ip", "netns", "exec", ns, sys.executable, "-c", physical_probe)
+            report["backup_underlay_observer_reachable"] = True
             stop(); start()
             application({"names": [["direct.ru", "DIRECT", 1], ["vpn.test", "VPN", 1]]})
             assert child.pid != active_pid and child.poll() is None
@@ -269,7 +275,6 @@ def main():
             assert counts_after_loss["direct_tcp"] == counts_before_loss["direct_tcp"]
             assert counts_after_loss["direct_udp"] == counts_before_loss["direct_udp"]
             ns_ip("link", "set", "eth0", "up")
-            ns_ip("route", "del", "10.0.2.2/32")
             ns_ip("route", "replace", "default", "via", "10.0.2.2", "dev", "eth0")
             ns_ip("link", "set", "eth1", "up")
             stop(); start()
@@ -318,6 +323,8 @@ def main():
             child.kill(); child.wait(timeout=10)
         if peer is not None:
             peer.terminate(); peer.wait(timeout=10)
+        if observer_owned:
+            subprocess.run(["ip", "addr", "del", observer + "/32", "dev", "lo"], capture_output=True)
         subprocess.run(["ip", "link", "del", backup], capture_output=True)
         subprocess.run(["ip", "link", "del", host], capture_output=True)
         subprocess.run(["ip", "netns", "del", ns], capture_output=True)

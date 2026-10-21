@@ -96,10 +96,12 @@ def main():
     classes = work / "classes"; classes.mkdir(exist_ok=True)
     dex = work / "dex"; dex.mkdir(exist_ok=True)
     source = ROOT / "scripts/routing/android"
-    run("javac", "-source", "8", "-target", "8", "-classpath", android_jar, "-d", classes, source / "RoutingInstrumentation.java")
+    run("javac", "-source", "8", "-target", "8", "-classpath", android_jar, "-d", classes, *sorted(source.glob("*.java")))
     run(tools / "d8", "--min-api", "28", "--lib", android_jar, "--output", dex, *sorted(classes.rglob("*.class")))
     unsigned = work / "instrumentation-unsigned.apk"
-    run(tools / "aapt2", "link", "-I", android_jar, "--manifest", source / "AndroidManifest.xml", "-o", unsigned)
+    resources = work / "policy-resources.zip"
+    run(tools / "aapt2", "compile", "--dir", source / "res", "-o", resources)
+    run(tools / "aapt2", "link", "-I", android_jar, "--manifest", source / "AndroidManifest.xml", "-R", resources, "-o", unsigned)
     with zipfile.ZipFile(unsigned, "a") as apk:
         apk.write(dex / "classes.dex", "classes.dex")
         apk.write(args.fixture, "assets/fixture.json")
@@ -117,10 +119,12 @@ def main():
               "apk_sha256": hashlib.sha256(args.apk.read_bytes()).hexdigest(), "native_payloads": payload_hashes(args.apk),
               "environment": "disposable Android emulator; independent host and AWG-netstack observers",
               "cycles_requested": args.cycles, "native_vpn_acceptance": "FAIL", "resources": {},
-              "not_run": ["physical device", "Wi-Fi/cellular handover", "always-on/lockdown", "performance parity"]}
+              "not_run": ["physical device", "Wi-Fi/cellular handover", "Android 9 lockdown query restriction", "physical-device policy behavior", "performance parity"]}
+    admin = "org.amnezia.routingtest/.RoutingPolicyReceiver"
     try:
         adb("install", "-r", "-t", str(target))
         adb("install", "-r", "-t", str(instrument))
+        assert "Success" in adb("shell", "dpm", "set-device-owner", admin), "AVD device owner setup failed"
         adb("shell", "appops", "set", PACKAGE, "ACTIVATE_VPN", "allow")
         # am instrument does not set a useful shell exit code on test failure.
         # Require the explicit PASS result and successful resource assertions.
@@ -131,6 +135,12 @@ def main():
             started = time.monotonic(); output = []
             for line in process.stdout:
                 print(line, end="", flush=True); log.write(line); log.flush(); output.append(line)
+                if "POLICY_CHECKPOINT " in line:
+                    mode = line.strip().split("POLICY_CHECKPOINT ", 1)[1]
+                    assert mode in ("off", "alwayson", "lockdown")
+                    output_policy = adb("shell", "am", "broadcast", "-a", "org.amnezia.routingtest.POLICY", "-n", admin, "--es", "mode", mode)
+                    assert "result=-1" in output_policy, "AVD VPN policy was not applied: " + output_policy
+                    adb("shell", "touch", f"/data/user/0/{PACKAGE}/files/routing-policy-{mode}.ready")
                 if "RESOURCE_CHECKPOINT " in line:
                     label = line.strip().split("RESOURCE_CHECKPOINT ", 1)[1]
                     report["resources"][label] = snapshot()
@@ -152,7 +162,14 @@ def main():
         assert after["threads"] <= before["threads"] + 24, "thread growth across reconnects"
         report["resource_limits"] = {"fd_growth": 8, "thread_growth": 24, "rss": "measured only; Go heap retention varies"}
         report["native_vpn_acceptance"] = "PASS"
+        report["android_os_always_on_lockdown"] = "PASS"
+        report["legacy_awg_transition"] = "PASS"
     finally:
+        try:
+            adb("shell", "am", "broadcast", "-a", "org.amnezia.routingtest.POLICY", "-n", admin, "--es", "mode", "off")
+            adb("shell", "dpm", "remove-active-admin", admin)
+        except subprocess.CalledProcessError:
+            report["policy_cleanup"] = "FAIL"
         (work / "android-acceptance.json").write_text(json.dumps(report, indent=2) + "\n")
         for label, command in {
             "routes": ("shell", "ip", "route", "show", "table", "all"),

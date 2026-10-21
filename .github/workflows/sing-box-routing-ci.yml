@@ -16,7 +16,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: routing-${{ github.workflow }}-${{ github.ref }}
+  group: routing-product-v2-${{ github.ref }}
   # A CI-only follow-up can reuse an already verified compatible APK while
   # the existing full matrix finishes. Source fixes still supersede old builds.
   cancel-in-progress: ${{ !startsWith(github.event.head_commit.message, 'ci(routing):') }}

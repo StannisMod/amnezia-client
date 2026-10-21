@@ -49,6 +49,9 @@ class Awg : Wireguard() {
     }
 
     private fun startRouted(config: JSONObject, vpnBuilder: Builder, protect: (Int) -> Boolean) {
+        if (lockdownEnabled()) {
+            throw VpnStartException("Experimental domain routing is unavailable while Android VPN lockdown is enabled")
+        }
         // Use the existing profile parser, including every AWG 3.1 parameter,
         // but never materialize the legacy site's cached IP exclusions.
         val parseInput = JSONObject(config.toString()).apply { put("splitTunnelType", 0) }
@@ -117,10 +120,24 @@ class Awg : Wireguard() {
             // Do not silently retry the legacy backend or expose VPN flows.
             throw VpnStartException("Domain routing startup failed; check the profile and routing rules")
         }
+        val statusHandle = routedHandle
         routedStatusJob = routedScope.launch {
-            while (true) {
-                val snapshot = RoutingBackend.stats(routedHandle) ?: break
-                if (snapshot[2] > 0) { state.value = CONNECTED; break }
+            var announced = false
+            while (routedHandle == statusHandle) {
+                // Lockdown may be enabled while a routed tunnel is active.
+                // Stop rather than allowing protected DIRECT proxy sockets to
+                // circumvent the user's OS policy. The OS keeps traffic blocked.
+                if (lockdownEnabled()) {
+                    stopRouted()
+                    state.value = DISCONNECTED
+                    onError("Experimental domain routing stopped because Android VPN lockdown is enabled")
+                    break
+                }
+                if (!announced) {
+                    val snapshot = RoutingBackend.stats(statusHandle) ?: break
+                    if (routedHandle != statusHandle) break
+                    if (snapshot[2] > 0) { state.value = CONNECTED; announced = true }
+                }
                 delay(1000)
             }
         }

@@ -60,29 +60,37 @@ jobs:
           def api(path):
               req = urllib.request.Request(f'https://api.github.com/repos/{repo}/{path}', headers={'Authorization': f"Bearer {os.environ['GH_TOKEN']}"})
               with urllib.request.urlopen(req, timeout=30) as stream: return json.load(stream)
-          selected = os.environ.get('APK_OVERRIDE') or '39375044626'
-          base = api(f'actions/runs/{selected}')
-          subprocess.run(['git', 'fetch', '--depth', '1', 'origin', base['head_sha']], check=True)
-          changed = subprocess.run(['git', 'diff', '--quiet', base['head_sha'], 'HEAD', '--', 'client/android', 'client/platforms/android']).returncode
-          assert changed in (0, 1), 'Android host comparison failed'
-          if changed and not os.environ.get('APK_OVERRIDE'):
-              print('Android host changed; waiting for the full-client build of this source commit', flush=True)
-              deadline = time.monotonic() + 125 * 60
-              while time.monotonic() < deadline:
-                  runs = api(f"actions/runs?head_sha={os.environ['GITHUB_SHA']}&event=push&per_page=20")['workflow_runs']
-                  builds = [r for r in runs if r['name'] == 'Sing-box routing checks' and r['head_sha'] == os.environ['GITHUB_SHA']]
-                  if builds:
-                      candidate = builds[0]
-                      jobs = api(f"actions/runs/{candidate['id']}/jobs?per_page=100")['jobs']
-                      android = [j for j in jobs if j['name'] == 'client-android (x86_64, android_x86_64)']
-                      if android and android[0]['status'] == 'completed':
-                          assert android[0]['conclusion'] == 'success', 'Compatible Android full-client build failed'
-                          artifacts = api(f"actions/runs/{candidate['id']}/artifacts?per_page=100")['artifacts']
-                          if any(a['name'] == 'routing-client-android-x86_64-baseline' and not a['expired'] for a in artifacts):
-                              selected = str(candidate['id'])
-                              break
-                  time.sleep(15)
-              else: raise TimeoutError('Compatible Android full-client build did not finish within its build budget')
+          override = os.environ.get('APK_OVERRIDE')
+          compatibility = {}
+          def compatible(sha):
+              if sha not in compatibility:
+                  subprocess.run(['git', 'fetch', '--depth', '1', 'origin', sha], check=True)
+                  code = subprocess.run(['git', 'diff', '--quiet', sha, 'HEAD', '--', 'client/android', 'client/platforms/android']).returncode
+                  assert code in (0, 1), 'Android host comparison failed'
+                  compatibility[sha] = code == 0
+              return compatibility[sha]
+          selected = None
+          deadline = time.monotonic() + 125 * 60
+          while time.monotonic() < deadline:
+              candidates = ([api(f'actions/runs/{override}')] if override else
+                            api('actions/workflows/sing-box-routing-ci.yml/runs?branch=feature%2Fsing-box-routing&event=push&per_page=30')['workflow_runs'])
+              for candidate in candidates:
+                  jobs = api(f"actions/runs/{candidate['id']}/jobs?per_page=100")['jobs']
+                  android = [j for j in jobs if j['name'] == 'client-android (x86_64, android_x86_64)']
+                  if not android or android[0]['status'] != 'completed' or android[0]['conclusion'] != 'success':
+                      continue
+                  if not compatible(candidate['head_sha']):
+                      assert not override, 'Requested APK has incompatible production Android host sources'
+                      continue
+                  artifacts = api(f"actions/runs/{candidate['id']}/artifacts?per_page=100")['artifacts']
+                  if any(a['name'] == 'routing-client-android-x86_64-baseline' and not a['expired'] for a in artifacts):
+                      selected = str(candidate['id'])
+                      break
+              if selected: break
+              assert not override, 'Requested APK build is not ready or has no usable artifact'
+              print('Waiting for an APK with identical production Android host sources', flush=True)
+              time.sleep(15)
+          if not selected: raise TimeoutError('Compatible Android full-client build did not finish within its build budget')
           with open(os.environ['GITHUB_ENV'], 'a') as stream: stream.write(f'APK_RUN={selected}\n')
           PYSELECT
       - uses: actions/download-artifact@v4

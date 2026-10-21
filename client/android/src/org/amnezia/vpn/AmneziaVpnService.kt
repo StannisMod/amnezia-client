@@ -524,7 +524,9 @@ open class AmneziaVpnService : VpnService() {
             disconnectionJob = null
 
             vpnProto?.protocol?.let { protocol ->
-                protocol.initialize(applicationContext, protocolState, ::onError)
+                protocol.initialize(applicationContext, protocolState, ::onError) {
+                    Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && this@AmneziaVpnService.isLockdownEnabled
+                }
                 protocol.startVpn(config, Builder(), ::protect)
             }
         }

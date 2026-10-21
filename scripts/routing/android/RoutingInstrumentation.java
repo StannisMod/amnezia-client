@@ -44,6 +44,7 @@ public final class RoutingInstrumentation extends Instrumentation {
     private final List<String> passed = new ArrayList<>();
     private volatile int state = -1;
     private volatile boolean serviceError;
+    private volatile String serviceErrorText = "";
     private Messenger service, replies;
     private JSONObject fixture;
     private int cycles = 100;
@@ -78,7 +79,7 @@ public final class RoutingInstrumentation extends Instrumentation {
             replies = new Messenger(new Handler(Looper.getMainLooper(), message -> {
                 synchronized (lock) {
                     if (message.what == 0 || message.what == 1) state = message.getData().getInt("state", -1);
-                    if (message.what == 3) serviceError = true;
+                    if (message.what == 3) { serviceError = true; serviceErrorText = message.getData().getString("ERROR", ""); }
                     lock.notifyAll();
                 }
                 return true;
@@ -165,6 +166,20 @@ public final class RoutingInstrumentation extends Instrumentation {
             disconnect(); connect(false);
             requireRoute(dns("vpn.test", 1), "VPN"); disconnect();
             pass("legacy AWG TCP/UDP/QUIC and routed-to-legacy-to-routed service transition");
+            // The driver owns a real DevicePolicyManager admin on this AVD.
+            // Always-on may start the saved profile itself; await that event.
+            state = -1; serviceError = false;
+            policy("alwayson"); awaitState(CONNECTED, false);
+            requireRoute(dns("vpn.test", 1), "VPN");
+            state = -1; serviceError = false; serviceErrorText = "";
+            policy("lockdown"); awaitState(DISCONNECTED, true);
+            require(serviceErrorText.contains("lockdown"), "active lockdown did not produce the policy error");
+            state = -1; serviceError = false; serviceErrorText = "";
+            startService(configuration(false)); awaitState(DISCONNECTED, true);
+            require(serviceErrorText.contains("lockdown"), "lockdown startup was not rejected before capture");
+            policy("off");
+            connect(false); requireRoute(dns("vpn.test", 1), "VPN"); disconnect();
+            pass("OS always-on, active lockdown shutdown, lockdown startup rejection and recovery");
             result.putString("routing_result", "PASS"); code = 0;
         } catch (Throwable error) {
             // Avoid dumping fixture/keys in an exception or Android log.
@@ -183,6 +198,16 @@ public final class RoutingInstrumentation extends Instrumentation {
             result.putString("passed", new JSONArray(passed).toString());
             finish(code, result);
         }
+    }
+
+    private void policy(String mode) throws Exception {
+        File ready = new File(getTargetContext().getFilesDir(), "routing-policy-" + mode + ".ready");
+        ready.delete();
+        progress("POLICY_CHECKPOINT " + mode);
+        long until = SystemClock.elapsedRealtime() + 20000;
+        while (!ready.exists() && SystemClock.elapsedRealtime() < until) SystemClock.sleep(100);
+        require(ready.exists(), "emulator policy driver did not acknowledge " + mode);
+        ready.delete();
     }
 
     private void pass(String text) { passed.add(text); progress("PASS: " + text); }

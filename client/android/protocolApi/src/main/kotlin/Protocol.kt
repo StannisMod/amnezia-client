@@ -27,11 +27,13 @@ abstract class Protocol {
     protected lateinit var state: MutableStateFlow<ProtocolState>
     protected lateinit var onError: (String) -> Unit
     protected var isInitialized: Boolean = false
+    protected var lockdownEnabled: () -> Boolean = { false }
 
-    fun initialize(context: Context, state: MutableStateFlow<ProtocolState>, onError: (String) -> Unit) {
+    fun initialize(context: Context, state: MutableStateFlow<ProtocolState>, onError: (String) -> Unit, lockdownEnabled: () -> Boolean = { false }) {
         this.context = context
         this.state = state
         this.onError = onError
+        this.lockdownEnabled = lockdownEnabled
         internalInit()
         isInitialized = true
     }
