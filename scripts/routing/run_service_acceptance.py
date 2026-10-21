@@ -31,6 +31,54 @@ def native_connect():
         pass
 
 
+class WindowsPipeStream:
+    """Raw newline IPC over an overlapped Windows handle, without CRT locks."""
+    def __init__(self, address):
+        import _winapi
+        from multiprocessing.connection import PipeConnection
+        _winapi.WaitNamedPipe(address, 5000)
+        handle = _winapi.CreateFile(address, _winapi.GENERIC_READ | _winapi.GENERIC_WRITE,
+                                    0, _winapi.NULL, _winapi.OPEN_EXISTING,
+                                    _winapi.FILE_FLAG_OVERLAPPED, _winapi.NULL)
+        # Windows PipeConnection uses raw WriteFile/ReadFile for send/recv;
+        # unlike the POSIX Connection implementation it adds no length prefix.
+        # Keep the pipe in byte mode and assemble Qt's newline frames ourselves.
+        self.connection = PipeConnection(handle)
+        self.pending = b""
+
+    def readline(self):
+        while b"\n" not in self.pending:
+            try:
+                chunk = self.connection.recv_bytes()
+            except EOFError:
+                return b""
+            if not chunk:
+                return b""
+            self.pending += chunk
+            if len(self.pending) > 1 << 20:
+                raise ValueError("service IPC line exceeded limit")
+        line, self.pending = self.pending.split(b"\n", 1)
+        return line + b"\n"
+
+    def write(self, data):
+        self.connection.send_bytes(data)
+        return len(data)
+
+    def flush(self):
+        pass
+
+    def cancel_read(self):
+        import ctypes
+        from ctypes import wintypes
+        cancel = ctypes.WinDLL("kernel32", use_last_error=True).CancelIoEx
+        cancel.argtypes = [wintypes.HANDLE, wintypes.LPVOID]
+        cancel.restype = wintypes.BOOL
+        cancel(self.connection.fileno(), None)
+
+    def close(self):
+        self.connection.close()
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--peer", type=Path, required=True)
@@ -84,10 +132,8 @@ def main():
         events = queue.Queue()
         reader_stop = threading.Event()
         if win:
-            stream = open(r"\\.\pipe\amneziavpn", "r+b", buffering=0)
-            # Windows CRT serializes _read/_write on one descriptor. A blocked
-            # reader must not hold the descriptor needed to send activation.
-            reader_stream = os.fdopen(os.dup(stream.fileno()), "rb", buffering=0)
+            stream = WindowsPipeStream(r"\\.\pipe\amneziavpn")
+            reader_stream = stream
         else:
             sock = socket.socket(socket.AF_UNIX)
             sock.settimeout(20); sock.connect("/var/run/amneziavpn/daemon.socket")
@@ -113,19 +159,10 @@ def main():
         if reader_stop is not None:
             reader_stop.set()
         if win and stream is not None and reader_thread is not None:
-            import ctypes
-            import msvcrt
-            from ctypes import wintypes
-            cancel = ctypes.WinDLL("kernel32", use_last_error=True).CancelIoEx
-            cancel.argtypes = [wintypes.HANDLE, wintypes.LPVOID]
-            cancel.restype = wintypes.BOOL
-            handle = msvcrt.get_osfhandle(reader_stream.fileno())
-            # A pending synchronous ReadFile in the reader must finish before
-            # closing its Python stream. Repeated cancellation closes the small
-            # check/read race without leaving a blocked reader on the old pipe.
+            # Cancel the overlapped read and join before closing its handle.
             deadline = time.monotonic() + 3
             while reader_thread.is_alive():
-                cancel(handle, None)
+                stream.cancel_read()
                 reader_thread.join(0.05)
                 if time.monotonic() >= deadline and reader_thread.is_alive():
                     raise TimeoutError("Windows service IPC reader did not stop")
