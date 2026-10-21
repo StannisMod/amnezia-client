@@ -198,10 +198,6 @@ bool IpSplitTunnelingController::setSingBoxRoutingEnabled(bool enabled)
 #if !defined(Q_OS_ANDROID) && !defined(Q_OS_IOS) && !defined(Q_OS_LINUX) && !defined(Q_OS_WIN)
     if (enabled) return false;
 #endif
-#if (defined(Q_OS_LINUX) && !defined(Q_OS_ANDROID)) || defined(Q_OS_WIN)
-    if (enabled && (m_appSettingsRepository->isKillSwitchEnabled()
-                    || m_appSettingsRepository->isAppsSplitTunnelingEnabled())) return false;
-#endif
     if (!enabled) {
         for (auto mode : {RouteMode::VpnOnlyForwardSites, RouteMode::VpnAllExceptSites}) {
             const auto sites = m_appSettingsRepository->vpnSites(mode);

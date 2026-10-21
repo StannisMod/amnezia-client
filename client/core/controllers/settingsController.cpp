@@ -142,14 +142,16 @@ ErrorCode SettingsController::restoreAppConfigFromData(const QByteArray &data)
     toggleAutoStart(autoStart);
 #endif
 
-#if defined(Q_OS_WINDOWS) || defined(Q_OS_ANDROID)
+#if defined(Q_OS_WINDOWS) || defined(Q_OS_ANDROID) || defined(Q_OS_LINUX)
     int appSplitTunnelingRouteMode = newConfigData.value("Conf/appsRouteMode").toInt();
     bool appSplittunnelingEnabled =
             newConfigData.value("Conf/appsSplitTunnelingEnabled").toVariant().toString().toLower() == "true";
     emit appSplitTunnelingRouteModeChanged(static_cast<AppsRouteMode>(appSplitTunnelingRouteMode));
 
     #if defined(Q_OS_WINDOWS)
-        emit appSplitTunnelingRouteModeChanged(AppsRouteMode::VpnAllExceptApps);
+        if (!m_appSettingsRepository->isSingBoxRoutingEnabled()) {
+            emit appSplitTunnelingRouteModeChanged(AppsRouteMode::VpnAllExceptApps);
+        }
     #endif
 
     if (newConfigData.contains("AppPlatform")) {

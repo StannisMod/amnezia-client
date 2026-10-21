@@ -34,6 +34,19 @@ private:
     }
 
 private slots:
+    void enableRoutingWithDesktopScopeAndKillSwitch()
+    {
+#if defined(Q_OS_WIN) || (defined(Q_OS_LINUX) && !defined(Q_OS_ANDROID))
+        auto repo = m_coreController->m_appSettingsRepository;
+        repo->setKillSwitchEnabled(true);
+        repo->setAppsSplitTunnelingEnabled(true);
+        QVERIFY(m_coreController->m_ipSplitTunnelingController->setSingBoxRoutingEnabled(true));
+        QVERIFY(repo->isSingBoxRoutingEnabled());
+        QVERIFY(repo->isKillSwitchEnabled());
+        QVERIFY(repo->isAppsSplitTunnelingEnabled());
+#endif
+    }
+
     void editableDomainRulesPersistAndRestore()
     {
         auto repository = m_coreController->m_appSettingsRepository;

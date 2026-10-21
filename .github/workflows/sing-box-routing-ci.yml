@@ -32,6 +32,18 @@ jobs:
         with:
           go-version-file: native/routing/go.mod
           cache-dependency-path: native/routing/go.sum
+      - name: Download pinned Go modules (retry transient network failures)
+        shell: bash
+        working-directory: native/routing
+        run: |
+          for attempt in 1 2 3; do
+            if go mod download; then
+              go mod verify
+              exit 0
+            fi
+            if [ "$attempt" -eq 3 ]; then exit 1; fi
+            sleep 5
+          done
       - name: Unit and local network integration tests
         shell: bash
         run: |
@@ -64,6 +76,18 @@ jobs:
         with:
           go-version-file: native/routing/go.mod
           cache-dependency-path: native/routing/go.sum
+      - name: Download pinned Go modules (retry transient network failures)
+        shell: bash
+        working-directory: native/routing
+        run: |
+          for attempt in 1 2 3; do
+            if go mod download; then
+              go mod verify
+              exit 0
+            fi
+            if [ "$attempt" -eq 3 ]; then exit 1; fi
+            sleep 5
+          done
       - name: Compile Go packages only (no native linking or device claim)
         working-directory: native/routing
         env:
@@ -83,6 +107,18 @@ jobs:
         with:
           go-version-file: native/routing/go.mod
           cache-dependency-path: native/routing/go.sum
+      - name: Download pinned Go modules (retry transient network failures)
+        shell: bash
+        working-directory: native/routing
+        run: |
+          for attempt in 1 2 3; do
+            if go mod download; then
+              go mod verify
+              exit 0
+            fi
+            if [ "$attempt" -eq 3 ]; then exit 1; fi
+            sleep 5
+          done
       - uses: actions/setup-python@v6
         with: {python-version: '3.14'}
       - uses: jurplel/install-qt-action@v4.3.1
@@ -120,7 +156,7 @@ jobs:
         if: success()
         env:
           QT_QPA_PLATFORM: offscreen
-        run: ctest --test-dir deploy/build/client/tests --output-on-failure -R 'UiIpModelAndControllerTest|SettingsSignalsTest|BackupExportImportTest|DomainRoutingContractTest'
+        run: ctest --test-dir deploy/build/client/tests --output-on-failure -R 'UiIpModelAndControllerTest|UiAppSTModelAndControllerTest|SettingsSignalsTest|BackupExportImportTest|DomainRoutingContractTest'
       - name: Build installed-service IPC probe and disposable peer
         run: |
           cmake -S scripts/routing/service-probe -B routing-service-probe-build -DCMAKE_PREFIX_PATH="${{ runner.temp }}/Qt/6.10.1/gcc_64"
@@ -164,6 +200,18 @@ jobs:
         with:
           go-version-file: native/routing/go.mod
           cache-dependency-path: native/routing/go.sum
+      - name: Download pinned Go modules (retry transient network failures)
+        shell: bash
+        working-directory: native/routing
+        run: |
+          for attempt in 1 2 3; do
+            if go mod download; then
+              go mod verify
+              exit 0
+            fi
+            if [ "$attempt" -eq 3 ]; then exit 1; fi
+            sleep 5
+          done
       - uses: actions/setup-python@v6
         with: {python-version: '3.14'}
       - uses: jurplel/install-qt-action@v4.3.1
@@ -298,6 +346,18 @@ jobs:
         with:
           go-version-file: native/routing/go.mod
           cache-dependency-path: native/routing/go.sum
+      - name: Download pinned Go modules (retry transient network failures)
+        shell: bash
+        working-directory: native/routing
+        run: |
+          for attempt in 1 2 3; do
+            if go mod download; then
+              go mod verify
+              exit 0
+            fi
+            if [ "$attempt" -eq 3 ]; then exit 1; fi
+            sleep 5
+          done
       - name: Compile protocol Kotlin without Qt or Conan
         run: python scripts/routing/check_android_kotlin.py --build-dir "${{ runner.temp }}/routing-kotlin-check"
       - name: Build and inspect the unified Go JNI payload

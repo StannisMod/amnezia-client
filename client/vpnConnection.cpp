@@ -335,6 +335,24 @@ void VpnConnection::connectToVpn(const QString &serverId, DockerContainer contai
                         .arg(ContainerUtils::containerToString(container))
              << m_appSettingsRepository->routeMode();
 
+#if defined(Q_OS_WIN) || (defined(Q_OS_LINUX) && !defined(Q_OS_ANDROID))
+    // These desktop app modes require the flow engine. Never silently start a
+    // legacy backend that cannot enforce the saved application scope.
+    const bool routedAwg = m_appSettingsRepository->isSingBoxRoutingEnabled()
+        && vpnConfiguration.value(configKey::vpnProto).toString() == ProtocolUtils::protoToString(Proto::Awg);
+    if (m_appSettingsRepository->isAppsSplitTunnelingEnabled() && !routedAwg
+        && !m_appSettingsRepository->vpnApps(m_appSettingsRepository->appsRouteMode()).isEmpty()
+        && (m_appSettingsRepository->appsRouteMode() == AppsRouteMode::VpnOnlyForwardApps
+#ifndef Q_OS_WIN
+            || m_appSettingsRepository->appsRouteMode() != AppsRouteMode::VpnAllApps
+#endif
+            )) {
+        setConnectionState(Vpn::ConnectionState::Error);
+        emit vpnProtocolError(ErrorCode::NotSupportedOnThisPlatform);
+        return;
+    }
+#endif
+
     m_remoteAddress = NetworkUtilities::getIPAddress(vpnConfiguration.value(configKey::hostName).toString());
     setConnectionState(Vpn::ConnectionState::Connecting);
 

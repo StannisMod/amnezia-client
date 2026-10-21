@@ -43,7 +43,7 @@ void IpSplitTunnelingUiController::setSingBoxRoutingEnabled(bool enabled)
 {
     if (!m_ipSplitTunnelingController->setSingBoxRoutingEnabled(enabled)) {
         emit errorOccurred(enabled
-            ? tr("AWG domain routing is unavailable with the current platform, kill-switch or application routing settings.")
+            ? tr("AWG domain routing is unavailable on this platform.")
             : tr("Remove wildcard destinations before disabling AWG domain routing."));
     }
     emit singBoxRoutingEnabledChanged();
