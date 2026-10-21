@@ -19,6 +19,7 @@ jobs:
         with:
           go-version-file: native/routing/go.mod
           cache-dependency-path: native/routing/go.sum
+      - run: sudo apt-get update && sudo apt-get install -y nftables
       - name: Build the real Linux capture helper and controlled AWG peer
         working-directory: native/routing
         run: |

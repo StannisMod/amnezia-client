@@ -197,6 +197,10 @@ def main():
         ns_ip("route", "add", "default", "via", "10.0.2.2")
         ns_ip("route", "add", "203.0.113.0/24", "via", "10.0.2.2", "table", "222")
         ns_ip("rule", "add", "pref", "100", "to", "203.0.113.0/24", "lookup", "222")
+        for interface in ("eth0", "eth1"):
+            run("ip", "netns", "exec", ns, "sysctl", "-qw", f"net.ipv4.conf.{interface}.rp_filter=1")
+        before_rpf = {interface: run("ip", "netns", "exec", ns, "sysctl", "-n", f"net.ipv4.conf.{interface}.rp_filter", capture_output=True, text=True).stdout for interface in ("eth0", "eth1")}
+        before_nft = run("ip", "netns", "exec", ns, "nft", "list", "tables", capture_output=True, text=True).stdout
         before_rules = ns_ip("rule", "show")
         before_routes = ns_ip("route", "show", "table", "all")
         report["native_routes_before"] = before_routes
@@ -300,7 +304,19 @@ def main():
             application({"blocked": ["10.0.2.2"]})
             after = control("/stats")
             assert before["direct_tcp"] == after["direct_tcp"] and before["direct_udp"] == after["direct_udp"]
+            # A foreign modification must prevent recovery rather than be erased.
+            run("ip", "netns", "exec", ns, "nft", "add", "chain", "inet", "amnezia_route_capture", "foreign")
+            occupied = ns_ip("rule", "show")
+            refused = subprocess.run(["ip", "netns", "exec", ns, str(helper), "--cache-dir", directory, "--recover"], capture_output=True, text=True, timeout=10)
+            assert refused.returncode != 0 and "unrecognized packet marking chain" in refused.stderr
+            assert ns_ip("rule", "show") == occupied, "refused recovery changed policy rules"
+            run("ip", "netns", "exec", ns, "nft", "delete", "chain", "inet", "amnezia_route_capture", "foreign")
             run("ip", "netns", "exec", ns, helper, "--cache-dir", directory, "--recover")
+            report["foreign_nft_state_preserved"] = "PASS"
+        assert run("ip", "netns", "exec", ns, "nft", "list", "tables", capture_output=True, text=True).stdout == before_nft
+        for interface, value in before_rpf.items():
+            assert run("ip", "netns", "exec", ns, "sysctl", "-n", f"net.ipv4.conf.{interface}.rp_filter", capture_output=True, text=True).stdout == value
+        report["off_link_peer_with_strict_physical_rpf"] = "PASS"
         assert ns_ip("rule", "show") == before_rules
         restored_routes = ns_ip("route", "show", "table", "all")
         assert restored_routes == before_routes, "native route restoration differs:\n" + "".join(difflib.unified_diff(before_routes.splitlines(True), restored_routes.splitlines(True), fromfile="before", tofile="after"))

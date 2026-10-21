@@ -30,12 +30,13 @@ const rulePriority = 1 // after the kernel local table, before native policy
 const socketMark = uint32(0x40000000)
 
 type Session struct {
-	core      *mobile.Session
-	routes    []netlink.Route
-	rules     []*netlink.Rule
-	manageDNS bool
-	dns       *resolvedLink
-	once      sync.Once
+	core         *mobile.Session
+	routes       []netlink.Route
+	rules        []*netlink.Rule
+	manageDNS    bool
+	dns          *resolvedLink
+	captureOwned bool
+	once         sync.Once
 }
 
 func command(ctx context.Context, args ...string) error {
@@ -50,6 +51,11 @@ func command(ctx context.Context, args ...string) error {
 // preflight refuses reserved-route conflicts and mark policies that would be
 // altered by our exemption bit. No existing OS rule or route is overwritten.
 func preflight() error {
+	if table, err := findCaptureTable(); err != nil {
+		return err
+	} else if table != nil {
+		return errors.New("reserved packet marking table is occupied; explicit recovery is required")
+	}
 	if _, err := net.InterfaceByName(InterfaceName); err == nil {
 		return errors.New("routing interface already exists")
 	}
@@ -69,7 +75,7 @@ func preflight() error {
 				if r.Mask >= 0 {
 					mask = uint32(r.Mask)
 				}
-				if mask&socketMark != 0 {
+				if mask&(socketMark|captureMark) != 0 {
 					return errors.New("native mark policy uses the reserved VPN exemption bit")
 				}
 			}
@@ -88,6 +94,10 @@ func Recover() error {
 	if _, err := net.InterfaceByName(InterfaceName); err == nil {
 		return errors.New("cannot recover a live routing interface")
 	}
+	table, err := ownedCaptureTable()
+	if err != nil {
+		return err
+	}
 	var ownedRules []*netlink.Rule
 	var ownedRoutes []netlink.Route
 	for _, family := range []int{unix.AF_INET, unix.AF_INET6} {
@@ -101,7 +111,9 @@ func Recover() error {
 			}
 			legacy := r.Mark == socketMark && r.Invert && (r.IifName == "" || r.IifName == "lo")
 			current := r.Mark == 0 && !r.Invert && r.IifName == "lo"
-			if r.Table != routeTable || r.Priority != rulePriority || r.Mask != int(socketMark) || (!legacy && !current) {
+			marked := r.Mark == captureMark && r.Mask == int(captureMark) && !r.Invert && r.IifName == ""
+			previous := r.Mask == int(socketMark) && (legacy || current)
+			if r.Table != routeTable || r.Priority != rulePriority || (!previous && !marked) {
 				return errors.New("refusing recovery of an unrecognized policy rule")
 			}
 			copy := r
@@ -131,6 +143,9 @@ func Recover() error {
 			}
 			ownedRoutes = append(ownedRoutes, r)
 		}
+	}
+	if err := removeCaptureTable(table); err != nil {
+		return err
 	}
 	for _, r := range ownedRules {
 		if err := netlink.RuleDel(r); err != nil {
@@ -251,14 +266,21 @@ func Start(ctx context.Context, raw []byte, manageDNS bool) (*Session, error) {
 		}
 		r := netlink.NewRule()
 		r.Family = family
-		r.IifName = "lo" // locally originated traffic; preserve native input/rp_filter lookups
+		// OUTPUT marks distinguish local capture from physical ingress/RPF lookups.
 		r.Priority = rulePriority
 		r.Table = routeTable
-		// Match a clear exemption bit directly. Invert would negate the whole
-		// selector (including iif lo), incorrectly capturing native input too.
-		r.Mark = 0
+		// Only the private OUTPUT hook sets this bit; protected sockets bypass it.
+		r.Mark = captureMark
 		r.MarkSet = true
-		r.Mask = int(socketMark)
+		r.Mask = int(captureMark)
+		if family == unix.AF_INET6 {
+			// IPv6 has no fib_validate_source rp_filter lookup. Keep its
+			// initial local route through the TUN even on IPv4-only uplinks:
+			// without any IPv6 route a packet cannot reach the OUTPUT hook.
+			r.IifName = "lo"
+			r.Mark = 0
+			r.Mask = int(socketMark)
+		}
 		if err := netlink.RuleAdd(r); err != nil {
 			return nil, errors.New("capture policy installation failed")
 		}
@@ -270,6 +292,10 @@ func Start(ctx context.Context, raw []byte, manageDNS bool) (*Session, error) {
 			return nil, err
 		}
 	}
+	if err := installCaptureMark(); err != nil {
+		return nil, err
+	}
+	s.captureOwned = true
 	ok = true
 	return s, nil
 }
@@ -307,6 +333,18 @@ func (s *Session) close(preserve bool) error {
 		}
 		if preserve {
 			return
+		}
+		if s.captureOwned {
+			// Validate again in case an administrator changed our private table.
+			table, err := ownedCaptureTable()
+			if err != nil {
+				errs = append(errs, err)
+				return
+			}
+			if err = removeCaptureTable(table); err != nil {
+				errs = append(errs, err)
+				return
+			}
 		}
 		// Do not remove native policies or flush shared tables. These exact
 		// entries were added by this successful/partially-started session only.

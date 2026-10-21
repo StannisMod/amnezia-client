@@ -4,6 +4,7 @@
 #include <QDir>
 #include <QJsonDocument>
 #include <QTimer>
+#include <QStringList>
 
 #include "killswitch.h"
 
