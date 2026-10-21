@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Installed Qt service/real resolver acceptance on disposable CI hosts only."""
 import argparse
+import faulthandler
 import http.client
 import ipaddress
 import json
@@ -86,6 +87,7 @@ def main():
     parser.add_argument("--report", type=Path, required=True)
     parser.add_argument("--resolver-cycles", type=int, default=1)
     args = parser.parse_args()
+    faulthandler.dump_traceback_later(120, repeat=True)
     if not 1 <= args.resolver_cycles <= 100:
         parser.error("--resolver-cycles must be between 1 and 100")
     win = os.name == "nt"
@@ -340,6 +342,7 @@ def main():
             if peer is not None: peer.terminate(); peer.wait(timeout=15)
             temporary.cleanup()
             args.report.write_text(json.dumps(report, indent=2) + "\n")
+            faulthandler.cancel_dump_traceback_later()
 
 
 if __name__ == "__main__":
