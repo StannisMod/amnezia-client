@@ -1,0 +1,67 @@
+name: Installed Linux resolver diagnostics
+on:
+  push:
+    branches: [feature/sing-box-routing]
+    paths:
+      - .github/workflows/routing-installed-linux.yml
+      - scripts/routing/run_service_acceptance.py
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  installed-service:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: native/routing/go.mod
+          cache-dependency-path: native/routing/go.sum
+      - uses: jurplel/install-qt-action@v4.3.1
+        with:
+          version: '6.10.1'
+          arch: linux_gcc_64
+          modules: qtremoteobjects
+          dir: ${{ runner.temp }}
+      - name: Download the exact ff7016b9 installer under investigation
+        uses: actions/download-artifact@v4
+        with:
+          name: routing-client-linux-baseline
+          run-id: 39555388790
+          github-token: ${{ github.token }}
+          path: installed-fixture
+      - name: Verify installer provenance and build test clients
+        run: |
+          python3 - <<'PYCODE'
+          import json
+          from pathlib import Path
+          manifest = json.loads(Path('installed-fixture/routing-build-manifest.json').read_text())
+          assert manifest['source_sha'] == 'ff7016b95a9a1432421e5fcd510f88e207f3055a'
+          PYCODE
+          cmake -S scripts/routing/service-probe -B routing-service-probe-build -DCMAKE_PREFIX_PATH="${{ runner.temp }}/Qt/6.10.1/gcc_64"
+          cmake --build routing-service-probe-build
+          cd native/routing
+          go build -mod=readonly -tags with_gvisor -o "$RUNNER_TEMP/installed-routing-peer" ./cmd/android-fixture
+      - name: Install and exercise actual system resolver without altering NSS
+        run: |
+          set -euo pipefail
+          packages=(installed-fixture/deploy/build/AmneziaVPN_*_linux_x64.run)
+          chmod +x "${packages[0]}"
+          sudo env QT_QPA_PLATFORM=offscreen "${packages[0]}" --root /opt/AmneziaVPN --accept-licenses --default-answer --confirm-command install
+          sudo systemctl daemon-reload
+          sudo systemctl restart AmneziaVPN
+          sudo python3 scripts/routing/run_service_acceptance.py --peer "$RUNNER_TEMP/installed-routing-peer" --qt-probe "$GITHUB_WORKSPACE/routing-service-probe-build/routing-service-probe" --report "$GITHUB_WORKSPACE/linux-resolver-diagnostics.json"
+      - name: Remove installed package
+        if: always()
+        run: |
+          if [ -x /opt/AmneziaVPN/maintenancetool ]; then
+            sudo env QT_QPA_PLATFORM=offscreen /opt/AmneziaVPN/maintenancetool --default-answer --confirm-command purge
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: linux-installed-resolver-diagnostics
+          path: linux-resolver-diagnostics.json
+          if-no-files-found: error

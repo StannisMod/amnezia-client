@@ -101,6 +101,25 @@ def main():
         if stream is not None:
             stream.close(); stream = None
 
+    def resolver_diagnostics():
+        if win:
+            return {}
+        result = {}
+        for label, argv in (
+            ("status", ["resolvectl", "status"]),
+            ("query", ["resolvectl", "query", "--type=A", "service.direct.ru"]),
+            ("rules", ["ip", "rule", "show"]),
+            ("capture_routes", ["ip", "route", "show", "table", "20313"]),
+        ):
+            try:
+                row = subprocess.run(argv, capture_output=True, text=True, timeout=15)
+                result[label] = {"exit_code": row.returncode, "stdout": row.stdout, "stderr": row.stderr}
+            except subprocess.TimeoutExpired:
+                result[label] = {"timeout": True}
+        for path in ("/etc/resolv.conf", "/etc/nsswitch.conf"):
+            result[path] = {"target": str(Path(path).resolve()), "text": Path(path).read_text()}
+        return result
+
     def snapshot():
         if win:
             from run_windows_acceptance import network_state
@@ -193,6 +212,13 @@ def main():
         after = snapshot()
         assert after == before, "installed-service route/DNS restoration differed"
         report.update(installed_service="PASS", strict_kill_switch="PASS", system_resolver="PASS", application_scope="PASS", ipc_reconnect="PASS", helper_crash_recovery="PASS", observers=counts, os_state_restored=True)
+    except Exception:
+        # Retain the failed state before teardown; explicit DNS probes can pass
+        # while libc/NSS uses a different resolver path. Never convert failure
+        # into PASS or rewrite the runner's resolver as a diagnostic shortcut.
+        report["resolver_diagnostics"] = resolver_diagnostics()
+        print(json.dumps(report["resolver_diagnostics"], indent=2), flush=True)
+        raise
     finally:
         if stream is not None:
             try:
