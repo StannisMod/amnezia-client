@@ -43,6 +43,7 @@ def main():
     win = os.name == "nt"
     report = {"installed_service": "FAIL", "not_run": ["physical host", "full GUI interaction", "network handover", "performance parity"]}
     peer = stream = sock = None
+    reader_thread = reader_stop = None
     temporary = tempfile.TemporaryDirectory()
     events = queue.Queue()
 
@@ -76,25 +77,52 @@ def main():
         return data
 
     def open_channel():
-        nonlocal stream, sock, events
+        nonlocal stream, sock, events, reader_thread, reader_stop
+        print("STAGE opening service IPC", flush=True)
         events = queue.Queue()
+        reader_stop = threading.Event()
         if win:
             stream = open(r"\\.\pipe\amneziavpn", "r+b", buffering=0)
         else:
             sock = socket.socket(socket.AF_UNIX)
             sock.settimeout(20); sock.connect("/var/run/amneziavpn/daemon.socket")
             sock.settimeout(None); stream = sock.makefile("rwb", buffering=0)
-        def reader(source, destination):
+        def reader(source, destination, stopped):
             try:
-                for line in source:
+                while not stopped.is_set():
+                    line = source.readline()
+                    if not line:
+                        break
                     destination.put(json.loads(line))
             except (OSError, ValueError):
                 pass
             destination.put({"type": "exited"})
-        threading.Thread(target=reader, args=(stream, events), daemon=True).start()
+        reader_thread = threading.Thread(target=reader, args=(stream, events, reader_stop), daemon=True)
+        reader_thread.start()
+        print("STAGE service IPC open", flush=True)
 
     def close_channel():
         nonlocal stream, sock
+        print("STAGE closing service IPC", flush=True)
+        if reader_stop is not None:
+            reader_stop.set()
+        if win and stream is not None and reader_thread is not None:
+            import ctypes
+            import msvcrt
+            from ctypes import wintypes
+            cancel = ctypes.WinDLL("kernel32", use_last_error=True).CancelIoEx
+            cancel.argtypes = [wintypes.HANDLE, wintypes.LPVOID]
+            cancel.restype = wintypes.BOOL
+            handle = msvcrt.get_osfhandle(stream.fileno())
+            # A pending synchronous ReadFile in the reader must finish before
+            # closing its Python stream. Repeated cancellation closes the small
+            # check/read race without leaving a blocked reader on the old pipe.
+            deadline = time.monotonic() + 3
+            while reader_thread.is_alive():
+                cancel(handle, None)
+                reader_thread.join(0.05)
+                if time.monotonic() >= deadline and reader_thread.is_alive():
+                    raise TimeoutError("Windows service IPC reader did not stop")
         if sock is not None:
             try:
                 sock.shutdown(socket.SHUT_RDWR)
@@ -103,6 +131,7 @@ def main():
             sock.close(); sock = None
         if stream is not None:
             stream.close(); stream = None
+        print("STAGE service IPC closed", flush=True)
 
     def resolver_diagnostics(include_query=True):
         if win:

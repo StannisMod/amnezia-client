@@ -1,0 +1,100 @@
+name: Installed Windows service acceptance
+on:
+  push:
+    branches: [feature/sing-box-routing]
+    paths:
+      - .github/workflows/routing-installed-windows.yml
+      - scripts/routing/run_windows_installer.ps1
+      - scripts/routing/run_service_acceptance.py
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  installed-service:
+    strategy:
+      fail-fast: false
+      matrix:
+        kind: [msi, exe]
+    runs-on: windows-2022
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: native/routing/go.mod
+          cache-dependency-path: native/routing/go.sum
+      - uses: actions/setup-python@v6
+        with: {python-version: '3.14'}
+      - uses: jurplel/install-qt-action@v4.3.1
+        with:
+          version: '6.10.1'
+          arch: win64_msvc2022_64
+          modules: qtremoteobjects
+          dir: ${{ runner.temp }}
+      - uses: ilammy/msvc-dev-cmd@v1
+        with: {arch: x64}
+      - uses: actions/download-artifact@v4
+        with:
+          name: routing-client-windows-baseline
+          run-id: 39555388790
+          github-token: ${{ github.token }}
+          path: installed-fixture
+      - name: Verify ff7016b9 installer provenance and build test clients
+        shell: pwsh
+        run: |
+          $manifest = Get-Content installed-fixture/routing-build-manifest.json | ConvertFrom-Json
+          if ($manifest.source_sha -ne 'ff7016b95a9a1432421e5fcd510f88e207f3055a') { throw 'Installer source mismatch' }
+          cmake -S scripts/routing/service-probe -B routing-service-probe-build -DCMAKE_PREFIX_PATH="$env:RUNNER_TEMP/Qt/6.10.1/msvc2022_64"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build routing-service-probe-build --config Release
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Set-Location native/routing
+          go build -mod=readonly -tags with_gvisor -o "$env:RUNNER_TEMP/installed-routing-peer.exe" ./cmd/android-fixture
+          exit $LASTEXITCODE
+      - name: Install verified package and test its actual LocalSystem service
+        timeout-minutes: 10
+        shell: pwsh
+        env:
+          PACKAGE_KIND: ${{ matrix.kind }}
+        run: |
+          $package = (Get-ChildItem "installed-fixture/deploy/build/AmneziaVPN_*_windows_x64.$env:PACKAGE_KIND" | Select-Object -First 1).FullName
+          ./scripts/routing/run_windows_installer.ps1 -Kind $env:PACKAGE_KIND -Package $package
+          Write-Host 'STAGE installer returned; waiting for service'
+          Start-Service AmneziaVPN-service
+          (Get-Service AmneziaVPN-service).WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
+          Write-Host 'STAGE service running; beginning acceptance'
+          python -u scripts/routing/run_service_acceptance.py --peer "$env:RUNNER_TEMP/installed-routing-peer.exe" --qt-probe "$env:GITHUB_WORKSPACE/routing-service-probe-build/Release/routing-service-probe.exe" --report "windows-installed-$env:PACKAGE_KIND.json" 2>&1 | Tee-Object -FilePath windows-service-acceptance.log
+          exit $LASTEXITCODE
+      - name: Restore owned policy and remove test installation
+        if: always()
+        timeout-minutes: 8
+        shell: pwsh
+        env:
+          PACKAGE_KIND: ${{ matrix.kind }}
+        run: |
+          $probe = "$env:GITHUB_WORKSPACE/routing-service-probe-build/Release/routing-service-probe.exe"
+          if (Test-Path $probe) { & $probe off }
+          $service = Get-Service AmneziaVPN-service -ErrorAction SilentlyContinue
+          if ($service) {
+            $service.Stop()
+            $service.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
+          }
+          $helper = Get-ChildItem "$env:ProgramFiles/AmneziaVPN" -Filter amnezia-routing.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($helper) { & $helper.FullName --recover }
+          if ($env:PACKAGE_KIND -eq 'msi') {
+            $package = Get-ChildItem installed-fixture/deploy/build/*.msi -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($package) { ./scripts/routing/run_windows_installer.ps1 -Kind msi -Package $package.FullName -Uninstall -LogPath routing-msi-remove.log }
+          } else {
+            $maintenance = "$env:ProgramFiles/AmneziaVPN/maintenancetool.exe"
+            if (Test-Path $maintenance) { ./scripts/routing/run_windows_installer.ps1 -Kind exe -Package $maintenance -Uninstall }
+          }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-installed-${{ matrix.kind }}-acceptance
+          path: |
+            windows-installed-*.json
+            windows-service-acceptance.log
+            routing-msi-install.log
+            routing-msi-remove.log
