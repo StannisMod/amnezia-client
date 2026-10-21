@@ -75,11 +75,9 @@ jobs:
         run: |
           $probe = "$env:GITHUB_WORKSPACE/routing-service-probe-build/Release/routing-service-probe.exe"
           if (Test-Path $probe) { & $probe off }
-          $service = Get-Service AmneziaVPN-service -ErrorAction SilentlyContinue
-          if ($service) {
-            Stop-Service -Name AmneziaVPN-service -Force
-            $service.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
-          }
+          # Exercise each package's own service-removal operations. A separate
+          # SCM stop here prevents the actual uninstaller from even running.
+          sc.exe queryex AmneziaVPN-service
           $helper = Get-ChildItem "$env:ProgramFiles/AmneziaVPN" -Filter amnezia-routing.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
           if ($helper) { & $helper.FullName --recover }
           if ($env:PACKAGE_KIND -eq 'msi') {
@@ -89,6 +87,7 @@ jobs:
             $maintenance = "$env:ProgramFiles/AmneziaVPN/maintenancetool.exe"
             if (Test-Path $maintenance) { ./scripts/routing/run_windows_installer.ps1 -Kind exe -Package $maintenance -Uninstall }
           }
+          if (Get-Service AmneziaVPN-service -ErrorAction SilentlyContinue) { throw 'Package uninstall left its service registered' }
       - uses: actions/upload-artifact@v4
         if: always()
         with:
