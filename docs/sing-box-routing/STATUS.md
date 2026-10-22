@@ -2,6 +2,16 @@
 
 ## Continuation — 2026-10-22
 
+At `ac06b611`, native Linux run `39771504567` completed traffic, native QUIC,
+application scope, virtual uplink failover, outage fail-closed/recovery,
+100 reconnects, pipe-loss/crash guards and explicit recovery. Its overall
+result is still FAIL: the final exact route comparison found the fixture's
+`203.0.113.0/24` route missing from table 222. Bringing eth0 down had removed
+that route in the kernel; the simulated network manager now reapplies its own
+static route on eth0 restoration, just as it already reapplies the default.
+The final exact comparison is retained; this is not an exemption for route leaks.
+
+
 Follow-up evidence: [performance run 39770515696](https://github.com/StannisMod/amnezia-client/actions/runs/39770515696)
 PASS at `0232050c` (artifact `12421039401`). Median throughput: legacy
 551.44 Mbit/s, routed 437.90 Mbit/s; routed/legacy throughput 0.794,

@@ -311,6 +311,10 @@ def main():
             assert counts_after_loss["direct_udp"] == counts_before_loss["direct_udp"]
             ns_ip("link", "set", "eth0", "up")
             ns_ip("route", "replace", "default", "via", "10.0.2.2", "dev", "eth0")
+            # Link-down removes the fixture's static route from table 222.
+            # Act as its network manager and reapply it when restoring eth0;
+            # the VPN must not own/recreate unrelated native policy routes.
+            ns_ip("route", "replace", "203.0.113.0/24", "via", "10.0.2.2", "dev", "eth0", "table", "222")
             ns_ip("link", "set", "eth1", "up")
             stop(); start()
             application({"names": [["direct.ru", "DIRECT", 1], ["vpn.test", "VPN", 1]]})
