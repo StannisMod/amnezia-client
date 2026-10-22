@@ -415,7 +415,13 @@ func probeUnderlayAWG(path string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	var listen net.ListenConfig
-	transport, err := awg.New(ctx, config.AWG, listen.ListenPacket)
+	transport, err := awg.New(ctx, config.AWG, func(ctx context.Context, network, address string) (net.PacketConn, error) {
+		pc, err := listen.ListenPacket(ctx, network, address)
+		if err != nil {
+			return nil, err
+		}
+		return &probePacketConn{pc}, nil
+	})
 	if err != nil {
 		return err
 	}
@@ -434,4 +440,16 @@ func probeUnderlayAWG(path string) error {
 		return fmt.Errorf("unexpected fixture observer")
 	}
 	return nil
+}
+
+// Test-only metadata: identify replies rejected by pinned-endpoint validation
+// without recording a byte of the encrypted payload or profile.
+type probePacketConn struct{ net.PacketConn }
+
+func (c *probePacketConn) ReadFrom(packet []byte) (int, net.Addr, error) {
+	n, from, err := c.PacketConn.ReadFrom(packet)
+	if err == nil {
+		fmt.Fprintln(os.Stderr, "fixture AWG datagram source:", from.String())
+	}
+	return n, from, err
 }
