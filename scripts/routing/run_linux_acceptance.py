@@ -206,7 +206,7 @@ def main():
         before_routes = ns_ip("route", "show", "table", "all")
         report["native_routes_before"] = before_routes
         ca = args.fixture.with_suffix(".quic.der")
-        peer = subprocess.Popen([str(args.peer.resolve()), "--shared-ip", observer, "--config", str(args.fixture), "--quic-ca", str(ca)], stdout=subprocess.PIPE, text=True)
+        peer = subprocess.Popen([str(args.peer.resolve()), "--shared-ip", observer, "--bind-ip", observer, "--config", str(args.fixture), "--quic-ca", str(ca)], stdout=subprocess.PIPE, text=True)
         assert select.select([peer.stdout], [], [], 10)[0] and peer.stdout.readline().startswith("READY")
         profile = json.loads(args.fixture.read_text())
         application({"direct": [observer]})

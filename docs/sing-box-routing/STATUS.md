@@ -2,6 +2,29 @@
 
 ## Continuation — 2026-10-22
 
+Follow-up evidence: [performance run 39770515696](https://github.com/StannisMod/amnezia-client/actions/runs/39770515696)
+PASS at `0232050c` (artifact `12421039401`). Median throughput: legacy
+551.44 Mbit/s, routed 437.90 Mbit/s; routed/legacy throughput 0.794,
+CPU seconds/MiB 1.647, observed RSS 4.005 (11,616 vs 46,524 KiB).
+This is one 4-vCPU CI-host data-path comparison at MTU 1280, not cross-platform
+parity. That report's source_sha was null because sudo stripped the environment;
+workflow source SHA and binary checksums establish its provenance. `35e949c4`
+passes source SHA explicitly and records time to the first verified transfer;
+the old initialization timers end at different milestones and are not a valid
+startup-latency comparison.
+
+Linux run `39770515900` failed the new raw-AWG probe **before native capture**,
+after ordinary TCP/UDP underlay observer probes passed. The peer received 12
+outer datagrams and submitted 3 responses, but no inner flow reached it.
+Run `39770943808` identified the cause: the client expected the fixture endpoint
+`198.51.100.2`, but all observed AWG replies came from `10.0.2.2`. The client
+correctly rejected the different endpoint. The disposable peer now explicitly
+binds its outer socket to the off-link observer address; production endpoint
+validation is unchanged. A local authenticated loopback-secondary-address test
+passes with race detection. Keep the full Linux native gate FAIL until this
+correction and the subsequent handover/crash/restoration scenarios pass.
+
+
 Resumed at `1f56c109d9bc3596f2bba8ae75066408385ccb16`.
 The latest source matrix [39624238843](https://github.com/StannisMod/amnezia-client/actions/runs/39624238843)
 passed Android APK builds for all four ABIs, unsigned iOS app/extension,

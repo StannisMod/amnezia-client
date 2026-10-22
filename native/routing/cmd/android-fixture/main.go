@@ -47,6 +47,7 @@ type fixture struct {
 	mu                                   sync.Mutex
 	peer                                 *device.Device
 	listenPort                           uint16
+	bindIP                               string
 	closePeer                            []io.Closer
 	server, client                       *ecdh.PrivateKey
 	directTCP, directUDP, vpnTCP, vpnUDP atomic.Int64
@@ -179,7 +180,11 @@ func (f *fixture) start() error {
 	// Omit endpoint on the server: authenticate then learn the emulator's NAT
 	// source port. Production outbound endpoint pinning is left unchanged.
 	ipc := fmt.Sprintf("private_key=%s\nlisten_port=%d\njc=3\njmin=40\njmax=80\ns1=16\ns2=24\ns3=8\ns4=8\nh1=1001\nh2=1002\nh3=1003\nh4=1004\nreplace_peers=true\npublic_key=%s\nreplace_allowed_ips=true\nallowed_ip=10.77.0.1/32\nallowed_ip=fd77::1/128\n", hex.EncodeToString(f.server.Bytes()), f.listenPort, hex.EncodeToString(f.client.PublicKey().Bytes()))
-	if f.peer, err = awg.NewConfiguredDevice(t, &fixtureBind{Bind: conn.NewDefaultBind(), received: &f.outerRX, sent: &f.outerTX}, ipc); err != nil {
+	var outer conn.Bind = conn.NewDefaultBind()
+	if f.bindIP != "" {
+		outer = &fixedFixtureBind{address: f.bindIP}
+	}
+	if f.peer, err = awg.NewConfiguredDevice(t, &fixtureBind{Bind: outer, received: &f.outerRX, sent: &f.outerTX}, ipc); err != nil {
 		return err
 	}
 	ipcStatus, err := f.peer.IpcGet()
@@ -270,6 +275,7 @@ func main() {
 	probeTCP := flag.String("probe-tcp", "", "native application TCP observer probe")
 	probeUDP := flag.String("probe-udp", "", "native application UDP observer probe")
 	probeAWG := flag.String("probe-awg", "", "test-only private fixture profile: verify AWG before native capture")
+	bindIP := flag.String("bind-ip", "", "explicit native source address for a multihomed disposable peer")
 	flag.Parse()
 	if *probeAWG != "" {
 		if err := probeUnderlayAWG(*probeAWG); err != nil {
@@ -314,7 +320,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	f := &fixture{server: serverKey, client: clientKey}
+	f := &fixture{server: serverKey, client: clientKey, bindIP: *bindIP}
 	if err = f.start(); err != nil {
 		panic(err)
 	}

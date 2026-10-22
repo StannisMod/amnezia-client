@@ -166,7 +166,7 @@ func TestEmulatorPeerLearnsEndpointAndServesIPv4IPv6(t *testing.T) {
 func TestFixtureProfileUnderlayProbe(t *testing.T) {
 	server, _ := ecdh.X25519().GenerateKey(rand.Reader)
 	client, _ := ecdh.X25519().GenerateKey(rand.Reader)
-	f := &fixture{server: server, client: client}
+	f := &fixture{server: server, client: client, bindIP: "127.0.0.2"}
 	if err := f.start(); err != nil {
 		t.Fatal(err)
 	}
@@ -176,7 +176,7 @@ func TestFixtureProfileUnderlayProbe(t *testing.T) {
 		"awg_config_data": map[string]any{
 			"client_priv_key": base64.StdEncoding.EncodeToString(client.Bytes()),
 			"server_pub_key":  base64.StdEncoding.EncodeToString(server.PublicKey().Bytes()),
-			"hostName":        "127.0.0.1", "port": f.listenPort, "client_ip": "10.77.0.1/32, fd77::1/128",
+			"hostName":        "127.0.0.2", "port": f.listenPort, "client_ip": "10.77.0.1/32, fd77::1/128",
 			"allowed_ips": []string{"0.0.0.0/0", "::/0"}, "mtu": "1280",
 			"Jc": 3, "Jmin": 40, "Jmax": 80, "S1": 16, "S2": 24, "S3": 8, "S4": 8,
 			"H1": 1001, "H2": 1002, "H3": 1003, "H4": 1004,
