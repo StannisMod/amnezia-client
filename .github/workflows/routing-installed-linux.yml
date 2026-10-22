@@ -59,7 +59,7 @@ jobs:
           test "${#helpers[@]}" -eq 1
           sudo install -m 0755 "$RUNNER_TEMP/current-routing-helper" "${helpers[0]}"
           sudo systemctl restart AmneziaVPN
-          sudo timeout --signal=INT --kill-after=30s 600s python3 -u scripts/routing/run_service_acceptance.py --peer "$RUNNER_TEMP/installed-routing-peer" --qt-probe "$GITHUB_WORKSPACE/routing-service-probe-build/routing-service-probe" --report "$GITHUB_WORKSPACE/linux-resolver-diagnostics-100.json" --resolver-cycles 100 2>&1 | tee linux-resolver-acceptance.log
+          sudo timeout --signal=INT --kill-after=30s 600s python3 -u scripts/routing/run_service_acceptance.py --peer "$RUNNER_TEMP/installed-routing-peer" --qt-probe "$GITHUB_WORKSPACE/routing-service-probe-build/routing-service-probe" --report "$GITHUB_WORKSPACE/linux-resolver-diagnostics-100.json" --resolver-cycles 100 --ci-rescue 2>&1 | tee linux-resolver-acceptance.log
       - name: Remove installed package
         if: always()
         run: |

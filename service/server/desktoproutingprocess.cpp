@@ -5,6 +5,7 @@
 #include <QJsonDocument>
 #include <QTimer>
 #include <QStringList>
+#include <QRegularExpression>
 
 #include "killswitch.h"
 
@@ -124,6 +125,11 @@ void DesktopRoutingProcess::readOutput()
                 "capture reverse-path configuration failed", "native policy routing inventory unavailable"
             };
             QString category = categories.contains(message) ? message : "native backend failure";
+            // Native resolver diagnostics contain only the D-Bus error name,
+            // never its body. Preserve that bounded category through IPC.
+            static const QRegularExpression resolverCategory(QStringLiteral(
+                R"(\Asystem resolver link configuration (?:failed|lost) \((?:org\.[A-Za-z0-9_.]+|deadline exceeded)\)\z)"));
+            if (resolverCategory.match(message).hasMatch()) category = message;
             if (message.startsWith("capture route installation failed (family ")) category = "capture route installation failed";
             if (message.startsWith("reserved routing ")) category = "reserved routing state is occupied";
             m_status.insert("routingError", category);

@@ -69,6 +69,7 @@ The following workflows can be rerun on the feature branch through Actions:
 | `routing-linux-acceptance.yml` | Native namespace capture, observer egress, handover/outage tests, reconnects and recovery |
 | `routing-windows-acceptance.yml` | Wintun/WFP, native egress, crash recovery and reconnects on a disposable Windows runner |
 | `routing-installed-windows.yml` | Explicitly identified MSI/EXE installation and installed Qt service acceptance |
+| `routing-android-package.yml` | Independent x86_64 APK build using the same pins/deploy script; no full-matrix claim |
 | `routing-android-acceptance.yml` | Compatible real APK/VpnService on a disposable rooted emulator, including policy and reconnect checks |
 | `routing-performance.yml` | Measured Linux data-path comparison with an explicitly identified installed legacy AWG binary |
 
@@ -102,3 +103,5 @@ Pinned routing dependency notices are shipped under `native/routing/licenses`
 and referenced by [THIRD_PARTY_LICENSES.md](../../THIRD_PARTY_LICENSES.md).
 The feature remains off by default until the four-platform acceptance criteria
 are satisfied. Build artifacts do not constitute a public release.
+
+Installed Linux CI can opt into `--ci-rescue` on disposable root runners. Its independently armed watchdog uses existing owned-state recovery operations after 420 seconds or a failed test. A triggered rescue is failure evidence, even if it restores runner connectivity; inspect the associated `.rescue.json`.

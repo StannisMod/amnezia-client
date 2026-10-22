@@ -87,11 +87,29 @@ def main():
     parser.add_argument("--report", type=Path, required=True)
     parser.add_argument("--resolver-cycles", type=int, default=1)
     parser.add_argument("--require-notices", action="store_true")
+    parser.add_argument("--ci-rescue", action="store_true", help="arm independent local recovery on a disposable Linux runner")
     args = parser.parse_args()
     faulthandler.dump_traceback_later(120, repeat=True)
     if not 1 <= args.resolver_cycles <= 100:
         parser.error("--resolver-cycles must be between 1 and 100")
     win = os.name == "nt"
+    rescue = None
+    if args.ci_rescue:
+        if win or os.geteuid() != 0:
+            parser.error("--ci-rescue requires a disposable root Linux CI run")
+        rescue_report = args.report.resolve().with_suffix('.rescue.json')
+        rescue_report.unlink(missing_ok=True)
+        rescue = subprocess.Popen([
+            sys.executable, str(Path(__file__).with_name('linux_ci_rescue.py')),
+            '--confirm-disposable-runner', '--qt-probe', str(args.qt_probe.resolve()),
+            '--report', str(rescue_report),
+        ], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        armed = time.monotonic() + 3
+        while not rescue_report.exists():
+            if rescue.poll() is not None or time.monotonic() >= armed:
+                rescue.terminate()
+                raise RuntimeError("independent Linux CI rescue did not arm")
+            time.sleep(0.02)
     report = {"installed_service": "FAIL", "not_run": ["physical host", "full GUI interaction", "network handover", "performance parity"]}
     peer = stream = sock = None
     reader_thread = reader_stop = reader_stream = None
@@ -366,8 +384,26 @@ def main():
             close_channel()
             if peer is not None: peer.terminate(); peer.wait(timeout=15)
             temporary.cleanup()
+            rescued_pass = False
+            if rescue is not None:
+                if report.get("installed_service") == "PASS":
+                    rescue.terminate()
+                else:
+                    rescue.send_signal(signal.SIGUSR1)
+                try:
+                    rescue.wait(timeout=120)
+                except subprocess.TimeoutExpired:
+                    report["ci_rescue"] = "RECOVERY_DID_NOT_FINISH"
+                else:
+                    report["ci_rescue"] = json.loads(rescue_report.read_text()).get("state", "UNKNOWN")
+                if report.get("installed_service") == "PASS" and report["ci_rescue"] != "CANCELLED_AFTER_ACCEPTANCE":
+                    rescued_pass = True
+                    report["installed_service"] = "FAIL"
+                    report["failure"] = "independent CI rescue activated; acceptance is not PASS"
             args.report.write_text(json.dumps(report, indent=2) + "\n")
             faulthandler.cancel_dump_traceback_later()
+            if rescued_pass:
+                raise AssertionError(report["failure"])
 
 
 if __name__ == "__main__":

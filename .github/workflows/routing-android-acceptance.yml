@@ -79,8 +79,17 @@ jobs:
           selected = None
           deadline = time.monotonic() + 125 * 60
           while time.monotonic() < deadline:
-              candidates = ([api(f'actions/runs/{override}')] if override else
-                            api('actions/workflows/sing-box-routing-ci.yml/runs?branch=feature%2Fsing-box-routing&event=push&per_page=30')['workflow_runs'])
+              candidates = [api(f'actions/runs/{override}')] if override else []
+              if not override:
+                  # A compatible APK can also come from the independent Android
+                  # lane while desktop installed-service jobs remain in flight.
+                  # This does not replace the full four-platform build gate.
+                  for workflow in ('sing-box-routing-ci.yml', 'routing-android-package.yml'):
+                      try:
+                          candidates += api(f'actions/workflows/{workflow}/runs?branch=feature%2Fsing-box-routing&event=push&per_page=30')['workflow_runs']
+                      except urllib.error.HTTPError as error:
+                          if error.code != 404: raise
+                  candidates.sort(key=lambda run: run['created_at'], reverse=True)
               for candidate in candidates:
                   jobs = api(f"actions/runs/{candidate['id']}/jobs?per_page=100")['jobs']
                   android = [j for j in jobs if j['name'] == 'client-android (x86_64, android_x86_64)']

@@ -2,6 +2,57 @@
 
 ## Continuation — 2026-10-22
 
+Android emulator run `39771504529` at `ac06b611` passed traffic, native QUIC,
+100 reconnects, resource checks, invalid-start recovery and legacy transitions.
+It no longer crashed during policy changes, but remains **FAIL**: repeating a
+routed start under lockdown timed out waiting for a rejection. The service now
+rejects that policy before checking/launching VPN consent and explicitly emits
+its unchanged disconnected state, so a repeated rejection does not depend on
+StateFlow producing a duplicate value. New APK/emulator evidence is required.
+
+Installed-service CI runs exceeded their configured budgets while the runner
+was globally captured by a test VPN. Loss of the runner control plane is a
+possible cause, not a proven product diagnosis. New disposable Linux runs arm
+an independent local 420-second rescue before network changes. It uses existing
+Qt strict-off, service deactivation/stop and owned-helper recovery operations;
+it never flushes global network state. Triggered rescue records failure and
+cannot turn acceptance green. A cancellation test verifies that a disarmed
+watchdog executes no recovery operations. Reports include `.rescue.json`.
+
+The Qt service also preserves the standardized resolver error-name category through IPC without exposing its error body; its compilation needs a fresh client build.
+
+An independent x86_64 Android package lane uses the existing deploy script and
+pins to supply a compatible emulator host without waiting for desktop runner
+recovery. It is not a replacement for the full four-platform build gate.
+
+
+### Latest observed gates
+
+Shipping source was changed at `cd9d8305`; subsequent commits through `afd9375b`
+change only disposable fixtures, test scripts, performance CI and documentation.
+A path comparison confirms the client, deploy scripts and production routing
+packages are unchanged since that source fix.
+
+| Gate | Latest observed result |
+| --- | --- |
+| Linux native capture | **PASS** at `afd9375b`, [run 39772229380](https://github.com/StannisMod/amnezia-client/actions/runs/39772229380): full TCP/UDP/QUIC, IPv6, application scope, virtual uplink failover/outage recovery, 100 reconnects, pipe loss, hard crash, explicit recovery and exact native-state restoration |
+| Windows native capture | **PASS** at shipping source `cd9d8305`, [run 39769773465](https://github.com/StannisMod/amnezia-client/actions/runs/39769773465) |
+| Core race suite / cross-compilation | **PASS** in all three desktop test lanes and all eight architecture lanes of [39769773545](https://github.com/StannisMod/amnezia-client/actions/runs/39769773545) |
+| Android APK compilation | **PASS**, all four ABI jobs of run `39769773545`, including current production Kotlin service changes |
+| Android policy/emulator acceptance | **FAIL**, [39771504529](https://github.com/StannisMod/amnezia-client/actions/runs/39771504529); repeat-lockdown rejection fix requires a new compatible APK/emulator run |
+| Installed Linux resolver stress | **NOT ACCEPTED**: [39769773506](https://github.com/StannisMod/amnezia-client/actions/runs/39769773506) cancelled with logs unavailable after exceeding its budget; new runs use independent local rescue |
+| Full Windows / unsigned iOS clients | **IN PROGRESS** in run `39769773545`; prior build passes are historical evidence, not a completed new matrix |
+| Linux comparative performance | **PASS** at `35e949c4`, [39771128512](https://github.com/StannisMod/amnezia-client/actions/runs/39771128512), with source SHA and binary checksums in the JSON report |
+| iOS signed runtime / physical mobile devices | **BLOCKED / NOT RUN**: matching signing/provisioning and physical hardware still required |
+
+The second performance run measured legacy/routed median throughput of
+818.38/635.94 Mbit/s, CPU seconds/MiB of 0.01375/0.02375, and maximum observed
+RSS of 12,164/46,464 KiB. Routed/legacy ratios were 0.777 throughput, 1.727 CPU
+per MiB and 3.820 RSS. First verified transfer after starting the backend took
+0.123/1.136 seconds. These are measurements on one disposable CI machine;
+absolute rates vary between runs. No production performance parity is claimed.
+
+
 At `ac06b611`, native Linux run `39771504567` completed traffic, native QUIC,
 application scope, virtual uplink failover, outage fail-closed/recovery,
 100 reconnects, pipe-loss/crash guards and explicit recovery. Its overall

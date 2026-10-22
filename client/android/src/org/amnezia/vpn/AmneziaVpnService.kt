@@ -524,6 +524,20 @@ open class AmneziaVpnService : VpnService() {
             return
         }
 
+        if (config.has("sing_box_routing") &&
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && isLockdownEnabled
+        ) {
+            // Policy rejection must precede prepare()/the permission activity.
+            // Repeated rejected starts may already be DISCONNECTED, so notify
+            // clients explicitly instead of relying on a StateFlow transition.
+            protocolState.value = DISCONNECTED
+            onError("Experimental domain routing is unavailable while Android VPN lockdown is enabled")
+            clientMessengers.send {
+                ServiceEvent.STATUS.packToMessage { putStatus(DISCONNECTED) }
+            }
+            return
+        }
+
         protocolState.value = CONNECTING
 
         if (!checkPermission()) {
