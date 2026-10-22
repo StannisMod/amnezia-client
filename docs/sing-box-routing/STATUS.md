@@ -1,5 +1,41 @@
 # Implementation checkpoint — incomplete
 
+## Continuation — 2026-10-22
+
+Resumed at `1f56c109d9bc3596f2bba8ae75066408385ccb16`.
+The latest source matrix [39624238843](https://github.com/StannisMod/amnezia-client/actions/runs/39624238843)
+passed Android APK builds for all four ABIs, unsigned iOS app/extension,
+Windows app/service/installers, desktop core tests and package cross-compiles.
+Linux compiled, packaged and passed Qt tests, but its installed-service resolver
+stress failed with `system resolver link configuration failed`. Therefore the
+aggregate build gate is **FAIL**, not a green four-platform acceptance.
+
+- Windows native acceptance: PASS, run `39624238817`.
+- Linux native acceptance: FAIL, run `39624238708`, waiting for a helper event.
+  The new diagnostics distinguish `ready` from `connected` timeouts and verify
+  native observer reachability before capture. Underlay/handover acceptance
+  remains open.
+- Android emulator: FAIL, run `39624238657`. Traffic, 100 reconnects and the
+  routed/legacy/routed transition passed, then a device-policy transition
+  triggered a foreground-service `SecurityException`. The failure snapshot
+  masked the instrumentation failure when the service process disappeared.
+- Linux performance: FAIL, run `39624238994`; the baseline installer could not
+  load `libxkbcommon-x11.so.0`, so no performance comparison was measured.
+
+This continuation adds the missing installer runtime dependency, handles
+foreground-promotion authorization loss without an uncaught exception,
+restores emulator VPN consent after removing device-owner always-on policy,
+and preserves the original instrumentation failure if resource collection
+fails. Resolver initialization now bounds `NoSuchLink` retries across GetLink
+and all setters; other D-Bus failures remain immediate and expose only their
+error name, never their body. The exact cause of the earlier generic resolver
+failure is still unproven; native CI must establish it.
+
+Local Go 1.27.1 complete race suite (`-count=3`) PASS, including setter-race,
+permanent-error, cancellation and error-redaction tests. Local native capture
+is BLOCKED by forbidden netlink sockets and absent `/dev/net/tun`. The source
+changes need new native/package/emulator CI evidence. No merge or release.
+
 ## Current verification — 2026-10-21
 
 Resumed from `ff86843cbe35e7e8bc9fbcdec0d4a627cf425e57` on the existing

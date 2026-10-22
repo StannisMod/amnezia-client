@@ -140,10 +140,21 @@ def main():
                     assert mode in ("off", "alwayson", "lockdown")
                     output_policy = adb("shell", "am", "broadcast", "-a", "org.amnezia.routingtest.POLICY", "-n", admin, "--es", "mode", mode)
                     assert "result=-1" in output_policy, "AVD VPN policy was not applied: " + output_policy
+                    if mode == "off":
+                        # Removing an always-on package revokes its VPN grant.
+                        # Emulate renewed user consent before the recovery test.
+                        adb("shell", "appops", "set", PACKAGE, "ACTIVATE_VPN", "allow")
                     adb("shell", "touch", f"/data/user/0/{PACKAGE}/files/routing-policy-{mode}.ready")
                 if "RESOURCE_CHECKPOINT " in line:
                     label = line.strip().split("RESOURCE_CHECKPOINT ", 1)[1]
-                    report["resources"][label] = snapshot()
+                    try:
+                        report["resources"][label] = snapshot()
+                    except (AssertionError, subprocess.CalledProcessError) as error:
+                        if label != "failure":
+                            raise
+                        # Preserve the instrumentation's original failure even
+                        # when that failure terminated the service process.
+                        report["resources"][label] = {"snapshot_error": type(error).__name__}
                     if label == "failure":
                         for name, command in {
                             "routes": ("shell", "ip", "route", "show", "table", "all"),

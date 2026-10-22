@@ -5,6 +5,7 @@ package desktop
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -51,36 +52,25 @@ func startResolvedLink(ctx context.Context, index int) (*resolvedLink, error) {
 	setupCtx, setupCancel := context.WithTimeout(runCtx, 5*time.Second)
 	defer setupCancel()
 	var path dbus.ObjectPath
-	// resolved consumes link creation asynchronously. A fresh kernel TUN can
-	// exist before its resolver object is exported; wait only for NoSuchLink,
-	// never retry permission/bus/configuration failures or DNS queries.
-	for {
+	// The link can disappear from resolved between GetLink and a setter while
+	// its queued netlink events settle. Retry the entire setup, not just GetLink.
+	err = waitResolvedLink(setupCtx, func() error {
 		err = r.manager.CallWithContext(setupCtx, resolvedManager+".GetLink", 0, r.index).Store(&path)
-		var busError dbus.Error
-		if !errors.As(err, &busError) || busError.Name != resolvedService+".NoSuchLink" {
-			break
+		if err != nil {
+			return fmt.Errorf("GetLink: %w", err)
 		}
-		select {
-		case <-setupCtx.Done():
-			err = setupCtx.Err()
-		case <-time.After(20 * time.Millisecond):
-			continue
-		}
-		break
-	}
-	if err == nil {
 		r.link = conn.Object(resolvedService, path)
+		return r.apply(setupCtx)
+	})
+	if err == nil {
 		err = conn.AddMatchSignalContext(setupCtx, dbus.WithMatchObjectPath(path), dbus.WithMatchInterface("org.freedesktop.DBus.Properties"), dbus.WithMatchMember("PropertiesChanged"))
 	}
 	signals := make(chan *dbus.Signal, 16)
 	conn.Signal(signals)
-	if err == nil {
-		err = r.apply(setupCtx)
-	}
 	if err != nil {
 		cancel()
 		conn.Close()
-		return nil, errors.New("system resolver link configuration failed")
+		return nil, resolvedFailure("system resolver link configuration failed", err)
 	}
 	go func() {
 		defer close(r.done)
@@ -101,13 +91,43 @@ func startResolvedLink(ctx context.Context, index int) (*resolvedLink, error) {
 			checkCancel()
 			if err != nil {
 				if runCtx.Err() == nil {
-					r.err = errors.New("system resolver link configuration lost")
+					r.err = resolvedFailure("system resolver link configuration lost", err)
 				}
 				return
 			}
 		}
 	}()
 	return r, nil
+}
+
+func waitResolvedLink(ctx context.Context, configure func() error) error {
+	for {
+		err := configure()
+		var busError dbus.Error
+		if !errors.As(err, &busError) || busError.Name != resolvedService+".NoSuchLink" {
+			return err
+		}
+		timer := time.NewTimer(20 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+// Include only the standardized error name, never its body (which may contain
+// configuration data). Keep permissions/busy/bus failures distinct from races.
+func resolvedFailure(message string, err error) error {
+	var busError dbus.Error
+	if errors.As(err, &busError) {
+		return fmt.Errorf("%s (%s)", message, busError.Name)
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf("%s (deadline exceeded)", message)
+	}
+	return errors.New(message)
 }
 
 func (r *resolvedLink) apply(ctx context.Context) error {
@@ -120,7 +140,7 @@ func (r *resolvedLink) apply(ctx context.Context) error {
 		{"SetLinkDNS", []any{r.index, []resolvedDNS{{2, []byte{172, 19, 0, 2}}}}},
 	} {
 		if err := r.manager.CallWithContext(ctx, resolvedManager+"."+call.name, 0, call.args...).Err; err != nil {
-			return err
+			return fmt.Errorf("%s: %w", call.name, err)
 		}
 	}
 	return nil

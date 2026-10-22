@@ -161,7 +161,7 @@ def main():
             assert row.get("type") != "error", row.get("message")
             if row.get("type") == kind:
                 return row
-        raise AssertionError("routing helper did not become ready")
+        raise AssertionError("routing helper did not emit " + kind)
     def stop():
         nonlocal child
         if child is not None:
@@ -209,6 +209,8 @@ def main():
         peer = subprocess.Popen([str(args.peer.resolve()), "--shared-ip", observer, "--config", str(args.fixture), "--quic-ca", str(ca)], stdout=subprocess.PIPE, text=True)
         assert select.select([peer.stdout], [], [], 10)[0] and peer.stdout.readline().startswith("READY")
         profile = json.loads(args.fixture.read_text())
+        application({"direct": [observer]})
+        report["native_underlay_before_capture"] = "PASS"
         # Header-only diagnostics for this disposable fixture port. Never log
         # payloads, encrypted datagrams, credentials or unrelated host traffic.
         headers = socket.socket(socket.AF_PACKET, socket.SOCK_DGRAM, socket.htons(0x0800))
@@ -356,6 +358,9 @@ def main():
                 "routes": ns_ip("route", "show", "table", "all"),
                 "ipv6_routes": ns_ip("-6", "route", "show", "table", "all"),
                 "links": ns_ip("-s", "link", "show"),
+                "capture_marking": run("ip", "netns", "exec", ns, "nft", "list", "tables", capture_output=True, text=True).stdout,
+                "host_routes": ip("route", "get", "10.0.2.15"),
+                "host_links": ip("-s", "link", "show", host),
                 "observers": control("/stats"),
             }
         except Exception:

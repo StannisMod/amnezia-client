@@ -23,4 +23,7 @@ for line in sys.stdin:
         continue
     if isinstance(row, dict) and row.get("type") == "error":
         message = row.get("message")
-        print(json.dumps({"native_failure": message if message in allowed else "unclassified native failure"}), flush=True)
+        # D-Bus names contain no error body, profile data or credentials.
+        resolver_failure = isinstance(message, str) and re.fullmatch(
+            r"system resolver link configuration (?:failed|lost) \((?:org\.[A-Za-z0-9_.]+|deadline exceeded)\)", message)
+        print(json.dumps({"native_failure": message if message in allowed or resolver_failure else "unclassified native failure"}), flush=True)
