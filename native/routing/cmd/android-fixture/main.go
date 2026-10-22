@@ -6,6 +6,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/ecdh"
 	"crypto/rand"
 	"crypto/tls"
@@ -29,6 +30,7 @@ import (
 	"time"
 
 	"github.com/StannisMod/amnezia-client/native/routing/awg"
+	"github.com/StannisMod/amnezia-client/native/routing/desktop"
 	"github.com/StannisMod/amnezia-client/native/routing/internal/fixturequic"
 	"github.com/amnezia-vpn/amneziawg-go/v3/conn"
 	"github.com/amnezia-vpn/amneziawg-go/v3/device"
@@ -49,13 +51,40 @@ type fixture struct {
 	server, client                       *ecdh.PrivateKey
 	directTCP, directUDP, vpnTCP, vpnUDP atomic.Int64
 	dnsQueries                           atomic.Int64
+	outerRX, outerTX                     atomic.Int64
 	quicCertificate                      tls.Certificate
 }
 
 // The disposable loopback peer never changes underlay networks. Wrapping the
 // stock bind avoids its optional Linux netlink route watcher, so this fixture
 // also runs in hosts that permit UDP but forbid netlink sockets.
-type fixtureBind struct{ conn.Bind }
+type fixtureBind struct {
+	conn.Bind
+	received, sent *atomic.Int64
+}
+
+func (b *fixtureBind) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
+	functions, actualPort, err := b.Bind.Open(port)
+	if err != nil {
+		return nil, actualPort, err
+	}
+	for i, receive := range functions {
+		functions[i] = func(packets [][]byte, sizes []int, endpoints []conn.Endpoint) (int, error) {
+			n, err := receive(packets, sizes, endpoints)
+			b.received.Add(int64(n))
+			return n, err
+		}
+	}
+	return functions, actualPort, nil
+}
+
+func (b *fixtureBind) Send(packets [][]byte, endpoint conn.Endpoint) error {
+	err := b.Bind.Send(packets, endpoint)
+	if err == nil {
+		b.sent.Add(int64(len(packets)))
+	}
+	return err
+}
 
 // Optional bounded stream observer used only by the comparative CI benchmark.
 func observeBulk(listener net.Listener, label string) {
@@ -150,7 +179,7 @@ func (f *fixture) start() error {
 	// Omit endpoint on the server: authenticate then learn the emulator's NAT
 	// source port. Production outbound endpoint pinning is left unchanged.
 	ipc := fmt.Sprintf("private_key=%s\nlisten_port=%d\njc=3\njmin=40\njmax=80\ns1=16\ns2=24\ns3=8\ns4=8\nh1=1001\nh2=1002\nh3=1003\nh4=1004\nreplace_peers=true\npublic_key=%s\nreplace_allowed_ips=true\nallowed_ip=10.77.0.1/32\nallowed_ip=fd77::1/128\n", hex.EncodeToString(f.server.Bytes()), f.listenPort, hex.EncodeToString(f.client.PublicKey().Bytes()))
-	if f.peer, err = awg.NewConfiguredDevice(t, &fixtureBind{conn.NewDefaultBind()}, ipc); err != nil {
+	if f.peer, err = awg.NewConfiguredDevice(t, &fixtureBind{Bind: conn.NewDefaultBind(), received: &f.outerRX, sent: &f.outerTX}, ipc); err != nil {
 		return err
 	}
 	ipcStatus, err := f.peer.IpcGet()
@@ -240,7 +269,16 @@ func main() {
 	quicCA := flag.String("quic-ca", "", "public disposable QUIC certificate output")
 	probeTCP := flag.String("probe-tcp", "", "native application TCP observer probe")
 	probeUDP := flag.String("probe-udp", "", "native application UDP observer probe")
+	probeAWG := flag.String("probe-awg", "", "test-only private fixture profile: verify AWG before native capture")
 	flag.Parse()
+	if *probeAWG != "" {
+		if err := probeUnderlayAWG(*probeAWG); err != nil {
+			fmt.Fprintln(os.Stderr, "fixture AWG underlay probe failed")
+			os.Exit(1)
+		}
+		fmt.Println("VPN")
+		return
+	}
 	if *probeTCP != "" || *probeUDP != "" {
 		network, address := "tcp", *probeTCP
 		if *probeUDP != "" {
@@ -310,7 +348,9 @@ func main() {
 	go observeUDP(u, "DIRECT", &f.directUDP)
 	control := http.NewServeMux()
 	control.HandleFunc("/stats", func(w http.ResponseWriter, _ *http.Request) {
-		json.NewEncoder(w).Encode(map[string]int64{"direct_tcp": f.directTCP.Load(), "direct_udp": f.directUDP.Load(), "vpn_tcp": f.vpnTCP.Load(), "vpn_udp": f.vpnUDP.Load(), "dns_queries": f.dnsQueries.Load()})
+		// Datagram counts identify delivery/peer response failures without
+		// persisting handshake payloads, keys or private UAPI configuration.
+		json.NewEncoder(w).Encode(map[string]int64{"direct_tcp": f.directTCP.Load(), "direct_udp": f.directUDP.Load(), "vpn_tcp": f.vpnTCP.Load(), "vpn_udp": f.vpnUDP.Load(), "dns_queries": f.dnsQueries.Load(), "outer_received": f.outerRX.Load(), "outer_sent": f.outerTX.Load()})
 	})
 	control.HandleFunc("/peer", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -352,4 +392,46 @@ func main() {
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGTERM, os.Interrupt)
 	<-stop
+}
+
+func probeUnderlayAWG(path string) error {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	var profile map[string]any
+	if err = json.Unmarshal(raw, &profile); err != nil {
+		return err
+	}
+	profile["sing_box_routing"] = map[string]any{"version": 1, "default": "vpn", "rules": []any{}}
+	raw, err = json.Marshal(profile)
+	if err != nil {
+		return err
+	}
+	config, err := desktop.ProfileSession(raw)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	var listen net.ListenConfig
+	transport, err := awg.New(ctx, config.AWG, listen.ListenPacket)
+	if err != nil {
+		return err
+	}
+	defer transport.Close()
+	connection, err := transport.DialContext(ctx, "tcp", "10.77.0.2:18081")
+	if err != nil {
+		return err
+	}
+	defer connection.Close()
+	connection.SetDeadline(time.Now().Add(10 * time.Second))
+	data, err := io.ReadAll(io.LimitReader(connection, 16))
+	if err != nil {
+		return err
+	}
+	if string(data) != "VPN\n" {
+		return fmt.Errorf("unexpected fixture observer")
+	}
+	return nil
 }

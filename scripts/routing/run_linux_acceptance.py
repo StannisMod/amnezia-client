@@ -211,6 +211,9 @@ def main():
         profile = json.loads(args.fixture.read_text())
         application({"direct": [observer]})
         report["native_underlay_before_capture"] = "PASS"
+        outer = run("ip", "netns", "exec", ns, str(args.peer.resolve()), "--probe-awg", str(args.fixture.resolve()), capture_output=True, text=True, timeout=25)
+        assert outer.stdout.strip() == "VPN", "AWG underlay observer was not reached before capture"
+        report["awg_underlay_before_capture"] = "PASS"
         # Header-only diagnostics for this disposable fixture port. Never log
         # payloads, encrypted datagrams, credentials or unrelated host traffic.
         headers = socket.socket(socket.AF_PACKET, socket.SOCK_DGRAM, socket.htons(0x0800))

@@ -19,7 +19,7 @@ jobs:
       - name: Install runtime dependencies of the baseline installer
         run: |
           sudo apt-get update
-          sudo apt-get install -y libxkbcommon-x11-0
+          sudo apt-get install -y libxkbcommon-x11-0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-render-util0 libxcb-xinerama0 libxcb-cursor0 libxcb-shape0 libxcb-xfixes0 libxcb-randr0 libgl1 libegl1 libdbus-1-3
       - uses: actions/setup-go@v5
         with:
           go-version-file: native/routing/go.mod
@@ -47,6 +47,10 @@ jobs:
           set -euo pipefail
           packages=(legacy-package/deploy/build/AmneziaVPN_*_linux_x64.run)
           chmod +x "${packages[0]}"
+          if ldd "${packages[0]}" | grep 'not found'; then
+            echo 'Baseline installer runtime is incomplete'
+            exit 1
+          fi
           sudo timeout --signal=INT --kill-after=30s 180s env QT_QPA_PLATFORM=offscreen "${packages[0]}" --root /opt/AmneziaVPN --accept-licenses --default-answer --confirm-command install
           sudo systemctl daemon-reload
           sudo systemctl stop AmneziaVPN
