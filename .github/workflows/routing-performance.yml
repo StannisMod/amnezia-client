@@ -56,7 +56,7 @@ jobs:
           sudo systemctl stop AmneziaVPN
           mapfile -t legacy < <(find /opt/AmneziaVPN -type f -name amneziawg-go)
           test "${#legacy[@]}" -eq 1
-          sudo timeout --signal=INT --kill-after=30s 600s python3 scripts/routing/benchmark_linux.py --legacy "${legacy[0]}" --helper "$RUNNER_TEMP/benchmark-routing" --peer "$RUNNER_TEMP/benchmark-peer" --report "$GITHUB_WORKSPACE/linux-routing-performance.json"
+          sudo timeout --signal=INT --kill-after=30s 600s python3 scripts/routing/benchmark_linux.py --source-sha "$GITHUB_SHA" --legacy "${legacy[0]}" --helper "$RUNNER_TEMP/benchmark-routing" --peer "$RUNNER_TEMP/benchmark-peer" --report "$GITHUB_WORKSPACE/linux-routing-performance.json"
       - name: Remove installed benchmark package
         if: always()
         run: |

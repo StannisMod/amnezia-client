@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import platform
 import queue
+import re
 import select
 import socket
 import statistics
@@ -59,7 +60,9 @@ def main():
     parser.add_argument('--helper', type=Path, required=True)
     parser.add_argument('--peer', type=Path, required=True)
     parser.add_argument('--report', type=Path, required=True)
+    parser.add_argument('--source-sha', required=True, help='checkout SHA passed explicitly across sudo')
     args = parser.parse_args()
+    assert re.fullmatch(r'[0-9a-f]{40}', args.source_sha), 'full source SHA is required'
     ns, host = 'amnezia-routing-bench', 'amnrbench-host'
     interface = 'amnbench0'
     sock_path = Path('/var/run/amneziawg') / (interface + '.sock')
@@ -67,7 +70,7 @@ def main():
     process = peer = None
     namespace_owned = host_owned = False
     report = {'result': 'FAIL', 'scope': 'Linux CI data path; not UI, mobile or physical hardware',
-              'source_sha': os.environ.get('GITHUB_SHA'), 'kernel': platform.release(),
+              'source_sha': args.source_sha, 'kernel': platform.release(),
               'cpu_count': os.cpu_count(), 'cpu_affinity': sorted(os.sched_getaffinity(0)),
               'legacy_version': '3.1.20260814', 'mtu': 1280,
               'binary_sha256': {name: hashlib.sha256(path.read_bytes()).hexdigest()
@@ -150,6 +153,7 @@ def main():
                     ns_ip('route', 'add', '10.77.0.2/32', 'dev', interface)
                 initialized = time.monotonic() - began
                 samples = []
+                first_verified = None
                 for index, size in enumerate([1 << 20] + [8 << 20] * 3):
                     before = resources(process.pid)
                     result = run('ip', 'netns', 'exec', ns, sys.executable, Path(__file__).resolve(), '--transfer', 'routed' if routed else 'legacy', str(size), capture_output=True, text=True, timeout=150)
@@ -157,9 +161,13 @@ def main():
                     after = resources(process.pid)
                     sample.update(cpu_seconds=after['cpu_seconds'] - before['cpu_seconds'], rss_kib=after['rss_kib'])
                     sample['cpu_seconds_per_mib'] = sample['cpu_seconds'] / (size / (1 << 20))
+                    if index == 0:
+                        first_verified = time.monotonic() - began
                     if index:
                         samples.append(sample)
                 report['measurements'][label] = {'backend_initialized_seconds': initialized, 'samples': samples,
+                    'initialization_milestone': 'helper reports handshake' if routed else 'legacy UAPI and routes installed; handshake may be pending',
+                    'first_verified_transfer_seconds': first_verified,
                     'median_mbps': statistics.median(s['mbps'] for s in samples),
                     'median_cpu_seconds_per_mib': statistics.median(s['cpu_seconds_per_mib'] for s in samples),
                     'max_observed_rss_kib': max(s['rss_kib'] for s in samples)}
