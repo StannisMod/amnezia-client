@@ -21,12 +21,14 @@ permissions:
   contents: read
 
 concurrency:
-  # Push and same-repository PR events share one build instead of duplicating it.
-  group: routing-product-v3-${{ github.head_ref || github.ref_name }}
+  # Internal PRs use the feature-branch push checks; their entire PR diff
+  # would otherwise re-run every platform even after a docs/test-script edit.
+  group: routing-product-v4-${{ github.event_name }}-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
 
 jobs:
   core-tests:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
     strategy:
       fail-fast: false
       matrix:
@@ -66,6 +68,7 @@ jobs:
           if-no-files-found: error
 
   core-cross-compile:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
@@ -107,6 +110,7 @@ jobs:
         run: go build -mod=readonly -tags with_gvisor ./...
 
   client-linux:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ubuntu-22.04
     timeout-minutes: 120
     steps:
@@ -196,6 +200,7 @@ jobs:
             linux-installed-service.journal.log
 
   client-windows:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
     runs-on: windows-2022
     timeout-minutes: 120
     steps:
@@ -322,6 +327,7 @@ jobs:
             routing-msi-install.log
 
   client-android:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ubuntu-22.04
     timeout-minutes: 120
     strategy:
@@ -441,6 +447,7 @@ jobs:
             deploy/build/client/**/utils/build/test-results/**/*.xml
 
   client-ios:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
     runs-on: macos-15
     timeout-minutes: 120
     steps:
@@ -519,7 +526,7 @@ jobs:
             deploy/build/client/Release-iphoneos/*.app
 
   build-gate:
-    if: always()
+    if: always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository)
     needs: [core-tests, core-cross-compile, client-linux, client-windows, client-android, client-ios]
     runs-on: ubuntu-22.04
     steps:
