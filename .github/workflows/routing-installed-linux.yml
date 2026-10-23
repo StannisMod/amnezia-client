@@ -29,34 +29,50 @@ jobs:
           arch: linux_gcc_64
           modules: qtremoteobjects
           dir: ${{ runner.temp }}
-      - name: Download the exact ff7016b9 installer under investigation
+      - name: Download the accepted current Linux package
         uses: actions/download-artifact@v4
         with:
           name: routing-client-linux-baseline
-          run-id: 39555388790
+          run-id: 39966881951
           github-token: ${{ github.token }}
           path: installed-fixture
-      - name: Verify installer provenance and build test clients
+      - name: Verify installer provenance and production source compatibility
         run: |
           python3 - <<'PYCODE'
-          import json
+          import hashlib, json, subprocess
           from pathlib import Path
           manifest = json.loads(Path('installed-fixture/routing-build-manifest.json').read_text())
-          assert manifest['source_sha'] == 'ff7016b95a9a1432421e5fcd510f88e207f3055a'
+          expected = '5fd7a8e0ce7a91455a971e61b11688b281815216'
+          assert manifest['source_sha'] == expected
+          assert manifest['client_baseline_compile'] == 'PASS'
+          assert manifest['routing_core_packaged_with_service']
+          packages = list(Path('installed-fixture/deploy/build').glob('AmneziaVPN_*_linux_x64.run'))
+          assert len(packages) == 1
+          package = packages[0]
+          digest = hashlib.sha256(package.read_bytes()).hexdigest()
+          row = next(row for row in manifest['artifacts'] if row['path'] == package.relative_to('installed-fixture').as_posix())
+          assert digest == row['sha256']
+          subprocess.run(['git', 'fetch', '--no-tags', '--depth=1', 'origin', expected], check=True)
+          subprocess.run(['git', 'diff', '--exit-code', expected, 'HEAD', '--', 'client', 'service', 'native/routing', 'deploy', 'cmake', 'recipes', 'conanfile.py', 'CMakeLists.txt'], check=True)
+          Path('linux-resolver-diagnostics-provenance.json').write_text(json.dumps({
+              'package_run_id': 39966881951, 'package_source_sha': expected,
+              'package_sha256': digest, 'production_source_matches': True,
+              'packaged_helper_replaced': False,
+              'test_source_sha': subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          }, indent=2) + '\n')
           PYCODE
           cmake -S scripts/routing/service-probe -B routing-service-probe-build -DCMAKE_PREFIX_PATH="${{ runner.temp }}/Qt/6.10.1/gcc_64"
           cmake --build routing-service-probe-build
           cd native/routing
           go build -mod=readonly -tags with_gvisor -o "$RUNNER_TEMP/installed-routing-peer" ./cmd/android-fixture
-          go build -mod=readonly -tags with_gvisor -o "$RUNNER_TEMP/current-routing-helper" ./cmd/amnezia-routing
-      - name: Test current helper with the verified ff7016b9 Qt service (not a rebuilt installer)
+      - name: Repeat full installed-service acceptance against the unchanged package
         timeout-minutes: 12
         run: |
           set -euo pipefail
           packages=(installed-fixture/deploy/build/AmneziaVPN_*_linux_x64.run)
           chmod +x "${packages[0]}"
           sudo modprobe tun
-          python3 -u scripts/routing/run_linux_service_container.py --package "${packages[0]}" --helper "$RUNNER_TEMP/current-routing-helper" --peer "$RUNNER_TEMP/installed-routing-peer" --qt-probe "$GITHUB_WORKSPACE/routing-service-probe-build/routing-service-probe" --diagnose-capture-mark --report "$GITHUB_WORKSPACE/linux-resolver-diagnostics-100.json" 2>&1 | tee linux-resolver-acceptance.log
+          python3 -u scripts/routing/run_linux_service_container.py --package "${packages[0]}" --peer "$RUNNER_TEMP/installed-routing-peer" --qt-probe "$GITHUB_WORKSPACE/routing-service-probe-build/routing-service-probe" --report "$GITHUB_WORKSPACE/linux-resolver-diagnostics-100.json" 2>&1 | tee linux-resolver-acceptance.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:
