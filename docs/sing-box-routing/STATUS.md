@@ -2,6 +2,8 @@
 
 ## Continuation — 2026-10-23
 
+GitHub Actions availability was checked in the public repository UI on 2026-10-23. GitHub displays: "Workflows are not currently being run on this fork due to the scale of GitHub Actions usage. A repository maintainer can choose to re-enable these." This explains why new branch updates and the draft PR did not create runs. Actions must be re-enabled by a repository maintainer before the remaining gates can execute. The cloud browser is signed out; the secure sign-in request was declined, so browser execution stopped. No new matrix/container acceptance is claimed.
+
 Latest production-source evidence at `1d1e0d89`:
 
 - **PASS** Android emulator/policy acceptance, including repeat-lockdown rejection: [39774494339](https://github.com/StannisMod/amnezia-client/actions/runs/39774494339).
