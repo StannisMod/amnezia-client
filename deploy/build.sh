@@ -190,6 +190,7 @@ fi
 : ${JOBS:=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 2)}
 
 args=()
+[[ -n "$AMNEZIA_CONAN_PREBUILTS" ]] && args+=("-DAMNEZIA_CONAN_PREBUILTS=$AMNEZIA_CONAN_PREBUILTS")
 [[ -n "$CMAKE_GENERATOR" ]]           && args+=("-G" "$CMAKE_GENERATOR")
 [[ -n "$CMAKE_BUILD_TYPE" ]]          && args+=("-DCMAKE_BUILD_TYPE=$CMAKE_BUILD_TYPE")
 [[ -n "$CMAKE_PREFIX_PATH" ]]         && args+=("-DCMAKE_PREFIX_PATH=$CMAKE_PREFIX_PATH")

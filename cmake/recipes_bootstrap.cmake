@@ -13,6 +13,9 @@ foreach(RECIPE ${LOCAL_RECIPES})
     )
 endforeach()
 
+option(AMNEZIA_CONAN_PREBUILTS "Use optional Amnezia prebuilt Conan packages" ON)
+if(AMNEZIA_CONAN_PREBUILTS)
 execute_process(
     COMMAND ${CONAN_COMMAND} remote add amnezia "https://artifactory.amnezia.org/artifactory/api/conan/client-prebuilts" --force
 )
+endif()

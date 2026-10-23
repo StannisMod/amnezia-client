@@ -175,16 +175,8 @@ jobs:
           set -euo pipefail
           packages=(deploy/build/AmneziaVPN_*_linux_x64.run)
           chmod +x "${packages[0]}"
-          sudo env QT_QPA_PLATFORM=offscreen "${packages[0]}" --root /opt/AmneziaVPN --accept-licenses --default-answer --confirm-command install
-          sudo systemctl daemon-reload
-          sudo systemctl restart AmneziaVPN
-          sudo timeout --signal=INT --kill-after=30s 600s python3 -u scripts/routing/run_service_acceptance.py --require-notices --peer "$RUNNER_TEMP/installed-routing-peer" --qt-probe "$GITHUB_WORKSPACE/routing-service-probe-build/routing-service-probe" --report "$GITHUB_WORKSPACE/linux-installed-service.json" --resolver-cycles 100 --ci-rescue
-      - name: Remove installed test package
-        if: always()
-        run: |
-          if [ -x /opt/AmneziaVPN/maintenancetool ]; then
-            sudo env QT_QPA_PLATFORM=offscreen /opt/AmneziaVPN/maintenancetool --default-answer --confirm-command purge
-          fi
+          sudo modprobe tun
+          python3 -u scripts/routing/run_linux_service_container.py --package "${packages[0]}" --peer "$RUNNER_TEMP/installed-routing-peer" --qt-probe "$GITHUB_WORKSPACE/routing-service-probe-build/routing-service-probe" --report "$GITHUB_WORKSPACE/linux-installed-service.json"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -197,6 +189,7 @@ jobs:
             deploy/build/AmneziaVPN_*_linux_x64.run
             linux-installed-service.json
             linux-installed-service.rescue.json
+            linux-installed-service.journal.log
 
   client-windows:
     runs-on: windows-2022
@@ -500,6 +493,7 @@ jobs:
         env:
           QT_INSTALL_DIR: ${{ runner.temp }}
           IOS_UNSIGNED_BUILD: '1'
+          AMNEZIA_CONAN_PREBUILTS: 'OFF'
         run: |
           set -o pipefail
           deploy/build.sh -t ios 2>&1 | tee client-build.log

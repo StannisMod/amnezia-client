@@ -5,7 +5,7 @@ on:
     paths:
       - .github/workflows/routing-installed-linux.yml
       - native/routing/**
-      - scripts/routing/run_service_acceptance.py
+      - scripts/routing/**
   workflow_dispatch:
 permissions:
   contents: read
@@ -52,20 +52,8 @@ jobs:
           set -euo pipefail
           packages=(installed-fixture/deploy/build/AmneziaVPN_*_linux_x64.run)
           chmod +x "${packages[0]}"
-          sudo timeout --signal=INT --kill-after=30s 180s env QT_QPA_PLATFORM=offscreen "${packages[0]}" --root /opt/AmneziaVPN --accept-licenses --default-answer --confirm-command install
-          sudo systemctl daemon-reload
-          sudo systemctl stop AmneziaVPN
-          mapfile -t helpers < <(find /opt/AmneziaVPN -type f -name amnezia-routing)
-          test "${#helpers[@]}" -eq 1
-          sudo install -m 0755 "$RUNNER_TEMP/current-routing-helper" "${helpers[0]}"
-          sudo systemctl restart AmneziaVPN
-          sudo timeout --signal=INT --kill-after=30s 600s python3 -u scripts/routing/run_service_acceptance.py --peer "$RUNNER_TEMP/installed-routing-peer" --qt-probe "$GITHUB_WORKSPACE/routing-service-probe-build/routing-service-probe" --report "$GITHUB_WORKSPACE/linux-resolver-diagnostics-100.json" --resolver-cycles 100 --ci-rescue 2>&1 | tee linux-resolver-acceptance.log
-      - name: Remove installed package
-        if: always()
-        run: |
-          if [ -x /opt/AmneziaVPN/maintenancetool ]; then
-            sudo timeout --signal=INT --kill-after=30s 180s env QT_QPA_PLATFORM=offscreen /opt/AmneziaVPN/maintenancetool --default-answer --confirm-command purge
-          fi
+          sudo modprobe tun
+          python3 -u scripts/routing/run_linux_service_container.py --package "${packages[0]}" --helper "$RUNNER_TEMP/current-routing-helper" --peer "$RUNNER_TEMP/installed-routing-peer" --qt-probe "$GITHUB_WORKSPACE/routing-service-probe-build/routing-service-probe" --report "$GITHUB_WORKSPACE/linux-resolver-diagnostics-100.json" 2>&1 | tee linux-resolver-acceptance.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -73,4 +61,5 @@ jobs:
           path: |
             linux-resolver-diagnostics-*.json
             linux-resolver-acceptance.log
+            linux-resolver-diagnostics-*.log
           if-no-files-found: error
