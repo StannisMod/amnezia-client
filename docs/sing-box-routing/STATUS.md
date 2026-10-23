@@ -1,5 +1,22 @@
 # Implementation checkpoint — incomplete
 
+## Continuation — 2026-10-23
+
+Latest production-source evidence at `1d1e0d89`:
+
+- **PASS** Android emulator/policy acceptance, including repeat-lockdown rejection: [39774494339](https://github.com/StannisMod/amnezia-client/actions/runs/39774494339).
+- **PASS** installed Windows service acceptance: [39774494333](https://github.com/StannisMod/amnezia-client/actions/runs/39774494333).
+- **PASS** Windows client/service/installers and all four Android APK ABI builds in [39774494365](https://github.com/StannisMod/amnezia-client/actions/runs/39774494365).
+- **FAIL** full platform gate: Darwin fixture test tried binding an unconfigured secondary loopback address; unsigned iOS dependency resolution failed because the optional Amnezia Conan mirror did not resolve. Linux installed-service acceptance still lacks a completed report.
+
+Follow-up commits make the fixture's explicit endpoint binding portable on Darwin, allow source builds without the optional Conan mirror, and run the real installed Linux service with its own systemd, systemd-resolved, system D-Bus and network namespace in a disposable container. The host runner stays outside the test VPN. The existing 100 reconnects, managed resolver reset, native traffic/crash guards, resource checks and exact OS-state restoration remain required. Container execution is not physical-host or handover acceptance.
+
+Local `go test -mod=readonly -tags with_gvisor -race -count=3 ./...` and `go vet ./...` passed, as did workflow actionlint and shell/Python syntax checks. These checks do **not** establish container runtime, Apple client compilation or the refreshed full matrix acceptance. New workflow runs are still required: updating the branch and opening a PR have not yet produced any new Actions runs, so the new gates are **NOT RUN**, not PASS. The public draft [PR #1](https://github.com/StannisMod/amnezia-client/pull/1) collects the change for review; no merge/release was performed.
+
+Signed iOS runtime still needs matching credentials/provisioning and hardware. Physical mobile network handover, sleep/wake, full GUI and unaffected protocol acceptance remain outside the automated evidence.
+
+---
+
 ## Continuation — 2026-10-22
 
 Android emulator run `39771504529` at `ac06b611` passed traffic, native QUIC,

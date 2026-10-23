@@ -105,3 +105,7 @@ The feature remains off by default until the four-platform acceptance criteria
 are satisfied. Build artifacts do not constitute a public release.
 
 Installed Linux CI can opt into `--ci-rescue` on disposable root runners. Its independently armed watchdog uses existing owned-state recovery operations after 420 seconds or a failed test. A triggered rescue is failure evidence, even if it restores runner connectivity; inspect the associated `.rescue.json`.
+
+Installed Linux workflows now use `run_linux_service_container.py` with a privileged disposable Ubuntu 22.04 systemd container, its own bridge/PID/cgroup namespaces, system D-Bus and real systemd-resolved. The checkout and Qt toolchain are mounted read-only; the host network, system D-Bus and Docker socket are not exposed. JSON and service/resolver journal diagnostics are copied out even on failure, then the container is removed from outside its network namespace. This retains the production service and resolver integration checks while keeping the CI control connection outside the VPN.
+
+For source-only Apple dependency builds, set `AMNEZIA_CONAN_PREBUILTS=OFF` when calling `deploy/build.sh`. This skips registration of the optional Amnezia binary mirror on a fresh Conan home and uses the exported local recipes plus the normal Conan sources. Existing Conan homes may already have that remote configured; use a clean Conan home for the same CI behavior.
