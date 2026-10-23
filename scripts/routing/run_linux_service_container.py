@@ -24,6 +24,7 @@ def main():
     parser.add_argument('--peer', type=Path, required=True)
     parser.add_argument('--qt-probe', type=Path, required=True)
     parser.add_argument('--report', type=Path, required=True)
+    parser.add_argument('--diagnose-capture-mark', action='store_true')
     parser.add_argument('--helper', type=Path, help='diagnostic replacement; not installer acceptance')
     args = parser.parse_args()
     repo = Path(__file__).resolve().parents[2]
@@ -67,6 +68,7 @@ def main():
         execute('python3', '-u', str(repo / 'scripts/routing/run_service_acceptance.py'),
                 '--peer', str(args.peer.resolve()), '--qt-probe', str(args.qt_probe.resolve()),
                 '--report', '/artifacts/' + report.name, '--resolver-cycles', '100', '--ci-rescue',
+                *(['--diagnose-capture-mark'] if args.diagnose_capture_mark else []),
                 *([] if args.helper else ['--require-notices']), timeout=720)
     finally:
         report.parent.mkdir(parents=True, exist_ok=True)

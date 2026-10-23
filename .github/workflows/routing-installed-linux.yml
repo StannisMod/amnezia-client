@@ -56,7 +56,7 @@ jobs:
           packages=(installed-fixture/deploy/build/AmneziaVPN_*_linux_x64.run)
           chmod +x "${packages[0]}"
           sudo modprobe tun
-          python3 -u scripts/routing/run_linux_service_container.py --package "${packages[0]}" --helper "$RUNNER_TEMP/current-routing-helper" --peer "$RUNNER_TEMP/installed-routing-peer" --qt-probe "$GITHUB_WORKSPACE/routing-service-probe-build/routing-service-probe" --report "$GITHUB_WORKSPACE/linux-resolver-diagnostics-100.json" 2>&1 | tee linux-resolver-acceptance.log
+          python3 -u scripts/routing/run_linux_service_container.py --package "${packages[0]}" --helper "$RUNNER_TEMP/current-routing-helper" --peer "$RUNNER_TEMP/installed-routing-peer" --qt-probe "$GITHUB_WORKSPACE/routing-service-probe-build/routing-service-probe" --diagnose-capture-mark --report "$GITHUB_WORKSPACE/linux-resolver-diagnostics-100.json" 2>&1 | tee linux-resolver-acceptance.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:

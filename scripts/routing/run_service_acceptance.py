@@ -88,11 +88,15 @@ def main():
     parser.add_argument("--resolver-cycles", type=int, default=1)
     parser.add_argument("--require-notices", action="store_true")
     parser.add_argument("--ci-rescue", action="store_true", help="arm independent local recovery on a disposable Linux runner")
+    parser.add_argument("--diagnose-capture-mark", action="store_true", help="failure-only experiment in the disposable Linux service namespace; cannot yield acceptance PASS")
     args = parser.parse_args()
     faulthandler.dump_traceback_later(120, repeat=True)
     if not 1 <= args.resolver_cycles <= 100:
         parser.error("--resolver-cycles must be between 1 and 100")
     win = os.name == "nt"
+    if args.diagnose_capture_mark and (win or not args.ci_rescue):
+        parser.error("capture-mark diagnostic requires the disposable Linux rescue lifecycle")
+    strict_probe_pending = False
     rescue = None
     if args.ci_rescue:
         if win or os.geteuid() != 0:
@@ -311,7 +315,9 @@ def main():
         # Strict state can change live. It must coexist with DIRECT/VPN rules,
         # stay blocked after disconnect, and release only on explicit disable.
         toggle(True)
+        strict_probe_pending = True
         probe({"names": [["direct.ru", "DIRECT", 1], ["vpn.test", "VPN", 1]]})
+        strict_probe_pending = False
         disconnect()
         try:
             native_connect()
@@ -364,6 +370,34 @@ def main():
         report.update(installed_service="PASS", strict_kill_switch="PASS", system_resolver="PASS", application_scope="PASS", ipc_reconnect="PASS", helper_crash_recovery="PASS", observers=counts, os_state_restored=True)
     except Exception as error:
         report["failure"] = str(error)
+        if not win:
+            report["packet_policy_at_failure"] = {}
+            for label, argv in (("rules4", ["ip", "-details", "rule", "show"]),
+                                ("rules6", ["ip", "-6", "-details", "rule", "show"]),
+                                ("firewall4", ["iptables-save", "-c"]),
+                                ("firewall6", ["ip6tables-save", "-c"]),
+                                ("native_capture", ["nft", "list", "table", "inet", "amnezia_route_capture"])):
+                result = subprocess.run(argv, capture_output=True, text=True, timeout=10)
+                report["packet_policy_at_failure"][label] = {"returncode": result.returncode, "stdout": result.stdout[:24000]}
+        if args.diagnose_capture_mark and strict_probe_pending:
+            # A causal experiment on the historical Qt service only. Preserve
+            # the original failure, undo the added rule before service teardown,
+            # and never report acceptance PASS after this intervention.
+            rule = ["-m", "mark", "--mark", "0x20000000/0x20000000", "-j", "ACCEPT"]
+            added = []
+            try:
+                for program in ("iptables", "ip6tables"):
+                    present = subprocess.run([program, "-w", "5", "-C", "amnrouting.session", *rule], capture_output=True).returncode == 0
+                    if not present:
+                        command(program, "-w", "5", "-I", "amnrouting.session", "1", *rule)
+                        added.append(program)
+                probe({"names": [["direct.ru", "DIRECT", 1], ["vpn.test", "VPN", 1]]})
+                report["capture_mark_experiment"] = "TRAFFIC_RESTORED_AFTER_TEST_INTERVENTION_NOT_ACCEPTANCE"
+            except Exception as diagnostic_error:
+                report["capture_mark_experiment"] = type(diagnostic_error).__name__
+            finally:
+                for program in added:
+                    command(program, "-w", "5", "-D", "amnrouting.session", *rule)
         # Retain the failed state before teardown; explicit DNS probes can pass
         # while libc/NSS uses a different resolver path. Never convert failure
         # into PASS or rewrite the runner's resolver as a diagnostic shortcut.
