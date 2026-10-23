@@ -694,6 +694,11 @@ bool IosController::setupAwg()
 
     insertNonEmptyAwgParams(wgConfig, config);
 
+    if (m_rawConfig.contains("sing_box_routing")) {
+        wgConfig.insert("routingConfig", QString::fromUtf8(QJsonDocument(m_rawConfig.value("sing_box_routing").toObject()).toJson(QJsonDocument::Compact)));
+        wgConfig.insert("routingDNSPath", m_rawConfig.value("sing_box_dns_path"));
+    }
+
     QJsonDocument wgConfigDoc(wgConfig);
     QString wgConfigDocStr(wgConfigDoc.toJson(QJsonDocument::Compact));
 

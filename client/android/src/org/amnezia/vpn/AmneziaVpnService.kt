@@ -229,11 +229,23 @@ open class AmneziaVpnService : VpnService() {
             Log.d(TAG, "Start service")
             connect(intent?.getStringExtra(MSG_VPN_CONFIG))
         }
-        ServiceCompat.startForeground(
-            this, NOTIFICATION_ID,
-            serviceNotification.buildNotification(serverName, vpnProto?.label, protocolState.value),
-            foregroundServiceTypeCompat
-        )
+        try {
+            ServiceCompat.startForeground(
+                this, NOTIFICATION_ID,
+                serviceNotification.buildNotification(serverName, vpnProto?.label, protocolState.value),
+                foregroundServiceTypeCompat
+            )
+        } catch (error: SecurityException) {
+            // Device-policy changes can revoke VPN authorization between
+            // prepare() and foreground promotion. Close the tunnel and report
+            // the policy failure instead of crashing the service process.
+            disconnect()
+            val lockdown = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && isLockdownEnabled
+            onError(if (lockdown) "VPN foreground service permission was revoked by Android lockdown"
+                    else "VPN foreground service permission was revoked")
+            stopSelf()
+            return START_NOT_STICKY
+        }
         return START_REDELIVER_INTENT
     }
 
@@ -512,6 +524,20 @@ open class AmneziaVpnService : VpnService() {
             return
         }
 
+        if (config.has("sing_box_routing") &&
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && isLockdownEnabled
+        ) {
+            // Policy rejection must precede prepare()/the permission activity.
+            // Repeated rejected starts may already be DISCONNECTED, so notify
+            // clients explicitly instead of relying on a StateFlow transition.
+            protocolState.value = DISCONNECTED
+            onError("Experimental domain routing is unavailable while Android VPN lockdown is enabled")
+            clientMessengers.send {
+                ServiceEvent.STATUS.packToMessage { putStatus(DISCONNECTED) }
+            }
+            return
+        }
+
         protocolState.value = CONNECTING
 
         if (!checkPermission()) {
@@ -524,7 +550,9 @@ open class AmneziaVpnService : VpnService() {
             disconnectionJob = null
 
             vpnProto?.protocol?.let { protocol ->
-                protocol.initialize(applicationContext, protocolState, ::onError)
+                protocol.initialize(applicationContext, protocolState, ::onError) {
+                    Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && this@AmneziaVpnService.isLockdownEnabled
+                }
                 protocol.startVpn(config, Builder(), ::protect)
             }
         }

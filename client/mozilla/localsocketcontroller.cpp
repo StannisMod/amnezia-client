@@ -123,6 +123,13 @@ void LocalSocketController::daemonConnected() {
 }
 
 void LocalSocketController::activate(const QJsonObject &rawConfig) {
+#if defined(MZ_LINUX) || defined(MZ_WINDOWS)
+  if (rawConfig.contains("sing_box_routing")) {
+    m_deviceIpv4 = "172.19.0.1";
+    write(QJsonObject{{"type", "activate"}, {"routing_profile", rawConfig}});
+    return;
+  }
+#endif
   QString protocolName = rawConfig.value("protocol").toString();
 
   int splitTunnelType = rawConfig.value("splitTunnelType").toInt();

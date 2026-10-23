@@ -11,6 +11,10 @@ winbuild*.bat
 .cache/
 .vscode/
 .venv/
+__pycache__/
+*.pyc
+/routing-contract-build/
+/deploy/routing-native/
 .cursor*
 
 

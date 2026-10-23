@@ -22,6 +22,8 @@ struct WGConfig: Decodable {
   var persistentKeepAlive: String?
   let splitTunnelType: Int
   let splitTunnelSites: [String]
+  let routingConfig: String?
+  let routingDNSPath: String?
 
   enum CodingKeys: String, CodingKey {
     case initPacketMagicHeader = "H1", responsePacketMagicHeader = "H2"
@@ -48,6 +50,8 @@ struct WGConfig: Decodable {
     case persistentKeepAlive = "persistent_keep_alive"
     case splitTunnelType
     case splitTunnelSites
+    case routingConfig
+    case routingDNSPath
   }
 
   var settings: String {

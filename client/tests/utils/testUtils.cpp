@@ -22,11 +22,10 @@ QString getEnvValue(const QString &key)
 void logEnvValueState(const QString &key)
 {
     const QString value = getEnvValue(key);
-    qInfo().noquote() << QString("%1: configured=%2 length=%3 value=\"%4\"")
+    qInfo().noquote() << QString("%1: configured=%2 length=%3")
                              .arg(key,
                                   isEnvValueConfigured(value) ? "yes" : "no",
-                                  QString::number(value.size()),
-                                  value);
+                                  QString::number(value.size()));
 }
 
 bool isEnvValueConfigured(const QString &value)

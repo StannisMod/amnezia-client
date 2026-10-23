@@ -17,6 +17,7 @@
 #include "winsock.h"
 
 #include <QApplication>
+#include <QDir>
 #include <QFileInfo>
 #include <QHostAddress>
 #include <QNetworkInterface>
@@ -433,6 +434,71 @@ bool WindowsFirewall::allowAllTraffic() {
     m_activeRules.clear();
     logger.debug() << "Firewall Disabled!";
     return true;
+}
+
+bool WindowsFirewall::allowDomainRouting(const QString& helperPath, quint64 captureLuid) {
+  const QString owner = QStringLiteral("domain-routing-session");
+  const auto previous = m_peerRules.values(owner);
+  if (FwpmTransactionBegin0(m_sessionHandle, 0) != ERROR_SUCCESS) return false;
+  auto rollback = qScopeGuard([&] {
+    FwpmTransactionAbort0(m_sessionHandle);
+    m_peerRules.remove(owner);
+    for (auto id : previous) m_peerRules.insert(owner, id);
+  });
+  for (auto id : previous) {
+    if (FwpmFilterDeleteById0(m_sessionHandle, id) != ERROR_SUCCESS) return false;
+  }
+  m_peerRules.remove(owner);
+  FWP_BYTE_BLOB* appId = nullptr;
+  const auto path = QDir::toNativeSeparators(helperPath).toStdWString();
+  if (FwpmGetAppIdFromFileName0(path.c_str(), &appId) != ERROR_SUCCESS) return false;
+  auto freeApp = qScopeGuard([&] { FwpmFreeMemory0(reinterpret_cast<void**>(&appId)); });
+  const GUID layers[] {FWPM_LAYER_ALE_AUTH_CONNECT_V4, FWPM_LAYER_ALE_AUTH_CONNECT_V6,
+                       FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V4, FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V6};
+  for (const auto& layer : layers) {
+    FWPM_FILTER_CONDITION0 condition {};
+    condition.fieldKey = FWPM_CONDITION_ALE_APP_ID;
+    condition.matchType = FWP_MATCH_EQUAL;
+    condition.conditionValue.type = FWP_BYTE_BLOB_TYPE;
+    condition.conditionValue.byteBlob = appId;
+    FWPM_FILTER0 filter {};
+    filter.layerKey = layer;
+    filter.subLayerKey = ST_FW_WINFW_BASELINE_SUBLAYER_KEY;
+    filter.weight.type = FWP_UINT8;
+    filter.weight.uint8 = HIGH_WEIGHT;
+    filter.action.type = FWP_ACTION_PERMIT;
+    filter.numFilterConditions = 1;
+    filter.filterCondition = &condition;
+    if (!enableFilter(&filter, "Domain routing helper", "Protected helper traffic", owner)) return false;
+    condition.fieldKey = FWPM_CONDITION_FLAGS;
+    condition.matchType = FWP_MATCH_FLAGS_ALL_SET;
+    condition.conditionValue.type = FWP_UINT32;
+    condition.conditionValue.uint32 = FWP_CONDITION_FLAG_IS_LOOPBACK;
+    if (!enableFilter(&filter, "Domain routing loopback", "Preserve native local services", owner)) return false;
+    if (captureLuid != 0) {
+      condition.fieldKey = FWPM_CONDITION_IP_LOCAL_INTERFACE;
+      condition.matchType = FWP_MATCH_EQUAL;
+      condition.conditionValue.type = FWP_UINT64;
+      condition.conditionValue.uint64 = &captureLuid;
+      if (!enableFilter(&filter, "Domain routing capture", "Owned capture interface LUID", owner)) return false;
+    }
+  }
+  if (FwpmTransactionCommit0(m_sessionHandle) != ERROR_SUCCESS) return false;
+  rollback.dismiss();
+  return true;
+}
+
+bool WindowsFirewall::removeDomainRouting() {
+  const QString owner = QStringLiteral("domain-routing-session");
+  if (FwpmTransactionBegin0(m_sessionHandle, 0) != ERROR_SUCCESS) return false;
+  auto rollback = qScopeGuard([&] { FwpmTransactionAbort0(m_sessionHandle); });
+  for (auto id : m_peerRules.values(owner)) {
+    if (FwpmFilterDeleteById0(m_sessionHandle, id) != ERROR_SUCCESS) return false;
+  }
+  if (FwpmTransactionCommit0(m_sessionHandle) != ERROR_SUCCESS) return false;
+  rollback.dismiss();
+  m_peerRules.remove(owner);
+  return true;
 }
 
 bool WindowsFirewall::allowTrafficForAppOnAll(const QString& exePath,

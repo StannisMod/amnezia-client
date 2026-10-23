@@ -31,6 +31,7 @@
 #endif
 
 #include "core/utils/networkUtilities.h"
+#include "core/utils/domainRoutingConfig.h"
 #include "core/utils/serverConfigUtils.h"
 #include "vpnConnection.h"
 
@@ -334,6 +335,24 @@ void VpnConnection::connectToVpn(const QString &serverId, DockerContainer contai
                         .arg(ContainerUtils::containerToString(container))
              << m_appSettingsRepository->routeMode();
 
+#if defined(Q_OS_WIN) || (defined(Q_OS_LINUX) && !defined(Q_OS_ANDROID))
+    // These desktop app modes require the flow engine. Never silently start a
+    // legacy backend that cannot enforce the saved application scope.
+    const bool routedAwg = m_appSettingsRepository->isSingBoxRoutingEnabled()
+        && vpnConfiguration.value(configKey::vpnProto).toString() == ProtocolUtils::protoToString(Proto::Awg);
+    if (m_appSettingsRepository->isAppsSplitTunnelingEnabled() && !routedAwg
+        && !m_appSettingsRepository->vpnApps(m_appSettingsRepository->appsRouteMode()).isEmpty()
+        && (m_appSettingsRepository->appsRouteMode() == AppsRouteMode::VpnOnlyForwardApps
+#ifndef Q_OS_WIN
+            || m_appSettingsRepository->appsRouteMode() != AppsRouteMode::VpnAllApps
+#endif
+            )) {
+        setConnectionState(Vpn::ConnectionState::Error);
+        emit vpnProtocolError(ErrorCode::NotSupportedOnThisPlatform);
+        return;
+    }
+#endif
+
     m_remoteAddress = NetworkUtilities::getIPAddress(vpnConfiguration.value(configKey::hostName).toString());
     setConnectionState(Vpn::ConnectionState::Connecting);
 
@@ -496,6 +515,25 @@ void VpnConnection::appendSplitTunnelingConfig()
 
     m_vpnConfiguration.insert(configKey::splitTunnelType, routeMode);
     m_vpnConfiguration.insert(configKey::splitTunnelSites, sitesJsonArray);
+
+#if defined(Q_OS_ANDROID) || defined(Q_OS_IOS) || defined(Q_OS_LINUX) || defined(Q_OS_WIN)
+    if (m_appSettingsRepository->isSingBoxRoutingEnabled()
+            && protocolName == ProtocolUtils::protoToString(Proto::Awg)) {
+        m_vpnConfiguration.insert("sing_box_routing", m_appSettingsRepository->isSitesSplitTunnelingEnabled()
+            ? m_appSettingsRepository->domainRoutingConfig()
+            : QJsonObject{{"version", 1}, {"default", "vpn"}, {"rules", QJsonArray()}});
+        const QHostAddress dns(m_vpnConfiguration.value(configKey::dns1).toString());
+        const bool localResolver = dns.isLoopback() || (!m_appSettingsRepository->useAmneziaDns() && dns.isPrivateUse());
+        m_vpnConfiguration.insert("sing_box_dns_path", localResolver ? "direct" : "vpn");
+        // Only the flow engine applies destinations. The OS captures all flows
+        // selected by the existing per-application VPN scope.
+        m_vpnConfiguration.insert(configKey::splitTunnelType, amnezia::RouteMode::VpnAllSites);
+        m_vpnConfiguration.insert(configKey::splitTunnelSites, QJsonArray());
+    } else {
+        m_vpnConfiguration.remove("sing_box_routing");
+        m_vpnConfiguration.remove("sing_box_dns_path");
+    }
+#endif
 
     amnezia::AppsRouteMode appsRouteMode = amnezia::AppsRouteMode::VpnAllApps;
     QJsonArray appsJsonArray;
