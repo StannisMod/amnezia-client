@@ -55,8 +55,10 @@ cd ../..
 Full-client entry points are `deploy/build.sh --generator Ninja --installer all`
 on Linux, `deploy/build.bat --installer all` on Windows,
 `deploy/build.sh -t android --abi arm64-v8a --apk` for Android, and
-`deploy/build.sh -t ios` on a configured macOS/Xcode host. Setup and unsigned iOS
-options are defined by `sing-box-routing-ci.yml`; those commands alone do not
+`deploy/build.sh -t ios` on a configured macOS/Xcode host. For iOS source builds,
+set `AMNEZIA_CONAN_PREBUILTS=OFF` to omit the optional Amnezia binary mirror.
+Setup and unsigned iOS options are defined by `sing-box-routing-ci.yml`; those
+commands alone do not
 install Qt, SDKs, Conan dependencies, installer tools or signing identities.
 
 The following workflows can be rerun on the feature branch through Actions:
@@ -65,7 +67,7 @@ The following workflows can be rerun on the feature branch through Actions:
 | --- | --- |
 | `sing-box-routing-ci.yml` | All client compilation/packaging lanes, core race tests, cross-compilation and embedded installed-service gates |
 | `routing-linux-package.yml` | Fresh Linux package installation, actual Qt service, resolver cycles, restoration and removal |
-| `routing-installed-linux.yml` | Current helper with the explicitly identified older Qt installer; diagnostic evidence only |
+| `routing-installed-linux.yml` | Repeat acceptance of the current verified Linux package, including installer checksum and production-source compatibility |
 | `routing-linux-acceptance.yml` | Native namespace capture, observer egress, handover/outage tests, reconnects and recovery |
 | `routing-windows-acceptance.yml` | Wintun/WFP, native egress, crash recovery and reconnects on a disposable Windows runner |
 | `routing-installed-windows.yml` | Explicitly identified MSI/EXE installation and installed Qt service acceptance |

@@ -1,11 +1,5 @@
 name: Installed Windows service acceptance
 on:
-  push:
-    branches: [feature/sing-box-routing]
-    paths:
-      - .github/workflows/routing-installed-windows.yml
-      - scripts/routing/run_windows_installer.ps1
-      - scripts/routing/run_service_acceptance.py
   workflow_dispatch:
 permissions:
   contents: read
@@ -37,14 +31,23 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: routing-client-windows-baseline
-          run-id: 39555388790
+          run-id: 39966881951
           github-token: ${{ github.token }}
           path: installed-fixture
-      - name: Verify ff7016b9 installer provenance and build test clients
+      - name: Verify current installer provenance and build test clients
         shell: pwsh
         run: |
           $manifest = Get-Content installed-fixture/routing-build-manifest.json | ConvertFrom-Json
-          if ($manifest.source_sha -ne 'ff7016b95a9a1432421e5fcd510f88e207f3055a') { throw 'Installer source mismatch' }
+          if ($manifest.source_sha -ne '5fd7a8e0ce7a91455a971e61b11688b281815216') { throw 'Installer source mismatch' }
+          if ($manifest.client_baseline_compile -ne 'PASS' -or !$manifest.routing_core_packaged_with_service) { throw 'Package build did not pass' }
+          foreach ($row in $manifest.artifacts) {
+            $packagePath = Join-Path installed-fixture $row.path
+            if ((Get-FileHash $packagePath -Algorithm SHA256).Hash.ToLowerInvariant() -ne $row.sha256) { throw "Installer checksum mismatch: $packagePath" }
+          }
+          git fetch --no-tags --depth=1 origin $manifest.source_sha
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git diff --exit-code $manifest.source_sha HEAD -- client service native/routing deploy cmake recipes conanfile.py CMakeLists.txt
+          if ($LASTEXITCODE -ne 0) { throw 'Production source differs from the pinned installer' }
           cmake -S scripts/routing/service-probe -B routing-service-probe-build -DCMAKE_PREFIX_PATH="$env:RUNNER_TEMP/Qt/6.10.1/msvc2022_64"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cmake --build routing-service-probe-build --config Release
@@ -64,7 +67,7 @@ jobs:
           Start-Service AmneziaVPN-service
           (Get-Service AmneziaVPN-service).WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
           Write-Host 'STAGE service running; beginning acceptance'
-          python -u scripts/routing/run_service_acceptance.py --peer "$env:RUNNER_TEMP/installed-routing-peer.exe" --qt-probe "$env:GITHUB_WORKSPACE/routing-service-probe-build/Release/routing-service-probe.exe" --report "windows-installed-$env:PACKAGE_KIND.json" 2>&1 | Tee-Object -FilePath windows-service-acceptance.log
+          python -u scripts/routing/run_service_acceptance.py --require-notices --peer "$env:RUNNER_TEMP/installed-routing-peer.exe" --qt-probe "$env:GITHUB_WORKSPACE/routing-service-probe-build/Release/routing-service-probe.exe" --report "windows-installed-$env:PACKAGE_KIND.json" 2>&1 | Tee-Object -FilePath windows-service-acceptance.log
           exit $LASTEXITCODE
       - name: Restore owned policy and remove test installation
         if: always()

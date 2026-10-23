@@ -1,21 +1,52 @@
-# Implementation checkpoint — incomplete
+# Implementation checkpoint — automated validation
 
 ## Continuation — 2026-10-23
 
-GitHub Actions availability was checked in the public repository UI on 2026-10-23. GitHub displays: "Workflows are not currently being run on this fork due to the scale of GitHub Actions usage. A repository maintainer can choose to re-enable these." This explains why new branch updates and the draft PR did not create runs. Actions must be re-enabled by a repository maintainer before the remaining gates can execute. The cloud browser is signed out; the secure sign-in request was declined, so browser execution stopped. No new matrix/container acceptance is claimed.
+Actions were re-enabled by the repository maintainer. The current production
+source is `5fd7a8e0ce7a91455a971e61b11688b281815216`; later commits update CI
+provenance and documentation. The table below supersedes the historical
+checkpoints retained after the separator.
 
-Latest production-source evidence at `1d1e0d89`:
+| Gate | Current evidence |
+| --- | --- |
+| Core race tests | **PASS**, Linux, Windows and macOS, [39966881951](https://github.com/StannisMod/amnezia-client/actions/runs/39966881951) |
+| Core cross-compilation | **PASS**, all eight architecture lanes in the same run |
+| Android APK compilation | **PASS**, arm64-v8a, armeabi-v7a, x86 and x86_64 in the same run |
+| iOS app and Network Extension | **PASS**, unsigned compilation in the same run; signed runtime remains untested |
+| Linux client and installed package | **PASS** in the same run, including 26 Qt tests, all 61 dependency notices, 100 system-resolver reconnects, resolver reset repair, strict Kill Switch toggles, application scope, IPC reconnect, helper crash/recovery and exact DNS/route restoration |
+| Independent Linux package repeat | **PASS**, [39972050403](https://github.com/StannisMod/amnezia-client/actions/runs/39972050403), matching package SHA256 and production source; installed helper was not replaced |
+| Windows client, MSI and EXE | **IN PROGRESS** in run 39966881951 |
+| Android emulator policy and 100 reconnects | Earlier **PASS** at `1d1e0d89`, [39774494339](https://github.com/StannisMod/amnezia-client/actions/runs/39774494339); refreshed package acceptance is **IN PROGRESS** in [39972740869](https://github.com/StannisMod/amnezia-client/actions/runs/39972740869) |
+| Native Linux and Windows capture | **PASS**, [39772229380](https://github.com/StannisMod/amnezia-client/actions/runs/39772229380) and [39772229355](https://github.com/StannisMod/amnezia-client/actions/runs/39772229355); native production capture source is unchanged |
+| Physical devices / signed iOS runtime | **NOT RUN**; see the acceptance boundaries below |
 
-- **PASS** Android emulator/policy acceptance, including repeat-lockdown rejection: [39774494339](https://github.com/StannisMod/amnezia-client/actions/runs/39774494339).
-- **PASS** installed Windows service acceptance: [39774494333](https://github.com/StannisMod/amnezia-client/actions/runs/39774494333).
-- **PASS** Windows client/service/installers and all four Android APK ABI builds in [39774494365](https://github.com/StannisMod/amnezia-client/actions/runs/39774494365).
-- **FAIL** full platform gate: Darwin fixture test tried binding an unconfigured secondary loopback address; unsigned iOS dependency resolution failed because the optional Amnezia Conan mirror did not resolve. Linux installed-service acceptance still lacks a completed report.
+The Linux strict-firewall fix permits the reserved capture mark through the
+legacy strict chain alongside the existing TUN and protected-socket exceptions.
+The owned routing guard still blocks captured traffic between sessions.
+The earlier diagnostic [39966881917](https://github.com/StannisMod/amnezia-client/actions/runs/39966881917)
+intentionally tested an older Qt package with the current helper: its strict
+probe failed, adding the capture-mark exception restored traffic, and the run
+retained FAIL. It is causal negative evidence, not acceptance of that old package.
+The new package passed without this diagnostic override. Its rescue report is
+`CANCELLED_AFTER_ACCEPTANCE` with zero recovery operations. Across the 100-cycle
+stress, the same service PID retained 15 handles and 12 threads; observed RSS
+changed from 57.8 to 58.0 MB. Container results do not establish physical-host
+network handover or hardware resource behavior.
 
-Follow-up commits make the fixture's explicit endpoint binding portable on Darwin, allow source builds without the optional Conan mirror, and run the real installed Linux service with its own systemd, systemd-resolved, system D-Bus and network namespace in a disposable container. The host runner stays outside the test VPN. The existing 100 reconnects, managed resolver reset, native traffic/crash guards, resource checks and exact OS-state restoration remain required. Container execution is not physical-host or handover acceptance.
+The Darwin fixture now uses an explicitly configured loopback address. iOS CI
+builds dependencies from source without the optional unavailable Conan mirror;
+libagw now uses the same pinned Go 1.27.1 recipe as the other native components.
+Upstream libagw race tests and its C/C++ archive smoke tests passed locally.
+Local routing race tests, vet, workflow actionlint and script syntax checks also
+passed. These do not replace the platform-specific acceptance results above.
 
-Local `go test -mod=readonly -tags with_gvisor -race -count=3 ./...` and `go vet ./...` passed, as did workflow actionlint and shell/Python syntax checks. These checks do **not** establish container runtime, Apple client compilation or the refreshed full matrix acceptance. New workflow runs are still required: updating the branch and opening a PR have not yet produced any new Actions runs, so the new gates are **NOT RUN**, not PASS. The public draft [PR #1](https://github.com/StannisMod/amnezia-client/pull/1) collects the change for review; no merge/release was performed.
-
-Signed iOS runtime still needs matching credentials/provisioning and hardware. Physical mobile network handover, sleep/wake, full GUI and unaffected protocol acceptance remain outside the automated evidence.
+The feature remains experimental and opt-in. Signed iOS runtime requires
+matching app/extension provisioning and hardware. Physical Android Wi-Fi/cellular
+handover, sleep/wake, complete GUI interaction and unaffected protocol regression
+acceptance remain separate work. The measured Linux data-path comparison below
+shows overhead and does not establish cross-platform performance parity.
+The public draft [PR #1](https://github.com/StannisMod/amnezia-client/pull/1)
+collects the work for review. No merge or release has been performed.
 
 ---
 
