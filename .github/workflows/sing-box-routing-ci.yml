@@ -493,6 +493,7 @@ jobs:
         env:
           QT_INSTALL_DIR: ${{ runner.temp }}
           IOS_UNSIGNED_BUILD: '1'
+          # Exercise local recipes without depending on the optional binary mirror.
           AMNEZIA_CONAN_PREBUILTS: 'OFF'
         run: |
           set -o pipefail
