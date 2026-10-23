@@ -27,7 +27,34 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  cancel-superseded:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            if (context.eventName !== 'push') return;
+            const {owner, repo} = context.repo;
+            const branch = context.ref.replace(/^refs\/heads\//, '');
+            const runs = await github.paginate(github.rest.actions.listWorkflowRuns, {
+              owner, repo, workflow_id: 'sing-box-routing-ci.yml', branch, per_page: 100
+            });
+            for (const run of runs) {
+              if (run.id >= context.runId || run.status === 'completed') continue;
+              try {
+                await github.rest.actions.cancelWorkflowRun({owner, repo, run_id: run.id});
+                core.info(`Cancelled superseded build ${run.id}`);
+              } catch (error) {
+                if (error.status !== 409) throw error; // already finished is harmless
+              }
+            }
+
   core-tests:
+    needs: cancel-superseded
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
     strategy:
       fail-fast: false
@@ -68,6 +95,7 @@ jobs:
           if-no-files-found: error
 
   core-cross-compile:
+    needs: cancel-superseded
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ubuntu-22.04
     strategy:
@@ -110,6 +138,7 @@ jobs:
         run: go build -mod=readonly -tags with_gvisor ./...
 
   client-linux:
+    needs: cancel-superseded
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ubuntu-22.04
     timeout-minutes: 120
@@ -198,8 +227,10 @@ jobs:
             linux-installed-service.json
             linux-installed-service.rescue.json
             linux-installed-service.journal.log
+            linux-installed-service.boot.log
 
   client-windows:
+    needs: cancel-superseded
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
     runs-on: windows-2022
     timeout-minutes: 120
@@ -327,6 +358,7 @@ jobs:
             routing-msi-install.log
 
   client-android:
+    needs: cancel-superseded
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ubuntu-22.04
     timeout-minutes: 120
@@ -447,6 +479,7 @@ jobs:
             deploy/build/client/**/utils/build/test-results/**/*.xml
 
   client-ios:
+    needs: cancel-superseded
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
     runs-on: macos-15
     timeout-minutes: 120
@@ -527,7 +560,7 @@ jobs:
 
   build-gate:
     if: always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository)
-    needs: [core-tests, core-cross-compile, client-linux, client-windows, client-android, client-ios]
+    needs: [cancel-superseded, core-tests, core-cross-compile, client-linux, client-windows, client-android, client-ios]
     runs-on: ubuntu-22.04
     steps:
       - name: Fail for any failed, cancelled or skipped required lane
