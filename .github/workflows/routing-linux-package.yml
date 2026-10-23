@@ -14,7 +14,7 @@ permissions:
   contents: read
 concurrency:
   group: routing-linux-package-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 jobs:
   package-linux:
     runs-on: ubuntu-22.04

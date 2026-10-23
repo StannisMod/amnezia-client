@@ -10,16 +10,20 @@ on:
       - '.github/workflows/routing-*.yml'
   pull_request:
     branches: [dev]
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
+      - 'scripts/routing/**'
+      - '.github/workflows/routing-*.yml'
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: routing-product-v2-${{ github.ref }}
-  # A CI-only follow-up can reuse an already verified compatible APK while
-  # the existing full matrix finishes. Source fixes still supersede old builds.
-  cancel-in-progress: ${{ !startsWith(github.event.head_commit.message, 'ci(routing):') }}
+  # Push and same-repository PR events share one build instead of duplicating it.
+  group: routing-product-v3-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
 
 jobs:
   core-tests:

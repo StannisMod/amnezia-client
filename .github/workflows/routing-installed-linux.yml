@@ -10,6 +10,9 @@ on:
 permissions:
   contents: read
   actions: read
+concurrency:
+  group: routing-installed-linux-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   installed-service:
     runs-on: ubuntu-22.04
