@@ -40,7 +40,6 @@ def main():
     try:
         run('docker', 'run', '--detach', '--name', name, '--privileged', '--cgroupns=private',
             '--tmpfs', '/run', '--tmpfs', '/run/lock', '--tmpfs', '/tmp',
-            '--volume', '/sys/fs/cgroup:/sys/fs/cgroup:rw',
             '--volume', f'{repo}:{repo}:ro', '--volume', f'{runtime}:{runtime}:ro',
             '--env', 'QT_QPA_PLATFORM=offscreen', image)
 
@@ -49,6 +48,9 @@ def main():
 
         deadline = time.monotonic() + 60
         while True:
+            running = run('docker', 'inspect', '--format', '{{.State.Running}}', name, stdout=subprocess.PIPE).stdout.strip()
+            if running != b'true':
+                raise RuntimeError('container init exited before systemd became ready; see boot log')
             state = execute('systemctl', 'is-system-running', stdout=subprocess.PIPE, check=False).stdout.strip()
             if state in (b'running', b'degraded'):
                 break
@@ -68,6 +70,9 @@ def main():
                 *([] if args.helper else ['--require-notices']), timeout=720)
     finally:
         report.parent.mkdir(parents=True, exist_ok=True)
+        # Preserve PID 1 output even if systemd never reached journald.
+        with report.with_suffix('.boot.log').open('w') as log:
+            subprocess.run(['docker', 'logs', name], stdout=log, stderr=subprocess.STDOUT, timeout=30, check=False)
         # Copy diagnostics even when acceptance, its watchdog or the container fails.
         subprocess.run(['docker', 'cp', name + ':/artifacts/.', str(report.parent)], timeout=30, check=False)
         with report.with_suffix('.journal.log').open('w') as log:

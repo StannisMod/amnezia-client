@@ -1,14 +1,7 @@
 name: Linux routed client package
 on:
-  push:
-    branches: [feature/sing-box-routing]
-    paths:
-      - .github/workflows/routing-linux-package.yml
-      - native/routing/**
-      - service/**
-      - client/**
-      - deploy/**
-      - scripts/routing/**
+  # The main matrix already builds Linux on source changes. Keep this
+  # focused duplicate lane available for explicit package investigations only.
   workflow_dispatch:
 permissions:
   contents: read
@@ -104,4 +97,5 @@ jobs:
             linux-installed-service.json
             linux-installed-service.rescue.json
             linux-installed-service.journal.log
+            linux-installed-service.boot.log
 
