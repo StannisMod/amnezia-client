@@ -4,7 +4,9 @@
 
 Actions were re-enabled by the repository maintainer. The current production
 source is `5fd7a8e0ce7a91455a971e61b11688b281815216`; later commits update CI
-provenance and documentation. The table below supersedes the historical
+provenance and documentation. **The full build gate passed**, including all
+20 jobs of [39966881951](https://github.com/StannisMod/amnezia-client/actions/runs/39966881951).
+The table below supersedes the historical
 checkpoints retained after the separator.
 
 | Gate | Current evidence |
@@ -15,8 +17,8 @@ checkpoints retained after the separator.
 | iOS app and Network Extension | **PASS**, unsigned compilation in the same run; signed runtime remains untested |
 | Linux client and installed package | **PASS** in the same run, including 26 Qt tests, all 61 dependency notices, 100 system-resolver reconnects, resolver reset repair, strict Kill Switch toggles, application scope, IPC reconnect, helper crash/recovery and exact DNS/route restoration |
 | Independent Linux package repeat | **PASS**, [39972050403](https://github.com/StannisMod/amnezia-client/actions/runs/39972050403), matching package SHA256 and production source; installed helper was not replaced |
-| Windows client, MSI and EXE | **IN PROGRESS** in run 39966881951 |
-| Android emulator policy and 100 reconnects | Earlier **PASS** at `1d1e0d89`, [39774494339](https://github.com/StannisMod/amnezia-client/actions/runs/39774494339); refreshed package acceptance is **IN PROGRESS** in [39972740869](https://github.com/StannisMod/amnezia-client/actions/runs/39972740869) |
+| Windows client, MSI and EXE | **PASS** in run 39966881951, including Qt regressions, installation, actual LocalSystem service acceptance, dependency notices and removal for both installer types |
+| Android emulator policy and 100 reconnects | **PASS**, [39972740869](https://github.com/StannisMod/amnezia-client/actions/runs/39972740869), host APK from `5fd7a8e0` with current native JNI payload from production-equivalent `1861d55e`; includes OS always-on/lockdown and legacy AWG transitions |
 | Native Linux and Windows capture | **PASS**, [39772229380](https://github.com/StannisMod/amnezia-client/actions/runs/39772229380) and [39772229355](https://github.com/StannisMod/amnezia-client/actions/runs/39772229355); native production capture source is unchanged |
 | Physical devices / signed iOS runtime | **NOT RUN**; see the acceptance boundaries below |
 
@@ -41,7 +43,10 @@ Local routing race tests, vet, workflow actionlint and script syntax checks also
 passed. These do not replace the platform-specific acceptance results above.
 
 The feature remains experimental and opt-in. Signed iOS runtime requires
-matching app/extension provisioning and hardware. Physical Android Wi-Fi/cellular
+matching app/extension provisioning and hardware. Android emulator acceptance
+rebuilds the native JNI payload and records both source SHAs and APK checksums;
+it does not claim to test an unmodified release APK. Android 9 lockdown-query
+restrictions and physical-device policy behavior remain untested. Physical Android Wi-Fi/cellular
 handover, sleep/wake, complete GUI interaction and unaffected protocol regression
 acceptance remain separate work. The measured Linux data-path comparison below
 shows overhead and does not establish cross-platform performance parity.
