@@ -5,6 +5,7 @@ on:
     branches: [feature/sing-box-routing]
     paths:
       - .github/workflows/routing-android-acceptance.yml
+      - recipes/libagw/**
       - scripts/routing/android/**
       - scripts/routing/run_android_acceptance.py
       - native/routing/cmd/android-fixture/**
@@ -72,7 +73,7 @@ jobs:
           def compatible(sha):
               if sha not in compatibility:
                   subprocess.run(['git', 'fetch', '--depth', '1', 'origin', sha], check=True)
-                  code = subprocess.run(['git', 'diff', '--quiet', sha, 'HEAD', '--', 'client/android', 'client/platforms/android']).returncode
+                  code = subprocess.run(['git', 'diff', '--quiet', sha, 'HEAD', '--', 'client/android', 'client/platforms/android', 'recipes', 'cmake', 'deploy/build.sh', 'CMakeLists.txt']).returncode
                   assert code in (0, 1), 'Android host comparison failed'
                   compatibility[sha] = code == 0
               return compatibility[sha]
