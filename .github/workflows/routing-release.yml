@@ -143,7 +143,7 @@ jobs:
 
           Android: these APKs use a debug certificate, not the official Amnezia signing key. They cannot update an official installation in place. Export profiles before replacing an existing installation. Desktop packages are unsigned unofficial builds. Proprietary upstream service API secrets are not included.
 
-          Exact build source: d64d8af796602ace13cc971df9c19b05615fd2da. The binaries are unchanged from the successful 20-job build https://github.com/StannisMod/amnezia-client/actions/runs/40497706736; later commits only update CI and documentation. BUILD_MANIFESTS.json and RELEASE_PROVENANCE.json retain checksums and source provenance; SHA256SUMS covers all release assets.
+          Exact build source: d64d8af796602ace13cc971df9c19b05615fd2da. The binaries are unchanged from the successful 20-job build https://github.com/StannisMod/amnezia-client/actions/runs/40497706736; later commits only update CI and documentation. The release tag includes this publication workflow; its production sources are checked against the build source. BUILD_MANIFESTS.json and RELEASE_PROVENANCE.json retain checksums and source provenance; SHA256SUMS covers all release assets.
 
           Linux and Android independent acceptance passed complete second attempts, including 100 reconnects. Their first attempts had traffic timeouts whose causes remain unresolved. Physical network handover/sleep-wake, complete GUI/unaffected-protocol regressions and signed iOS runtime remain unverified. The feature is disabled by default and remains experimental. See docs/sing-box-routing/STATUS.md for evidence and boundaries.
           '''
@@ -160,7 +160,7 @@ jobs:
             echo 'Release already exists; refusing to replace published assets.' >&2
             exit 1
           fi
-          gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --target "$SOURCE_SHA" --title 'AmneziaVPN 5.1.0.0 — experimental domain routing 1' --prerelease --draft --notes-file routing-release-notes.md routing-release-dist/*
+          gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title 'AmneziaVPN 5.1.0.0 — experimental domain routing 1' --prerelease --draft --notes-file routing-release-notes.md routing-release-dist/*
       - name: Verify uploaded assets and publish
         run: |
           python3 - <<'PY'
@@ -177,3 +177,10 @@ jobs:
               assert asset['digest'] == 'sha256:' + hashlib.sha256(path.read_bytes()).hexdigest()
           PY
           gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: routing-release-ready
+          path: routing-release-dist/
+          if-no-files-found: warn
+          retention-days: 7
