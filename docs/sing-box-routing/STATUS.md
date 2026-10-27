@@ -1,5 +1,42 @@
 # Implementation checkpoint — automated validation
 
+## Continuation — 2026-10-27
+
+Production source `d64d8af796602ace13cc971df9c19b05615fd2da` fixes the review's
+AWG 3.1 persistent-keepalive regression. Desktop, Android and iOS preserve
+range strings such as `25-35`; the shared core validates using the pinned AWG
+parser and accepts older numeric JSON. Regression tests cover JSON/UAPI
+round trips, actual device range retention, desktop profiles and mobile preflight.
+All local Go packages passed with `-race`; module verification also passed.
+
+The [full platform matrix 40497706736](https://github.com/StannisMod/amnezia-client/actions/runs/40497706736)
+passed all 20 jobs, including the installed Linux/Windows packages, all four
+Android ABIs, unsigned iOS, three race-test hosts and eight cross-compile lanes.
+[Windows native acceptance](https://github.com/StannisMod/amnezia-client/actions/runs/40497706686)
+and [Linux performance comparison](https://github.com/StannisMod/amnezia-client/actions/runs/40497706626)
+also passed.
+
+The first independent Linux capture run timed out during reconnect stress;
+the first Android emulator run passed 100 reconnects but timed out on the
+subsequent legacy AWG transition. Both original attempts remain **FAIL**.
+Without production changes, [Linux attempt 2](https://github.com/StannisMod/amnezia-client/actions/runs/40497706716/attempts/2)
+and [Android attempt 2](https://github.com/StannisMod/amnezia-client/actions/runs/40497706698/attempts/2)
+passed their complete suites. The timeout causes are unresolved; these passing
+repeats do not establish that the intermittent failures are fixed.
+
+The independent installed-Linux diagnostic was still pinned to historical
+package run `39966881951`. Its source-equality guard correctly rejected the
+new production source before acceptance ran. CI commit `0fddbfa` replaces the
+pin with selection of a successful package with identical production sources,
+retaining manifest-source, SHA256 and source-diff checks without substituting
+the packaged helper. The independent repeat
+[40505160583](https://github.com/StannisMod/amnezia-client/actions/runs/40505160583)
+**passed** with the current package and matching production sources.
+
+The feature remains opt-in and experimental; the physical-device, signed iOS
+and other acceptance boundaries recorded below remain in force. PR #1 is ready
+for review; it has not been merged or released.
+
 ## Continuation — 2026-10-23
 
 Actions were re-enabled by the repository maintainer. The current production
