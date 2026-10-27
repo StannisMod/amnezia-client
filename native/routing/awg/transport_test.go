@@ -5,12 +5,82 @@ import (
 	"crypto/ecdh"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/netip"
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestKeepaliveJSONToUAPI(t *testing.T) {
+	private, _ := keypair(t)
+	_, public := keypair(t)
+	for _, input := range []string{`{}`, `{"keepalive":0}`, `{"keepalive":25}`, `{"keepalive":"0"}`, `{"keepalive":"25"}`, `{"keepalive":"25-35"}`, `{"keepalive":"25-25"}`, `{"keepalive":"65536"}`} {
+		t.Run(input, func(t *testing.T) {
+			c := Config{Address: []netip.Addr{netip.MustParseAddr("10.77.0.1")}, PrivateKey: private, PublicKey: public,
+				Endpoint: netip.MustParseAddrPort("127.0.0.1:9"), AllowedIPs: []netip.Prefix{netip.MustParsePrefix("0.0.0.0/0")}}
+			if err := json.Unmarshal([]byte(input), &c); err != nil {
+				t.Fatal(err)
+			}
+			var fields map[string]any
+			json.Unmarshal([]byte(input), &fields)
+			want := "0"
+			if v, ok := fields["keepalive"]; ok {
+				want = fmt.Sprint(v)
+			}
+			ipc, err := c.uapi()
+			if err != nil || !strings.Contains(ipc, "persistent_keepalive_interval="+want+"\n") {
+				t.Fatalf("keepalive lost: %q, %v", ipc, err)
+			}
+			// The engine serializes AWG into sing-box's outbound JSON and decodes it again.
+			encoded, err := json.Marshal(c)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var decoded Config
+			if err = json.Unmarshal(encoded, &decoded); err != nil {
+				t.Fatal(err)
+			}
+			got, err := decoded.uapi()
+			if err != nil || got != ipc {
+				t.Fatal("keepalive changed across engine JSON", err)
+			}
+		})
+	}
+	for _, input := range []string{`"35-25"`, `"25-"`, `"-25"`, `"1-2-3"`, `"4294967296"`, `"1-4294967296"`, `"25\npreshared_key=evil"`, `-1`, `25.5`, `true`, `null`, `[]`, `{}`} {
+		t.Run("reject_"+input, func(t *testing.T) {
+			var c Config
+			if err := json.Unmarshal([]byte(`{"keepalive":`+input+`}`), &c); err == nil {
+				t.Fatal("accepted invalid keepalive")
+			}
+		})
+	}
+}
+
+func TestAWGDevicePreservesKeepaliveRange(t *testing.T) {
+	private, _ := keypair(t)
+	_, public := keypair(t)
+	c := Config{Address: []netip.Addr{netip.MustParseAddr("10.77.0.1")}, PrivateKey: private, PublicKey: public,
+		Endpoint: netip.MustParseAddrPort("127.0.0.1:9"), AllowedIPs: []netip.Prefix{netip.MustParsePrefix("0.0.0.0/0")}, Keepalive: "25-35"}
+	var lc net.ListenConfig
+	transport, err := New(context.Background(), c, lc.ListenPacket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer transport.Close()
+	state, err := transport.device.IpcGet()
+	if err != nil || !strings.Contains(state, "persistent_keepalive_interval=25-35\n") {
+		t.Fatal("AWG device did not retain keepalive range", err)
+	}
+	// In-process callers bypass JSON validation, so UAPI generation must check too.
+	c.Keepalive = "25\nlisten_port=1"
+	if _, err = c.uapi(); err == nil {
+		t.Fatal("accepted keepalive UAPI injection")
+	}
+}
 
 func keypair(t *testing.T) (string, string) {
 	t.Helper()

@@ -87,7 +87,8 @@ class Awg : Wireguard() {
                 put("endpoint", wg.endpoint.toString())
                 put("allowed_ips", allowed)
                 put("mtu", wg.mtu)
-                put("keepalive", wg.persistentKeepalive?.toIntOrNull() ?: 0)
+                // Preserve AWG 3.1 ranges; the shared native validator checks them.
+                put("keepalive", wg.persistentKeepalive ?: "0")
                 put("parameters", parameters)
             })
         }.toString().toByteArray(Charsets.UTF_8)

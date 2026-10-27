@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -30,6 +31,7 @@ func testProfile(t *testing.T) map[string]any {
 
 func TestNativeAWGProfilePreservesParametersAndDomainRules(t *testing.T) {
 	profile := testProfile(t)
+	profile["awg_config_data"].(map[string]any)["persistent_keep_alive"] = "25-35"
 	raw, _ := json.Marshal(profile)
 	config, err := ProfileSession(raw)
 	if err != nil {
@@ -47,6 +49,32 @@ func TestNativeAWGProfilePreservesParametersAndDomainRules(t *testing.T) {
 	}
 	if config.Rules.Rules[0].Value != "*.ru" {
 		t.Fatal("domain identity was lost")
+	}
+	if string(config.AWG.Keepalive) != "25-35" || !strings.Contains(string(compiled), `"keepalive":"25-35"`) {
+		t.Fatal("AWG 3.1 keepalive range was lost")
+	}
+}
+
+func TestDesktopKeepaliveCompatibility(t *testing.T) {
+	for _, value := range []any{"25", "0", "25-35", "25-25", 25} {
+		profile := testProfile(t)
+		profile["awg_config_data"].(map[string]any)["persistent_keep_alive"] = value
+		raw, _ := json.Marshal(profile)
+		config, err := ProfileSession(raw)
+		if err != nil {
+			t.Fatal(value, err)
+		}
+		if config.AWG.Keepalive.String() != fmt.Sprint(value) {
+			t.Fatal("keepalive changed", value)
+		}
+	}
+	for _, value := range []string{"35-25", "25-", "1-2-3", "4294967296", "25\nlisten_port=1"} {
+		profile := testProfile(t)
+		profile["awg_config_data"].(map[string]any)["persistent_keep_alive"] = value
+		raw, _ := json.Marshal(profile)
+		if _, err := ProfileSession(raw); err == nil {
+			t.Fatal("accepted invalid keepalive", value)
+		}
 	}
 }
 

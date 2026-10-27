@@ -314,3 +314,22 @@ func TestValidationDoesNotCreateCaptureOrCache(t *testing.T) {
 		t.Fatal("preflight accepted unsupported rule schema")
 	}
 }
+
+func TestMobileKeepaliveValidation(t *testing.T) {
+	for _, value := range []any{"25-35", "25", "0", 25, "35-25", "25\nlisten_port=1", "4294967296"} {
+		var config map[string]any
+		if err := json.Unmarshal(sampleConfig(t), &config); err != nil {
+			t.Fatal(err)
+		}
+		config["awg"].(map[string]any)["keepalive"] = value
+		raw, err := json.Marshal(config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = Validate(raw)
+		valid := value == "25-35" || value == "25" || value == "0" || value == 25
+		if (err == nil) != valid {
+			t.Fatalf("keepalive %v: %v", value, err)
+		}
+	}
+}

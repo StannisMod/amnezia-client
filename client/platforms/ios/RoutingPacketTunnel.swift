@@ -154,8 +154,8 @@ final class RoutingPacketTunnel {
                                   "endpoint": endpoint, "allowed_ips": config.allowedIPs, "parameters": parameters, "mtu": 1280]
         if let key = config.presharedKey, !key.isEmpty { awg["pre_shared_key"] = key }
         if let keepalive = config.persistentKeepAlive {
-            guard let seconds = UInt16(keepalive) else { throw RoutingError.invalidConfiguration }
-            awg["keepalive"] = seconds
+            // Preserve AWG 3.1 ranges for validation by the shared native core.
+            awg["keepalive"] = keepalive
         }
         let support = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
         try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])

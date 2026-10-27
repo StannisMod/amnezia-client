@@ -132,11 +132,11 @@ func ProfileSession(raw []byte) (engine.SessionConfig, error) {
 		config.AWG.MTU = n
 	}
 	if value := text(wg["persistent_keep_alive"]); value != "" {
-		n, err := strconv.ParseUint(value, 10, 16)
+		keepalive, err := awg.ParseKeepalive(value)
 		if err != nil {
 			return config, errors.New("invalid AWG keepalive")
 		}
-		config.AWG.Keepalive = uint16(n)
+		config.AWG.Keepalive = keepalive
 	}
 	for _, key := range strings.Fields("Jc Jmin Jmax S1 S2 S3 S4 H1 H2 H3 H4 I1 I2 I3 I4 I5") {
 		if value := text(wg[key]); value != "" {

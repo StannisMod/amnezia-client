@@ -45,6 +45,9 @@ Versions are locked in `go.mod`/`go.sum`. Primary source commits:
   order, legacy site-list conversion and sing-box route-rule compilation.
 - `awg`: a dedicated `amneziawg` outbound using the unmodified AWG v3 device
   and its in-memory TCP/UDP stack. It requires a native underlay socket factory.
+  The `keepalive` session field preserves AWG's string syntax (`"25"`, `"25-35"`,
+  or `"0"` to disable); older numeric JSON values are also accepted. Validation
+  uses the pinned AWG range parser before the value reaches UAPI.
 - `engine`: shared registries, a protected DIRECT outbound, and a session
   compiler combining capture, managed DNS/FakeIP, rules and AWG. A native host
   still has to supply its platform interface and implement TUN/route ownership.

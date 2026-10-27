@@ -28,7 +28,7 @@ type Config struct {
 	// Endpoint is resolved through the host's underlay bootstrap before start.
 	Endpoint   netip.AddrPort    `json:"endpoint"`
 	AllowedIPs []netip.Prefix    `json:"allowed_ips"`
-	Keepalive  uint16            `json:"keepalive,omitempty"`
+	Keepalive  Keepalive         `json:"keepalive,omitempty"`
 	ListenPort uint16            `json:"listen_port,omitempty"`
 	Parameters map[string]string `json:"parameters,omitempty"`
 }
@@ -89,7 +89,11 @@ func (c Config) uapi() (string, error) {
 		}
 		fmt.Fprintf(&b, "preshared_key=%s\n", psk)
 	}
-	fmt.Fprintf(&b, "endpoint=%s\npersistent_keepalive_interval=%d\nreplace_allowed_ips=true\n", c.Endpoint, c.Keepalive)
+	keepalive, e := ParseKeepalive(c.Keepalive.String())
+	if e != nil {
+		return "", e
+	}
+	fmt.Fprintf(&b, "endpoint=%s\npersistent_keepalive_interval=%s\nreplace_allowed_ips=true\n", c.Endpoint, keepalive)
 	for _, p := range c.AllowedIPs {
 		if !p.IsValid() {
 			return "", errors.New("invalid allowed IP")
