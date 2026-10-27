@@ -1,0 +1,179 @@
+name: Publish experimental routing release
+
+on:
+  push:
+    branches: [feature/sing-box-routing]
+    paths: [.github/workflows/routing-release.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: routing-release-v5.1.0.0-sing-box-routing.1
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.repository == 'StannisMod/amnezia-client' && github.ref == 'refs/heads/feature/sing-box-routing'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    permissions:
+      actions: read
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SOURCE_SHA: d64d8af796602ace13cc971df9c19b05615fd2da
+      BUILD_RUN: '40497706736'
+      RELEASE_TAG: v5.1.0.0-sing-box-routing.1
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify tested source and prepare all platform assets
+        run: |
+          git diff --exit-code "$SOURCE_SHA" HEAD -- client service native/routing deploy cmake recipes conanfile.py CMakeLists.txt
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, plistlib, shutil, stat, tempfile, urllib.error, urllib.request, zipfile
+          repo = os.environ['GITHUB_REPOSITORY']
+          source = os.environ['SOURCE_SHA']
+          run = os.environ['BUILD_RUN']
+          prefix = 'AmneziaVPN_5.1.0.0-routing.1'
+          base = f'https://api.github.com/repos/{repo}/'
+          def request(path):
+              return urllib.request.Request(base + path, headers={'Authorization': 'Bearer ' + os.environ['GH_TOKEN'], 'Accept': 'application/vnd.github+json'})
+          def api(path):
+              with urllib.request.urlopen(request(path), timeout=60) as stream:
+                  return json.load(stream)
+          build = api(f'actions/runs/{run}')
+          assert build['head_sha'] == source and build['conclusion'] == 'success'
+          assert build['head_repository']['full_name'] == repo
+          jobs = api(f'actions/runs/{run}/jobs?per_page=100')['jobs']
+          assert len(jobs) == 20 and all(j['conclusion'] == 'success' for j in jobs)
+          artifacts = api(f'actions/runs/{run}/artifacts?per_page=100')['artifacts']
+          targets = {'routing-client-linux-baseline': 'linux', 'routing-client-windows-baseline': 'windows',
+                     'routing-client-ios-unsigned-baseline': 'ios'}
+          for abi in ('arm64-v8a', 'armeabi-v7a', 'x86', 'x86_64'):
+              targets[f'routing-client-android-{abi}-baseline'] = 'android'
+          dist = pathlib.Path('routing-release-dist'); dist.mkdir()
+          manifests = {}
+          provenance = {'source_sha': source, 'build_run': int(run), 'artifacts': [], 'assets': {}}
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, req, fp, code, msg, headers, newurl):
+                  return None
+          for name, platform in targets.items():
+              matches = [a for a in artifacts if a['name'] == name and not a['expired']]
+              assert len(matches) == 1, name
+              artifact = matches[0]
+              # Do not forward the repository token to the signed blob URL.
+              opener = urllib.request.build_opener(NoRedirect)
+              try:
+                  response = opener.open(request(f"actions/artifacts/{artifact['id']}/zip"), timeout=60)
+              except urllib.error.HTTPError as error:
+                  if error.code != 302:
+                      raise
+                  location = error.headers['Location']
+                  assert location.startswith('https://')
+                  response = urllib.request.urlopen(location, timeout=120)
+              with tempfile.TemporaryFile() as archive:
+                  digest = hashlib.sha256()
+                  with response:
+                      while block := response.read(1024 * 1024):
+                          digest.update(block); archive.write(block)
+                  assert artifact['digest'] == 'sha256:' + digest.hexdigest(), 'artifact digest mismatch: ' + name
+                  archive.seek(0)
+                  with zipfile.ZipFile(archive) as z:
+                      manifest = json.loads(z.read('routing-build-manifest.json'))
+                      assert manifest['source_sha'] == source and manifest['client_baseline_compile'] == 'PASS'
+                      assert manifest['platform'] == platform
+                      manifests[name] = manifest
+                      if platform == 'ios':
+                          root = 'deploy/build/client/Release-iphoneos/'
+                          files = [n for n in z.namelist() if n.startswith(root) and not n.endswith('/')]
+                          apps = {n[len(root):].split('/')[0] for n in files}
+                          assert apps == {'AmneziaVPN.app'}
+                          info = plistlib.loads(z.read(root + 'AmneziaVPN.app/Info.plist'))
+                          assert root + 'AmneziaVPN.app/' + info['CFBundleExecutable'] in files
+                          assert any('.appex/' in n and n.endswith('/routing-licenses/inventory.json') for n in files)
+                          assert manifest['signing'] == 'BLOCKED'
+                          output = dist / (prefix + '_ios_arm64_UNSIGNED.ipa')
+                          with zipfile.ZipFile(output, 'w', compression=zipfile.ZIP_DEFLATED) as ipa:
+                              for n in files:
+                                  relative = n[len(root):]
+                                  assert '..' not in pathlib.PurePosixPath(relative).parts
+                                  data = z.read(n)
+                                  # Artifact ZIPs flatten executable permissions. Restore Mach-O modes.
+                                  executable = data[:4] in (b'\xcf\xfa\xed\xfe', b'\xce\xfa\xed\xfe', b'\xfe\xed\xfa\xcf', b'\xfe\xed\xfa\xce', b'\xca\xfe\xba\xbe', b'\xbe\xba\xfe\xca')
+                                  entry = zipfile.ZipInfo('Payload/' + relative)
+                                  entry.create_system = 3
+                                  entry.external_attr = (stat.S_IFREG | (0o755 if executable else 0o644)) << 16
+                                  entry.compress_type = zipfile.ZIP_DEFLATED
+                                  ipa.writestr(entry, data)
+                      else:
+                          rows = manifest['artifacts']
+                          if platform == 'android':
+                              rows = [r for r in rows if r['path'] == 'deploy/build/client/android-build/AmneziaVPN.apk']
+                              assert len(rows) == 1 and manifest['routing_core_linked_into_client']
+                              assert manifest['signing'] == 'debug'
+                          else:
+                              assert manifest['routing_core_packaged_with_service']
+                              suffixes = ('.run',) if platform == 'linux' else ('.msi', '.exe')
+                              rows = [r for r in rows if pathlib.PurePosixPath(r['path']).parent.as_posix() == 'deploy/build' and r['path'].endswith(suffixes)]
+                              assert len(rows) == (1 if platform == 'linux' else 2)
+                          for row in rows:
+                              data = z.read(row['path'])
+                              assert len(data) == row['bytes'] and hashlib.sha256(data).hexdigest() == row['sha256']
+                              abi = manifest['abi'] if platform == 'android' else 'x64'
+                              suffix = pathlib.PurePosixPath(row['path']).suffix
+                              output = dist / f'{prefix}_{platform}_{abi}{"_debug" if platform == "android" else ""}{suffix}'
+                              assert not output.exists()
+                              output.write_bytes(data)
+                              if platform == 'linux': output.chmod(0o755)
+                      provenance['artifacts'].append({'id': artifact['id'], 'name': name, 'digest': artifact['digest']})
+              print('Verified and packaged ' + name, flush=True)
+          assert len(list(dist.glob('*.apk'))) == 4 and len(list(dist.glob('*.ipa'))) == 1
+          assert len(list(dist.glob('*.run'))) == 1 and len(list(dist.glob('*.msi'))) == 1 and len(list(dist.glob('*.exe'))) == 1
+          (dist / 'SOURCE_COMMIT').write_text(source + '\n')
+          (dist / 'BUILD_MANIFESTS.json').write_text(json.dumps(manifests, indent=2) + '\n')
+          notes = '''Unofficial experimental AmneziaVPN 5.1.0.0 build with opt-in domain-aware AWG routing (exact domains, suffixes and CIDR), managed DNS/FakeIP, and the AWG 3.1 keepalive-range fix.
+
+          Assets: Linux x86-64 .run; Windows x86-64 .msi and .exe; Android debug-signed APKs for arm64-v8a, armeabi-v7a, x86 and x86_64; iOS arm64 UNSIGNED IPA.
+
+          iOS: the IPA is an unsigned build artifact, NOT directly installable. Both the application and Network Extension need your Apple signing identities, matching provisioning profiles and entitlements. Signed iOS runtime has not been tested.
+
+          Android: these APKs use a debug certificate, not the official Amnezia signing key. They cannot update an official installation in place. Export profiles before replacing an existing installation. Desktop packages are unsigned unofficial builds. Proprietary upstream service API secrets are not included.
+
+          Exact build source: d64d8af796602ace13cc971df9c19b05615fd2da. The binaries are unchanged from the successful 20-job build https://github.com/StannisMod/amnezia-client/actions/runs/40497706736; later commits only update CI and documentation. BUILD_MANIFESTS.json and RELEASE_PROVENANCE.json retain checksums and source provenance; SHA256SUMS covers all release assets.
+
+          Linux and Android independent acceptance passed complete second attempts, including 100 reconnects. Their first attempts had traffic timeouts whose causes remain unresolved. Physical network handover/sleep-wake, complete GUI/unaffected-protocol regressions and signed iOS runtime remain unverified. The feature is disabled by default and remains experimental. See docs/sing-box-routing/STATUS.md for evidence and boundaries.
+          '''
+          (dist / 'README.txt').write_text(notes)
+          for path in sorted(dist.iterdir()):
+              provenance['assets'][path.name] = hashlib.sha256(path.read_bytes()).hexdigest()
+          (dist / 'RELEASE_PROVENANCE.json').write_text(json.dumps(provenance, indent=2) + '\n')
+          (dist / 'SHA256SUMS').write_text(''.join(hashlib.sha256(p.read_bytes()).hexdigest() + '  ' + p.name + '\n' for p in sorted(dist.iterdir()) if p.name != 'SHA256SUMS'))
+          pathlib.Path('routing-release-notes.md').write_text(notes)
+          PY
+      - name: Create release draft and upload verified assets
+        run: |
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo 'Release already exists; refusing to replace published assets.' >&2
+            exit 1
+          fi
+          gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --target "$SOURCE_SHA" --title 'AmneziaVPN 5.1.0.0 — experimental domain routing 1' --prerelease --draft --notes-file routing-release-notes.md routing-release-dist/*
+      - name: Verify uploaded assets and publish
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, subprocess
+          local = pathlib.Path('routing-release-dist')
+          release = json.loads(subprocess.check_output(['gh', 'api', f"repos/{os.environ['GITHUB_REPOSITORY']}/releases", '--paginate']))
+          release = next(r for r in release if r['tag_name'] == os.environ['RELEASE_TAG'])
+          assert release['draft'] and release['prerelease']
+          assets = {a['name']: a for a in release['assets']}
+          assert set(assets) == {p.name for p in local.iterdir()}
+          for path in local.iterdir():
+              asset = assets[path.name]
+              assert asset['state'] == 'uploaded' and asset['size'] == path.stat().st_size
+              assert asset['digest'] == 'sha256:' + hashlib.sha256(path.read_bytes()).hexdigest()
+          PY
+          gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false
