@@ -16,7 +16,7 @@ concurrency:
 jobs:
   installed-service:
     runs-on: ubuntu-22.04
-    timeout-minutes: 25
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -29,20 +29,62 @@ jobs:
           arch: linux_gcc_64
           modules: qtremoteobjects
           dir: ${{ runner.temp }}
-      - name: Download the accepted current Linux package
+      - name: Select a Linux package with matching production sources
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PYSELECT'
+          import json, os, subprocess, time, urllib.request
+          repo = os.environ['GITHUB_REPOSITORY']
+          def api(path):
+              req = urllib.request.Request(f'https://api.github.com/repos/{repo}/{path}', headers={'Authorization': f"Bearer {os.environ['GH_TOKEN']}"})
+              with urllib.request.urlopen(req, timeout=30) as stream:
+                  return json.load(stream)
+          paths = ['client', 'service', 'native/routing', 'deploy', 'cmake', 'recipes', 'conanfile.py', 'CMakeLists.txt']
+          compatibility = {}
+          selected = None
+          deadline = time.monotonic() + 125 * 60
+          while time.monotonic() < deadline:
+              runs = api('actions/workflows/sing-box-routing-ci.yml/runs?branch=feature%2Fsing-box-routing&event=push&per_page=30')['workflow_runs']
+              for candidate in runs:
+                  jobs = api(f"actions/runs/{candidate['id']}/jobs?per_page=100")['jobs']
+                  if not any(j['name'] == 'client-linux' and j['conclusion'] == 'success' for j in jobs):
+                      continue
+                  sha = candidate['head_sha']
+                  if sha not in compatibility:
+                      subprocess.run(['git', 'fetch', '--no-tags', '--depth=1', 'origin', sha], check=True)
+                      code = subprocess.run(['git', 'diff', '--quiet', sha, 'HEAD', '--', *paths]).returncode
+                      assert code in (0, 1), 'Linux package source comparison failed'
+                      compatibility[sha] = code == 0
+                  if not compatibility[sha]:
+                      continue
+                  artifacts = api(f"actions/runs/{candidate['id']}/artifacts?per_page=100")['artifacts']
+                  if any(a['name'] == 'routing-client-linux-baseline' and not a['expired'] for a in artifacts):
+                      selected = candidate
+                      break
+              if selected:
+                  break
+              print('Waiting for a Linux package with identical production sources', flush=True)
+              time.sleep(15)
+          if not selected:
+              raise TimeoutError('Compatible Linux package did not finish within its build budget')
+          with open(os.environ['GITHUB_ENV'], 'a') as stream:
+              stream.write(f"PACKAGE_RUN={selected['id']}\nPACKAGE_SOURCE={selected['head_sha']}\n")
+          PYSELECT
+      - name: Download the matching Linux package
         uses: actions/download-artifact@v4
         with:
           name: routing-client-linux-baseline
-          run-id: 39966881951
+          run-id: ${{ env.PACKAGE_RUN }}
           github-token: ${{ github.token }}
           path: installed-fixture
       - name: Verify installer provenance and production source compatibility
         run: |
           python3 - <<'PYCODE'
-          import hashlib, json, subprocess
+          import hashlib, json, os, subprocess
           from pathlib import Path
           manifest = json.loads(Path('installed-fixture/routing-build-manifest.json').read_text())
-          expected = '5fd7a8e0ce7a91455a971e61b11688b281815216'
+          expected = os.environ['PACKAGE_SOURCE']
           assert manifest['source_sha'] == expected
           assert manifest['client_baseline_compile'] == 'PASS'
           assert manifest['routing_core_packaged_with_service']
@@ -55,7 +97,7 @@ jobs:
           subprocess.run(['git', 'fetch', '--no-tags', '--depth=1', 'origin', expected], check=True)
           subprocess.run(['git', 'diff', '--exit-code', expected, 'HEAD', '--', 'client', 'service', 'native/routing', 'deploy', 'cmake', 'recipes', 'conanfile.py', 'CMakeLists.txt'], check=True)
           Path('linux-resolver-diagnostics-provenance.json').write_text(json.dumps({
-              'package_run_id': 39966881951, 'package_source_sha': expected,
+              'package_run_id': int(os.environ['PACKAGE_RUN']), 'package_source_sha': expected,
               'package_sha256': digest, 'production_source_matches': True,
               'packaged_helper_replaced': False,
               'test_source_sha': subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
