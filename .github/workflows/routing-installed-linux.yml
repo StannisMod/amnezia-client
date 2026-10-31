@@ -1,0 +1,126 @@
+name: Installed Linux resolver diagnostics
+on:
+  push:
+    branches: [feature/sing-box-routing]
+    paths:
+      - .github/workflows/routing-installed-linux.yml
+      - native/routing/**
+      - scripts/routing/**
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: routing-installed-linux-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  installed-service:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: native/routing/go.mod
+          cache-dependency-path: native/routing/go.sum
+      - uses: jurplel/install-qt-action@v4.3.1
+        with:
+          version: '6.10.1'
+          arch: linux_gcc_64
+          modules: qtremoteobjects
+          dir: ${{ runner.temp }}
+      - name: Select a Linux package with matching production sources
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PYSELECT'
+          import json, os, subprocess, time, urllib.request
+          repo = os.environ['GITHUB_REPOSITORY']
+          def api(path):
+              req = urllib.request.Request(f'https://api.github.com/repos/{repo}/{path}', headers={'Authorization': f"Bearer {os.environ['GH_TOKEN']}"})
+              with urllib.request.urlopen(req, timeout=30) as stream:
+                  return json.load(stream)
+          paths = ['client', 'service', 'native/routing', 'deploy', 'cmake', 'recipes', 'conanfile.py', 'CMakeLists.txt']
+          compatibility = {}
+          selected = None
+          deadline = time.monotonic() + 125 * 60
+          while time.monotonic() < deadline:
+              runs = api('actions/workflows/sing-box-routing-ci.yml/runs?branch=feature%2Fsing-box-routing&event=push&per_page=30')['workflow_runs']
+              for candidate in runs:
+                  jobs = api(f"actions/runs/{candidate['id']}/jobs?per_page=100")['jobs']
+                  if not any(j['name'] == 'client-linux' and j['conclusion'] == 'success' for j in jobs):
+                      continue
+                  sha = candidate['head_sha']
+                  if sha not in compatibility:
+                      subprocess.run(['git', 'fetch', '--no-tags', '--depth=1', 'origin', sha], check=True)
+                      code = subprocess.run(['git', 'diff', '--quiet', sha, 'HEAD', '--', *paths]).returncode
+                      assert code in (0, 1), 'Linux package source comparison failed'
+                      compatibility[sha] = code == 0
+                  if not compatibility[sha]:
+                      continue
+                  artifacts = api(f"actions/runs/{candidate['id']}/artifacts?per_page=100")['artifacts']
+                  if any(a['name'] == 'routing-client-linux-baseline' and not a['expired'] for a in artifacts):
+                      selected = candidate
+                      break
+              if selected:
+                  break
+              print('Waiting for a Linux package with identical production sources', flush=True)
+              time.sleep(15)
+          if not selected:
+              raise TimeoutError('Compatible Linux package did not finish within its build budget')
+          with open(os.environ['GITHUB_ENV'], 'a') as stream:
+              stream.write(f"PACKAGE_RUN={selected['id']}\nPACKAGE_SOURCE={selected['head_sha']}\n")
+          PYSELECT
+      - name: Download the matching Linux package
+        uses: actions/download-artifact@v4
+        with:
+          name: routing-client-linux-baseline
+          run-id: ${{ env.PACKAGE_RUN }}
+          github-token: ${{ github.token }}
+          path: installed-fixture
+      - name: Verify installer provenance and production source compatibility
+        run: |
+          python3 - <<'PYCODE'
+          import hashlib, json, os, subprocess
+          from pathlib import Path
+          manifest = json.loads(Path('installed-fixture/routing-build-manifest.json').read_text())
+          expected = os.environ['PACKAGE_SOURCE']
+          assert manifest['source_sha'] == expected
+          assert manifest['client_baseline_compile'] == 'PASS'
+          assert manifest['routing_core_packaged_with_service']
+          packages = list(Path('installed-fixture/deploy/build').glob('AmneziaVPN_*_linux_x64.run'))
+          assert len(packages) == 1
+          package = packages[0]
+          digest = hashlib.sha256(package.read_bytes()).hexdigest()
+          row = next(row for row in manifest['artifacts'] if row['path'] == package.relative_to('installed-fixture').as_posix())
+          assert digest == row['sha256']
+          subprocess.run(['git', 'fetch', '--no-tags', '--depth=1', 'origin', expected], check=True)
+          subprocess.run(['git', 'diff', '--exit-code', expected, 'HEAD', '--', 'client', 'service', 'native/routing', 'deploy', 'cmake', 'recipes', 'conanfile.py', 'CMakeLists.txt'], check=True)
+          Path('linux-resolver-diagnostics-provenance.json').write_text(json.dumps({
+              'package_run_id': int(os.environ['PACKAGE_RUN']), 'package_source_sha': expected,
+              'package_sha256': digest, 'production_source_matches': True,
+              'packaged_helper_replaced': False,
+              'test_source_sha': subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          }, indent=2) + '\n')
+          PYCODE
+          cmake -S scripts/routing/service-probe -B routing-service-probe-build -DCMAKE_PREFIX_PATH="${{ runner.temp }}/Qt/6.10.1/gcc_64"
+          cmake --build routing-service-probe-build
+          cd native/routing
+          go build -mod=readonly -tags with_gvisor -o "$RUNNER_TEMP/installed-routing-peer" ./cmd/android-fixture
+      - name: Repeat full installed-service acceptance against the unchanged package
+        timeout-minutes: 12
+        run: |
+          set -euo pipefail
+          packages=(installed-fixture/deploy/build/AmneziaVPN_*_linux_x64.run)
+          chmod +x "${packages[0]}"
+          sudo modprobe tun
+          python3 -u scripts/routing/run_linux_service_container.py --package "${packages[0]}" --peer "$RUNNER_TEMP/installed-routing-peer" --qt-probe "$GITHUB_WORKSPACE/routing-service-probe-build/routing-service-probe" --report "$GITHUB_WORKSPACE/linux-resolver-diagnostics-100.json" 2>&1 | tee linux-resolver-acceptance.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: linux-installed-resolver-diagnostics
+          path: |
+            linux-resolver-diagnostics-*.json
+            linux-resolver-acceptance.log
+            linux-resolver-diagnostics-*.log
+          if-no-files-found: error

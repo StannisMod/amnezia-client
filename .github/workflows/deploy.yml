@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - '**'
+      - '!feature/sing-box-routing' # Four-platform baseline: sing-box-routing-ci.yml
 
 env:
   QT_MIRROR: https://mirrors.ocf.berkeley.edu/qt/ # https://download.qt.io/static/mirrorlist/

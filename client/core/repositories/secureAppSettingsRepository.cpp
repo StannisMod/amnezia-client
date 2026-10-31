@@ -1,4 +1,5 @@
 #include "secureAppSettingsRepository.h"
+#include "core/utils/domainRoutingConfig.h"
 
 #include <QJsonDocument>
 #include <QJsonArray>
@@ -200,6 +201,28 @@ void SecureAppSettingsRepository::removeAllVpnSites(RouteMode mode)
 bool SecureAppSettingsRepository::isSitesSplitTunnelingEnabled() const
 {
     return value("Conf/sitesSplitTunnelingEnabled", false).toBool();
+}
+
+bool SecureAppSettingsRepository::isSingBoxRoutingEnabled() const
+{
+    return value("Conf/singBoxRoutingEnabled", false).toBool();
+}
+
+void SecureAppSettingsRepository::setSingBoxRoutingEnabled(bool enabled)
+{
+    setValue("Conf/singBoxRoutingEnabled", enabled);
+}
+
+QJsonObject SecureAppSettingsRepository::domainRoutingConfig() const
+{
+    const auto saved = value("Conf/domainRoutingV1").toMap();
+    if (!saved.isEmpty()) return QJsonObject::fromVariantMap(saved);
+    return amnezia::routing::fromLegacySites(true, routeMode(), vpnSites(routeMode()));
+}
+
+void SecureAppSettingsRepository::setDomainRoutingConfig(const QJsonObject &config)
+{
+    setValue("Conf/domainRoutingV1", config.toVariantMap());
 }
 
 void SecureAppSettingsRepository::setSitesSplitTunnelingEnabled(bool enabled)

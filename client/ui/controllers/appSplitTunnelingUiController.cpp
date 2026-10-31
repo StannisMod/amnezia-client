@@ -53,13 +53,11 @@ void AppSplitTunnelingUiController::removeApp(const int index)
 void AppSplitTunnelingUiController::toggleSplitTunneling(bool enabled)
 {
     m_appSplitTunnelingController->toggleSplitTunneling(enabled);
-    emit isSplitTunnelingEnabledChanged();
 }
 
 void AppSplitTunnelingUiController::setRouteMode(int routeMode)
 {
     m_appSplitTunnelingController->setRouteMode(static_cast<amnezia::AppsRouteMode>(routeMode));
-    emit routeModeChanged();
 }
 
 int AppSplitTunnelingUiController::getRouteMode() const
@@ -75,5 +73,7 @@ bool AppSplitTunnelingUiController::isSplitTunnelingEnabled() const
 void AppSplitTunnelingUiController::updateModel()
 {
     m_appSplitTunnelingModel->updateModel(m_appSplitTunnelingController->getApps());
+    emit routeModeChanged();
+    emit isSplitTunnelingEnabledChanged();
 }
 

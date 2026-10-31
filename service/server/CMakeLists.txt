@@ -342,6 +342,36 @@ if(APPLE)
 endif()
 
 # install non-linked dependencies
+if(LINUX OR WIN32)
+    # This private service child is built from the same pinned routing module;
+    # no downloaded routing binary or second in-process Go runtime is used.
+    find_program(ROUTING_GO_EXECUTABLE go REQUIRED)
+    set(ROUTING_SOURCE_DIR "${CMAKE_SOURCE_DIR}/native/routing")
+    file(GLOB_RECURSE ROUTING_GO_SOURCES CONFIGURE_DEPENDS "${ROUTING_SOURCE_DIR}/*.go")
+    set(ROUTING_EXECUTABLE "${CMAKE_CURRENT_BINARY_DIR}/routing/amnezia-routing${CMAKE_EXECUTABLE_SUFFIX}")
+    add_custom_command(OUTPUT "${ROUTING_EXECUTABLE}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/routing"
+        COMMAND ${CMAKE_COMMAND} -E env GOTOOLCHAIN=auto
+            "${ROUTING_GO_EXECUTABLE}" build -mod=readonly -trimpath -buildvcs=false
+            -tags with_gvisor -o "${ROUTING_EXECUTABLE}" ./cmd/amnezia-routing
+        WORKING_DIRECTORY "${ROUTING_SOURCE_DIR}"
+        DEPENDS ${ROUTING_GO_SOURCES} "${ROUTING_SOURCE_DIR}/go.mod" "${ROUTING_SOURCE_DIR}/go.sum"
+        VERBATIM)
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    set(ROUTING_LICENSE_DIR "${CMAKE_CURRENT_BINARY_DIR}/routing-licenses")
+    add_custom_command(OUTPUT "${ROUTING_LICENSE_DIR}/inventory.json" "${ROUTING_LICENSE_DIR}/THIRD_PARTY_NOTICES.txt"
+        COMMAND "${Python3_EXECUTABLE}" "${ROUTING_SOURCE_DIR}/licenses/generate.py"
+            --go "${ROUTING_GO_EXECUTABLE}" --module "${ROUTING_SOURCE_DIR}" --output "${ROUTING_LICENSE_DIR}"
+        DEPENDS "${ROUTING_SOURCE_DIR}/licenses/generate.py" "${ROUTING_SOURCE_DIR}/go.mod" "${ROUTING_SOURCE_DIR}/go.sum"
+        VERBATIM)
+    add_custom_target(amnezia-routing-child DEPENDS "${ROUTING_EXECUTABLE}"
+        "${ROUTING_LICENSE_DIR}/inventory.json" "${ROUTING_LICENSE_DIR}/THIRD_PARTY_NOTICES.txt")
+    install(DIRECTORY "${ROUTING_LICENSE_DIR}/" DESTINATION "${CMAKE_INSTALL_BINDIR}/routing-licenses" COMPONENT AmneziaVPN)
+    add_dependencies(${PROJECT} amnezia-routing-child)
+    target_sources(${PROJECT} PRIVATE desktoproutingprocess.cpp desktoproutingprocess.h)
+    list(APPEND CONAN_EXECS "${ROUTING_EXECUTABLE}")
+endif()
+
 if(WIN32)
     find_package(awg-windows REQUIRED)
     list(APPEND CONAN_EXECS $<TARGET_FILE:amnezia::awg-windows>)

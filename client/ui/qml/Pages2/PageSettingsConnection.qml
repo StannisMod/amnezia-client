@@ -13,6 +13,7 @@ PageType {
     id: root
 
     property bool isAppSplitTinnelingEnabled: Qt.platform.os === "windows" || Qt.platform.os === "android"
+        || (Qt.platform.os === "linux" && IpSplitTunnelingController.singBoxRoutingEnabled)
 
     FlickableType {
         id: flickable

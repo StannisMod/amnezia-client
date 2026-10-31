@@ -1,0 +1,71 @@
+name: Linux routed versus legacy AWG performance
+on:
+  push:
+    branches: [feature/sing-box-routing]
+    paths:
+      - .github/workflows/routing-performance.yml
+      - scripts/routing/benchmark_linux.py
+      - native/routing/**
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  comparative-data-path:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install runtime dependencies of the baseline installer
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-x11-0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-render-util0 libxcb-xinerama0 libxcb-cursor0 libxcb-shape0 libxcb-xfixes0 libxcb-randr0 libgl1 libegl1 libdbus-1-3
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: native/routing/go.mod
+          cache-dependency-path: native/routing/go.sum
+      - uses: actions/download-artifact@v4
+        with:
+          name: routing-linux-verified-package
+          run-id: 39587126587
+          github-token: ${{ github.token }}
+          path: legacy-package
+      - name: Verify installed legacy baseline provenance and build current backend
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          manifest = json.loads(Path('legacy-package/routing-build-manifest.json').read_text())
+          assert manifest['source_sha'] == '45e7b353d8af5c850570b6663f8297b8c9c58f09'
+          PY
+          cd native/routing
+          go build -mod=readonly -tags with_gvisor -o "$RUNNER_TEMP/benchmark-routing" ./cmd/amnezia-routing
+          go build -mod=readonly -tags with_gvisor -o "$RUNNER_TEMP/benchmark-peer" ./cmd/android-fixture
+      - name: Compare actual installed AWG binary with current native TUN data path
+        timeout-minutes: 12
+        run: |
+          set -euo pipefail
+          packages=(legacy-package/deploy/build/AmneziaVPN_*_linux_x64.run)
+          chmod +x "${packages[0]}"
+          if ldd "${packages[0]}" | grep 'not found'; then
+            echo 'Baseline installer runtime is incomplete'
+            exit 1
+          fi
+          sudo timeout --signal=INT --kill-after=30s 180s env QT_QPA_PLATFORM=offscreen "${packages[0]}" --root /opt/AmneziaVPN --accept-licenses --default-answer --confirm-command install
+          sudo systemctl daemon-reload
+          sudo systemctl stop AmneziaVPN
+          mapfile -t legacy < <(find /opt/AmneziaVPN -type f -name amneziawg-go)
+          test "${#legacy[@]}" -eq 1
+          sudo timeout --signal=INT --kill-after=30s 600s python3 scripts/routing/benchmark_linux.py --source-sha "$GITHUB_SHA" --legacy "${legacy[0]}" --helper "$RUNNER_TEMP/benchmark-routing" --peer "$RUNNER_TEMP/benchmark-peer" --report "$GITHUB_WORKSPACE/linux-routing-performance.json"
+      - name: Remove installed benchmark package
+        if: always()
+        run: |
+          if [ -x /opt/AmneziaVPN/maintenancetool ]; then
+            sudo timeout --signal=INT --kill-after=30s 180s env QT_QPA_PLATFORM=offscreen /opt/AmneziaVPN/maintenancetool --default-answer --confirm-command purge
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: linux-routing-performance
+          path: linux-routing-performance.json
+          if-no-files-found: error
