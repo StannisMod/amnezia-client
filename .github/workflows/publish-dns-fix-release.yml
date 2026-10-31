@@ -1,0 +1,65 @@
+name: Publish verified Ubuntu DNS fix
+
+on:
+  push:
+    branches: [fix/dns-flush-systemd-race]
+    paths: [.github/workflows/publish-dns-fix-release.yml]
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: publish-dns-fix-release-1
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.repository == 'StannisMod/amnezia-client'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download the verified installer
+        uses: actions/download-artifact@v4
+        with:
+          name: AmneziaVPN-Ubuntu-dns-fix
+          run-id: 39212175929
+          github-token: ${{ github.token }}
+          path: release
+      - name: Verify and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        working-directory: release
+        run: |
+          set -euo pipefail
+          test "$(cat SOURCE_COMMIT)" = b541191a2b7e9989e21ebf8c2dd52e72389bb1be
+          printf '%s  %s\n' 8187adaaf62fdb44a4d18840d38f56fd86964d15c5d578d13d6ff22de6b2c64e AmneziaVPN_5.1.0.0_linux_x64.run | sha256sum --check
+          sha256sum AmneziaVPN_5.1.0.0_linux_x64.run > SHA256SUMS
+          cat > RELEASE_NOTES.md <<'NOTES'
+          Experimental Ubuntu x86-64 desktop build fixing the systemd-resolved DNS cache flush race.
+
+          Changes:
+          - Flush DNS caches without restarting systemd-resolved or nscd.
+          - Bound command execution and report startup failures, timeouts and unsuccessful exits.
+          - Include D-Bus method, interface index and error details in DNS configuration failures.
+
+          Validation: all nine isolated DNS cache regression scenarios passed on Ubuntu 24.04; the desktop app and Qt IFW installer built successfully using upstream's Ubuntu 22.04 toolchain for compatibility with Ubuntu 24.04.
+
+          Source commit: b541191a2b7e9989e21ebf8c2dd52e72389bb1be
+          Build: https://github.com/StannisMod/amnezia-client/actions/runs/39212175929
+          Related upstream issue: https://github.com/amnezia-vpn/amnezia-client/issues/2575
+
+          This is an unofficial prerelease based on upstream dev (5.1.0.0). Live VPN connectivity has not been tested here. The separate Kill Switch / blocked-uplink-DNS resolver busy-loop scenario is not claimed fixed. Proprietary service API settings from upstream's private CI secrets are not included in this fork build.
+
+          Installation: make the .run file executable and launch it. SHA256SUMS covers the installer; SOURCE_COMMIT identifies its exact source.
+          NOTES
+          if gh release view v5.1.0.0-dns-fix.1 >/dev/null 2>&1; then
+            echo 'Release already exists; leaving it unchanged.'
+          else
+            gh release create v5.1.0.0-dns-fix.1 \
+              --target "$GITHUB_SHA" \
+              --title 'AmneziaVPN 5.1.0.0 — Ubuntu DNS race fix 1' \
+              --prerelease --latest=false --notes-file RELEASE_NOTES.md \
+              AmneziaVPN_5.1.0.0_linux_x64.run SHA256SUMS SOURCE_COMMIT
+          fi
