@@ -11,7 +11,11 @@ permissions:
   contents: read
 jobs:
   namespace-capture:
-    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -32,6 +36,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: linux-native-capture-acceptance
+          name: linux-native-capture-acceptance-${{ matrix.os }}
           path: linux-native-acceptance.json
           if-no-files-found: error

@@ -41,11 +41,23 @@ func keys(t *testing.T) (string, string) {
 // maps that observer to loopback; VPN uses the real AWG stack at 10.77.0.2.
 func TestFakeIPSharedAddressEgress(t *testing.T) {
 	for _, policy := range []rules.Action{rules.VPN, rules.Direct} {
-		t.Run(string(policy), func(t *testing.T) { testFakeIPSharedAddressEgress(t, policy) })
+		t.Run(string(policy), func(t *testing.T) { testFakeIPSharedAddressEgress(t, policy, false, false) })
 	}
 }
 
-func testFakeIPSharedAddressEgress(t *testing.T, defaultPolicy rules.Action) {
+func TestFakeIPRealDNSSharedAddressEgress(t *testing.T) {
+	for _, policy := range []rules.Action{rules.VPN, rules.Direct} {
+		t.Run(string(policy), func(t *testing.T) { testFakeIPSharedAddressEgress(t, policy, true, false) })
+	}
+}
+
+func TestFakeIPRealDNSUnreachableIPv6(t *testing.T) {
+	for _, policy := range []rules.Action{rules.VPN, rules.Direct} {
+		t.Run(string(policy), func(t *testing.T) { testFakeIPSharedAddressEgress(t, policy, true, true) })
+	}
+}
+
+func testFakeIPSharedAddressEgress(t *testing.T, defaultPolicy rules.Action, realDNS, dualStack bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	aPriv, aPub := keys(t)
@@ -95,7 +107,7 @@ func testFakeIPSharedAddressEgress(t *testing.T, defaultPolicy rules.Action) {
 	}
 	go serve(physical, "DIRECT")
 	go serve(virtual, "TUNNEL")
-	route, e := (rules.Config{Version: 1, Default: defaultPolicy, Rules: []rules.Rule{{Kind: rules.Suffix, Value: "*.direct.test", Action: rules.Direct}, {Kind: rules.Domain, Value: "b.vpn.test", Action: rules.VPN}}}).Compile()
+	route, e := (rules.Config{Version: 1, Default: defaultPolicy, Rules: []rules.Rule{{Kind: rules.Suffix, Value: "*.ru", Action: rules.Direct}, {Kind: rules.Domain, Value: "b.vpn.test", Action: rules.VPN}}}).Compile()
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -104,12 +116,53 @@ func testFakeIPSharedAddressEgress(t *testing.T, defaultPolicy rules.Action) {
 	routeConfig["default_domain_resolver"] = "real"
 	config := map[string]any{
 		"dns": map[string]any{"servers": []any{
-			map[string]any{"type": "hosts", "tag": "real", "predefined": map[string]any{"a.direct.test": "10.77.0.2", "b.vpn.test": "10.77.0.2", "unlisted.test": "10.77.0.2"}},
+			map[string]any{"type": "hosts", "tag": "real", "predefined": map[string]any{"a.direct.ru": "10.77.0.2", "b.vpn.test": "10.77.0.2", "unlisted.test": "10.77.0.2"}},
 			map[string]any{"type": "fakeip", "tag": "fake", "inet4_range": "198.18.0.0/15", "inet6_range": "fc00::/18"},
-		}, "rules": []any{map[string]any{"inbound": []string{"test-capture"}, "query_type": []string{"A", "AAAA"}, "action": "route", "server": "fake"}}, "final": "real", "reverse_mapping": false},
+		}, "rules": []any{map[string]any{"inbound": []string{TUNTag}, "query_type": []string{"A", "AAAA"}, "action": "route", "server": "fake"}}, "final": "real", "reverse_mapping": false},
 		"outbounds": []any{map[string]any{"type": "direct", "tag": "direct"}, map[string]any{
 			"type": "amneziawg", "tag": "vpn", "address": []string{"10.77.0.1"}, "private_key": aPriv, "public_key": bPub, "endpoint": netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), bPort).String(), "listen_port": aPort, "allowed_ips": []string{"10.77.0.2/32"}, "parameters": params,
 		}}, "route": routeConfig,
+	}
+	if realDNS {
+		pc, err := net.ListenPacket("udp4", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		server := &dns.Server{PacketConn: pc, Handler: dns.HandlerFunc(func(w dns.ResponseWriter, q *dns.Msg) {
+			r := new(dns.Msg)
+			r.SetReply(q)
+			if q.Question[0].Qtype == dns.TypeA {
+				r.Answer = []dns.RR{&dns.A{Hdr: dns.RR_Header{Name: q.Question[0].Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 60}, A: net.ParseIP("10.77.0.2")}}
+			}
+			if dualStack && q.Question[0].Qtype == dns.TypeAAAA {
+				r.Answer = []dns.RR{&dns.AAAA{Hdr: dns.RR_Header{Name: q.Question[0].Name, Rrtype: dns.TypeAAAA, Class: dns.ClassINET, Ttl: 60}, AAAA: net.ParseIP("2001:db8::dead")}}
+			}
+			w.WriteMsg(r)
+		})}
+		ready := make(chan struct{})
+		server.NotifyStartedFunc = func() { close(ready) }
+		go server.ActivateAndServe()
+		<-ready
+		defer server.Shutdown()
+		addr := netip.MustParseAddrPort(pc.LocalAddr().String())
+		policy := rules.Config{Version: 1, Default: defaultPolicy, Rules: []rules.Rule{
+			{Kind: rules.CIDR, Value: "192.168.0.1", Action: rules.Direct},
+			{Kind: rules.CIDR, Value: "192.168.0.104", Action: rules.Direct},
+			{Kind: rules.Suffix, Value: "*.selectel.org", Action: rules.Direct},
+			{Kind: rules.Suffix, Value: "*.ru", Action: rules.Direct},
+		}}
+		if defaultPolicy == rules.Direct {
+			policy.Rules = append(policy.Rules, rules.Rule{Kind: rules.Domain, Value: "b.vpn.test", Action: rules.VPN})
+		}
+		compiled, err := (SessionConfig{Rules: policy, AWG: awg.Config{Address: []netip.Addr{netip.MustParseAddr("10.77.0.1")}, PrivateKey: aPriv, PublicKey: bPub, Endpoint: netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), bPort), ListenPort: aPort, AllowedIPs: []netip.Prefix{netip.MustParsePrefix("0.0.0.0/0")}, Parameters: params}, Resolver: addr, ResolverAction: rules.Direct}).Compile()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = json.Unmarshal(compiled, &config); err != nil {
+			t.Fatal(err)
+		}
+		// Route captured flows directly; OS capture is tested separately.
+		delete(config, "inbounds")
 	}
 	raw, e := json.Marshal(config)
 	if e != nil {
@@ -149,7 +202,7 @@ func testFakeIPSharedAddressEgress(t *testing.T, defaultPolicy rules.Action) {
 		defaultObserver = "DIRECT"
 		expectedDirect++
 	}
-	for _, v := range []struct{ domain, want string }{{"a.direct.test", "DIRECT"}, {"b.vpn.test", "TUNNEL"}, {"unlisted.test", defaultObserver}} {
+	for _, v := range []struct{ domain, want string }{{"a.direct.ru", "DIRECT"}, {"b.vpn.test", "TUNNEL"}, {"unlisted.test", defaultObserver}} {
 		query := new(dns.Msg)
 		query.SetQuestion(dns.Fqdn(v.domain), dns.TypeA)
 		response, e := dnsRouter.Exchange(ctx, query, adapter.DNSQueryOptions{Transport: fake})
@@ -166,7 +219,7 @@ func testFakeIPSharedAddressEgress(t *testing.T, defaultPolicy rules.Action) {
 		}
 		app, router := net.Pipe()
 		app.SetDeadline(time.Now().Add(8 * time.Second))
-		go instance.Router().RouteConnectionEx(ctx, router, adapter.InboundContext{Inbound: "test-capture", Network: "tcp", Source: M.ParseSocksaddr("127.0.0.1:12345"), Destination: M.Socksaddr{Addr: netip.MustParseAddr(ip), Port: port}}, nil)
+		go instance.Router().RouteConnectionEx(ctx, router, adapter.InboundContext{Inbound: TUNTag, Network: "tcp", Source: M.ParseSocksaddr("127.0.0.1:12345"), Destination: M.Socksaddr{Addr: netip.MustParseAddr(ip), Port: port}}, nil)
 		buf := make([]byte, len(v.want))
 		_, e = io.ReadFull(app, buf)
 		app.Close()
@@ -182,7 +235,7 @@ func testFakeIPSharedAddressEgress(t *testing.T, defaultPolicy rules.Action) {
 	for _, address := range []string{"198.19.255.1", "fc00:3fff::1"} {
 		app, capture := net.Pipe()
 		closed := make(chan error, 1)
-		instance.Router().RouteConnectionEx(ctx, capture, adapter.InboundContext{Inbound: "test-capture", Network: "tcp", Destination: M.Socksaddr{Addr: netip.MustParseAddr(address), Port: port}}, func(err error) { closed <- err })
+		instance.Router().RouteConnectionEx(ctx, capture, adapter.InboundContext{Inbound: TUNTag, Network: "tcp", Destination: M.Socksaddr{Addr: netip.MustParseAddr(address), Port: port}}, func(err error) { closed <- err })
 		select {
 		case err := <-closed:
 			if err == nil || !strings.Contains(err.Error(), "missing fakeip record") {
@@ -215,7 +268,7 @@ func testFakeIPSharedAddressEgress(t *testing.T, defaultPolicy rules.Action) {
 	udpApp.SetDeadline(time.Now().Add(2 * time.Second))
 	udpDestination := M.Socksaddr{Addr: vpnFakeIP, Port: port}
 	udpClosed := make(chan error, 1)
-	go instance.Router().RoutePacketConnectionEx(ctx, bufio.NewUnbindPacketConnWithAddr(udpCapture, udpDestination), adapter.InboundContext{Inbound: "test-capture", Network: "udp", Destination: udpDestination}, func(err error) { udpClosed <- err })
+	go instance.Router().RoutePacketConnectionEx(ctx, bufio.NewUnbindPacketConnWithAddr(udpCapture, udpDestination), adapter.InboundContext{Inbound: TUNTag, Network: "udp", Destination: udpDestination}, func(err error) { udpClosed <- err })
 	if _, e := udpApp.Write([]byte("UDP")); e != nil {
 		t.Fatal(e)
 	}
@@ -238,7 +291,7 @@ func testFakeIPSharedAddressEgress(t *testing.T, defaultPolicy rules.Action) {
 	app, router := net.Pipe()
 	defer app.Close()
 	app.SetDeadline(time.Now().Add(time.Second))
-	go instance.Router().RouteConnectionEx(failedCtx, router, adapter.InboundContext{Inbound: "test-capture", Network: "tcp", Destination: M.Socksaddr{Addr: vpnFakeIP, Port: port}}, nil)
+	go instance.Router().RouteConnectionEx(failedCtx, router, adapter.InboundContext{Inbound: TUNTag, Network: "tcp", Destination: M.Socksaddr{Addr: vpnFakeIP, Port: port}}, nil)
 	if n, _ := app.Read(make([]byte, 16)); n != 0 {
 		t.Fatal("unavailable VPN returned data")
 	}
