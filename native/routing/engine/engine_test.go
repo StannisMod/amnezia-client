@@ -41,23 +41,29 @@ func keys(t *testing.T) (string, string) {
 // maps that observer to loopback; VPN uses the real AWG stack at 10.77.0.2.
 func TestFakeIPSharedAddressEgress(t *testing.T) {
 	for _, policy := range []rules.Action{rules.VPN, rules.Direct} {
-		t.Run(string(policy), func(t *testing.T) { testFakeIPSharedAddressEgress(t, policy, false, false) })
+		t.Run(string(policy), func(t *testing.T) { testFakeIPSharedAddressEgress(t, policy, false, false, false) })
 	}
 }
 
 func TestFakeIPRealDNSSharedAddressEgress(t *testing.T) {
 	for _, policy := range []rules.Action{rules.VPN, rules.Direct} {
-		t.Run(string(policy), func(t *testing.T) { testFakeIPSharedAddressEgress(t, policy, true, false) })
+		t.Run(string(policy), func(t *testing.T) { testFakeIPSharedAddressEgress(t, policy, true, false, false) })
 	}
 }
 
 func TestFakeIPRealDNSUnreachableIPv6(t *testing.T) {
 	for _, policy := range []rules.Action{rules.VPN, rules.Direct} {
-		t.Run(string(policy), func(t *testing.T) { testFakeIPSharedAddressEgress(t, policy, true, true) })
+		t.Run(string(policy), func(t *testing.T) { testFakeIPSharedAddressEgress(t, policy, true, true, false) })
 	}
 }
 
-func testFakeIPSharedAddressEgress(t *testing.T, defaultPolicy rules.Action, realDNS, dualStack bool) {
+func TestFakeIPRealDNSOverAWG(t *testing.T) {
+	for _, policy := range []rules.Action{rules.VPN, rules.Direct} {
+		t.Run(string(policy), func(t *testing.T) { testFakeIPSharedAddressEgress(t, policy, true, true, true) })
+	}
+}
+
+func testFakeIPSharedAddressEgress(t *testing.T, defaultPolicy rules.Action, realDNS, dualStack, dnsOverVPN bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	aPriv, aPub := keys(t)
@@ -124,7 +130,15 @@ func testFakeIPSharedAddressEgress(t *testing.T, defaultPolicy rules.Action, rea
 		}}, "route": routeConfig,
 	}
 	if realDNS {
-		pc, err := net.ListenPacket("udp4", "127.0.0.1:0")
+		var pc net.PacketConn
+		var err error
+		dnsPath := rules.Direct
+		if dnsOverVPN {
+			pc, err = b.Net.ListenUDPAddrPort(netip.MustParseAddrPort("10.77.0.2:0"))
+			dnsPath = rules.VPN
+		} else {
+			pc, err = net.ListenPacket("udp4", "127.0.0.1:0")
+		}
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -154,7 +168,7 @@ func testFakeIPSharedAddressEgress(t *testing.T, defaultPolicy rules.Action, rea
 		if defaultPolicy == rules.Direct {
 			policy.Rules = append(policy.Rules, rules.Rule{Kind: rules.Domain, Value: "b.vpn.test", Action: rules.VPN})
 		}
-		compiled, err := (SessionConfig{Rules: policy, AWG: awg.Config{Address: []netip.Addr{netip.MustParseAddr("10.77.0.1")}, PrivateKey: aPriv, PublicKey: bPub, Endpoint: netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), bPort), ListenPort: aPort, AllowedIPs: []netip.Prefix{netip.MustParsePrefix("0.0.0.0/0")}, Parameters: params}, Resolver: addr, ResolverAction: rules.Direct}).Compile()
+		compiled, err := (SessionConfig{Rules: policy, AWG: awg.Config{Address: []netip.Addr{netip.MustParseAddr("10.77.0.1")}, PrivateKey: aPriv, PublicKey: bPub, Endpoint: netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), bPort), ListenPort: aPort, AllowedIPs: []netip.Prefix{netip.MustParsePrefix("0.0.0.0/0")}, Parameters: params}, Resolver: addr, ResolverAction: dnsPath}).Compile()
 		if err != nil {
 			t.Fatal(err)
 		}
