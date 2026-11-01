@@ -1,7 +1,7 @@
 name: Installed Linux resolver diagnostics
 on:
   push:
-    branches: [feature/sing-box-routing]
+    branches: [dev, feature/sing-box-routing]
     paths:
       - .github/workflows/routing-installed-linux.yml
       - native/routing/**
@@ -34,18 +34,28 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           python3 - <<'PYSELECT'
-          import json, os, subprocess, time, urllib.request
+          import json, os, subprocess, time, urllib.error, urllib.parse, urllib.request
           repo = os.environ['GITHUB_REPOSITORY']
+          branch = urllib.parse.quote(os.environ['GITHUB_REF_NAME'], safe='')
           def api(path):
               req = urllib.request.Request(f'https://api.github.com/repos/{repo}/{path}', headers={'Authorization': f"Bearer {os.environ['GH_TOKEN']}"})
-              with urllib.request.urlopen(req, timeout=30) as stream:
-                  return json.load(stream)
+              for attempt in range(4):
+                  try:
+                      with urllib.request.urlopen(req, timeout=30) as stream:
+                          return json.load(stream)
+                  except urllib.error.HTTPError as error:
+                      if error.code not in (429, 500, 502, 503, 504) or attempt == 3:
+                          raise
+                  except urllib.error.URLError:
+                      if attempt == 3:
+                          raise
+                  time.sleep(2 ** attempt)
           paths = ['client', 'service', 'native/routing', 'deploy', 'cmake', 'recipes', 'conanfile.py', 'CMakeLists.txt']
           compatibility = {}
           selected = None
           deadline = time.monotonic() + 125 * 60
           while time.monotonic() < deadline:
-              runs = api('actions/workflows/sing-box-routing-ci.yml/runs?branch=feature%2Fsing-box-routing&event=push&per_page=30')['workflow_runs']
+              runs = api(f'actions/workflows/sing-box-routing-ci.yml/runs?branch={branch}&event=push&per_page=30')['workflow_runs']
               for candidate in runs:
                   jobs = api(f"actions/runs/{candidate['id']}/jobs?per_page=100")['jobs']
                   if not any(j['name'] == 'client-linux' and j['conclusion'] == 'success' for j in jobs):

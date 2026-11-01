@@ -5,6 +5,7 @@ import argparse
 import json
 import shutil
 import subprocess
+import time
 
 
 def main():
@@ -33,7 +34,24 @@ configure<SettingsExtension> { compileSdk=36; minSdk=28; buildToolsVersion="36.0
 }
 ''')
     (work / "gradle.properties").write_text("android.useAndroidX=true\norg.gradle.jvmargs=-Xmx2g\n")
-    subprocess.run([str(android / "gradlew"), "-p", str(work), ":awg:compileDebugKotlin", "--no-daemon"], check=True)
+    command = [str(android / "gradlew"), "-p", str(work), ":awg:compileDebugKotlin", "--no-daemon"]
+    for attempt in range(3):
+        result = subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        print(result.stdout, end="", flush=True)
+        if result.returncode == 0:
+            break
+        # Retry dependency transport/resolution failures only; compiler failures
+        # must remain visible on their first attempt.
+        dependency_failure = any(marker in result.stdout for marker in (
+            "Could not resolve all artifacts", "Could not resolve all files",
+            "Could not GET", "Could not HEAD",
+        ))
+        if not dependency_failure or attempt == 2:
+            raise subprocess.CalledProcessError(result.returncode, command)
+        print("Retrying Gradle dependency resolution with refreshed metadata", flush=True)
+        if "--refresh-dependencies" not in command:
+            command.append("--refresh-dependencies")
+        time.sleep(5 * (attempt + 1))
 
 
 if __name__ == "__main__":

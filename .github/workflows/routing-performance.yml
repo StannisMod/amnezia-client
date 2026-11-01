@@ -1,7 +1,7 @@
 name: Linux routed versus legacy AWG performance
 on:
   push:
-    branches: [feature/sing-box-routing]
+    branches: [dev, feature/sing-box-routing]
     paths:
       - .github/workflows/routing-performance.yml
       - scripts/routing/benchmark_linux.py
