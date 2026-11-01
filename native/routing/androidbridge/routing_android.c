@@ -3,6 +3,7 @@
 #include <jni.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <string.h>
 #include <unistd.h>
 #include "_cgo_export.h"
 #include "routing_host.h"
@@ -119,5 +120,15 @@ JNIEXPORT jlongArray JNICALL Java_org_amnezia_awg_RoutingBackend_stats(JNIEnv *e
     jlong values[3] = {rx, tx, handshake};
     jlongArray result = (*env)->NewLongArray(env, 3);
     if (result) (*env)->SetLongArrayRegion(env, result, 0, 3, values);
+    return result;
+}
+
+JNIEXPORT jbyteArray JNICALL Java_org_amnezia_awg_RoutingBackend_diagnostics(JNIEnv *env, jobject self, jlong handle) {
+    char *json = RoutingDiagnostics(handle);
+    if (!json) return NULL;
+    jsize size = (jsize)strlen(json);
+    jbyteArray result = (*env)->NewByteArray(env, size);
+    if (result) (*env)->SetByteArrayRegion(env, result, 0, size, (jbyte *)json);
+    free(json);
     return result;
 }

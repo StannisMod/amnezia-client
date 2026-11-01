@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"net"
 	"net/netip"
 	"os"
@@ -19,6 +20,7 @@ import (
 	"github.com/StannisMod/amnezia-client/native/routing/awg"
 	"github.com/StannisMod/amnezia-client/native/routing/engine"
 	"github.com/StannisMod/amnezia-client/native/routing/rules"
+	"github.com/StannisMod/amnezia-client/native/routing/wireguard"
 	"github.com/miekg/dns"
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/option"
@@ -27,7 +29,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-func sampleConfig(t *testing.T) []byte {
+func sampleConfig(t *testing.T, transport ...string) []byte {
 	t.Helper()
 	a, e := ecdh.X25519().GenerateKey(rand.Reader)
 	if e != nil {
@@ -41,12 +43,30 @@ func sampleConfig(t *testing.T) []byte {
 	if e != nil {
 		t.Fatal(e)
 	}
+	if len(transport) > 0 && transport[0] == "wireguard" {
+		var session engine.SessionConfig
+		if err := json.Unmarshal(raw, &session); err != nil {
+			t.Fatal(err)
+		}
+		c := session.AWG
+		session.VPN = &engine.TransportConfig{Type: "wireguard", WireGuard: &wireguard.Config{Address: c.Address, PrivateKey: c.PrivateKey, PublicKey: c.PublicKey, Endpoint: c.Endpoint, AllowedIPs: c.AllowedIPs}}
+		session.AWG = awg.Config{}
+		raw, e = json.Marshal(session)
+		if e != nil {
+			t.Fatal(e)
+		}
+	}
 	return raw
 }
 
 // Use a datagram FD as a packet source, exercising NativeTun and its real
 // gVisor FD endpoint without claiming an Android VpnService/device test.
 func TestOwnedPacketFDManagedDNSAndCleanup(t *testing.T) {
+	for _, transport := range []string{"awg", "wireguard"} {
+		t.Run(transport, func(t *testing.T) { testOwnedPacketFDManagedDNSAndCleanup(t, transport) })
+	}
+}
+func testOwnedPacketFDManagedDNSAndCleanup(t *testing.T, transport string) {
 	pair, e := unix.Socketpair(unix.AF_UNIX, unix.SOCK_DGRAM, 0)
 	if e != nil {
 		t.Fatal(e)
@@ -76,7 +96,7 @@ func TestOwnedPacketFDManagedDNSAndCleanup(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	session, e := Start(ctx, platform, sampleConfig(t))
+	session, e := Start(ctx, platform, sampleConfig(t, transport))
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -179,6 +199,11 @@ func dnsPacket(t *testing.T) []byte {
 }
 
 func TestPublicPacketFlowManagedDNSAndCleanup(t *testing.T) {
+	for _, transport := range []string{"awg", "wireguard"} {
+		t.Run(transport, func(t *testing.T) { testPublicPacketFlowManagedDNSAndCleanup(t, transport) })
+	}
+}
+func testPublicPacketFlowManagedDNSAndCleanup(t *testing.T, transport string) {
 	replies := make(chan []byte, 4)
 	var writes, released atomic.Int32
 	flow, err := NewPacketFlow(1280, func(packet []byte) error {
@@ -199,7 +224,7 @@ func TestPublicPacketFlowManagedDNSAndCleanup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	session, err := Start(context.Background(), platform, sampleConfig(t))
+	session, err := Start(context.Background(), platform, sampleConfig(t, transport))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -242,6 +267,11 @@ func TestPublicPacketFlowManagedDNSAndCleanup(t *testing.T) {
 // FD ownership alone misses auxiliary descriptors allocated by the capture
 // endpoint. Reconnect in one process, as Android does, and count eventfds too.
 func TestCaptureReconnectDoesNotLeakEventFD(t *testing.T) {
+	for _, transport := range []string{"awg", "wireguard"} {
+		t.Run(transport, func(t *testing.T) { testCaptureReconnectDoesNotLeakEventFD(t, transport) })
+	}
+}
+func testCaptureReconnectDoesNotLeakEventFD(t *testing.T, transport string) {
 	eventfds := func() int {
 		rows, err := os.ReadDir("/proc/self/fd")
 		if err != nil {
@@ -269,7 +299,7 @@ func TestCaptureReconnectDoesNotLeakEventFD(t *testing.T) {
 			unix.Close(pair[0])
 			t.Fatal(err)
 		}
-		s, err := Start(context.Background(), p, sampleConfig(t))
+		s, err := Start(context.Background(), p, sampleConfig(t, transport))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -330,6 +360,73 @@ func TestMobileKeepaliveValidation(t *testing.T) {
 		valid := value == "25-35" || value == "25" || value == "0" || value == 25
 		if (err == nil) != valid {
 			t.Fatalf("keepalive %v: %v", value, err)
+		}
+	}
+}
+
+func TestTransportFailureReleasesCapture(t *testing.T) {
+	for _, transport := range []string{"awg", "wireguard"} {
+		for _, stage := range []string{"socket", "capture"} {
+			t.Run(transport+"/"+stage, func(t *testing.T) {
+				pair, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_DGRAM, 0)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer unix.Close(pair[1])
+				var released atomic.Int32
+				hooks := Hooks{Interfaces: func() ([]adapter.NetworkInterface, error) { return nil, nil }, Release: func() { released.Add(1) }, Protect: func(int) error {
+					if stage == "socket" {
+						return errors.New("controlled protection failure")
+					}
+					return nil
+				}}
+				if stage == "capture" {
+					hooks.Open = func(*tun.Options) (tun.Tun, error) { return nil, errors.New("controlled capture failure") }
+				}
+				platform, err := New(pair[0], hooks)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if session, err := Start(context.Background(), platform, sampleConfig(t, transport)); err == nil {
+					session.Close()
+					t.Fatal("controlled startup failure was ignored")
+				}
+				if _, err := unix.FcntlInt(uintptr(pair[0]), unix.F_GETFD, 0); err != unix.EBADF {
+					t.Fatal("failed startup leaked capture", err)
+				}
+				if released.Load() != 1 {
+					t.Fatal("host must be released exactly once", released.Load())
+				}
+			})
+		}
+	}
+}
+
+func TestTypedWireGuardSessionSchema(t *testing.T) {
+	raw := sampleConfig(t, "wireguard")
+	if err := Validate(raw); err != nil {
+		t.Fatal("valid WG envelope", err)
+	}
+	for _, mutate := range []func(map[string]any){
+		func(c map[string]any) { c["vpn"].(map[string]any)["type"] = "openvpn" },
+		func(c map[string]any) {
+			c["vpn"].(map[string]any)["wireguard"].(map[string]any)["parameters"] = map[string]any{"jc": "3"}
+		},
+		func(c map[string]any) { c["vpn"].(map[string]any)["wireguard"].(map[string]any)["keepalive"] = "25-35" },
+		func(c map[string]any) { c["vpn"].(map[string]any)["wireguard"].(map[string]any)["keepalive"] = 65536 },
+		func(c map[string]any) { c["vpn"].(map[string]any)["awg"] = map[string]any{} },
+	} {
+		var config map[string]any
+		if err := json.Unmarshal(raw, &config); err != nil {
+			t.Fatal(err)
+		}
+		mutate(config)
+		encoded, err := json.Marshal(config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if Validate(encoded) == nil {
+			t.Fatal("accepted an unsupported WG transport setting")
 		}
 	}
 }

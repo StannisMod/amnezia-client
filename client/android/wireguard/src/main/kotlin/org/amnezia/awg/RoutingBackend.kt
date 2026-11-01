@@ -14,6 +14,7 @@ object RoutingBackend {
     external fun start(tunFd: Int, config: ByteArray, host: RoutingHost): Long
     external fun stop(handle: Long)
     external fun stats(handle: Long): LongArray?
+    external fun diagnostics(handle: Long): ByteArray?
 }
 
 @Keep

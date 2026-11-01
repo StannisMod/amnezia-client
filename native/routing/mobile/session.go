@@ -8,31 +8,21 @@ import (
 	"io"
 	"sync"
 
-	"github.com/StannisMod/amnezia-client/native/routing/awg"
 	"github.com/StannisMod/amnezia-client/native/routing/engine"
-	box "github.com/sagernet/sing-box"
+	"github.com/StannisMod/amnezia-client/native/routing/tunnel"
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing/service"
 )
 
 type Session struct {
-	box      *box.Box
+	core     *engine.Runtime
 	platform *Platform
-	cancel   context.CancelFunc
 	once     sync.Once
+	closeErr error
 }
 
-func (s *Session) Stats() (awg.Stats, error) {
-	out, ok := s.box.Outbound().Outbound("vpn")
-	if !ok {
-		return awg.Stats{}, errors.New("AWG outbound unavailable")
-	}
-	transport, ok := out.(*awg.Outbound)
-	if !ok {
-		return awg.Stats{}, errors.New("invalid AWG outbound")
-	}
-	return transport.Stats()
-}
+func (s *Session) Stats() (tunnel.Stats, error)           { return s.core.Stats() }
+func (s *Session) Diagnostics() engine.DiagnosticSnapshot { return s.core.Diagnostics() }
 
 // Start consumes the platform and closes it on every failed-start path. No
 // fallback to the legacy backend is allowed once a routed session is requested.
@@ -50,31 +40,23 @@ func Start(ctx context.Context, p *Platform, raw []byte) (*Session, error) {
 	if err != nil {
 		return nil, err
 	}
-	ctx, cancel := context.WithCancel(ctx)
 	ctx = engine.Context(ctx, p.Underlay())
 	ctx = service.ContextWith[adapter.PlatformInterface](ctx, p)
-	instance, err := engine.NewWithCache(ctx, compiled, cachePath)
+	instance, err := engine.StartRuntime(ctx, compiled, cachePath)
 	if err != nil {
-		cancel()
-		return nil, errors.New("routing engine initialization failed")
-	}
-	if err = instance.Start(); err != nil {
-		cancel()
-		return nil, errors.New("routing engine startup failed")
+		return nil, err
 	}
 	ok = true
-	return &Session{box: instance, platform: p, cancel: cancel}, nil
+	return &Session{core: instance, platform: p}, nil
 }
 func (s *Session) Close() error {
-	var err error
 	s.once.Do(func() {
-		s.cancel()
-		err = s.box.Close()
-		if e := s.platform.Close(); err == nil {
-			err = e
+		s.closeErr = s.core.Close()
+		if err := s.platform.Close(); s.closeErr == nil {
+			s.closeErr = err
 		}
 	})
-	return err
+	return s.closeErr
 }
 
 // Validate checks the shared schema and routing compiler without opening a

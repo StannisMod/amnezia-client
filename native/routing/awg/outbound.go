@@ -22,14 +22,20 @@ const Type = "amneziawg"
 // not replace upstream WireGuard or change any other app protocol backend.
 func Register(r *outbound.Registry, listen ListenUnderlay) {
 	outbound.Register[Config](r, Type, func(ctx context.Context, _ adapter.Router, _ log.ContextLogger, tag string, c Config) (adapter.Outbound, error) {
-		if listen == nil {
-			return nil, errors.New("AWG requires a protected underlay")
-		}
-		if _, e := c.uapi(); e != nil {
-			return nil, e
-		}
-		return &Outbound{Adapter: outbound.NewAdapter(Type, tag, []string{N.NetworkTCP, N.NetworkUDP}, nil), ctx: ctx, config: c, listen: listen, dns: service.FromContext[adapter.DNSRouter](ctx)}, nil
+		return NewOutbound(ctx, tag, c, listen)
 	})
+}
+
+// NewOutbound reuses the flow transport for AWG and standard WireGuard. The
+// WireGuard adapter validates its stricter schema before calling this.
+func NewOutbound(ctx context.Context, tag string, c Config, listen ListenUnderlay) (*Outbound, error) {
+	if listen == nil {
+		return nil, errors.New("VPN requires a protected underlay")
+	}
+	if err := c.Validate(); err != nil {
+		return nil, err
+	}
+	return &Outbound{Adapter: outbound.NewAdapter(Type, tag, []string{N.NetworkTCP, N.NetworkUDP}, nil), ctx: ctx, config: c, listen: listen, dns: service.FromContext[adapter.DNSRouter](ctx)}, nil
 }
 
 type Outbound struct {

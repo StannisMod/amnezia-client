@@ -22,6 +22,7 @@ struct WGConfig: Decodable {
   var persistentKeepAlive: String?
   let splitTunnelType: Int
   let splitTunnelSites: [String]
+  let routingTransport: String?
   let routingConfig: String?
   let routingDNSPath: String?
 
@@ -50,6 +51,7 @@ struct WGConfig: Decodable {
     case persistentKeepAlive = "persistent_keep_alive"
     case splitTunnelType
     case splitTunnelSites
+    case routingTransport
     case routingConfig
     case routingDNSPath
   }

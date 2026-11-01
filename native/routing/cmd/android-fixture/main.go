@@ -38,6 +38,7 @@ import (
 )
 
 var bulkEnabled bool
+var transportKind string
 
 var sharedIP = "10.0.2.2" // Android emulator host alias; Windows uses its native local IP.
 const tcpPort = 18081
@@ -179,7 +180,11 @@ func (f *fixture) start() error {
 	}()
 	// Omit endpoint on the server: authenticate then learn the emulator's NAT
 	// source port. Production outbound endpoint pinning is left unchanged.
-	ipc := fmt.Sprintf("private_key=%s\nlisten_port=%d\njc=3\njmin=40\njmax=80\ns1=16\ns2=24\ns3=8\ns4=8\nh1=1001\nh2=1002\nh3=1003\nh4=1004\nreplace_peers=true\npublic_key=%s\nreplace_allowed_ips=true\nallowed_ip=10.77.0.1/32\nallowed_ip=fd77::1/128\n", hex.EncodeToString(f.server.Bytes()), f.listenPort, hex.EncodeToString(f.client.PublicKey().Bytes()))
+	extensions := ""
+	if transportKind != "wireguard" {
+		extensions = "jc=3\njmin=40\njmax=80\ns1=16\ns2=24\ns3=8\ns4=8\nh1=1001\nh2=1002\nh3=1003\nh4=1004\n"
+	}
+	ipc := fmt.Sprintf("private_key=%s\nlisten_port=%d\n%sreplace_peers=true\npublic_key=%s\nreplace_allowed_ips=true\nallowed_ip=10.77.0.1/32\nallowed_ip=fd77::1/128\n", hex.EncodeToString(f.server.Bytes()), f.listenPort, extensions, hex.EncodeToString(f.client.PublicKey().Bytes()))
 	var outer conn.Bind = conn.NewDefaultBind()
 	if f.bindIP != "" {
 		outer = &fixedFixtureBind{address: f.bindIP}
@@ -268,6 +273,7 @@ func (f *fixture) start() error {
 }
 
 func main() {
+	flag.StringVar(&transportKind, "transport", "awg", "disposable peer protocol: awg or wireguard")
 	flag.BoolVar(&bulkEnabled, "bulk", false, "enable bounded performance-test stream observers")
 	flag.StringVar(&sharedIP, "shared-ip", sharedIP, "native host address used by both controlled observers")
 	path := flag.String("config", "", "private output fixture JSON (never upload)")
@@ -277,6 +283,9 @@ func main() {
 	probeAWG := flag.String("probe-awg", "", "test-only private fixture profile: verify AWG before native capture")
 	bindIP := flag.String("bind-ip", "", "explicit native source address for a multihomed disposable peer")
 	flag.Parse()
+	if transportKind != "awg" && transportKind != "wireguard" {
+		panic("unsupported fixture protocol")
+	}
 	if *probeAWG != "" {
 		if err := probeUnderlayAWG(*probeAWG); err != nil {
 			fmt.Fprintln(os.Stderr, "fixture AWG underlay probe failed")
@@ -387,6 +396,15 @@ func main() {
 			"Jc": "3", "Jmin": "40", "Jmax": "80", "S1": "16", "S2": "24", "S3": "8", "S4": "8", "H1": "1001", "H2": "1002", "H3": "1003", "H4": "1004",
 		},
 	}
+	if transportKind == "wireguard" {
+		data := config["awg_config_data"].(map[string]any)
+		for _, key := range strings.Fields("Jc Jmin Jmax S1 S2 S3 S4 H1 H2 H3 H4") {
+			delete(data, key)
+		}
+		config["protocol"] = "wireguard"
+		config["wireguard_config_data"] = data
+		delete(config, "awg_config_data")
+	}
 	raw, err := json.Marshal(config)
 	if err != nil {
 		panic(err)
@@ -421,7 +439,11 @@ func probeUnderlayAWG(path string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	var listen net.ListenConfig
-	transport, err := awg.New(ctx, config.AWG, func(ctx context.Context, network, address string) (net.PacketConn, error) {
+	native := config.AWG
+	if config.VPN != nil && config.VPN.WireGuard != nil {
+		native = config.VPN.WireGuard.Native()
+	}
+	transport, err := awg.New(ctx, native, func(ctx context.Context, network, address string) (net.PacketConn, error) {
 		pc, err := listen.ListenPacket(ctx, network, address)
 		if err != nil {
 			return nil, err

@@ -15,8 +15,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/StannisMod/amnezia-client/native/routing/awg"
+	"github.com/StannisMod/amnezia-client/native/routing/engine"
 	"github.com/StannisMod/amnezia-client/native/routing/mobile"
+	"github.com/StannisMod/amnezia-client/native/routing/tunnel"
 	"github.com/sagernet/netlink"
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-tun"
@@ -300,10 +301,10 @@ func Start(ctx context.Context, raw []byte, manageDNS bool) (*Session, error) {
 	return s, nil
 }
 
-func (s *Session) Stats() (awg.Stats, error) {
+func (s *Session) Stats() (tunnel.Stats, error) {
 	if s.dns != nil {
 		if err := s.dns.Err(); err != nil {
-			return awg.Stats{}, err
+			return tunnel.Stats{}, err
 		}
 	}
 	return s.core.Stats()
@@ -360,3 +361,5 @@ func (s *Session) close(preserve bool) error {
 	})
 	return errors.Join(errs...)
 }
+
+func (s *Session) Diagnostics() engine.DiagnosticSnapshot { return s.core.Diagnostics() }

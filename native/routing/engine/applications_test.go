@@ -20,10 +20,10 @@ import (
 // semantics and ordering. Native tests independently verify kernel ownership.
 func TestApplicationScopeAndDomainPrecedence(t *testing.T) {
 	for _, mode := range []string{"include", "exclude"} {
-		c := SessionConfig{Resolver: netip.MustParseAddrPort("1.1.1.1:53"), ResolverAction: rules.VPN,
+		c := RoutingConfig{Resolver: netip.MustParseAddrPort("1.1.1.1:53"), ResolverAction: rules.VPN,
 			Rules:        rules.Config{Version: 1, Default: rules.VPN, Rules: []rules.Rule{{Kind: rules.Domain, Value: "direct.test", Action: rules.Direct}}},
 			Applications: &ApplicationScope{Mode: mode, Paths: []string{"/opt/selected.app"}}}
-		raw, err := c.Compile()
+		raw, err := c.compile(map[string]any{"type": "direct", "tag": "vpn"})
 		if err != nil {
 			t.Fatal(err)
 		}

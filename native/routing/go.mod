@@ -6,10 +6,17 @@ require (
 	github.com/amnezia-vpn/amneziawg-go/v3 v3.1.20260814
 	github.com/godbus/dbus/v5 v5.2.2
 	github.com/miekg/dns v1.1.72
+	github.com/sagernet/gvisor v0.0.0-20260727.0-sing-box-mod.1
+	github.com/sagernet/netlink v0.0.0-20260814022025-64455d367bbf
+	github.com/sagernet/nftables v0.3.0-mod.4
+	github.com/sagernet/quic-go v0.61.0-sing-box-mod.9
 	github.com/sagernet/sing v0.9.7-0.20260929150544-0ad23b637bd4
 	github.com/sagernet/sing-box v1.14.3
 	github.com/sagernet/sing-tun v0.9.7-0.20261009020158-bca4bf029237
 	golang.org/x/net v0.57.0
+	golang.org/x/sys v0.47.0
+	golang.zx2c4.com/wireguard v0.0.0-20231211153847-12269c276173
+	gvisor.dev/gvisor v0.0.0-20231202080848-1f7806d17489
 )
 
 require (
@@ -41,10 +48,6 @@ require (
 	github.com/quic-go/qpack v0.6.0 // indirect
 	github.com/sagernet/bbolt v0.0.0-20260915102804-500ee1e84832 // indirect
 	github.com/sagernet/fswatch v0.1.2 // indirect
-	github.com/sagernet/gvisor v0.0.0-20260727.0-sing-box-mod.1 // indirect
-	github.com/sagernet/netlink v0.0.0-20260814022025-64455d367bbf // indirect
-	github.com/sagernet/nftables v0.3.0-mod.4 // indirect
-	github.com/sagernet/quic-go v0.61.0-sing-box-mod.9 // indirect
 	github.com/sagernet/sing-mux v0.3.10-0.20260929204512-caf09fe32475 // indirect
 	github.com/sagernet/sing-quic v0.7.2-0.20261002084117-75c3ac4fa12b // indirect
 	github.com/sagernet/sing-snell v0.0.0-20260904135315-bc5a12ac736f // indirect
@@ -61,10 +64,8 @@ require (
 	golang.org/x/exp v0.0.0-20260410095643-746e56fc9e2f // indirect
 	golang.org/x/mod v0.37.0 // indirect
 	golang.org/x/sync v0.22.0 // indirect
-	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.40.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
 	golang.org/x/tools v0.47.0 // indirect
 	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2 // indirect
-	gvisor.dev/gvisor v0.0.0-20231202080848-1f7806d17489 // indirect
 )

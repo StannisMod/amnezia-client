@@ -117,6 +117,7 @@ def main():
     parser.add_argument("--fixture", type=Path, required=True)
     parser.add_argument("--peer", type=Path, required=True)
     parser.add_argument("--report", type=Path, required=True)
+    parser.add_argument("--transport", choices=("awg", "wireguard"), default="awg")
     parser.add_argument("--cycles", type=int, default=100)
     parser.add_argument("--quic-probe", type=Path, required=True)
     args = parser.parse_args()
@@ -129,7 +130,7 @@ def main():
     observer_owned = False
     observer = "198.51.100.2"
     child_buffer = b""
-    report = {"native_capture": "FAIL", "not_run": ["installed Qt service", "systemd-resolved integration", "installer", "OS kill switch", "physical Wi-Fi/Ethernet handover", "GUI network-change callback"]}
+    report = {"transport": args.transport, "native_capture": "FAIL", "not_run": ["installed Qt service", "systemd-resolved integration", "installer", "OS kill switch", "physical Wi-Fi/Ethernet handover", "GUI network-change callback"]}
     def ip(*parts):
         return run("ip", *parts, capture_output=True, text=True).stdout
     def ns_ip(*parts):
@@ -206,7 +207,7 @@ def main():
         before_routes = ns_ip("route", "show", "table", "all")
         report["native_routes_before"] = before_routes
         ca = args.fixture.with_suffix(".quic.der")
-        peer = subprocess.Popen([str(args.peer.resolve()), "--shared-ip", observer, "--bind-ip", observer, "--config", str(args.fixture), "--quic-ca", str(ca)], stdout=subprocess.PIPE, text=True)
+        peer = subprocess.Popen([str(args.peer.resolve()), "--transport", args.transport, "--shared-ip", observer, "--bind-ip", observer, "--config", str(args.fixture), "--quic-ca", str(ca)], stdout=subprocess.PIPE, text=True)
         assert select.select([peer.stdout], [], [], 10)[0] and peer.stdout.readline().startswith("READY")
         profile = json.loads(args.fixture.read_text())
         application({"direct": [observer]})
@@ -234,7 +235,7 @@ def main():
                 if len(packet) < offset + 8:
                     continue
                 source, destination, size = struct.unpack_from("!HHH", packet, offset)
-                if profile["awg_config_data"]["port"] not in (source, destination):
+                if profile[args.transport + "_config_data"]["port"] not in (source, destination):
                     continue
                 if len(report["fixture_udp_headers"]) < 60:
                     report["fixture_udp_headers"].append({"interface": address[0], "source": socket.inet_ntoa(packet[12:16]), "destination": socket.inet_ntoa(packet[16:20]), "source_port": source, "destination_port": destination, "udp_length": size})
@@ -360,7 +361,7 @@ def main():
         assert ns_ip("rule", "show") == before_rules
         restored_routes = ns_ip("route", "show", "table", "all")
         assert restored_routes == before_routes, "native route restoration differs:\n" + "".join(difflib.unified_diff(before_routes.splitlines(True), restored_routes.splitlines(True), fromfile="before", tofile="after"))
-        report.update(native_capture="PASS", scenarios=["FakeIP identity/shared real IP", "DIRECT and AWG TCP/UDP", "IPv6", "CNAME", "native policy route", "loopback IPv4/IPv6", "inverse mode", "persistent FakeIP", "application include/exclude with independent executables and domain precedence", "AWG loss fails closed", "helper crash fails closed and explicit recovery"], reconnect_cycles=args.cycles, os_state_restored=True)
+        report.update(native_capture="PASS", scenarios=["FakeIP identity/shared real IP", "DIRECT and VPN TCP/UDP", "IPv6", "CNAME", "native policy route", "loopback IPv4/IPv6", "inverse mode", "persistent FakeIP", "application include/exclude with independent executables and domain precedence", "VPN loss fails closed", "helper crash fails closed and explicit recovery"], reconnect_cycles=args.cycles, os_state_restored=True)
     finally:
         # This namespace contains only controlled fixture traffic. Record
         # interface counters and route decisions, never packet payloads/keys.

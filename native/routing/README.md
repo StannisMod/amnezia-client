@@ -1,6 +1,6 @@
 # Shared routing core — experimental source milestone
 
-The shared sing-box/AWG core has source integration in Android's existing
+The shared sing-box routing core has source integration in Android's existing
 VpnService/JNI payload, iOS's existing Network Extension, and the Linux/Windows
 privileged service. It remains an experimental opt-in feature.
 
@@ -15,13 +15,45 @@ IP-literal flows (including clients using their own DoH resolver) are sniffed
 for visible HTTP Host, TLS SNI and QUIC ClientHello before domain rules, with a
 300 ms sniff budget. This does not decrypt HTTPS. Existing FakeIP identities
 take precedence over sniffed names; application scope and DNS interception
-retain their existing priority. Hidden/missing names use the configured default
-route; ECH is not claimed to reveal the actual destination name.
+retain their existing priority. When no domain is available, IP rules and the
+configured default still apply. ECH may hide the original destination name.
 
 `engine.RoutingConfig` compiles common policy independently of the VPN adapter.
-The existing `SessionConfig` JSON contract and AWG host integrations are retained.
-Other VPN protocols still need their own validated adapters and native lifecycle
-integration; this change does not advertise support for them.
+`SessionConfig` selects a typed `vpn` adapter (`awg` or `wireguard`), with explicit
+TCP/UDP capabilities and validation before capture. Legacy top-level `awg` JSON
+remains readable; mixing legacy and explicit transport settings is rejected.
+Routing policy, managed DNS, sniffing, application scope and cache identity are
+shared. Other protocols still require adapters; raw sing-box outbounds are not
+accepted.
+
+`engine.Runtime` owns start/cancellation/close and transport-neutral statistics.
+`mobile.Session` owns native descriptor release, including failed starts. Linux
+and Windows retain their platform-specific route/DNS cleanup and crash recovery;
+the refactor does not substitute a second OS route manager. Android now shares
+the routed lifecycle in `Wireguard`, with `Awg` specializing profile parsing.
+iOS selects the same explicit adapter through its existing packet-flow owner.
+
+Standard WireGuard uses the existing AWG device in compatibility mode without
+extensions, as the legacy client already does. Its schema excludes AWG parameters
+and accepts a scalar keepalive in 0..65535. Obfuscated WG profiles must use the
+AWG adapter. `wireguard/interop_test.go` verifies IPv4/IPv6 TCP/UDP against an
+independent upstream wireguard-go peer pinned only for tests; no second VPN
+runtime or reference peer is bundled into the client.
+
+Diagnostics count Direct/VPN selections, managed-DNS/sniffed/unavailable domain
+identities and default decisions, plus the last matching configured rule and
+network type. They report routing choices, not successful delivery. Data stays
+in memory and contains no observed destination name/address. Desktop helper
+status includes `routing`; iOS runtime status and Android's
+`RoutingBackend.diagnostics(handle)` expose the same JSON. A user-facing
+connection inspector is not included.
+
+Validation includes the same shared-IP/FakeIP/real-DNS/sniffing and TCP/UDP cases
+for both adapters, native FD/packet-flow cleanup, controlled socket/capture
+startup failures and reconnect loops. Linux namespace CI covers AWG and WG on
+Ubuntu 22.04/24.04, including crash recovery and OS state restoration. Physical
+mobile devices and native platform packages still require their CI/runtime
+checks; local loopback tests do not establish those results.
 
 Use Go **1.27.1**, with `GOTOOLCHAIN=local` and `GOTELEMETRY=off`:
 
@@ -61,7 +93,7 @@ Versions are locked in `go.mod`/`go.sum`. Primary source commits:
   or `"0"` to disable); older numeric JSON values are also accepted. Validation
   uses the pinned AWG range parser before the value reaches UAPI.
 - `engine`: shared registries, a protected DIRECT outbound, and a session
-  compiler combining capture, managed DNS/FakeIP, rules and AWG. A native host
+  compiler combining capture, managed DNS/FakeIP, rules and typed VPN adapters. A native host
   still has to supply its platform interface and implement TUN/route ownership.
 
 The session compiler disables automatic OS route installation, because those

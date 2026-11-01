@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/StannisMod/amnezia-client/native/routing/tunnel"
 	"github.com/amnezia-vpn/amneziawg-go/v3/device"
 )
 
@@ -112,7 +113,18 @@ type Transport struct {
 	address6 netip.Addr
 }
 
-type Stats struct{ RXBytes, TXBytes, LastHandshake uint64 }
+type Stats = tunnel.Stats
+
+// Validate checks transport settings before the native host installs capture.
+func (c Config) Validate() error {
+	if _, err := c.uapi(); err != nil {
+		return err
+	}
+	if c.MTU != 0 && (c.MTU < 1280 || c.MTU > 65535) {
+		return errors.New("AWG MTU outside supported range")
+	}
+	return nil
+}
 
 // Stats returns only counters and a timestamp, never private UAPI material.
 func (t *Transport) Stats() (Stats, error) {
