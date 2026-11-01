@@ -1,0 +1,120 @@
+name: Ubuntu DNS fix
+
+on:
+  push:
+    branches: [fix/dns-flush-systemd-race]
+    paths-ignore:
+      - .github/workflows/dns-fix-ubuntu.yml
+      - .github/workflows/publish-dns-fix-release.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dns-regression-tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install test dependencies
+        run: sudo apt-get update && sudo apt-get install -y qt6-base-dev ninja-build
+      - name: Test DNS cache commands without touching system services
+        run: |
+          cmake -S tests/linux-dns-cache -B build-dns-tests -G Ninja
+          cmake --build build-dns-tests
+          sudo env AMNEZIA_REQUIRE_ROUTE_TESTS=1 ctest --test-dir build-dns-tests --output-on-failure
+
+  desktop-installer:
+    needs: dns-regression-tests
+    # Match upstream's Linux toolchain. The older glibc baseline supports
+    # Ubuntu 24.04 as well as 22.04.
+    runs-on: ubuntu-22.04
+    env:
+      QT_VERSION: 6.10.1
+      JOBS: 2
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+          fetch-depth: 10
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.14'
+      - uses: jurplel/install-qt-action@v3
+        with:
+          version: '6.10.1'
+          host: linux
+          target: desktop
+          arch: linux_gcc_64
+          modules: qtremoteobjects qt5compat qtshadertools qthttpserver qtwebsockets
+          tools: tools_ifw
+          dir: ${{ runner.temp }}
+          setup-python: false
+          aqtversion: '==3.3.0'
+          py7zrversion: '==0.22.*'
+      - name: Install build dependencies
+        run: |
+          python -m pip install 'conan==2.28.0' ninja
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-x11-0 libsecret-1-dev
+      - name: Build desktop and installer
+        env:
+          QT_INSTALL_DIR: ${{ runner.temp }}
+        run: deploy/build.sh --generator Ninja --installer all
+      - name: Check installer and record checksums
+        run: |
+          test -n "$(find deploy/build -maxdepth 1 -name 'AmneziaVPN_*_linux_x64.run' -print -quit)"
+          sha256sum deploy/build/AmneziaVPN_*_linux_x64.run > deploy/build/SHA256SUMS
+          git rev-parse HEAD > deploy/build/SOURCE_COMMIT
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AmneziaVPN-Ubuntu-dns-fix
+          path: |
+            deploy/build/AmneziaVPN_*_linux_x64.run
+            deploy/build/SHA256SUMS
+            deploy/build/SOURCE_COMMIT
+          if-no-files-found: error
+          retention-days: 30
+
+  publish-loopback-fix:
+    needs: desktop-installer
+    if: github.repository == 'StannisMod/amnezia-client'
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: AmneziaVPN-Ubuntu-dns-fix
+          path: release
+      - name: Publish tested build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        working-directory: release
+        run: |
+          set -euo pipefail
+          test "$(cat SOURCE_COMMIT)" = "$GITHUB_SHA"
+          expected=$(awk '{print $1}' SHA256SUMS)
+          printf '%s  %s\n' "$expected" AmneziaVPN_5.1.0.0_linux_x64.run | sha256sum --check
+          sha256sum AmneziaVPN_5.1.0.0_linux_x64.run > SHA256SUMS
+          cat > RELEASE_NOTES.md <<'NOTES'
+          Experimental Ubuntu x86-64 desktop build: DNS cache race and split-tunnel routing compatibility.
+
+          Includes the first DNS fix (cache invalidation without restarting systemd-resolved). VPN routes now use a separate, dynamically allocated table. Exclusions use throw routes to continue through existing system routing policy, preserving loopback, on-link LAN, alternate gateways and policy routes instead of forcing every exception through the default router. Original routing tables remain untouched; disconnect removes only the owned table and lookup rules.
+
+          Validation: nine cache-command scenarios plus real routing integration tests on Ubuntu 24.04. Tests compile production LinuxRouteMonitor and create an isolated network namespace, checking IPv4/IPv6, loopback, LAN, another gateway, CIDR exceptions with heterogeneous paths, pre-existing policy rules, occupied table IDs and cleanup. The desktop and installer use upstream's Ubuntu 22.04 toolchain for Ubuntu 24.04 compatibility.
+
+          Excluded destinations follow the system's current routing policy, including network changes, rather than a frozen snapshot. Earlier administrator policy rules retain priority over the VPN lookup. Non-excluded destinations reaching the VPN lookup use its selected prefixes; physical-network destinations that should bypass a full tunnel must be excluded explicitly. This change does not grant firewall exceptions or weaken Kill Switch DNS protection. Disconnect the old VPN before replacing the application; routes left by other software are not rewritten.
+
+          Unofficial prerelease based on upstream dev (5.1.0.0). No proprietary upstream service API settings are included. See SOURCE_COMMIT for the exact build revision and SHA256SUMS for installer integrity.
+          NOTES
+          if gh release view v5.1.0.0-dns-fix.2 >/dev/null 2>&1; then
+            echo 'Release already exists; leaving it unchanged.'
+          else
+            gh release create v5.1.0.0-dns-fix.2 --target "$GITHUB_SHA" \
+              --title 'AmneziaVPN 5.1.0.0 — DNS and split-tunnel routing fix 2' \
+              --prerelease --latest=false --notes-file RELEASE_NOTES.md \
+              AmneziaVPN_5.1.0.0_linux_x64.run SHA256SUMS SOURCE_COMMIT
+          fi

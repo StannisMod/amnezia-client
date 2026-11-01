@@ -22,7 +22,6 @@
 #include "core/utils/utilities.h"
 #include "leakdetector.h"
 #include "logger.h"
-#include "core/utils/networkUtilities.h"
 
 namespace {
 Logger logger("LinuxRouteMonitor");
@@ -120,13 +119,31 @@ bool LinuxRouteMonitor::deleteExclusionRoute(const IPAddress& prefix) {
 
 bool LinuxRouteMonitor::rtmSendRoute(int action, int flags, int type,
                                        const IPAddress& prefix) {
+    // Loopback delivery is handled by the existing local routing rule.
+    // Do not install or remove redundant VPN-table exclusions for it.
+    if (type == RTN_THROW && prefix.address().isLoopback() &&
+        ((prefix.type() == QAbstractSocket::IPv4Protocol &&
+          prefix.prefixLength() >= 8 && prefix.prefixLength() <= 32) ||
+         (prefix.type() == QAbstractSocket::IPv6Protocol &&
+          prefix.prefixLength() == 128))) {
+        logger.debug() << "Keeping loopback exclusion local:" << prefix.toString();
+        return true;
+    }
+
     constexpr size_t rtm_max_size = sizeof(struct rtmsg) +
-                                    2 * RTA_SPACE(sizeof(uint32_t)) +
+                                    3 * RTA_SPACE(sizeof(uint32_t)) +
                                     RTA_SPACE(sizeof(struct in6_addr));
     wg_allowedip ip;
     if (!buildAllowedIp(&ip, prefix)) {
     logger.warning() << "Invalid destination prefix";
     return false;
+    }
+
+    const QString family = ip.family == AF_INET6 ? QStringLiteral("-6") : QStringLiteral("-4");
+    if (action == RTM_NEWROUTE) {
+        if (!m_routingTable.ensureFamily(family)) return false;
+    } else if (!m_routingTable.hasFamily(family)) {
+        return true;
     }
 
     char buf[NLMSG_SPACE(rtm_max_size)];
@@ -145,6 +162,7 @@ bool LinuxRouteMonitor::rtmSendRoute(int action, int flags, int type,
     rtm->rtm_table = RT_TABLE_UNSPEC;
     rtm->rtm_protocol = RTPROT_BOOT;
     rtm->rtm_scope = RT_SCOPE_UNIVERSE;
+    nlmsg_append_attr32(nlmsg, sizeof(buf), RTA_TABLE, m_routingTable.table());
 
     if (rtm->rtm_family == AF_INET6) {
     nlmsg_append_attr(nlmsg, sizeof(buf), RTA_DST, &ip.ip6, sizeof(ip.ip6));
@@ -153,7 +171,7 @@ bool LinuxRouteMonitor::rtmSendRoute(int action, int flags, int type,
     }
 
     if (rtm->rtm_type == RTN_UNICAST) {
-    int index = if_nametoindex(WG_INTERFACE);
+    int index = if_nametoindex(qPrintable(m_ifname));
 
     if (index <= 0) {
         logger.error() << "if_nametoindex() failed:" << strerror(errno);
@@ -163,18 +181,8 @@ bool LinuxRouteMonitor::rtmSendRoute(int action, int flags, int type,
     nlmsg_append_attr32(nlmsg, sizeof(buf), RTA_PRIORITY, 1);
     }
 
-    if (rtm->rtm_type == RTN_THROW) {
-    QString gateway = NetworkUtilities::getGatewayAndIface().first;
-    if (gateway.isEmpty()) {
-        logger.warning() << "No default gateway available, skipping exclusion route";
-        return false;
-    }
-    struct in_addr ip4;
-    inet_pton(AF_INET, gateway.toUtf8(), &ip4);
-    nlmsg_append_attr(nlmsg, sizeof(buf), RTA_GATEWAY, &ip4, sizeof(ip4));
-    nlmsg_append_attr32(nlmsg, sizeof(buf), RTA_PRIORITY, 0);
-    rtm->rtm_type = RTN_UNICAST;
-    }
+    // Keep RTN_THROW as-is. An excluded destination must continue through the
+    // pre-existing routing policy instead of being forced to one IPv4 gateway.
 
     struct sockaddr_nl nladdr;
     memset(&nladdr, 0, sizeof(nladdr));

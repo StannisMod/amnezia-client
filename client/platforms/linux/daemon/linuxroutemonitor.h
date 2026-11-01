@@ -12,6 +12,7 @@
 #include <QSocketNotifier>
 
 #include "ipaddress.h"
+#include "linuxroutingtable.h"
 
 
 class LinuxRouteMonitor final : public QObject {
@@ -36,6 +37,7 @@ class LinuxRouteMonitor final : public QObject {
   int m_nlsock = -1;
   int m_nlseq = 0;
   QSocketNotifier* m_notifier = nullptr;
+  LinuxRoutingTable m_routingTable;
 
  private slots:
     void nlsockReady();
