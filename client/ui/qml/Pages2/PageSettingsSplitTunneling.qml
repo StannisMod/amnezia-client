@@ -161,7 +161,7 @@ PageType {
 
                 BodyTextType {
                     Layout.fillWidth: true
-                    text: qsTr("AWG rules apply to apps included in the VPN. Exact domain → longest suffix → longest CIDR → default. A suffix includes its root domain. Reconnect to apply changes.")
+                    text: qsTr("AWG rules apply to apps included in the VPN. Exact domain → longest suffix → longest CIDR → default. A suffix includes its root domain. Domains can come from managed DNS or visible HTTP/TLS/QUIC metadata. Hidden or unavailable domains use the default route. Reconnect to apply changes.")
                     wrapMode: Text.WordWrap
                     color: AmneziaStyle.color.textSecondary
                 }

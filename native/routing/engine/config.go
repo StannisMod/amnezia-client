@@ -23,7 +23,31 @@ type SessionConfig struct {
 	Applications   *ApplicationScope `json:"applications,omitempty"`
 }
 
+// RoutingConfig is independent of the VPN transport. Native hosts still own
+// capture/protection and supply a separately validated transport adapter.
+type RoutingConfig struct {
+	Rules          rules.Config
+	Resolver       netip.AddrPort
+	ResolverAction rules.Action
+	Applications   *ApplicationScope
+}
+
 func (c SessionConfig) Compile() ([]byte, error) {
+	awgBytes, err := json.Marshal(c.AWG)
+	if err != nil {
+		return nil, errors.New("invalid AWG configuration")
+	}
+	var vpn map[string]any
+	if err = json.Unmarshal(awgBytes, &vpn); err != nil {
+		return nil, err
+	}
+	vpn["type"] = awg.Type
+	vpn["tag"] = "vpn"
+	return (RoutingConfig{Rules: c.Rules, Resolver: c.Resolver, ResolverAction: c.ResolverAction, Applications: c.Applications}).compile(vpn)
+}
+
+// compile is internal: hosts cannot inject an arbitrary raw sing-box outbound.
+func (c RoutingConfig) compile(vpn map[string]any) ([]byte, error) {
 	if !c.Resolver.IsValid() || c.Resolver.Port() == 0 {
 		return nil, errors.New("numeric DNS resolver is required")
 	}
@@ -47,15 +71,13 @@ func (c SessionConfig) Compile() ([]byte, error) {
 	if e != nil {
 		return nil, e
 	}
-	route["rules"] = append(append([]any{map[string]any{"inbound": []string{TUNTag}, "port": 53, "action": "hijack-dns"}}, scopeRules...), userRules...)
-	awgBytes, e := json.Marshal(c.AWG)
-	if e != nil {
-		return nil, errors.New("invalid AWG configuration")
-	}
-	var vpn map[string]any
-	json.Unmarshal(awgBytes, &vpn)
-	vpn["type"] = awg.Type
-	vpn["tag"] = "vpn"
+	preRules := append([]any{map[string]any{"inbound": []string{TUNTag}, "port": 53, "action": "hijack-dns"}}, scopeRules...)
+	// FakeIP and explicit domain identities remain authoritative. Sniff only
+	// IP-literal flows (e.g. browser DoH), without rewriting their destination.
+	preRules = append(preRules, map[string]any{"type": "logical", "mode": "and", "rules": []any{
+		map[string]any{"inbound": []string{TUNTag}}, map[string]any{"domain_regex": []string{".+"}, "invert": true}},
+		"action": "sniff", "sniffer": []string{"http", "tls", "quic"}, "timeout": "300ms"})
+	route["rules"] = append(preRules, userRules...)
 	config := map[string]any{
 		"log":       map[string]any{"disabled": true},
 		"inbounds":  []any{map[string]any{"type": "tun", "tag": TUNTag, "address": []string{"172.19.0.1/30", "fdfe:dcba:9876::1/126"}, "mtu": 1280, "stack": "gvisor", "auto_route": false}},

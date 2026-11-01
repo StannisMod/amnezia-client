@@ -11,6 +11,18 @@ Do not infer physical-device or Internet-egress acceptance from compilation.
 
 ## Build and test
 
+IP-literal flows (including clients using their own DoH resolver) are sniffed
+for visible HTTP Host, TLS SNI and QUIC ClientHello before domain rules, with a
+300 ms sniff budget. This does not decrypt HTTPS. Existing FakeIP identities
+take precedence over sniffed names; application scope and DNS interception
+retain their existing priority. Hidden/missing names use the configured default
+route; ECH is not claimed to reveal the actual destination name.
+
+`engine.RoutingConfig` compiles common policy independently of the VPN adapter.
+The existing `SessionConfig` JSON contract and AWG host integrations are retained.
+Other VPN protocols still need their own validated adapters and native lifecycle
+integration; this change does not advertise support for them.
+
 Use Go **1.27.1**, with `GOTOOLCHAIN=local` and `GOTELEMETRY=off`:
 
 ```sh
