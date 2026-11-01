@@ -85,8 +85,11 @@ PageType {
         anchors.right: parent.right
         anchors.bottom: addSitePanel.top
 
-        model: SortFilterProxyModel {
-            id: proxyIpSplitTunnelingModel
+        model: IpSplitTunnelingController.singBoxRoutingEnabled ? null : legacyProxy
+
+        SortFilterProxyModel {
+            id: legacyProxy
+
             sourceModel: IpSplitTunnelingModel
             filters: [
                 AnyOf {
@@ -135,8 +138,103 @@ PageType {
                 }
             }
 
+            CheckBox {
+                visible: IpSplitTunnelingController.singBoxRoutingAvailable
+                Layout.fillWidth: true
+                Layout.leftMargin: 16
+                Layout.rightMargin: 16
+                enabled: root.pageEnabled
+                text: qsTr("Experimental AWG domain routing (supports *.ru)")
+                checked: IpSplitTunnelingController.singBoxRoutingEnabled
+                onClicked: {
+                    IpSplitTunnelingController.setSingBoxRoutingEnabled(checked)
+                    checked = IpSplitTunnelingController.singBoxRoutingEnabled
+                }
+            }
+
+            ColumnLayout {
+                visible: IpSplitTunnelingController.singBoxRoutingEnabled
+                Layout.fillWidth: true
+                Layout.margins: 16
+                enabled: root.pageEnabled
+                spacing: 12
+
+                BodyTextType {
+                    Layout.fillWidth: true
+                    text: qsTr("AWG rules apply to apps included in the VPN. Exact domain → longest suffix → longest CIDR → default. A suffix includes its root domain. Reconnect to apply changes.")
+                    wrapMode: Text.WordWrap
+                    color: AmneziaStyle.color.textSecondary
+                }
+                RowLayout {
+                    Label { text: qsTr("Default route") }
+                    ComboBox {
+                        model: [qsTr("VPN (AmneziaWG)"), qsTr("Direct")]
+                        currentIndex: IpSplitTunnelingController.domainDefault === "direct" ? 1 : 0
+                        onActivated: IpSplitTunnelingController.setDomainDefault(currentIndex === 1 ? "direct" : "vpn")
+                    }
+                }
+                Repeater {
+                    model: IpSplitTunnelingController.domainRules
+                    delegate: ColumnLayout {
+                        id: routingRow
+                        required property int index
+                        required property var modelData
+                        Layout.fillWidth: true
+                        TextField {
+                            id: ruleDestination
+                            Layout.fillWidth: true
+                            text: (routingRow.modelData.kind === "suffix" && !routingRow.modelData.value.startsWith("*.") ? "*." : "") + routingRow.modelData.value
+                            placeholderText: qsTr("Domain, *.suffix or CIDR")
+                            Accessible.name: qsTr("Rule destination")
+                        }
+                        RowLayout {
+                            CheckBox {
+                                id: ruleEnabled
+                                text: qsTr("Enabled")
+                                checked: !routingRow.modelData.disabled
+                            }
+                            ComboBox {
+                                id: ruleAction
+                                Layout.fillWidth: true
+                                model: [qsTr("VPN"), qsTr("Direct")]
+                                currentIndex: routingRow.modelData.action === "direct" ? 1 : 0
+                                Accessible.name: qsTr("Rule route")
+                            }
+                            Button {
+                                text: qsTr("Save")
+                                onClicked: IpSplitTunnelingController.saveDomainRule(routingRow.index, ruleDestination.text, ruleAction.currentIndex === 1 ? "direct" : "vpn", ruleEnabled.checked)
+                            }
+                            Button {
+                                text: qsTr("Remove")
+                                onClicked: IpSplitTunnelingController.removeDomainRule(routingRow.index)
+                            }
+                        }
+                    }
+                }
+                TextField {
+                    id: newRuleDestination
+                    Layout.fillWidth: true
+                    placeholderText: qsTr("Domain, *.suffix, IP or CIDR")
+                    Accessible.name: qsTr("New rule destination")
+                }
+                RowLayout {
+                    ComboBox {
+                        id: newRuleAction
+                        Layout.fillWidth: true
+                        model: [qsTr("Direct"), qsTr("VPN (AmneziaWG)")]
+                    }
+                    Button {
+                        text: qsTr("Add rule")
+                        onClicked: {
+                            if (IpSplitTunnelingController.saveDomainRule(-1, newRuleDestination.text, newRuleAction.currentIndex === 0 ? "direct" : "vpn", true)) newRuleDestination.clear()
+                        }
+                    }
+                }
+            }
+
             SegmentedControlType {
                 id: modeSelector
+                visible: !IpSplitTunnelingController.singBoxRoutingEnabled
 
                 Layout.fillWidth: true
                 Layout.topMargin: 16
@@ -170,6 +268,7 @@ PageType {
                 Layout.rightMargin: 16
                 Layout.bottomMargin: 24
 
+                visible: !IpSplitTunnelingController.singBoxRoutingEnabled
                 text: root.routeModesModel[modeSelector.currentIndex].name
                 color: AmneziaStyle.color.textSecondary
             }
@@ -198,7 +297,7 @@ PageType {
                     var noButtonText = qsTr("Cancel")
 
                     var yesButtonFunction = function() {
-                        IpSplitTunnelingController.removeSite(proxyIpSplitTunnelingModel.mapToSource(index))
+                        IpSplitTunnelingController.removeSite(legacyProxy.mapToSource(index))
                         if (!GC.isMobile()) {
                             site.forceActiveFocus(Qt.TabFocusReason)
                         }
@@ -217,6 +316,8 @@ PageType {
 
     AddSitePanel {
         id: addSitePanel
+        visible: !IpSplitTunnelingController.singBoxRoutingEnabled
+        height: visible ? implicitHeight : 0
 
         anchors.left: parent.left
         anchors.right: parent.right

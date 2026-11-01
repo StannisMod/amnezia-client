@@ -1,0 +1,133 @@
+# Independent emulator-host APK lane using the same deploy entry point and pins
+# as the full matrix. Its result is not the four-platform build gate.
+name: Routed Android emulator client package
+on:
+  push:
+    branches: [feature/sing-box-routing]
+    paths:
+      - client/android/**
+      - client/platforms/android/**
+      - .github/workflows/routing-android-package.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: routing-android-package-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  client-android:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {abi: x86_64, qt_arch: android_x86_64}
+    env:
+      APP_ANDROID_MIN_SDK: '28'
+      ANDROID_PLATFORM: android-28
+    steps:
+      - uses: actions/checkout@v4
+        with: {submodules: recursive}
+      - uses: actions/setup-python@v6
+        with: {python-version: '3.14'}
+      - uses: actions/setup-java@v4
+        with: {distribution: temurin, java-version: '17'}
+      - uses: android-actions/setup-android@v4
+        with:
+          packages: 'platform-tools platforms;android-28 platforms;android-36 build-tools;36.0.0'
+      - name: Install pinned NDK (retry transient SDK archive failures)
+        run: |
+          for attempt in 1 2 3; do
+            if sdkmanager --install 'ndk;27.0.12077973'; then exit 0; fi
+          done
+          exit 1
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: native/routing/go.mod
+          cache-dependency-path: native/routing/go.sum
+      - name: Download pinned Go modules (retry transient network failures)
+        shell: bash
+        working-directory: native/routing
+        run: |
+          for attempt in 1 2 3; do
+            if go mod download; then
+              go mod verify
+              exit 0
+            fi
+            if [ "$attempt" -eq 3 ]; then exit 1; fi
+            sleep 5
+          done
+      - name: Compile protocol Kotlin without Qt or Conan
+        run: python scripts/routing/check_android_kotlin.py --build-dir "${{ runner.temp }}/routing-kotlin-check"
+      - name: Build and inspect the unified Go JNI payload
+        shell: bash
+        env:
+          ABI: ${{ matrix.abi }}
+          GOTOOLCHAIN: local
+          GOTELEMETRY: 'off'
+        run: |
+          bash scripts/routing/build_android_native.sh "$GITHUB_WORKSPACE/deploy/routing-native/$ABI"
+      - uses: jurplel/install-qt-action@v4.3.1
+        with:
+          version: '6.10.1'
+          arch: linux_gcc_64
+          modules: qtremoteobjects qt5compat qtimageformats qtshadertools
+          dir: ${{ runner.temp }}
+      - uses: jurplel/install-qt-action@v4.3.1
+        with:
+          version: '6.10.1'
+          host: all_os
+          target: android
+          arch: ${{ matrix.qt_arch }}
+          modules: qtremoteobjects qt5compat qtimageformats qtshadertools
+          dir: ${{ runner.temp }}
+      - run: |
+          pip install conan==2.28.0
+          conan profile detect --force
+      - name: Build debug-signed APK with existing script
+        id: build
+        shell: bash
+        env:
+          QT_INSTALL_DIR: ${{ runner.temp }}
+          CMAKE_BUILD_TYPE: Debug
+          ABI: ${{ matrix.abi }}
+          ANDROID_NDK_VERSION: '27.0.12077973'
+        run: |
+          set -o pipefail
+          deploy/build.sh -t android --abi "$ABI" --apk 2>&1 | tee client-build.log
+      - name: Android network callback lifecycle unit tests
+        if: matrix.abi == 'x86_64'
+        run: |
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          import subprocess
+          candidates = sorted(p for p in Path('deploy/build/client').rglob('gradlew') if (p.parent / 'utils').is_dir())
+          assert candidates, 'Generated Android Gradle project missing'
+          wrapper = candidates[0].resolve()
+          subprocess.run([str(wrapper), ':utils:testDebugUnitTest', '--no-daemon'], cwd=wrapper.parent, check=True, timeout=300)
+          PYCODE
+      - name: Inspect native JNI in the actual APK
+        id: payload
+        run: python scripts/routing/verify_android_payload.py --build-dir deploy/build --readelf "$ANDROID_HOME/ndk/27.0.12077973/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
+      - name: Record baseline result
+        if: always()
+        env:
+          BUILD_OUTCOME: ${{ steps.build.outcome }}
+          ROUTING_ABI: ${{ matrix.abi }}
+          ROUTING_PAYLOAD_OUTCOME: ${{ steps.payload.outcome }}
+        run: python scripts/routing/build_manifest.py android
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: routing-client-android-${{ matrix.abi }}-baseline
+          path: |
+            client-build.log
+            routing-build-manifest.json
+            deploy/build/client/tests/qt-regression.xml
+            deploy/build/client/tests/Testing/Temporary/LastTest.log
+            deploy/build/client/android-build/**/*.apk
+            deploy/routing-native/
+            android-routing-payloads.json
+            deploy/build/client/**/utils/build/test-results/**/*.xml
+

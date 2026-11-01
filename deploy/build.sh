@@ -190,6 +190,7 @@ fi
 : ${JOBS:=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 2)}
 
 args=()
+[[ -n "$AMNEZIA_CONAN_PREBUILTS" ]] && args+=("-DAMNEZIA_CONAN_PREBUILTS=$AMNEZIA_CONAN_PREBUILTS")
 [[ -n "$CMAKE_GENERATOR" ]]           && args+=("-G" "$CMAKE_GENERATOR")
 [[ -n "$CMAKE_BUILD_TYPE" ]]          && args+=("-DCMAKE_BUILD_TYPE=$CMAKE_BUILD_TYPE")
 [[ -n "$CMAKE_PREFIX_PATH" ]]         && args+=("-DCMAKE_PREFIX_PATH=$CMAKE_PREFIX_PATH")
@@ -211,6 +212,13 @@ args=()
 [[ -n "$QT_ANDROID_ABIS" ]]           && args+=("-DQT_ANDROID_ABIS=$QT_ANDROID_ABIS")
 [[ -n "$QT_ANDROID_BUILD_ALL_ABIS" ]] && args+=("-DQT_ANDROID_BUILD_ALL_ABIS=$QT_ANDROID_BUILD_ALL_ABIS")
 [[ -n "$BUILD_PLAY" ]]                && args+=("-DANDROID_BUILD_PLAY=ON")
+
+# Compile the app and extension on CI without installing distribution secrets.
+# Empty by default: existing signed build behavior is unchanged.
+if [[ "$TARGET" == "ios" && "${IOS_UNSIGNED_BUILD:-}" == "1" ]]; then
+    args+=("-DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO"
+           "-DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_REQUIRED=NO")
+fi
 
 if [[ -n "$FORCE" ]]; then
     run_traced rm -rf "$BUILD_PATH"

@@ -100,6 +100,7 @@ public:
     static void updateDNSServers(const QStringList& servers);
     static void updateAllowNets(const QStringList& servers);
     static void updateBlockNets(const QStringList& servers);
+    static bool setDomainRoutingAllowed(bool enabled);
 };
 
 #endif // LINUXFIREWALL_H

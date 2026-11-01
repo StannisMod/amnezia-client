@@ -15,6 +15,15 @@ extension PacketTunnelProvider {
 
         do {
             let wgConfig = try JSONDecoder().decode(WGConfig.self, from: wgConfigData)
+            if wgConfig.routingConfig != nil {
+                let routed = RoutingPacketTunnel(provider: self)
+                routedAdapter = routed
+                routed.start(config: wgConfig) { error in
+                    if error != nil { errorNotifier.notify(PacketTunnelProviderError.couldNotStartBackend) }
+                    completionHandler(error)
+                }
+                return
+            }
             let wgConfigStr = wgConfig.str
 
             let tunnelConfiguration = try TunnelConfiguration(fromWgQuickConfig: wgConfigStr)
@@ -101,6 +110,7 @@ extension PacketTunnelProvider {
 
     func handleWireguardStatusMessage(_ messageData: Data, completionHandler: ((Data?) -> Void)? = nil) {
         guard let completionHandler = completionHandler else { return }
+        if let routed = routedAdapter { routed.status(completion: completionHandler); return }
         guard let wgAdapter = wgAdapter else {
             completionHandler(nil)
             return
@@ -141,6 +151,9 @@ extension PacketTunnelProvider {
 
     func handleWireguardAppMessage(_ messageData: Data, completionHandler: ((Data?) -> Void)? = nil) {
         guard let completionHandler = completionHandler else { return }
+        // Routed sessions are replaced as a whole; never reinterpret legacy
+        // UAPI updates as a destination-rule update or start another reader.
+        if routedAdapter != nil { completionHandler(nil); return }
         if messageData.count == 1 && messageData[0] == 0 {
             wgAdapter?.getRuntimeConfiguration { settings in
                 var data: Data?
@@ -184,6 +197,11 @@ extension PacketTunnelProvider {
     }
 
     func stopWireguard(with reason: NEProviderStopReason, completionHandler: @escaping () -> Void) {
+        if let routed = routedAdapter {
+            routedAdapter = nil
+            routed.stop(completion: completionHandler)
+            return
+        }
         wg_log(.info, message: "Stopping tunnel: reason: \(reason.amneziaDescription)")
 
         wgAdapter?.stop { error in

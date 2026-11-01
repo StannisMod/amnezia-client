@@ -447,3 +447,7 @@ endif()
 # CTest cannot run Android binaries on the host machine, so no add_test() entries are registered here.
 
 amnezia_copy_runtime_dlls()
+
+if(NOT ANDROID)
+    add_subdirectory(routing)
+endif()

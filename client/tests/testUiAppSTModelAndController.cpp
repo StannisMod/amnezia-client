@@ -50,6 +50,69 @@ private slots:
         }
     }
 
+    void testApplicationModesKeepSeparateLists()
+    {
+        auto ui = m_coreController->m_appSplitTunnelingUiController;
+        auto model = m_coreController->m_appSplitTunnelingModel;
+        auto repo = m_coreController->m_appSettingsRepository;
+        auto core = m_coreController->m_appSplitTunnelingController;
+        core->setRouteMode(AppsRouteMode::VpnAllExceptApps);
+        core->clearAppsList();
+        core->setRouteMode(AppsRouteMode::VpnOnlyForwardApps);
+        core->clearAppsList();
+        const auto executable = QCoreApplication::applicationFilePath();
+        ui->addApp(executable);
+        QCOMPARE(model->rowCount(), 1);
+        ui->setRouteMode(static_cast<int>(AppsRouteMode::VpnAllExceptApps));
+        QCOMPARE(model->rowCount(), 0);
+        ui->setRouteMode(static_cast<int>(AppsRouteMode::VpnOnlyForwardApps));
+        QCOMPARE(model->rowCount(), 1);
+        QCOMPARE(repo->vpnApps(AppsRouteMode::VpnOnlyForwardApps).first().appPath, executable);
+        QVERIFY(repo->vpnApps(AppsRouteMode::VpnAllExceptApps).isEmpty());
+        core->clearAppsList();
+    }
+
+    void testRestoreApplicationScope()
+    {
+#if defined(Q_OS_WIN) || (defined(Q_OS_LINUX) && !defined(Q_OS_ANDROID))
+        auto repo = m_coreController->m_appSettingsRepository;
+        auto ui = m_coreController->m_appSplitTunnelingUiController;
+        repo->setSingBoxRoutingEnabled(true);
+        ui->setRouteMode(static_cast<int>(AppsRouteMode::VpnOnlyForwardApps));
+        m_coreController->m_appSplitTunnelingController->clearAppsList();
+        ui->addApp(QCoreApplication::applicationFilePath());
+        ui->toggleSplitTunneling(true);
+        const auto backup = m_coreController->m_settingsController->backupAppConfig();
+        ui->setRouteMode(static_cast<int>(AppsRouteMode::VpnAllExceptApps));
+        ui->toggleSplitTunneling(false);
+        QSignalSpy modeSpy(ui, &AppSplitTunnelingUiController::routeModeChanged);
+        QCOMPARE(m_coreController->m_settingsController->restoreAppConfigFromData(backup), ErrorCode::NoError);
+        QVERIFY(!modeSpy.isEmpty());
+        QCOMPARE(ui->getRouteMode(), static_cast<int>(AppsRouteMode::VpnOnlyForwardApps));
+        QVERIFY(ui->isSplitTunnelingEnabled());
+        QCOMPARE(m_coreController->m_appSplitTunnelingModel->rowCount(), 1);
+        m_coreController->m_appSplitTunnelingController->clearAppsList();
+#endif
+    }
+
+    void testUnsupportedLegacyScopeRejectedBeforeConnect()
+    {
+#if defined(Q_OS_WIN) || (defined(Q_OS_LINUX) && !defined(Q_OS_ANDROID))
+        auto repo = m_coreController->m_appSettingsRepository;
+        repo->setAppsSplitTunnelingEnabled(true);
+        repo->setAppsRouteMode(AppsRouteMode::VpnOnlyForwardApps);
+        repo->setVpnApps(AppsRouteMode::VpnOnlyForwardApps,
+            {InstalledAppInfo{ "test", "", QCoreApplication::applicationFilePath() }});
+        auto connection = QSharedPointer<VpnConnection>::create(nullptr, nullptr);
+        connection->setRepositories(m_coreController->m_serversRepository, repo);
+        QSignalSpy errorSpy(connection.data(), &VpnConnection::vpnProtocolError);
+        connection->connectToVpn("test", DockerContainer::OpenVpn, {});
+        QCOMPARE(errorSpy.count(), 1);
+        QCOMPARE(errorSpy.first().first().value<ErrorCode>(), ErrorCode::NotSupportedOnThisPlatform);
+        QCOMPARE(connection->connectionState(), Vpn::ConnectionState::Error);
+#endif
+    }
+
     void testRolesAndSignals()
     {
         QSignalSpy finishedSpy(m_coreController->m_appSplitTunnelingUiController, &AppSplitTunnelingUiController::finished);

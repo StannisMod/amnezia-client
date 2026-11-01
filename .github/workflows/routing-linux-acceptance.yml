@@ -1,0 +1,41 @@
+name: Linux native routed VPN acceptance
+on:
+  push:
+    branches: [feature/sing-box-routing]
+    paths:
+      - .github/workflows/routing-linux-acceptance.yml
+      - native/routing/**
+      - scripts/routing/run_linux_acceptance.py
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  namespace-capture:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: native/routing/go.mod
+          cache-dependency-path: native/routing/go.sum
+      - run: sudo apt-get update && sudo apt-get install -y nftables
+      - name: Build the real Linux capture helper and controlled AWG peer
+        working-directory: native/routing
+        run: |
+          go build -mod=readonly -tags with_gvisor -o "$RUNNER_TEMP/amnezia-routing" ./cmd/amnezia-routing
+          go build -mod=readonly -tags with_gvisor -o "$RUNNER_TEMP/android-fixture" ./cmd/android-fixture
+          go build -mod=readonly -o "$RUNNER_TEMP/traffic-probe" ./cmd/traffic-probe
+      - name: Native TUN, Linux policy routing and crash/reconnect restoration
+        run: |
+          sudo python3 scripts/routing/run_linux_acceptance.py --helper "$RUNNER_TEMP/amnezia-routing" --peer "$RUNNER_TEMP/android-fixture" --fixture "$RUNNER_TEMP/linux-fixture.json" --report "$GITHUB_WORKSPACE/linux-native-acceptance.json" --quic-probe "$RUNNER_TEMP/traffic-probe" --cycles 100
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: linux-native-capture-acceptance-${{ matrix.os }}
+          path: linux-native-acceptance.json
+          if-no-files-found: error

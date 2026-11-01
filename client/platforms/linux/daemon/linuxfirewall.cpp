@@ -418,6 +418,62 @@ void LinuxFirewall::setAnchorEnabled(LinuxFirewall::IPVersion ip, const QString 
     }
 }
 
+bool LinuxFirewall::setDomainRoutingAllowed(bool enabled)
+{
+    const QString chain = QStringLiteral("amnrouting.session");
+    auto apply = [&](const QString &program, bool enable) {
+        auto invoke = [&](QStringList args, QByteArray *output = nullptr) {
+            QProcess p;
+            args.prepend("5"); args.prepend("-w");
+            p.start(program, args);
+            if (!p.waitForStarted(3000) || !p.waitForFinished(8000)) return false;
+            if (output) *output = p.readAllStandardOutput();
+            return p.exitStatus() == QProcess::NormalExit && p.exitCode() == 0;
+        };
+        const QStringList capture {"-o", "amnrouting0", "-j", "ACCEPT"};
+        const QStringList underlay {"-m", "mark", "--mark", "0x40000000/0x40000000", "-j", "ACCEPT"};
+        // LOCAL_OUT's interface can still describe the route before the native
+        // mangle hook applied policy routing. Accept its reserved capture bit
+        // as well as the TUN interface. The owned policy table retains its
+        // blackhole after a helper crash, so this does not release native egress.
+        const QStringList markedCapture {"-m", "mark", "--mark", "0x20000000/0x20000000", "-j", "ACCEPT"};
+        QByteArray existing;
+        bool present = invoke({"-S", chain}, &existing);
+        if (present) {
+            // Adopt only the exact current or previous owned chain. Upgrade
+            // the previous two-rule form without flushing any foreign policy.
+            const int lines = existing.trimmed().split('\n').size();
+            if ((lines != 3 && lines != 4)
+                    || !invoke(QStringList{"-C", chain} + capture)
+                    || !invoke(QStringList{"-C", chain} + underlay)
+                    || (lines == 4 && !invoke(QStringList{"-C", chain} + markedCapture))) return false;
+            if (enable && lines == 3 && !invoke(QStringList{"-A", chain} + markedCapture)) return false;
+        } else if (enable) {
+            if (!invoke({"-N", chain})) return false;
+            if (!invoke(QStringList{"-A", chain} + capture)
+                    || !invoke(QStringList{"-A", chain} + underlay)
+                    || !invoke(QStringList{"-A", chain} + markedCapture)) {
+                invoke({"-F", chain}); invoke({"-X", chain}); return false;
+            }
+        } else {
+            return true;
+        }
+        // Exact owned jump only. Reinsert ahead of a refreshed legacy strict
+        // root so the protected helper and captured packets remain usable.
+        for (int i = 0; invoke({"-C", "OUTPUT", "-j", chain}); ++i) {
+            if (i >= 16 || !invoke({"-D", "OUTPUT", "-j", chain})) return false;
+        }
+        if (enable) return invoke({"-I", "OUTPUT", "1", "-j", chain});
+        return invoke({"-F", chain}) && invoke({"-X", chain});
+    };
+    if (!apply("iptables", enabled)) return false;
+    if (!apply("ip6tables", enabled)) {
+        if (enabled) apply("iptables", false);
+        return false;
+    }
+    return true;
+}
+
 void LinuxFirewall::updateDNSServers(const QStringList& servers)
 {
     static QStringList existingServers {};

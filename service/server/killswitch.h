@@ -20,11 +20,18 @@ public:
     bool resetAllowedRange(const QStringList &ranges);
     bool addAllowedRange(const QStringList &ranges);
     bool isStrictKillSwitchEnabled();
+    bool beginRoutedSession(const QString &helperPath);
+    bool routedInterfaceReady(const QString &captureId);
+    bool endRoutedSession();
 
 private:
     KillSwitch(QObject* parent) {};
     QStringList m_allowedRanges;
     QSharedPointer<SecureQSettings> m_appSettigns;
+    bool applyRoutedExemptions();
+    bool m_routedSession = false;
+    QString m_routingHelperPath;
+    quint64 m_routingLuid = 0;
 
 };
 

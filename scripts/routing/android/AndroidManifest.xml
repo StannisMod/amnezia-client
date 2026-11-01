@@ -1,0 +1,12 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="org.amnezia.routingtest">
+    <uses-sdk android:minSdkVersion="28" android:targetSdkVersion="28" />
+    <uses-permission android:name="android.permission.INTERNET" />
+    <application android:label="Disposable routing acceptance" android:debuggable="true" android:extractNativeLibs="true" android:usesCleartextTraffic="true" android:testOnly="true">
+        <receiver android:name="org.amnezia.routingtest.RoutingPolicyReceiver" android:exported="true" android:permission="android.permission.BIND_DEVICE_ADMIN">
+            <meta-data android:name="android.app.device_admin" android:resource="@xml/routing_admin" />
+            <intent-filter><action android:name="android.app.action.DEVICE_ADMIN_ENABLED" /></intent-filter>
+        </receiver>
+    </application>
+    <instrumentation android:name="org.amnezia.routingtest.RoutingInstrumentation"
+        android:targetPackage="org.amnezia.vpn" android:functionalTest="true" />
+</manifest>

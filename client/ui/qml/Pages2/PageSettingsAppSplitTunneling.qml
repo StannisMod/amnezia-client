@@ -123,7 +123,9 @@ PageType {
                 Layout.leftMargin: 16
                 Layout.rightMargin: 16
 
-                enabled: (Qt.platform.os === "android") && root.pageEnabled
+                enabled: root.pageEnabled && (Qt.platform.os === "android"
+                    || ((Qt.platform.os === "windows" || Qt.platform.os === "linux")
+                        && IpSplitTunnelingController.singBoxRoutingEnabled))
 
                 model: [onlyForwardApps.segmentName, allExceptApps.segmentName]
                 currentIndex: root.getRouteModesModelIndex()
@@ -162,7 +164,8 @@ PageType {
 
                 text: qsTr("Only \"Apps from the list should not have access via VPN\" mode is available on Windows")
 
-                visible: (Qt.platform.os === "windows") && root.pageEnabled
+                visible: Qt.platform.os === "windows" && root.pageEnabled
+                    && !IpSplitTunnelingController.singBoxRoutingEnabled
             }
         }
 
@@ -231,7 +234,7 @@ PageType {
                 searchField.focus = false
                 PageController.showBusyIndicator(true)
 
-                if (Qt.platform.os === "windows") {
+                if (Qt.platform.os === "windows" || Qt.platform.os === "linux") {
                     var fileName = SystemController.getFileName(qsTr("Open executable file"),
                                                                 qsTr("Executable files (*.*)"))
                     if (fileName !== "") {

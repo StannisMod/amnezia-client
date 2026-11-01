@@ -98,6 +98,9 @@ bool KillSwitch::isStrictKillSwitchEnabled()
 }
 
 bool KillSwitch::disableKillSwitch() {
+    // During a routed session the native child owns capture and fail-closed
+    // state. Keep its narrowly scoped firewall exceptions until it stops.
+    if (m_routedSession) return applyRoutedExemptions();
 #ifdef Q_OS_LINUX
     if (isStrictKillSwitchEnabled()) {
         LinuxFirewall::setAnchorEnabled(LinuxFirewall::Both, QStringLiteral("000.allowLoopback"), true);
@@ -159,7 +162,8 @@ bool KillSwitch::disableKillSwitch() {
 
 bool KillSwitch::disableAllTraffic() {
 #ifdef Q_OS_WIN
-    WindowsFirewall::create(this)->enableInterface(-1);
+    auto firewall = WindowsFirewall::create(this);
+    if (!firewall || !firewall->enableInterface(-1)) return false;
 #endif
 #ifdef Q_OS_LINUX
     if (!LinuxFirewall::isInstalled()) {
@@ -181,6 +185,62 @@ bool KillSwitch::disableAllTraffic() {
     MacOSFirewall::setAnchorEnabled(QStringLiteral("250.blockIPv6"), true);
 #endif
     m_allowedRanges.clear();
+    if (m_routedSession) return applyRoutedExemptions();
+    return true;
+}
+
+bool KillSwitch::applyRoutedExemptions()
+{
+#ifdef Q_OS_WIN
+    auto firewall = WindowsFirewall::create(this);
+    return firewall && firewall->allowDomainRouting(m_routingHelperPath, m_routingLuid);
+#elif defined(Q_OS_LINUX)
+    return LinuxFirewall::setDomainRoutingAllowed(true);
+#else
+    return false;
+#endif
+}
+
+bool KillSwitch::beginRoutedSession(const QString &helperPath)
+{
+    m_routingHelperPath = helperPath;
+    m_routingLuid = 0;
+    if (!applyRoutedExemptions()) return false;
+    m_routedSession = true;
+    return true;
+}
+
+bool KillSwitch::routedInterfaceReady(const QString &captureId)
+{
+    if (!m_routedSession) return false;
+#ifdef Q_OS_WIN
+    bool valid = false;
+    m_routingLuid = captureId.toULongLong(&valid);
+    if (!valid || m_routingLuid == 0) return false;
+#else
+    if (captureId != "amnrouting0") return false;
+#endif
+    return applyRoutedExemptions();
+}
+
+bool KillSwitch::endRoutedSession()
+{
+    if (!m_routedSession) return true;
+#ifdef Q_OS_WIN
+    auto firewall = WindowsFirewall::create(this);
+    if (!firewall || !firewall->removeDomainRouting()) return false;
+#elif defined(Q_OS_LINUX)
+    if (!LinuxFirewall::setDomainRoutingAllowed(false)) return false;
+#endif
+    m_routedSession = false;
+    // A strict switch remains blocked between sessions. If it was disabled
+    // while connected, release its old policy only after restoring ownership.
+    if (!isStrictKillSwitchEnabled() && !disableKillSwitch()) {
+        m_routedSession = true;
+        return false;
+    }
+    m_routingHelperPath.clear();
+    m_routingLuid = 0;
     return true;
 }
 

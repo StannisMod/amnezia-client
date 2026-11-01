@@ -45,6 +45,8 @@ class WindowsFirewall final : public QObject {
   bool disableKillSwitch();
   bool allowAllTraffic();
   bool allowTrafficRange(const QStringList& ranges);
+  bool allowDomainRouting(const QString& helperPath, quint64 captureLuid);
+  bool removeDomainRouting();
 
  private:
   static bool initSublayer();

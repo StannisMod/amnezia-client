@@ -20,7 +20,66 @@ void IpSplitTunnelingUiController::addSite(QString hostname)
 {
     if (m_ipSplitTunnelingController->addSite(hostname)) {
         emit finished(tr("New site added: %1").arg(hostname));
+    } else {
+        emit errorOccurred(tr("Invalid or duplicate destination. Wildcards require experimental AWG domain routing."));
     }
+}
+
+bool IpSplitTunnelingUiController::isSingBoxRoutingAvailable() const
+{
+#if defined(Q_OS_ANDROID) || defined(Q_OS_IOS) || defined(Q_OS_LINUX) || defined(Q_OS_WIN)
+    return true;
+#else
+    return false;
+#endif
+}
+
+bool IpSplitTunnelingUiController::isSingBoxRoutingEnabled() const
+{
+    return m_ipSplitTunnelingController->isSingBoxRoutingEnabled();
+}
+
+void IpSplitTunnelingUiController::setSingBoxRoutingEnabled(bool enabled)
+{
+    if (!m_ipSplitTunnelingController->setSingBoxRoutingEnabled(enabled)) {
+        emit errorOccurred(enabled
+            ? tr("AWG domain routing is unavailable on this platform.")
+            : tr("Remove wildcard destinations before disabling AWG domain routing."));
+    }
+    emit singBoxRoutingEnabledChanged();
+    emit domainRoutingChanged();
+}
+
+QVariantList IpSplitTunnelingUiController::domainRules() const
+{
+    return m_ipSplitTunnelingController->domainRoutingConfig().value("rules").toArray().toVariantList();
+}
+
+QString IpSplitTunnelingUiController::domainDefault() const
+{
+    return m_ipSplitTunnelingController->domainRoutingConfig().value("default").toString();
+}
+
+bool IpSplitTunnelingUiController::saveDomainRule(int index, const QString &destination, const QString &action, bool enabled)
+{
+    if (!m_ipSplitTunnelingController->saveDomainRule(index, destination, action, enabled)) {
+        emit errorOccurred(tr("Invalid or duplicate rule. Use a domain, *.suffix, IP address or CIDR."));
+        return false;
+    }
+    emit domainRoutingChanged();
+    return true;
+}
+
+void IpSplitTunnelingUiController::removeDomainRule(int index)
+{
+    m_ipSplitTunnelingController->removeDomainRule(index);
+    emit domainRoutingChanged();
+}
+
+void IpSplitTunnelingUiController::setDomainDefault(const QString &action)
+{
+    m_ipSplitTunnelingController->setDomainDefault(action);
+    emit domainRoutingChanged();
 }
 
 void IpSplitTunnelingUiController::removeSite(int index)
@@ -67,13 +126,11 @@ void IpSplitTunnelingUiController::exportSites(const QString &fileName)
 void IpSplitTunnelingUiController::toggleSplitTunneling(bool enabled)
 {
     m_ipSplitTunnelingController->toggleSplitTunneling(enabled);
-    emit isSplitTunnelingEnabledChanged();
 }
 
 void IpSplitTunnelingUiController::setRouteMode(int routeMode)
 {
     m_ipSplitTunnelingController->setRouteMode(static_cast<amnezia::RouteMode>(routeMode));
-    emit routeModeChanged();
 }
 
 int IpSplitTunnelingUiController::getRouteMode() const
@@ -89,4 +146,8 @@ bool IpSplitTunnelingUiController::isSplitTunnelingEnabled() const
 void IpSplitTunnelingUiController::updateModel()
 {
     m_ipSplitTunnelingModel->updateModel(m_ipSplitTunnelingController->getCurrentSites());
+    emit routeModeChanged();
+    emit isSplitTunnelingEnabledChanged();
+    emit singBoxRoutingEnabledChanged();
+    emit domainRoutingChanged();
 }

@@ -21,8 +21,7 @@ class NetworkState(
     private val context: Context,
     private val onNetworkChange: () -> Unit
 ) {
-    private var currentNetwork: Network? = null
-    private var validated: Boolean = false
+    private val state = ValidatedNetworkState<Network>()
     private var isListenerBound = false
 
     private val handler: Handler by lazy(NONE) {
@@ -51,18 +50,8 @@ class NetworkState(
             }
 
             private fun checkNetworkState(network: Network, networkCapabilities: NetworkCapabilities) {
-                if (currentNetwork == null) {
-                    currentNetwork = network
-                    validated = networkCapabilities.hasCapability(NET_CAPABILITY_VALIDATED)
-                } else {
-                    if (currentNetwork != network) {
-                        currentNetwork = network
-                        validated = false
-                    }
-                    if (!validated) {
-                        validated = networkCapabilities.hasCapability(NET_CAPABILITY_VALIDATED)
-                        if (validated) onNetworkChange()
-                    }
+                if (state.update(network, networkCapabilities.hasCapability(NET_CAPABILITY_VALIDATED))) {
+                    onNetworkChange()
                 }
             }
 
@@ -72,6 +61,7 @@ class NetworkState(
 
             override fun onLost(network: Network) {
                 Log.v(TAG, "onLost: $network")
+                state.lost(network)
             }
         }
     }
@@ -111,7 +101,6 @@ class NetworkState(
         Log.d(TAG, "Unbind network listener")
         connectivityManager.unregisterNetworkCallback(networkCallback)
         isListenerBound = false
-        currentNetwork = null
-        validated = false
+        state.reset()
     }
 }

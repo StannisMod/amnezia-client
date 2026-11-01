@@ -1,5 +1,6 @@
 #include "ipSplitTunnelingController.h"
 #include "core/utils/networkUtilities.h"
+#include "core/utils/domainRoutingConfig.h"
 #include <QJsonObject>
 #include <QDebug>
 
@@ -79,6 +80,11 @@ bool IpSplitTunnelingController::addSite(const QString &hostname)
     
     if (!validateHostname(normalizedHostname)) {
         return false;
+    }
+
+    if (isSingBoxRoutingEnabled()) {
+        // Domain rules reach managed DNS as names, not startup DNS snapshots.
+        return addSiteInternal(normalizedHostname, {});
     }
     
     if (NetworkUtilities::ipAddressWithSubnetRegExp().exactMatch(normalizedHostname)) {
@@ -168,10 +174,86 @@ bool IpSplitTunnelingController::validateHostname(const QString &hostname) const
     if (hostname.isEmpty()) {
         return false;
     }
+    if (hostname.contains('*') && (!isSingBoxRoutingEnabled() || !hostname.startsWith("*.")
+            || hostname.mid(2).contains('*') || hostname.size() <= 2)) {
+        return false;
+    }
     if (!hostname.contains(".") && !NetworkUtilities::ipAddressWithSubnetRegExp().exactMatch(hostname)) {
         return false;
     }
     return true;
+}
+
+bool IpSplitTunnelingController::isSingBoxRoutingEnabled() const
+{
+#if defined(Q_OS_ANDROID) || defined(Q_OS_IOS) || defined(Q_OS_LINUX) || defined(Q_OS_WIN)
+    return m_appSettingsRepository->isSingBoxRoutingEnabled();
+#else
+    return false;
+#endif
+}
+
+bool IpSplitTunnelingController::setSingBoxRoutingEnabled(bool enabled)
+{
+#if !defined(Q_OS_ANDROID) && !defined(Q_OS_IOS) && !defined(Q_OS_LINUX) && !defined(Q_OS_WIN)
+    if (enabled) return false;
+#endif
+    if (!enabled) {
+        for (auto mode : {RouteMode::VpnOnlyForwardSites, RouteMode::VpnAllExceptSites}) {
+            const auto sites = m_appSettingsRepository->vpnSites(mode);
+            for (auto it = sites.cbegin(); it != sites.cend(); ++it) {
+                if (it.key().contains('*')) return false;
+            }
+        }
+    }
+    m_appSettingsRepository->setSingBoxRoutingEnabled(enabled);
+    if (enabled) m_appSettingsRepository->setDomainRoutingConfig(m_appSettingsRepository->domainRoutingConfig());
+    return true;
+}
+
+QJsonObject IpSplitTunnelingController::domainRoutingConfig() const
+{
+    return m_appSettingsRepository->domainRoutingConfig();
+}
+
+bool IpSplitTunnelingController::saveDomainRule(int index, const QString &destination, const QString &action, bool enabled)
+{
+    auto config = domainRoutingConfig();
+    auto rules = config.value("rules").toArray();
+    if (index < -1 || index >= rules.size()) return false;
+    const auto rule = amnezia::routing::destinationRule(destination, action, enabled);
+    if (rule.isEmpty()) return false;
+    for (int i = 0; i < rules.size(); ++i) {
+        if (i == index) continue;
+        const auto other = rules[i].toObject();
+        QString text = other.value("value").toString();
+        if (other.value("kind").toString() == "suffix" && !text.startsWith("*.")) text.prepend("*.");
+        const auto normalized = amnezia::routing::destinationRule(text, other.value("action").toString(), !other.value("disabled").toBool());
+        if (normalized.value("kind") == rule.value("kind") && normalized.value("value") == rule.value("value")
+                && enabled && !normalized.value("disabled").toBool()) return false;
+    }
+    if (index == -1) rules.append(rule); else rules[index] = rule;
+    config.insert("rules", rules);
+    m_appSettingsRepository->setDomainRoutingConfig(config);
+    return true;
+}
+
+void IpSplitTunnelingController::removeDomainRule(int index)
+{
+    auto config = domainRoutingConfig();
+    auto rules = config.value("rules").toArray();
+    if (index < 0 || index >= rules.size()) return;
+    rules.removeAt(index);
+    config.insert("rules", rules);
+    m_appSettingsRepository->setDomainRoutingConfig(config);
+}
+
+void IpSplitTunnelingController::setDomainDefault(const QString &action)
+{
+    if (action != "direct" && action != "vpn") return;
+    auto config = domainRoutingConfig();
+    config.insert("default", action);
+    m_appSettingsRepository->setDomainRoutingConfig(config);
 }
 
 

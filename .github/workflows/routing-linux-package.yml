@@ -1,0 +1,101 @@
+name: Linux routed client package
+on:
+  # The main matrix already builds Linux on source changes. Keep this
+  # focused duplicate lane available for explicit package investigations only.
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: routing-linux-package-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  package-linux:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with: {submodules: recursive}
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: native/routing/go.mod
+          cache-dependency-path: native/routing/go.sum
+      - name: Download pinned Go modules (retry transient network failures)
+        shell: bash
+        working-directory: native/routing
+        run: |
+          for attempt in 1 2 3; do
+            if go mod download; then
+              go mod verify
+              exit 0
+            fi
+            if [ "$attempt" -eq 3 ]; then exit 1; fi
+            sleep 5
+          done
+      - uses: actions/setup-python@v6
+        with: {python-version: '3.14'}
+      - uses: jurplel/install-qt-action@v4.3.1
+        with:
+          version: '6.10.1'
+          arch: linux_gcc_64
+          modules: qtremoteobjects qt5compat qtshadertools qthttpserver qtwebsockets
+          tools: tools_ifw
+          dir: ${{ runner.temp }}
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-x11-0 libsecret-1-dev
+          pip install conan==2.28.0
+          conan profile detect --force
+      - name: Qt-to-core rule migration contract
+        run: |
+          cmake -S client/tests/routing -B routing-contract-build -DCMAKE_PREFIX_PATH="${{ runner.temp }}/Qt/6.10.1/gcc_64"
+          cmake --build routing-contract-build
+          ctest --test-dir routing-contract-build --output-on-failure
+      - name: Build client, service and installer using existing entry point
+        id: build
+        shell: bash
+        env:
+          QT_INSTALL_DIR: ${{ runner.temp }}
+          AMNEZIA_BUILD_TESTS: 'ON'
+        run: |
+          set -o pipefail
+          deploy/build.sh --generator Ninja --installer all 2>&1 | tee client-build.log
+      - name: Record baseline result
+        if: always()
+        env:
+          BUILD_OUTCOME: ${{ steps.build.outcome }}
+        run: python scripts/routing/build_manifest.py linux
+      - name: Existing settings and rule UI regression tests
+        if: success()
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: ctest --test-dir deploy/build/client/tests -V --timeout 120 --output-junit qt-regression.xml
+      - name: Build installed-service IPC probe and disposable peer
+        run: |
+          cmake -S scripts/routing/service-probe -B routing-service-probe-build -DCMAKE_PREFIX_PATH="${{ runner.temp }}/Qt/6.10.1/gcc_64"
+          cmake --build routing-service-probe-build
+          cd native/routing
+          go build -mod=readonly -tags with_gvisor -o "$RUNNER_TEMP/installed-routing-peer" ./cmd/android-fixture
+      - name: Install RUN package and verify actual Qt service and system resolver
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          set -euo pipefail
+          packages=(deploy/build/AmneziaVPN_*_linux_x64.run)
+          chmod +x "${packages[0]}"
+          sudo modprobe tun
+          python3 -u scripts/routing/run_linux_service_container.py --package "${packages[0]}" --peer "$RUNNER_TEMP/installed-routing-peer" --qt-probe "$GITHUB_WORKSPACE/routing-service-probe-build/routing-service-probe" --report "$GITHUB_WORKSPACE/linux-installed-service.json"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: routing-linux-verified-package
+          path: |
+            client-build.log
+            routing-build-manifest.json
+            deploy/build/client/tests/qt-regression.xml
+            deploy/build/client/tests/Testing/Temporary/LastTest.log
+            deploy/build/AmneziaVPN_*_linux_x64.run
+            linux-installed-service.json
+            linux-installed-service.rescue.json
+            linux-installed-service.journal.log
+            linux-installed-service.boot.log
+

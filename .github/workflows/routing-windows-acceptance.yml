@@ -1,0 +1,57 @@
+name: Windows native routed VPN acceptance
+on:
+  push:
+    branches: [feature/sing-box-routing]
+    paths:
+      - .github/workflows/routing-windows-acceptance.yml
+      - native/routing/**
+      - scripts/routing/run_windows_acceptance.py
+      - scripts/routing/run_linux_acceptance.py
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  native-wintun-capture:
+    runs-on: windows-2022
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: native/routing/go.mod
+          cache-dependency-path: native/routing/go.sum
+      - uses: actions/setup-python@v6
+        with: {python-version: '3.14'}
+      - name: Build native helper and controlled AWG peer
+        working-directory: native/routing
+        shell: pwsh
+        run: |
+          go build -mod=readonly -tags with_gvisor -o "$env:RUNNER_TEMP/amnezia-routing.exe" ./cmd/amnezia-routing
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          go build -mod=readonly -tags with_gvisor -o "$env:RUNNER_TEMP/android-fixture.exe" ./cmd/android-fixture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          go build -mod=readonly -o "$env:RUNNER_TEMP/traffic-probe.exe" ./cmd/traffic-probe
+          exit $LASTEXITCODE
+      - name: Verify pinned Wintun dependency (same hash as the repository recipe)
+        shell: pwsh
+        run: |
+          Invoke-WebRequest https://www.wintun.net/builds/wintun-0.14.1.zip -OutFile "$env:RUNNER_TEMP/wintun.zip"
+          if ((Get-FileHash "$env:RUNNER_TEMP/wintun.zip" -Algorithm SHA256).Hash.ToLowerInvariant() -ne '07c256185d6ee3652e09fa55c0b673e2624b565e02c4b9091c79ca7d2f24ef51') { throw 'Wintun source archive mismatch' }
+          Expand-Archive "$env:RUNNER_TEMP/wintun.zip" "$env:RUNNER_TEMP/wintun"
+          Copy-Item "$env:RUNNER_TEMP/wintun/wintun/bin/amd64/wintun.dll" "$env:RUNNER_TEMP/wintun.dll"
+      - name: Native Windows route API, socket protection and ABI checks
+        working-directory: native/routing
+        env:
+          AMNEZIA_NATIVE_WFP_TEST: '1'
+        run: go test -mod=readonly -tags with_gvisor -race ./desktop
+      - name: Real Wintun, DNS and independent DIRECT/AWG observations
+        shell: pwsh
+        run: |
+          python scripts/routing/run_windows_acceptance.py --helper "$env:RUNNER_TEMP/amnezia-routing.exe" --peer "$env:RUNNER_TEMP/android-fixture.exe" --report windows-native-acceptance.json --quic-probe "$env:RUNNER_TEMP/traffic-probe.exe" --cycles 100
+          exit $LASTEXITCODE
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-native-capture-acceptance
+          path: windows-native-acceptance.json
+          if-no-files-found: error
