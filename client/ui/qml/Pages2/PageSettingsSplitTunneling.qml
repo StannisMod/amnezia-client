@@ -144,7 +144,7 @@ PageType {
                 Layout.leftMargin: 16
                 Layout.rightMargin: 16
                 enabled: root.pageEnabled
-                text: qsTr("Experimental AWG domain routing (supports *.ru)")
+                text: qsTr("Experimental domain routing (AWG / WireGuard) (supports *.ru)")
                 checked: IpSplitTunnelingController.singBoxRoutingEnabled
                 onClicked: {
                     IpSplitTunnelingController.setSingBoxRoutingEnabled(checked)
@@ -161,14 +161,14 @@ PageType {
 
                 BodyTextType {
                     Layout.fillWidth: true
-                    text: qsTr("AWG rules apply to apps included in the VPN. Exact domain → longest suffix → longest CIDR → default. A suffix includes its root domain. Domains can come from managed DNS or visible HTTP/TLS/QUIC metadata. Hidden or unavailable domains use the default route. Reconnect to apply changes.")
+                    text: qsTr("Routing rules apply to apps included in the VPN. Exact domain → longest suffix → longest CIDR → default. A suffix includes its root domain. Domains can come from managed DNS or visible HTTP/TLS/QUIC metadata. If no domain is available, IP rules and the default route still apply. ECH may hide the original hostname. Reconnect to apply changes.")
                     wrapMode: Text.WordWrap
                     color: AmneziaStyle.color.textSecondary
                 }
                 RowLayout {
                     Label { text: qsTr("Default route") }
                     ComboBox {
-                        model: [qsTr("VPN (AmneziaWG)"), qsTr("Direct")]
+                        model: [qsTr("VPN"), qsTr("Direct")]
                         currentIndex: IpSplitTunnelingController.domainDefault === "direct" ? 1 : 0
                         onActivated: IpSplitTunnelingController.setDomainDefault(currentIndex === 1 ? "direct" : "vpn")
                     }
@@ -221,7 +221,7 @@ PageType {
                     ComboBox {
                         id: newRuleAction
                         Layout.fillWidth: true
-                        model: [qsTr("Direct"), qsTr("VPN (AmneziaWG)")]
+                        model: [qsTr("Direct"), qsTr("VPN")]
                     }
                     Button {
                         text: qsTr("Add rule")

@@ -11,8 +11,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/StannisMod/amnezia-client/native/routing/awg"
+	"github.com/StannisMod/amnezia-client/native/routing/engine"
 	"github.com/StannisMod/amnezia-client/native/routing/mobile"
+	"github.com/StannisMod/amnezia-client/native/routing/tunnel"
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-tun"
 	"github.com/sagernet/sing/common/control"
@@ -129,8 +130,8 @@ func Start(ctx context.Context, raw []byte, manageDNS bool) (*Session, error) {
 	return s, nil
 }
 
-func (s *Session) Stats() (awg.Stats, error) { return s.core.Stats() }
-func (s *Session) CaptureID() string         { return strconv.FormatUint(s.luid, 10) }
+func (s *Session) Stats() (tunnel.Stats, error) { return s.core.Stats() }
+func (s *Session) CaptureID() string            { return strconv.FormatUint(s.luid, 10) }
 func (s *Session) Close() error {
 	return s.close(false)
 }
@@ -164,3 +165,5 @@ func Recover() error {
 	}
 	return errors.New("routing adapter is still owned; refusing to delete a live adapter")
 }
+
+func (s *Session) Diagnostics() engine.DiagnosticSnapshot { return s.core.Diagnostics() }

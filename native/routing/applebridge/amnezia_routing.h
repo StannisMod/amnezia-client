@@ -9,6 +9,8 @@ typedef void (*AmneziaHostRelease)(void *);
 int64_t AmneziaRoutingStart(char *, int32_t, void *, AmneziaPacketWriter, AmneziaHostRelease);
 void AmneziaRoutingStop(int64_t);
 int32_t AmneziaRoutingFeed(int64_t, uint8_t *, int32_t);
+// Diagnostics returns owned UTF-8 JSON; caller must free it.
+char *AmneziaRoutingDiagnostics(int64_t);
 int32_t AmneziaRoutingStats(int64_t, uint64_t *, uint64_t *, uint64_t *);
 static inline int32_t amnezia_write_packet(AmneziaPacketWriter fn, void *host, const uint8_t *data, int32_t size) { return fn(host, data, size); }
 static inline void amnezia_release_host(AmneziaHostRelease fn, void *host) { fn(host); }

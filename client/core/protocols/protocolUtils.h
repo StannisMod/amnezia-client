@@ -30,6 +30,9 @@ namespace amnezia
 
         int getPortForInstall(Proto p);
 
+        // Implemented flow adapters; native validation checks transport settings.
+        bool supportsDomainRouting(Proto p);
+
         int defaultPort(Proto p);
         bool defaultPortChangeable(Proto p);
 

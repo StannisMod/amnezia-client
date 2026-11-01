@@ -16,6 +16,7 @@ import (
 
 	"github.com/StannisMod/amnezia-client/native/routing/awg"
 	"github.com/StannisMod/amnezia-client/native/routing/rules"
+	"github.com/StannisMod/amnezia-client/native/routing/wireguard"
 	"github.com/miekg/dns"
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-tun"
@@ -63,7 +64,21 @@ func TestFakeIPRealDNSOverAWG(t *testing.T) {
 	}
 }
 
-func testFakeIPSharedAddressEgress(t *testing.T, defaultPolicy rules.Action, realDNS, dualStack, dnsOverVPN bool) {
+// Both adapters must preserve identical DNS, domain, TCP/UDP and sniffing
+// policy. Standard WG interoperability is also checked against wireguard-go.
+func TestWireGuardSharedRoutingPolicy(t *testing.T) {
+	for _, policy := range []rules.Action{rules.VPN, rules.Direct} {
+		for _, overVPN := range []bool{false, true} {
+			name := string(policy) + "/dns_direct"
+			if overVPN {
+				name = string(policy) + "/dns_vpn"
+			}
+			t.Run(name, func(t *testing.T) { testFakeIPSharedAddressEgress(t, policy, true, false, overVPN, "wireguard") })
+		}
+	}
+}
+
+func testFakeIPSharedAddressEgress(t *testing.T, defaultPolicy rules.Action, realDNS, dualStack, dnsOverVPN bool, transport ...string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	aPriv, aPub := keys(t)
@@ -87,6 +102,10 @@ func testFakeIPSharedAddressEgress(t *testing.T, defaultPolicy rules.Action, rea
 	aPort := uint16(reserved.LocalAddr().(*net.UDPAddr).Port)
 	reserved.Close()
 	params := map[string]string{"jc": "2", "jmin": "40", "jmax": "80", "s1": "16", "s2": "24", "h1": "1001", "h2": "1002", "h3": "1003", "h4": "1004"}
+	standardWG := len(transport) > 0 && transport[0] == "wireguard"
+	if standardWG {
+		params = nil
+	}
 	b, e := awg.New(ctx, awg.Config{Address: []netip.Addr{netip.MustParseAddr("10.77.0.2")}, PrivateKey: bPriv, PublicKey: aPub, Endpoint: netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), aPort), AllowedIPs: []netip.Prefix{netip.MustParsePrefix("10.77.0.1/32")}, Parameters: params}, listen)
 	if e != nil {
 		t.Fatal(e)
@@ -177,7 +196,13 @@ func testFakeIPSharedAddressEgress(t *testing.T, defaultPolicy rules.Action, rea
 		if defaultPolicy == rules.Direct {
 			policy.Rules = append(policy.Rules, rules.Rule{Kind: rules.Domain, Value: "b.vpn.test", Action: rules.VPN})
 		}
-		compiled, err := (SessionConfig{Rules: policy, AWG: awg.Config{Address: []netip.Addr{netip.MustParseAddr("10.77.0.1")}, PrivateKey: aPriv, PublicKey: bPub, Endpoint: netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), bPort), ListenPort: aPort, AllowedIPs: []netip.Prefix{netip.MustParsePrefix("0.0.0.0/0")}, Parameters: params}, Resolver: addr, ResolverAction: dnsPath}).Compile()
+		session := SessionConfig{Rules: policy, AWG: awg.Config{Address: []netip.Addr{netip.MustParseAddr("10.77.0.1")}, PrivateKey: aPriv, PublicKey: bPub, Endpoint: netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), bPort), ListenPort: aPort, AllowedIPs: []netip.Prefix{netip.MustParsePrefix("0.0.0.0/0")}, Parameters: params}, Resolver: addr, ResolverAction: dnsPath}
+		if standardWG {
+			c := session.AWG
+			session.VPN = &TransportConfig{Type: "wireguard", WireGuard: &wireguard.Config{Address: c.Address, PrivateKey: c.PrivateKey, PublicKey: c.PublicKey, Endpoint: c.Endpoint, ListenPort: c.ListenPort, AllowedIPs: c.AllowedIPs}}
+			session.AWG = awg.Config{}
+		}
+		compiled, err := session.Compile()
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -207,6 +232,8 @@ func testFakeIPSharedAddressEgress(t *testing.T, defaultPolicy rules.Action, rea
 	if e != nil {
 		t.Fatal(e)
 	}
+	diagnostics := new(Diagnostics)
+	instance.Router().AppendTracker(diagnostics)
 	if e = instance.Start(); e != nil {
 		t.Fatal(e)
 	}
@@ -253,8 +280,15 @@ func testFakeIPSharedAddressEgress(t *testing.T, defaultPolicy rules.Action, rea
 			t.Fatalf("%s egress: got %q", v.domain, buf)
 		}
 	}
+	snapshot := diagnostics.Snapshot()
+	if snapshot.Direct == 0 || snapshot.VPN == 0 || snapshot.ManagedDNS < 3 || snapshot.Default == 0 {
+		t.Fatal("routing diagnostics lost managed DNS or default decisions", snapshot)
+	}
 	if realDNS && !dualStack && defaultPolicy == rules.VPN {
 		testRealIPSniff(t, ctx, instance, b)
+		if diagnostics.Snapshot().Sniffed < 2 {
+			t.Fatal("visible real-IP names missing from diagnostics", diagnostics.Snapshot())
+		}
 	}
 	// An app may retain a FakeIP whose mapping was removed. Never pass that
 	// literal into DIRECT or AWG; the missing identity must fail at routing.

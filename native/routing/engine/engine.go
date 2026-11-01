@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 
 	"github.com/StannisMod/amnezia-client/native/routing/awg"
+	"github.com/StannisMod/amnezia-client/native/routing/wireguard"
 	box "github.com/sagernet/sing-box"
 	"github.com/sagernet/sing-box/adapter/certificate"
 	"github.com/sagernet/sing-box/adapter/endpoint"
@@ -36,6 +37,7 @@ func Context(ctx context.Context, host Underlay) context.Context {
 	out := outbound.NewRegistry()
 	registerDirect(out, host)
 	awg.Register(out, host.ListenPacket)
+	wireguard.Register(out, host.ListenPacket)
 	d := dns.NewTransportRegistry()
 	transport.RegisterUDP(d)
 	transport.RegisterTCP(d)

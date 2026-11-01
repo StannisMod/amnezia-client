@@ -120,3 +120,18 @@ func RoutingReadStats(handle int64, rx, tx, handshake *C.longlong) C.int {
 	*handshake = C.longlong(stats.LastHandshake)
 	return 0
 }
+
+//export RoutingDiagnostics
+func RoutingDiagnostics(handle int64) *C.char {
+	routedSessions.Lock()
+	session := routedSessions.sessions[handle]
+	routedSessions.Unlock()
+	if session == nil {
+		return nil
+	}
+	raw, err := json.Marshal(session.Diagnostics())
+	if err != nil {
+		return nil
+	}
+	return C.CString(string(raw)) // caller owns the returned allocation
+}

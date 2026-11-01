@@ -4,11 +4,16 @@ import android.net.VpnService.Builder
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import org.amnezia.awg.RoutingBackend
+import org.amnezia.awg.RoutingHost
+import org.json.JSONArray
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.amnezia.awg.GoBackend
 import org.amnezia.vpn.protocol.Protocol
+import org.amnezia.vpn.protocol.ProtocolConfig
 import org.amnezia.vpn.protocol.ProtocolState.CONNECTED
 import org.amnezia.vpn.protocol.ProtocolState.DISCONNECTED
 import org.amnezia.vpn.protocol.Statistics
@@ -27,6 +32,127 @@ private const val TAG = "Wireguard"
 
 open class Wireguard : Protocol() {
 
+    @Volatile private var routedHandle = -1L
+    @Volatile private var routedConfig: JSONObject? = null
+    private var routedStatusJob: Job? = null
+    private val routedScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    private fun startRouted(config: JSONObject, vpnBuilder: Builder, protect: (Int) -> Boolean) {
+        if (lockdownEnabled()) {
+            throw VpnStartException("Experimental domain routing is unavailable while Android VPN lockdown is enabled")
+        }
+        // Use the existing profile parser, including every AWG 3.1 parameter,
+        // but never materialize the legacy site's cached IP exclusions.
+        val parseInput = JSONObject(config.toString()).apply { put("splitTunnelType", 0) }
+        val wg = parseConfig(parseInput)
+        val transportType = config.getString("protocol")
+        if (transportType != "awg" && transportType != "wireguard") throw VpnStartException("Unsupported routing adapter")
+        val data = config.getJSONObject(transportType + "_config_data")
+        val allowed = data.getJSONArray("allowed_ips")
+        val allowedSet = (0 until allowed.length()).map { allowed.getString(it).trim() }.toSet()
+        if ("0.0.0.0/0" !in allowedSet) {
+            throw VpnStartException("Experimental domain routing requires an IPv4 default route in the VPN profile")
+        }
+        val parameters = JSONObject()
+        val excluded = setOf("private_key", "public_key", "preshared_key", "replace_peers", "replace_allowed_ips", "allowed_ip", "endpoint", "persistent_keepalive_interval", "listen_port")
+        for (line in wg.toWgUserspaceString().lineSequence()) {
+            val key = line.substringBefore('=')
+            if (line.contains('=') && key !in excluded) parameters.put(key, line.substringAfter('='))
+        }
+        val resolverValue = config.optString("dns1").ifBlank { config.optString("dns2") }
+        if (resolverValue.isBlank()) throw VpnStartException("A numeric DNS resolver is required for domain routing")
+        val resolver = parseInetAddress(resolverValue)
+        val resolverIp = resolver.hostAddress?.substringBefore('%')
+            ?: throw VpnStartException("Invalid DNS resolver")
+        val resolverEndpoint = if (resolverIp.contains(':')) "[$resolverIp]:53" else "$resolverIp:53"
+        val session = JSONObject().apply {
+            put("cache_path", java.io.File(context.filesDir, "routing-fakeip-v1.db").absolutePath)
+            put("rules", config.getJSONObject("sing_box_routing"))
+            put("resolver", resolverEndpoint)
+            put("resolver_action", if (resolver.isLoopbackAddress) "direct" else config.optString("sing_box_dns_path", "vpn"))
+            put("vpn", JSONObject().apply {
+                put("type", transportType)
+                put(transportType, JSONObject().apply {
+                    put("address", JSONArray(wg.addresses.map { it.address.hostAddress!!.substringBefore('%') }))
+                    put("private_key", data.getString("client_priv_key"))
+                    put("public_key", data.getString("server_pub_key"))
+                    if (!data.optString("psk_key").isNullOrEmpty()) put("pre_shared_key", data.getString("psk_key"))
+                    put("endpoint", wg.endpoint.toString())
+                    put("allowed_ips", allowed)
+                    put("mtu", wg.mtu)
+                    // Preserve AWG 3.1 ranges; the shared native validator checks them.
+                    if (transportType == "awg") {
+                        put("keepalive", wg.persistentKeepalive ?: "0")
+                        put("parameters", parameters)
+                    } else {
+                        if (parameters.length() != 0) throw VpnStartException("Obfuscated WireGuard requires the AWG adapter")
+                        val keepalive = (wg.persistentKeepalive ?: "0").toIntOrNull()
+                        if (keepalive == null || keepalive !in 0..65535) throw VpnStartException("Invalid WireGuard keepalive")
+                        put("keepalive", keepalive)
+                    }
+                })
+            })
+        }.toString().toByteArray(Charsets.UTF_8)
+
+        if (!RoutingBackend.validate(session)) {
+            throw VpnStartException("Domain routing rules or resolver configuration are invalid")
+        }
+
+        val capture = ProtocolConfig.build(blockingMode = false) {
+            addAddress(InetNetwork("172.19.0.1", 30))
+            addAddress(InetNetwork("fdfe:dcba:9876::1", 126))
+            addDnsServer(InetNetwork("172.19.0.2", 32).address)
+            addRoute(InetNetwork("0.0.0.0", 0))
+            // Capture ULA FakeIPs too, while leaving the legacy builder's
+            // ::/0-to-2000::/3 compatibility transformation unchanged.
+            addRoute(InetNetwork("::", 1))
+            addRoute(InetNetwork("8000::", 1))
+            setMtu(1280)
+            configAppSplitTunneling(config)
+        }
+        stopRouted()
+        routedConfig = JSONObject(config.toString())
+        buildVpnInterface(capture, vpnBuilder)
+        vpnBuilder.establish().use { descriptor ->
+            if (descriptor == null) throw VpnStartException("Cannot establish the routed VPN interface")
+            routedHandle = RoutingBackend.start(descriptor.detachFd(), session, RoutingHost(protect))
+        }
+        if (routedHandle <= 0) {
+            routedHandle = -1L
+            // Do not silently retry the legacy backend or expose VPN flows.
+            throw VpnStartException("Domain routing startup failed; check the profile and routing rules")
+        }
+        val statusHandle = routedHandle
+        routedStatusJob = routedScope.launch {
+            var announced = false
+            while (routedHandle == statusHandle) {
+                // Lockdown may be enabled while a routed tunnel is active.
+                // Stop rather than allowing protected DIRECT proxy sockets to
+                // circumvent the user's OS policy. The OS keeps traffic blocked.
+                if (lockdownEnabled()) {
+                    stopRouted()
+                    state.value = DISCONNECTED
+                    onError("Experimental domain routing stopped because Android VPN lockdown is enabled")
+                    break
+                }
+                if (!announced) {
+                    val snapshot = RoutingBackend.stats(statusHandle) ?: break
+                    if (routedHandle != statusHandle) break
+                    if (snapshot[2] > 0) { state.value = CONNECTED; announced = true }
+                }
+                delay(1000)
+            }
+        }
+    }
+
+    private fun stopRouted() {
+        routedStatusJob?.cancel()
+        routedStatusJob = null
+        val handle = routedHandle
+        routedHandle = -1L
+        if (handle > 0) RoutingBackend.stop(handle)
+    }
+
     private var tunnelHandle: Int = -1
     private var config: WireguardConfig? = null // save config for reconnect
     protected open val ifName: String = "amn0"
@@ -35,6 +161,10 @@ open class Wireguard : Protocol() {
 
     override val statistics: Statistics
         get() {
+            if (routedConfig != null) {
+                val counters = RoutingBackend.stats(routedHandle) ?: return Statistics.EMPTY_STATISTICS
+                return Statistics.build { setRxBytes(counters[0]); setTxBytes(counters[1]) }
+            }
             if (tunnelHandle == -1) return Statistics.EMPTY_STATISTICS
             val config = GoBackend.awgGetConfig(tunnelHandle) ?: return Statistics.EMPTY_STATISTICS
             return Statistics.build {
@@ -61,6 +191,13 @@ open class Wireguard : Protocol() {
     }
 
     override suspend fun startVpn(config: JSONObject, vpnBuilder: Builder, protect: (Int) -> Boolean) {
+        if (config.has("sing_box_routing")) {
+            if (tunnelHandle != -1) turnOffVpn()
+            startRouted(config, vpnBuilder, protect)
+            return
+        }
+        stopRouted()
+        routedConfig = null
         val wireguardConfig = parseConfig(config)
         start(wireguardConfig, vpnBuilder, protect)
         this.config = wireguardConfig
@@ -236,6 +373,7 @@ open class Wireguard : Protocol() {
     }
 
     override fun stopVpn() {
+        if (routedConfig != null) { stopRouted(); state.value = DISCONNECTED; return }
         if (tunnelHandle == -1) {
             Log.w(TAG, "Tunnel already down")
             return
@@ -245,6 +383,7 @@ open class Wireguard : Protocol() {
     }
 
     override fun reconnectVpn(vpnBuilder: Builder, protect: (Int) -> Boolean) {
+        routedConfig?.let { startRouted(it, vpnBuilder, protect); return }
         val config = this.config ?: throw VpnException("Reconnect config is empty")
         start(config, vpnBuilder, protect, true)
     }

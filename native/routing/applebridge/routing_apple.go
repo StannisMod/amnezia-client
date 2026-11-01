@@ -10,6 +10,7 @@ import "C"
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net"
 	"sync"
@@ -147,4 +148,23 @@ func AmneziaRoutingStats(handle C.int64_t, rx, tx, handshake *C.uint64_t) C.int3
 	}
 	*rx, *tx, *handshake = C.uint64_t(stats.RXBytes), C.uint64_t(stats.TXBytes), C.uint64_t(stats.LastHandshake)
 	return 0
+}
+
+//export AmneziaRoutingDiagnostics
+func AmneziaRoutingDiagnostics(handle C.int64_t) *C.char {
+	value, ok := appleRoutingHandles.Load(int64(handle))
+	if !ok {
+		return nil
+	}
+	s := value.(*appleRoutingSession)
+	s.RLock()
+	defer s.RUnlock()
+	if s.closed {
+		return nil
+	}
+	raw, err := json.Marshal(s.session.Diagnostics())
+	if err != nil {
+		return nil
+	}
+	return C.CString(string(raw)) // caller releases with free()
 }

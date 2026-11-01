@@ -101,9 +101,9 @@ func main() {
 			}
 			if !connected && stats.LastHandshake > 0 {
 				connected = true
-				write(map[string]any{"type": "connected", "pubkey": config.AWG.PublicKey})
+				write(map[string]any{"type": "connected", "pubkey": config.PeerPublicKey()})
 			}
-			write(map[string]any{"type": "status", "connected": connected, "rxBytes": stats.RXBytes, "txBytes": stats.TXBytes, "deviceIpv4Address": "172.19.0.1", "serverIpv4Gateway": "172.19.0.2"})
+			write(map[string]any{"type": "status", "routing": session.Diagnostics(), "connected": connected, "rxBytes": stats.RXBytes, "txBytes": stats.TXBytes, "deviceIpv4Address": "172.19.0.1", "serverIpv4Gateway": "172.19.0.2"})
 		}
 	}
 }

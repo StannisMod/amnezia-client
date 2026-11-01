@@ -338,9 +338,9 @@ void VpnConnection::connectToVpn(const QString &serverId, DockerContainer contai
 #if defined(Q_OS_WIN) || (defined(Q_OS_LINUX) && !defined(Q_OS_ANDROID))
     // These desktop app modes require the flow engine. Never silently start a
     // legacy backend that cannot enforce the saved application scope.
-    const bool routedAwg = m_appSettingsRepository->isSingBoxRoutingEnabled()
-        && vpnConfiguration.value(configKey::vpnProto).toString() == ProtocolUtils::protoToString(Proto::Awg);
-    if (m_appSettingsRepository->isAppsSplitTunnelingEnabled() && !routedAwg
+    const bool routedSession = m_appSettingsRepository->isSingBoxRoutingEnabled()
+        && ProtocolUtils::supportsDomainRouting(ProtocolUtils::protoFromString(vpnConfiguration.value(configKey::vpnProto).toString()));
+    if (m_appSettingsRepository->isAppsSplitTunnelingEnabled() && !routedSession
         && !m_appSettingsRepository->vpnApps(m_appSettingsRepository->appsRouteMode()).isEmpty()
         && (m_appSettingsRepository->appsRouteMode() == AppsRouteMode::VpnOnlyForwardApps
 #ifndef Q_OS_WIN
@@ -518,7 +518,7 @@ void VpnConnection::appendSplitTunnelingConfig()
 
 #if defined(Q_OS_ANDROID) || defined(Q_OS_IOS) || defined(Q_OS_LINUX) || defined(Q_OS_WIN)
     if (m_appSettingsRepository->isSingBoxRoutingEnabled()
-            && protocolName == ProtocolUtils::protoToString(Proto::Awg)) {
+            && ProtocolUtils::supportsDomainRouting(ProtocolUtils::protoFromString(protocolName))) {
         m_vpnConfiguration.insert("sing_box_routing", m_appSettingsRepository->isSitesSplitTunnelingEnabled()
             ? m_appSettingsRepository->domainRoutingConfig()
             : QJsonObject{{"version", 1}, {"default", "vpn"}, {"rules", QJsonArray()}});

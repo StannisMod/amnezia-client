@@ -112,7 +112,12 @@ final class RoutingPacketTunnel {
         queue.async {
             var rx: UInt64 = 0, tx: UInt64 = 0, handshake: UInt64 = 0
             guard self.handle > 0, AmneziaRoutingStats(self.handle, &rx, &tx, &handshake) == 0 else { completion(nil); return }
-            completion(try? JSONSerialization.data(withJSONObject: ["rx_bytes": String(rx), "tx_bytes": String(tx), "last_handshake_time_sec": handshake]))
+            var status: [String: Any] = ["rx_bytes": String(rx), "tx_bytes": String(tx), "last_handshake_time_sec": handshake]
+            if let raw = AmneziaRoutingDiagnostics(self.handle) {
+                defer { free(raw) }
+                status["routing"] = try? JSONSerialization.jsonObject(with: Data(String(cString: raw).utf8))
+            }
+            completion(try? JSONSerialization.data(withJSONObject: status))
         }
     }
 
@@ -159,7 +164,15 @@ final class RoutingPacketTunnel {
         }
         let support = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
         try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        return try JSONSerialization.data(withJSONObject: ["rules": rules, "awg": awg,
+        let transport = config.routingTransport ?? "awg" // saved pre-adapter sessions
+        guard transport == "awg" || transport == "wireguard" else { throw RoutingError.invalidConfiguration }
+        if transport == "wireguard" {
+            guard parameters.isEmpty,
+                  let keepalive = UInt16(config.persistentKeepAlive ?? "0") else { throw RoutingError.invalidConfiguration }
+            awg.removeValue(forKey: "parameters")
+            awg["keepalive"] = keepalive
+        }
+        return try JSONSerialization.data(withJSONObject: ["rules": rules, "vpn": ["type": transport, transport: awg],
                     "cache_path": support.appendingPathComponent("routing-fakeip-v1.db").path,
                     "resolver": dns.contains(":") ? "[\(dns)]:53" : "\(dns):53", "resolver_action": config.routingDNSPath ?? "vpn"])
     }

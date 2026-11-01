@@ -119,3 +119,34 @@ func TestDesktopApplicationScopeUsesExecutableIdentity(t *testing.T) {
 		}
 	}
 }
+
+func TestWireGuardProfileUsesCommonRouting(t *testing.T) {
+	profile := testProfile(t)
+	profile["protocol"] = "wireguard"
+	data := profile["awg_config_data"].(map[string]any)
+	for _, key := range strings.Fields("Jc Jmin Jmax S1 S2 H1 H2 H3 H4 HeaderProtectionKey RandomTrailers DisableCookies") {
+		delete(data, key)
+	}
+	profile["wireguard_config_data"] = data
+	delete(profile, "awg_config_data")
+	data["persistent_keep_alive"] = "25"
+	raw, _ := json.Marshal(profile)
+	config, err := ProfileSession(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.VPN == nil || config.VPN.Type != "wireguard" || config.VPN.WireGuard.Keepalive != 25 {
+		t.Fatal("wrong transport")
+	}
+	encoded, err := config.Compile()
+	if err != nil || !strings.Contains(string(encoded), "amnezia-wireguard") || !strings.Contains(string(encoded), "ru") {
+		t.Fatal("lost shared policy", err)
+	}
+	for _, mutate := range []func(){func() { data["persistent_keep_alive"] = "25-35" }, func() { data["persistent_keep_alive"] = "25"; data["Jc"] = "3" }} {
+		mutate()
+		raw, _ = json.Marshal(profile)
+		if _, err = ProfileSession(raw); err == nil {
+			t.Fatal("accepted AWG extension for WG")
+		}
+	}
+}

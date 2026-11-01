@@ -5,23 +5,10 @@ import (
 	"errors"
 	"net/netip"
 
-	"github.com/StannisMod/amnezia-client/native/routing/awg"
 	"github.com/StannisMod/amnezia-client/native/routing/rules"
 )
 
 const TUNTag = "amnezia-tun"
-
-// SessionConfig contains no OS route instructions. A native host must create
-// and protect its capture boundary before starting the engine, and restore
-// routes/resolvers after stopping it. The host installs its PlatformInterface
-// to provide the existing VPN descriptor on mobile.
-type SessionConfig struct {
-	Rules          rules.Config      `json:"rules"`
-	AWG            awg.Config        `json:"awg"`
-	Resolver       netip.AddrPort    `json:"resolver"`
-	ResolverAction rules.Action      `json:"resolver_action"`
-	Applications   *ApplicationScope `json:"applications,omitempty"`
-}
 
 // RoutingConfig is independent of the VPN transport. Native hosts still own
 // capture/protection and supply a separately validated transport adapter.
@@ -30,20 +17,6 @@ type RoutingConfig struct {
 	Resolver       netip.AddrPort
 	ResolverAction rules.Action
 	Applications   *ApplicationScope
-}
-
-func (c SessionConfig) Compile() ([]byte, error) {
-	awgBytes, err := json.Marshal(c.AWG)
-	if err != nil {
-		return nil, errors.New("invalid AWG configuration")
-	}
-	var vpn map[string]any
-	if err = json.Unmarshal(awgBytes, &vpn); err != nil {
-		return nil, err
-	}
-	vpn["type"] = awg.Type
-	vpn["tag"] = "vpn"
-	return (RoutingConfig{Rules: c.Rules, Resolver: c.Resolver, ResolverAction: c.ResolverAction, Applications: c.Applications}).compile(vpn)
 }
 
 // compile is internal: hosts cannot inject an arbitrary raw sing-box outbound.
