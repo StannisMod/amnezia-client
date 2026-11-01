@@ -44,7 +44,11 @@ func TestEmulatorPeerLearnsEndpointAndServesIPv4IPv6(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer f.stop()
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	// One authenticated bulk transfer plus dual-stack TCP/UDP and DNS probes
+	// share this session. On the macOS race runner the bulk phase alone takes
+	// 9-11 seconds; a 15-second session expired during the remaining probes.
+	// Keep per-connection deadlines below, with a bounded budget for all phases.
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	transport, err := awg.New(ctx, awg.Config{
 		Address:    []netip.Addr{netip.MustParseAddr("10.77.0.1"), netip.MustParseAddr("fd77::1")},
