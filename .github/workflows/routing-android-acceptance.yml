@@ -2,7 +2,7 @@ name: Android routed VPN acceptance
 
 on:
   push:
-    branches: [feature/sing-box-routing]
+    branches: [dev, feature/sing-box-routing]
     paths:
       - .github/workflows/routing-android-acceptance.yml
       - recipes/libagw/**
@@ -56,8 +56,9 @@ jobs:
           APK_OVERRIDE: ${{ inputs.apk_run_id }}
         run: |
           python3 - <<'PYSELECT'
-          import json, os, pathlib, subprocess, time, urllib.error, urllib.request
+          import json, os, pathlib, subprocess, time, urllib.error, urllib.parse, urllib.request
           repo = os.environ['GITHUB_REPOSITORY']
+          branch = urllib.parse.quote(os.environ['GITHUB_REF_NAME'], safe='')
           def api(path):
               req = urllib.request.Request(f'https://api.github.com/repos/{repo}/{path}', headers={'Authorization': f"Bearer {os.environ['GH_TOKEN']}"})
               for attempt in range(4):
@@ -87,7 +88,7 @@ jobs:
                   # This does not replace the full four-platform build gate.
                   for workflow in ('sing-box-routing-ci.yml', 'routing-android-package.yml'):
                       try:
-                          candidates += api(f'actions/workflows/{workflow}/runs?branch=feature%2Fsing-box-routing&event=push&per_page=30')['workflow_runs']
+                          candidates += api(f'actions/workflows/{workflow}/runs?branch={branch}&event=push&per_page=30')['workflow_runs']
                       except urllib.error.HTTPError as error:
                           if error.code != 404: raise
                   candidates.sort(key=lambda run: run['created_at'], reverse=True)

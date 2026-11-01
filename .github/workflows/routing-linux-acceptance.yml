@@ -1,7 +1,7 @@
 name: Linux native routed VPN acceptance
 on:
   push:
-    branches: [feature/sing-box-routing]
+    branches: [dev, feature/sing-box-routing]
     paths:
       - .github/workflows/routing-linux-acceptance.yml
       - native/routing/**

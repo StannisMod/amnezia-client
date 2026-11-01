@@ -2,33 +2,27 @@ name: Sing-box routing checks
 
 on:
   push:
-    branches: [feature/sing-box-routing]
+    branches: [dev, feature/sing-box-routing]
     paths-ignore:
       - 'docs/**'
       - '**/*.md'
-      - 'scripts/routing/**'
-      - '.github/workflows/routing-*.yml'
   pull_request:
     branches: [dev]
     paths-ignore:
       - 'docs/**'
       - '**/*.md'
-      - 'scripts/routing/**'
-      - '.github/workflows/routing-*.yml'
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  # Internal PRs use the feature-branch push checks; their entire PR diff
-  # would otherwise re-run every platform even after a docs/test-script edit.
+  # Validate both PR merge revisions and integrated dev commits.
   group: routing-product-v4-${{ github.event_name }}-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
 
 jobs:
   cancel-superseded:
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ubuntu-22.04
     permissions:
       contents: read
@@ -55,7 +49,6 @@ jobs:
 
   core-tests:
     needs: cancel-superseded
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
     strategy:
       fail-fast: false
       matrix:
@@ -96,7 +89,6 @@ jobs:
 
   core-cross-compile:
     needs: cancel-superseded
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
@@ -139,7 +131,6 @@ jobs:
 
   client-linux:
     needs: cancel-superseded
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ubuntu-22.04
     timeout-minutes: 120
     steps:
@@ -231,7 +222,6 @@ jobs:
 
   client-windows:
     needs: cancel-superseded
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
     runs-on: windows-2022
     timeout-minutes: 120
     steps:
@@ -359,7 +349,6 @@ jobs:
 
   client-android:
     needs: cancel-superseded
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ubuntu-22.04
     timeout-minutes: 120
     strategy:
@@ -480,7 +469,6 @@ jobs:
 
   client-ios:
     needs: cancel-superseded
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
     runs-on: macos-15
     timeout-minutes: 120
     steps:
@@ -558,9 +546,23 @@ jobs:
             deploy/build/client/tests/Testing/Temporary/LastTest.log
             deploy/build/client/Release-iphoneos/*.app
 
+  linux-dns-regression:
+    needs: cancel-superseded
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install DNS and native routing test dependencies
+        run: sudo apt-get update && sudo apt-get install -y qt6-base-dev ninja-build
+      - name: Test cache commands and production exclusion routes
+        run: |
+          cmake -S tests/linux-dns-cache -B build-dns-tests -G Ninja
+          cmake --build build-dns-tests
+          sudo env AMNEZIA_REQUIRE_ROUTE_TESTS=1 ctest --test-dir build-dns-tests --output-on-failure
+
   build-gate:
-    if: always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository)
-    needs: [cancel-superseded, core-tests, core-cross-compile, client-linux, client-windows, client-android, client-ios]
+    if: always()
+    needs: [cancel-superseded, core-tests, core-cross-compile, client-linux, client-windows, client-android, client-ios, linux-dns-regression]
     runs-on: ubuntu-22.04
     steps:
       - name: Fail for any failed, cancelled or skipped required lane

@@ -3,7 +3,7 @@
 name: Routed Android emulator client package
 on:
   push:
-    branches: [feature/sing-box-routing]
+    branches: [dev, feature/sing-box-routing]
     paths:
       - client/android/**
       - client/platforms/android/**
