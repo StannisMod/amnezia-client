@@ -56,7 +56,7 @@ func TestInvalidAndConflictingRules(t *testing.T) {
 			t.Errorf("accepted %q", v)
 		}
 	}
-	_, e := (Config{Version: 1, Default: VPN, Rules: []Rule{{Domain, "FOO.ru", Direct, false}, {Domain, "foo.ru.", VPN, false}}}).Normalize()
+	_, e := (Config{Version: 1, Default: VPN, Rules: []Rule{{Kind: Domain, Value: "FOO.ru", Action: Direct, Disabled: false}, {Kind: Domain, Value: "foo.ru.", Action: VPN, Disabled: false}}}).Normalize()
 	if e == nil {
 		t.Fatal("accepted conflicting normalized duplicate")
 	}
@@ -64,8 +64,8 @@ func TestInvalidAndConflictingRules(t *testing.T) {
 
 func TestInverseDisabledAndLongestPrefix(t *testing.T) {
 	c, e := (Config{Version: 1, Default: Direct, Rules: []Rule{
-		{CIDR, "10.0.0.0/8", Direct, false}, {CIDR, "10.1.0.0/16", VPN, false},
-		{Domain, "vpn.test", VPN, false}, {Domain, "off.test", VPN, true},
+		{Kind: CIDR, Value: "10.0.0.0/8", Action: Direct, Disabled: false}, {Kind: CIDR, Value: "10.1.0.0/16", Action: VPN, Disabled: false},
+		{Kind: Domain, Value: "vpn.test", Action: VPN, Disabled: false}, {Kind: Domain, Value: "off.test", Action: VPN, Disabled: true},
 	}}).Normalize()
 	if e != nil {
 		t.Fatal(e)

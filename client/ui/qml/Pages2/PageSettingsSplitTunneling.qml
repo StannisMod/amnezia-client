@@ -22,6 +22,8 @@ PageType {
 
     property var isServerFromTelegramApi: ServersUiController.isServerFromApi(ServersUiController.defaultServerId)
     
+    property var routeActions: ["vpn", "direct", "block"]
+    property string inspectionResult: ""
     property bool pageEnabled
 
     Component.onCompleted: {
@@ -38,6 +40,8 @@ PageType {
 
     Connections {
         target: IpSplitTunnelingController
+
+        function onDomainRoutingChanged() { root.inspectionResult = "" }
 
         function onFinished(message) {
             PageController.showNotificationMessage(message)
@@ -153,6 +157,29 @@ PageType {
             }
 
             ColumnLayout {
+                Layout.fillWidth: true
+                Layout.margins: 16
+                spacing: 8
+                BodyTextType {
+                    Layout.fillWidth: true
+                    text: qsTr("Portable domain routing configuration (AWG / WireGuard)")
+                    wrapMode: Text.WordWrap
+                }
+                RowLayout {
+                    Layout.fillWidth: true
+                    Button {
+                        text: qsTr("Import configuration")
+                        enabled: root.pageEnabled
+                        onClicked: root.importRoutingConfiguration()
+                    }
+                    Button {
+                        text: qsTr("Export configuration")
+                        onClicked: root.exportRoutingConfiguration()
+                    }
+                }
+            }
+
+            ColumnLayout {
                 visible: IpSplitTunnelingController.singBoxRoutingEnabled
                 Layout.fillWidth: true
                 Layout.margins: 16
@@ -161,16 +188,16 @@ PageType {
 
                 BodyTextType {
                     Layout.fillWidth: true
-                    text: qsTr("Routing rules apply to apps included in the VPN. Exact domain → longest suffix → longest CIDR → default. A suffix includes its root domain. Domains can come from managed DNS or visible HTTP/TLS/QUIC metadata. If no domain is available, IP rules and the default route still apply. ECH may hide the original hostname. Reconnect to apply changes.")
+                    text: qsTr("Routing rules apply to apps included in the VPN. Exact domain → longest suffix → longest CIDR → default. A suffix includes its root domain. Domains can come from managed DNS or visible HTTP/TLS/QUIC metadata. If no domain is available, IP rules and the default route still apply. ECH may hide the original hostname. Port and TCP/UDP conditions are combined with the destination. Equally specific rules are checked in list order. Reconnect to apply changes.")
                     wrapMode: Text.WordWrap
                     color: AmneziaStyle.color.textSecondary
                 }
                 RowLayout {
                     Label { text: qsTr("Default route") }
                     ComboBox {
-                        model: [qsTr("VPN"), qsTr("Direct")]
-                        currentIndex: IpSplitTunnelingController.domainDefault === "direct" ? 1 : 0
-                        onActivated: IpSplitTunnelingController.setDomainDefault(currentIndex === 1 ? "direct" : "vpn")
+                        model: [qsTr("VPN"), qsTr("Direct"), qsTr("Block")]
+                        currentIndex: root.routeActions.indexOf(IpSplitTunnelingController.domainDefault)
+                        onActivated: IpSplitTunnelingController.setDomainDefault(root.routeActions[currentIndex])
                     }
                 }
                 Repeater {
@@ -188,6 +215,21 @@ PageType {
                             Accessible.name: qsTr("Rule destination")
                         }
                         RowLayout {
+                            TextField {
+                                id: rulePorts
+                                Layout.fillWidth: true
+                                text: routingRow.modelData.ports || ""
+                                placeholderText: qsTr("All ports, or 80,443,8000-8100")
+                                Accessible.name: qsTr("Rule destination ports")
+                            }
+                            ComboBox {
+                                id: ruleNetwork
+                                model: [qsTr("TCP + UDP"), qsTr("TCP"), qsTr("UDP")]
+                                currentIndex: routingRow.modelData.network === "tcp" ? 1 : routingRow.modelData.network === "udp" ? 2 : 0
+                                Accessible.name: qsTr("Rule network")
+                            }
+                        }
+                        RowLayout {
                             CheckBox {
                                 id: ruleEnabled
                                 text: qsTr("Enabled")
@@ -196,13 +238,13 @@ PageType {
                             ComboBox {
                                 id: ruleAction
                                 Layout.fillWidth: true
-                                model: [qsTr("VPN"), qsTr("Direct")]
-                                currentIndex: routingRow.modelData.action === "direct" ? 1 : 0
+                                model: [qsTr("VPN"), qsTr("Direct"), qsTr("Block")]
+                                currentIndex: root.routeActions.indexOf(routingRow.modelData.action)
                                 Accessible.name: qsTr("Rule route")
                             }
                             Button {
                                 text: qsTr("Save")
-                                onClicked: IpSplitTunnelingController.saveDomainRule(routingRow.index, ruleDestination.text, ruleAction.currentIndex === 1 ? "direct" : "vpn", ruleEnabled.checked)
+                                onClicked: IpSplitTunnelingController.saveDomainRule(routingRow.index, ruleDestination.text, root.routeActions[ruleAction.currentIndex], ruleEnabled.checked, rulePorts.text, ruleNetwork.currentIndex === 0 ? "" : ruleNetwork.currentIndex === 1 ? "tcp" : "udp")
                             }
                             Button {
                                 text: qsTr("Remove")
@@ -218,17 +260,98 @@ PageType {
                     Accessible.name: qsTr("New rule destination")
                 }
                 RowLayout {
+                    TextField {
+                        id: newRulePorts
+                        Layout.fillWidth: true
+                        placeholderText: qsTr("All ports, or 80,443,8000-8100")
+                        Accessible.name: qsTr("New rule destination ports")
+                    }
+                    ComboBox {
+                        id: newRuleNetwork
+                        model: [qsTr("TCP + UDP"), qsTr("TCP"), qsTr("UDP")]
+                        Accessible.name: qsTr("New rule network")
+                    }
+                }
+                RowLayout {
                     ComboBox {
                         id: newRuleAction
                         Layout.fillWidth: true
-                        model: [qsTr("Direct"), qsTr("VPN")]
+                        model: [qsTr("VPN"), qsTr("Direct"), qsTr("Block")]
+                        currentIndex: 1
                     }
                     Button {
                         text: qsTr("Add rule")
                         onClicked: {
-                            if (IpSplitTunnelingController.saveDomainRule(-1, newRuleDestination.text, newRuleAction.currentIndex === 0 ? "direct" : "vpn", true)) newRuleDestination.clear()
+                            if (IpSplitTunnelingController.saveDomainRule(-1, newRuleDestination.text, root.routeActions[newRuleAction.currentIndex], true,
+                                    newRulePorts.text, newRuleNetwork.currentIndex === 0 ? "" : newRuleNetwork.currentIndex === 1 ? "tcp" : "udp")) {
+                                newRuleDestination.clear()
+                                newRulePorts.clear()
+                            }
                         }
                     }
+                }
+            }
+
+            ColumnLayout {
+                visible: IpSplitTunnelingController.singBoxRoutingEnabled
+                Layout.fillWidth: true
+                Layout.margins: 16
+                spacing: 8
+                BodyTextType {
+                    text: qsTr("Check a routing rule")
+                }
+                TextField {
+                    id: checkDestination
+                    Layout.fillWidth: true
+                    placeholderText: qsTr("Exact hostname or IP")
+                    Accessible.name: qsTr("Destination to check")
+                    onTextChanged: root.inspectionResult = ""
+                }
+                TextField {
+                    id: checkIp
+                    Layout.fillWidth: true
+                    placeholderText: qsTr("Known destination IP (optional with hostname)")
+                    Accessible.name: qsTr("Known destination IP")
+                    onTextChanged: root.inspectionResult = ""
+                }
+                RowLayout {
+                    TextField {
+                        id: checkPort
+                        Layout.fillWidth: true
+                        text: "443"
+                        placeholderText: qsTr("Destination port")
+                        Accessible.name: qsTr("Destination port to check")
+                        onTextChanged: root.inspectionResult = ""
+                    }
+                    ComboBox {
+                        id: checkNetwork
+                        model: [qsTr("TCP"), qsTr("UDP")]
+                        Accessible.name: qsTr("Network to check")
+                        onCurrentIndexChanged: root.inspectionResult = ""
+                    }
+                    Button {
+                        text: qsTr("Check")
+                        onClicked: {
+                            var result = IpSplitTunnelingController.inspectDomainRule(checkDestination.text, checkIp.text, checkPort.text,
+                                                                                   checkNetwork.currentIndex === 0 ? "tcp" : "udp")
+                            var action = result.action === "direct" ? qsTr("Direct") : result.action === "vpn" ? qsTr("VPN") : qsTr("Block")
+                            root.inspectionResult = result.error || (result.reason === "managed_dns"
+                                ? qsTr("Managed DNS — port 53 is intercepted before destination rules")
+                                : result.reason === "rule" ? qsTr("%1 — rule %2").arg(action).arg(result.rule)
+                                : qsTr("%1 — default route").arg(action))
+                        }
+                    }
+                }
+                BodyTextType {
+                    Layout.fillWidth: true
+                    text: root.inspectionResult
+                    wrapMode: Text.WordWrap
+                }
+                BodyTextType {
+                    Layout.fillWidth: true
+                    text: qsTr("Checks the saved policy against the hostname, IP, port and network you enter. No DNS lookup is performed. A live connection can differ if its hostname is hidden, or application rules exclude it from the VPN.")
+                    wrapMode: Text.WordWrap
+                    color: AmneziaStyle.color.textSecondary
                 }
             }
 
@@ -415,6 +538,22 @@ PageType {
                 showQuestionDrawer(headerText, descriptionText, yesButtonText, noButtonText, yesButtonFunction, noButtonFunction)
             }
         }
+    }
+
+    function importRoutingConfiguration() {
+        var fileName = SystemController.getFileName(qsTr("Import routing configuration"), qsTr("Routing configuration (*.json)"))
+        if (fileName === "") return
+        showQuestionDrawer(qsTr("Replace routing configuration?"),
+            qsTr("Replaces all domain routing rules and the default route after validation. VPN connections and enable switches are unchanged. Reconnect to apply."),
+            qsTr("Import"), qsTr("Cancel"),
+            function() { IpSplitTunnelingController.importDomainRouting(fileName) }, function() {})
+    }
+
+    function exportRoutingConfiguration() {
+        var fileName = GC.isMobile() ? "amnezia_routing.json" : SystemController.getFileName(qsTr("Export routing configuration"),
+            qsTr("Routing configuration (*.json)"),
+            StandardPaths.standardLocations(StandardPaths.DocumentsLocation) + "/amnezia_routing", true, ".json")
+        if (fileName !== "") IpSplitTunnelingController.exportDomainRouting(fileName)
     }
 
     function selectImportFile(replaceExistingSites) {

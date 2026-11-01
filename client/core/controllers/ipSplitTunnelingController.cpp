@@ -216,25 +216,21 @@ QJsonObject IpSplitTunnelingController::domainRoutingConfig() const
     return m_appSettingsRepository->domainRoutingConfig();
 }
 
-bool IpSplitTunnelingController::saveDomainRule(int index, const QString &destination, const QString &action, bool enabled)
+bool IpSplitTunnelingController::saveDomainRule(int index, const QString &destination, const QString &action, bool enabled,
+                                              const QString &ports, const QString &network)
 {
     auto config = domainRoutingConfig();
     auto rules = config.value("rules").toArray();
     if (index < -1 || index >= rules.size()) return false;
-    const auto rule = amnezia::routing::destinationRule(destination, action, enabled);
+    const auto rule = amnezia::routing::destinationRule(destination, action, enabled, ports, network);
     if (rule.isEmpty()) return false;
-    for (int i = 0; i < rules.size(); ++i) {
-        if (i == index) continue;
-        const auto other = rules[i].toObject();
-        QString text = other.value("value").toString();
-        if (other.value("kind").toString() == "suffix" && !text.startsWith("*.")) text.prepend("*.");
-        const auto normalized = amnezia::routing::destinationRule(text, other.value("action").toString(), !other.value("disabled").toBool());
-        if (normalized.value("kind") == rule.value("kind") && normalized.value("value") == rule.value("value")
-                && enabled && !normalized.value("disabled").toBool()) return false;
-    }
     if (index == -1) rules.append(rule); else rules[index] = rule;
     config.insert("rules", rules);
-    m_appSettingsRepository->setDomainRoutingConfig(config);
+    config.insert("version", 2);
+    QJsonObject normalized;
+    QString error;
+    if (!amnezia::routing::normalizeConfig(config, normalized, error)) return false;
+    m_appSettingsRepository->setDomainRoutingConfig(normalized);
     return true;
 }
 
@@ -250,10 +246,43 @@ void IpSplitTunnelingController::removeDomainRule(int index)
 
 void IpSplitTunnelingController::setDomainDefault(const QString &action)
 {
-    if (action != "direct" && action != "vpn") return;
+    if (!amnezia::routing::validAction(action)) return;
     auto config = domainRoutingConfig();
     config.insert("default", action);
-    m_appSettingsRepository->setDomainRoutingConfig(config);
+    config.insert("version", 2);
+    QJsonObject normalized;
+    QString error;
+    if (amnezia::routing::normalizeConfig(config, normalized, error)) m_appSettingsRepository->setDomainRoutingConfig(normalized);
+}
+
+bool IpSplitTunnelingController::importDomainRouting(const QByteArray &data, QString &error)
+{
+    if (data.size() > 1024 * 1024) { error = tr("Routing file exceeds 1 MiB"); return false; }
+    QJsonParseError parseError;
+    const auto document = QJsonDocument::fromJson(data, &parseError);
+    if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
+        error = tr("Expected a routing JSON object: %1").arg(parseError.errorString());
+        return false;
+    }
+    QJsonObject normalized;
+    if (!amnezia::routing::normalizeConfig(document.object(), normalized, error)) return false;
+    m_appSettingsRepository->setDomainRoutingConfig(normalized);
+    return true;
+}
+
+QByteArray IpSplitTunnelingController::exportDomainRouting(QString &error) const
+{
+    QJsonObject normalized;
+    if (!amnezia::routing::normalizeConfig(domainRoutingConfig(), normalized, error)) return {};
+    const auto data = QJsonDocument(normalized).toJson(QJsonDocument::Indented);
+    if (data.size() > 1024 * 1024) { error = tr("Routing file exceeds 1 MiB"); return {}; }
+    return data;
+}
+
+QVariantMap IpSplitTunnelingController::inspectDomainRule(const QString &destination, const QString &ip,
+                                                        const QString &port, const QString &network) const
+{
+    return amnezia::routing::inspectRule(domainRoutingConfig(), destination, ip, port, network);
 }
 
 

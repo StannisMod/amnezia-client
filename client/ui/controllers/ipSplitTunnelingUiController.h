@@ -37,7 +37,11 @@ public slots:
     void setSingBoxRoutingEnabled(bool enabled);
     QVariantList domainRules() const;
     QString domainDefault() const;
-    bool saveDomainRule(int index, const QString &destination, const QString &action, bool enabled);
+    bool saveDomainRule(int index, const QString &destination, const QString &action, bool enabled,
+                        const QString &ports = {}, const QString &network = {});
+    void importDomainRouting(const QString &fileName);
+    void exportDomainRouting(const QString &fileName);
+    QVariantMap inspectDomainRule(const QString &destination, const QString &ip, const QString &port, const QString &network) const;
     void removeDomainRule(int index);
     void setDomainDefault(const QString &action);
 

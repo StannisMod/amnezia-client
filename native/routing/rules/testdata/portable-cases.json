@@ -1,0 +1,380 @@
+[
+  {
+    "name": "scoped policies and precedence",
+    "config": {
+      "version": 2,
+      "default": "vpn",
+      "rules": [
+        {
+          "kind": "suffix",
+          "value": "*.RU.",
+          "action": "direct"
+        },
+        {
+          "kind": "domain",
+          "value": "shop.ru",
+          "action": "block",
+          "ports": "8001-8003,443,8000-8001",
+          "network": "tcp"
+        },
+        {
+          "kind": "domain",
+          "value": "shop.ru",
+          "action": "direct",
+          "ports": "443",
+          "network": "udp"
+        },
+        {
+          "kind": "domain",
+          "value": "off.ru",
+          "action": "block",
+          "disabled": true
+        },
+        {
+          "kind": "cidr",
+          "value": "10.0.0.1/8",
+          "action": "direct",
+          "ports": "5353",
+          "network": "udp"
+        },
+        {
+          "kind": "cidr",
+          "value": "10.2.0.1/16",
+          "action": "block",
+          "ports": "5353",
+          "network": "udp"
+        }
+      ]
+    },
+    "probes": [
+      {
+        "domain": "SHOP.ru.",
+        "ip": "10.2.1.1",
+        "port": 443,
+        "network": "tcp",
+        "action": "block",
+        "rule": 2
+      },
+      {
+        "domain": "shop.ru",
+        "port": 8002,
+        "network": "tcp",
+        "action": "block",
+        "rule": 2
+      },
+      {
+        "domain": "shop.ru",
+        "port": 443,
+        "network": "udp",
+        "action": "direct",
+        "rule": 3
+      },
+      {
+        "domain": "shop.ru",
+        "port": 444,
+        "network": "tcp",
+        "action": "direct",
+        "rule": 1
+      },
+      {
+        "domain": "off.ru",
+        "port": 443,
+        "network": "tcp",
+        "action": "direct",
+        "rule": 1
+      },
+      {
+        "domain": "ru",
+        "port": 443,
+        "network": "tcp",
+        "action": "direct",
+        "rule": 1
+      },
+      {
+        "domain": "notru",
+        "port": 443,
+        "network": "tcp",
+        "action": "vpn",
+        "rule": 0
+      },
+      {
+        "ip": "10.2.1.1",
+        "port": 5353,
+        "network": "udp",
+        "action": "block",
+        "rule": 6
+      },
+      {
+        "ip": "10.3.1.1",
+        "port": 5353,
+        "network": "udp",
+        "action": "direct",
+        "rule": 5
+      },
+      {
+        "ip": "10.3.1.1",
+        "port": 5353,
+        "network": "tcp",
+        "action": "vpn",
+        "rule": 0
+      }
+    ]
+  },
+  {
+    "name": "block default with IPv6 exception and list order",
+    "config": {
+      "version": 2,
+      "default": "block",
+      "rules": [
+        {
+          "kind": "cidr",
+          "value": "2001:db8::7/32",
+          "action": "vpn",
+          "ports": "443,80",
+          "network": "tcp"
+        },
+        {
+          "kind": "domain",
+          "value": "test.org",
+          "action": "direct",
+          "ports": "443-445"
+        },
+        {
+          "kind": "domain",
+          "value": "test.org",
+          "action": "block",
+          "ports": "444",
+          "network": "tcp"
+        }
+      ]
+    },
+    "probes": [
+      {
+        "ip": "2001:db8::2",
+        "port": 443,
+        "network": "tcp",
+        "action": "vpn",
+        "rule": 1
+      },
+      {
+        "ip": "2001:db8::2",
+        "port": 443,
+        "network": "udp",
+        "action": "block",
+        "rule": 0
+      },
+      {
+        "domain": "test.org",
+        "port": 444,
+        "network": "tcp",
+        "action": "direct",
+        "rule": 2
+      },
+      {
+        "domain": "other.test",
+        "port": 443,
+        "network": "tcp",
+        "action": "block",
+        "rule": 0
+      }
+    ]
+  },
+  {
+    "name": "legacy migration",
+    "config": {
+      "version": 1,
+      "default": "direct",
+      "rules": [
+        {
+          "kind": "domain",
+          "value": "ПРИМЕР.рф.",
+          "action": "vpn"
+        }
+      ]
+    },
+    "probes": [
+      {
+        "domain": "пример.рф",
+        "port": 443,
+        "network": "tcp",
+        "action": "vpn",
+        "rule": 1
+      }
+    ]
+  },
+  {
+    "name": "unknown version",
+    "invalid": true,
+    "config": {
+      "version": 3,
+      "default": "vpn",
+      "rules": []
+    }
+  },
+  {
+    "name": "unknown config field",
+    "invalid": true,
+    "config": {
+      "version": 2,
+      "default": "vpn",
+      "rules": [],
+      "future": true
+    }
+  },
+  {
+    "name": "unknown rule field",
+    "invalid": true,
+    "config": {
+      "version": 2,
+      "default": "vpn",
+      "rules": [
+        {
+          "kind": "domain",
+          "value": "a.test",
+          "action": "direct",
+          "future": true
+        }
+      ]
+    }
+  },
+  {
+    "name": "invalid ports in disabled rule",
+    "invalid": true,
+    "config": {
+      "version": 2,
+      "default": "vpn",
+      "rules": [
+        {
+          "kind": "domain",
+          "value": "a.test",
+          "action": "direct",
+          "ports": "9-1",
+          "disabled": true
+        }
+      ]
+    }
+  },
+  {
+    "name": "invalid network",
+    "invalid": true,
+    "config": {
+      "version": 2,
+      "default": "vpn",
+      "rules": [
+        {
+          "kind": "domain",
+          "value": "a.test",
+          "action": "direct",
+          "network": "quic"
+        }
+      ]
+    }
+  },
+  {
+    "name": "v1 cannot encode v2 policy",
+    "invalid": true,
+    "config": {
+      "version": 1,
+      "default": "vpn",
+      "rules": [
+        {
+          "kind": "domain",
+          "value": "a.test",
+          "action": "block"
+        }
+      ]
+    }
+  },
+  {
+    "name": "conflicting normalized conditions",
+    "invalid": true,
+    "config": {
+      "version": 2,
+      "default": "vpn",
+      "rules": [
+        {
+          "kind": "domain",
+          "value": "a.test",
+          "action": "direct",
+          "ports": "80,81-82"
+        },
+        {
+          "kind": "domain",
+          "value": "a.test.",
+          "action": "vpn",
+          "ports": "80-82"
+        }
+      ]
+    }
+  },
+  {
+    "name": "legacy empty native session",
+    "config": {
+      "version": 1,
+      "default": "vpn",
+      "rules": null
+    },
+    "probes": [
+      {
+        "domain": "test.org",
+        "port": 443,
+        "network": "tcp",
+        "action": "vpn",
+        "rule": 0
+      }
+    ]
+  },
+  {
+    "name": "missing v2 rules",
+    "invalid": true,
+    "config": {
+      "version": 2,
+      "default": "vpn"
+    }
+  },
+  {
+    "name": "null v2 rules",
+    "invalid": true,
+    "config": {
+      "version": 2,
+      "default": "vpn",
+      "rules": null
+    }
+  },
+  {
+    "name": "null condition",
+    "invalid": true,
+    "config": {
+      "version": 2,
+      "default": "vpn",
+      "rules": [
+        {
+          "kind": "domain",
+          "value": "a.test",
+          "action": "direct",
+          "ports": null
+        }
+      ]
+    }
+  },
+  {
+    "name": "duplicate identical conditions",
+    "invalid": true,
+    "config": {
+      "version": 2,
+      "default": "vpn",
+      "rules": [
+        {
+          "kind": "domain",
+          "value": "a.test",
+          "action": "direct"
+        },
+        {
+          "kind": "domain",
+          "value": "a.test",
+          "action": "direct"
+        }
+      ]
+    }
+  }
+]

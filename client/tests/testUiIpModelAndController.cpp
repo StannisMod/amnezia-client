@@ -34,6 +34,44 @@ private:
     }
 
 private slots:
+    void portableRoutingImportIsAtomicAndAvailableWhenDisabled()
+    {
+        auto core = m_coreController->m_ipSplitTunnelingController;
+        auto repo = m_coreController->m_appSettingsRepository;
+        auto ui = m_coreController->m_ipSplitTunnelingUiController;
+        QVERIFY(ui->saveDomainRule(-1, "*.ru", "block", true, "443,8000-8100", "udp"));
+        QVERIFY(ui->saveDomainRule(-1, "off.test", "direct", false, "80", "tcp"));
+        ui->setDomainDefault("block");
+        const auto saved = repo->domainRoutingConfig();
+        QVERIFY(!repo->isSingBoxRoutingEnabled());
+        QString error;
+        const auto exported = core->exportDomainRouting(error);
+        QVERIFY2(!exported.isEmpty(), qPrintable(error));
+        const auto parsed = QJsonDocument::fromJson(exported).object();
+        QCOMPARE(parsed.value("version").toInt(), 2);
+        QCOMPARE(parsed.value("rules").toArray().size(), 2);
+        QCOMPARE(ui->inspectDomainRule("site.ru", "", "443", "udp").value("action").toString(), QString("block"));
+        for (const auto &bad : {QByteArray("[]"), QByteArray("{broken"),
+                QByteArray(R"({"version":3,"default":"vpn","rules":[]})"),
+                QByteArray(R"({"version":2,"default":"vpn","rules":[{"kind":"domain","value":"good.test","action":"direct"},{"kind":"domain","value":"bad.test","action":"block","ports":"9-1"}]})")}) {
+            QVERIFY(!core->importDomainRouting(bad, error));
+            QCOMPARE(repo->domainRoutingConfig(), saved);
+        }
+        repo->setDomainRoutingConfig({{"version", 1}, {"default", "direct"}, {"rules", QJsonArray{}}});
+        QVERIFY(core->importDomainRouting(exported, error));
+        QCOMPARE(repo->domainRoutingConfig(), saved);
+        QVERIFY(!repo->isSingBoxRoutingEnabled());
+        QCOMPARE(core->exportDomainRouting(error), exported);
+        QTemporaryDir directory;
+        QVERIFY(directory.isValid());
+        QFile file(directory.filePath("routing.json"));
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        file.write(exported); file.close();
+        QSignalSpy changed(ui, &IpSplitTunnelingUiController::domainRoutingChanged);
+        ui->importDomainRouting(file.fileName());
+        QCOMPARE(changed.count(), 1);
+        QCOMPARE(repo->domainRoutingConfig(), saved);
+    }
     void enableRoutingWithDesktopScopeAndKillSwitch()
     {
 #if defined(Q_OS_WIN) || (defined(Q_OS_LINUX) && !defined(Q_OS_ANDROID))
