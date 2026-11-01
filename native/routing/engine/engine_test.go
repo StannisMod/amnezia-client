@@ -69,7 +69,16 @@ func testFakeIPSharedAddressEgress(t *testing.T, defaultPolicy rules.Action, rea
 	aPriv, aPub := keys(t)
 	bPriv, bPub := keys(t)
 	var lc net.ListenConfig
-	listen := func(ctx context.Context, n, a string) (net.PacketConn, error) { return lc.ListenPacket(ctx, n, a) }
+	listen := func(ctx context.Context, n, a string) (net.PacketConn, error) {
+		pc, err := lc.ListenPacket(ctx, n, a)
+		if err != nil {
+			return nil, err
+		}
+		if realDNS {
+			return &sniffMappedPackets{PacketConn: pc}, nil
+		}
+		return pc, nil
+	}
 	// Reserve the client's outer port so both peers have fixed endpoints.
 	reserved, e := net.ListenPacket("udp4", "127.0.0.1:0")
 	if e != nil {
@@ -243,6 +252,9 @@ func testFakeIPSharedAddressEgress(t *testing.T, defaultPolicy rules.Action, rea
 		if string(buf) != v.want {
 			t.Fatalf("%s egress: got %q", v.domain, buf)
 		}
+	}
+	if realDNS && !dualStack && defaultPolicy == rules.VPN {
+		testRealIPSniff(t, ctx, instance, b)
 	}
 	// An app may retain a FakeIP whose mapping was removed. Never pass that
 	// literal into DIRECT or AWG; the missing identity must fail at routing.
