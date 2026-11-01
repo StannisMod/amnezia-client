@@ -120,7 +120,11 @@ func testRealIPSniff(t *testing.T, ctx context.Context, instance *box.Box, peer 
 				}
 				response := make([]byte, len(tc.want))
 				_, err = io.ReadFull(client, response)
-				client.Close()
+				// The assertion concerns routing and verified TLS data, not a
+				// graceful close_notify exchange. net.Pipe has no send buffer;
+				// tls.Conn.Close can wait for its write deadline after the
+				// observer has stopped reading. Close the owned capture side.
+				app.Close()
 				if err != nil || string(response) != tc.want {
 					t.Fatalf("%s (%s, fake=%v): got %q, %v", protocol, tc.name, tc.fake, response, err)
 				}

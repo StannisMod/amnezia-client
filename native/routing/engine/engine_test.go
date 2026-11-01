@@ -79,7 +79,10 @@ func TestWireGuardSharedRoutingPolicy(t *testing.T) {
 }
 
 func testFakeIPSharedAddressEgress(t *testing.T, defaultPolicy rules.Action, realDNS, dualStack, dnsOverVPN bool, transport ...string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	// This context owns the entire fixture, including several independently
+	// bounded HTTP/TLS/QUIC exchanges. Race-instrumented macOS runners need
+	// more lifetime than the per-exchange deadlines below.
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	aPriv, aPub := keys(t)
 	bPriv, bPub := keys(t)
