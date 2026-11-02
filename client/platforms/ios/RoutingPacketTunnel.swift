@@ -16,6 +16,9 @@ final class RoutingPacketTunnel {
     private var refreshWork: DispatchWorkItem?
     private var lookupDeadline: DispatchWorkItem?
     private var lookupGeneration: UInt64 = 0
+    private var endpointHealthTimer: DispatchSourceTimer?
+    private var endpointHealth = EndpointHealthPolicy()
+    private var backendEpoch: UInt64 = 0
 
     init(provider: NEPacketTunnelProvider) { self.provider = provider }
 
@@ -64,6 +67,8 @@ final class RoutingPacketTunnel {
                             provider.setTunnelNetworkSettings(nil) { _ in completion(RoutingError.backendFailed) }
                             return
                         }
+                        self.backendEpoch &+= 1
+                        self.startEndpointWatchdog(config: config)
                         self.generation &+= 1
                         self.readPackets(generation: self.generation)
                         completion(nil)
@@ -94,6 +99,8 @@ final class RoutingPacketTunnel {
             self.stopped = true
             self.provider?.reasserting = false
             self.refreshPolicy.cancel()
+            self.endpointHealthTimer?.cancel()
+            self.endpointHealthTimer = nil
             self.refreshWork?.cancel()
             self.lookupDeadline?.cancel()
             self.lookupGeneration &+= 1
@@ -155,6 +162,7 @@ final class RoutingPacketTunnel {
                             AmneziaRoutingStart(UnsafeMutablePointer(mutating: buffer.bindMemory(to: CChar.self).baseAddress),
                                                 Int32(raw.count), context, Self.writePacket, Self.releaseHost)
                         }
+                        self.backendEpoch &+= 1
                         self.sessionData = raw
                         self.provider?.reasserting = false
                         if self.handle <= 0 { self.provider?.cancelTunnelWithError(RoutingError.backendFailed) }
@@ -164,6 +172,35 @@ final class RoutingPacketTunnel {
         }
         refreshWork = work
         queue.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+
+    private func startEndpointWatchdog(config: WGConfig) {
+        endpointHealthTimer?.cancel()
+        let host = config.hostName
+        guard !host.contains(":"), host.rangeOfCharacter(from: CharacterSet(charactersIn: "0123456789.").inverted) != nil else { return }
+        endpointHealth = EndpointHealthPolicy(staleMs: EndpointHealthPolicy.staleBudget(
+            rekey: config.rekeyAfterTime, reject: config.rejectAfterTime))
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now() + 5, repeating: 5, leeway: .milliseconds(500))
+        timer.setEventHandler { [weak self] in
+            guard let self, !self.stopped, self.handle > 0 else { return }
+            var rx: UInt64 = 0, tx: UInt64 = 0, handshake: UInt64 = 0
+            let available = AmneziaRoutingStats(self.handle, &rx, &tx, &handshake) == 0
+            let action = self.endpointHealth.sample(backend: available ? self.backendEpoch : self.backendEpoch | (1 << 63),
+                handshake: available ? Int64(clamping: handshake) : 0, tx: tx, rx: rx,
+                now: Int64(ProcessInfo.processInfo.systemUptime * 1000))
+            switch action {
+            case .none: break
+            case .refresh: self.networkChanged()
+            case .exhausted:
+                self.endpointHealthTimer?.cancel()
+                self.endpointHealthTimer = nil
+                self.provider?.reasserting = false
+                self.provider?.cancelTunnelWithError(RoutingError.endpointResolution)
+            }
+        }
+        endpointHealthTimer = timer
+        timer.resume()
     }
 
     func status(completion: @escaping (Data?) -> Void) {

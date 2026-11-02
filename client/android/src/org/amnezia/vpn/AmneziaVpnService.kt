@@ -211,7 +211,7 @@ open class AmneziaVpnService : VpnService() {
         connectionScope = CoroutineScope(SupervisorJob() + Dispatchers.IO + connectionExceptionHandler)
         loadServerData()
         launchProtocolStateHandler()
-        networkState = NetworkState(this, ::reconnect)
+        networkState = NetworkState(this) { reconnect() }
         trafficStats = TrafficStats()
         registerBroadcastReceivers()
     }
@@ -554,6 +554,7 @@ open class AmneziaVpnService : VpnService() {
                     Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && this@AmneziaVpnService.isLockdownEnabled
                 }
                 protocol.configureEndpointResolver(networkState::resolveEndpoint)
+                protocol.configureEndpointRecovery { current -> mainScope.launch { if (current()) reconnect(true) } }
                 protocol.startVpn(config, Builder(), ::protect)
             }
         }
@@ -586,8 +587,8 @@ open class AmneziaVpnService : VpnService() {
     }
 
     @MainThread
-    private fun reconnect() {
-        if (!isConnected) return
+    private fun reconnect(endpointRecovery: Boolean = false) {
+        if (!isConnected && !(endpointRecovery && (protocolState.value == CONNECTING || protocolState.value == RECONNECTING))) return
 
         Log.d(TAG, "Reconnect VPN")
 

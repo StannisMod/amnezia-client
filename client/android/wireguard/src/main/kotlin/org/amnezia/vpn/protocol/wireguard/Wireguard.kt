@@ -8,6 +8,8 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import org.amnezia.vpn.util.net.DomainEndpointRefresh
+import org.amnezia.vpn.util.net.EndpointHealthPolicy
+import android.os.SystemClock
 import kotlinx.coroutines.SupervisorJob
 import org.amnezia.awg.RoutingBackend
 import org.amnezia.awg.RoutingHost
@@ -39,6 +41,9 @@ open class Wireguard : Protocol() {
     private var endpointGeneration = 0L
     private var originalProfile: JSONObject? = null
     private var endpointRefreshJob: Job? = null
+    private var endpointHealthJob: Job? = null
+    private var endpointHealthGeneration = 0L
+    private var endpointBackendEpoch = 0L
 
     private fun endpointHost(profile: JSONObject): String =
         profile.getJSONObject(profile.getString("protocol") + "_config_data").getString("hostName")
@@ -145,6 +150,7 @@ open class Wireguard : Protocol() {
             // Do not silently retry the legacy backend or expose VPN flows.
             throw VpnStartException("Domain routing startup failed; check the profile and routing rules")
         }
+        ++endpointBackendEpoch
         val statusHandle = routedHandle
         routedStatusJob = routedScope.launch {
             var announced = false
@@ -216,6 +222,8 @@ open class Wireguard : Protocol() {
     override suspend fun startVpn(config: JSONObject, vpnBuilder: Builder, protect: (Int) -> Boolean) {
         val generation = synchronized(endpointLock) {
             endpointRefreshJob?.cancel()
+            ++endpointHealthGeneration
+            endpointHealthJob?.cancel()
             originalProfile = JSONObject(config.toString())
             ++endpointGeneration
         }
@@ -233,6 +241,7 @@ open class Wireguard : Protocol() {
                 start(wireguardConfig, vpnBuilder, protect)
                 this.config = wireguardConfig
             }
+            startEndpointWatchdog(config)
         }
     }
 
@@ -358,6 +367,7 @@ open class Wireguard : Protocol() {
             tunnelHandle = -1
             throw VpnStartException("Protect VPN interface: permission not granted or revoked")
         }
+        ++endpointBackendEpoch
         launchStatusJob()
     }
 
@@ -405,8 +415,50 @@ open class Wireguard : Protocol() {
         GoBackend.awgTurnOff(handleToClose)
     }
 
+    private fun startEndpointWatchdog(profile: JSONObject) {
+        ++endpointHealthGeneration
+        endpointHealthJob?.cancel()
+        if (!DomainEndpointRefresh.isDomain(endpointHost(profile)) || endpointRecovery == null) return
+        val generation = endpointHealthGeneration
+        val data = profile.getJSONObject(profile.getString("protocol") + "_config_data")
+        val health = EndpointHealthPolicy(EndpointHealthPolicy.staleBudget(
+            data.optString("RekeyAfterTime"), data.optString("RejectAfterTime")))
+        endpointHealthJob = scope.launch {
+            while (true) {
+                delay(5000)
+                val action = synchronized(endpointLock) {
+                    if (generation != endpointHealthGeneration) return@launch
+                    val sample = if (routedHandle > 0) RoutingBackend.stats(routedHandle)?.let {
+                        longArrayOf(it[2], it[1], it[0]) // handshake, tx, rx
+                    } else if (tunnelHandle >= 0) GoBackend.awgGetConfig(tunnelHandle)?.let { text ->
+                        val values = text.lineSequence().map { it.split('=', limit = 2) }
+                            .filter { it.size == 2 }.associate { it[0] to it[1] }
+                        longArrayOf(values["last_handshake_time_sec"]?.toLongOrNull() ?: 0,
+                            values["tx_bytes"]?.toLongOrNull() ?: 0, values["rx_bytes"]?.toLongOrNull() ?: 0)
+                    } else null
+                    if (sample == null) health.sample(-endpointBackendEpoch, 0, 0, 0, SystemClock.elapsedRealtime())
+                    else health.sample(endpointBackendEpoch, sample[0], sample[1], sample[2], SystemClock.elapsedRealtime())
+                }
+                when (action) {
+                    EndpointHealthPolicy.Action.NONE -> Unit
+                    EndpointHealthPolicy.Action.REFRESH -> endpointRecovery?.invoke {
+                        synchronized(endpointLock) { generation == endpointHealthGeneration && originalProfile != null }
+                    }
+                    EndpointHealthPolicy.Action.EXHAUSTED -> {
+                        if (synchronized(endpointLock) { generation == endpointHealthGeneration })
+                            onError("VPN endpoint recovery exhausted; check the server and reconnect")
+                        return@launch
+                    }
+                }
+            }
+        }
+    }
+
     override fun stopVpn() = synchronized(endpointLock) {
         ++endpointGeneration
+        ++endpointHealthGeneration
+        endpointHealthJob?.cancel()
+        endpointHealthJob = null
         endpointRefreshJob?.cancel()
         endpointRefreshJob = null
         originalProfile = null

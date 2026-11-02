@@ -30,6 +30,9 @@ abstract class Protocol {
     protected var lockdownEnabled: () -> Boolean = { false }
     protected var endpointResolver: ((String) -> List<java.net.InetAddress>)? = null
 
+    protected var endpointRecovery: ((() -> Boolean) -> Unit)? = null
+    fun configureEndpointRecovery(request: (() -> Boolean) -> Unit) { endpointRecovery = request }
+
     fun configureEndpointResolver(resolver: (String) -> List<java.net.InetAddress>) {
         endpointResolver = resolver
     }

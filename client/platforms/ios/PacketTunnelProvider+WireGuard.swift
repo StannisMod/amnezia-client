@@ -67,6 +67,7 @@ extension PacketTunnelProvider {
                 wireguardRefreshWork?.cancel()
                 wireguardOriginalConfiguration = tunnelConfiguration
                 wireguardEndpointStopped = false
+                wireguardHealthBudget = EndpointHealthPolicy.staleBudget(rekey: wgConfig.rekeyAfterTime, reject: wgConfig.rejectAfterTime)
             }
 
             // Start the tunnel
@@ -78,6 +79,7 @@ extension PacketTunnelProvider {
                 guard let adapterError else {
                     let interfaceName = self?.wgAdapter?.interfaceName ?? "unknown"
                     wg_log(.info, message: "Tunnel interface is \(interfaceName)")
+                    self?.startWireguardEndpointWatchdog()
                     completionHandler(nil)
                     return
                 }
@@ -201,6 +203,7 @@ extension PacketTunnelProvider {
                             // A later network change must preserve the most
                             // recent user-supplied keys/routes, not undo them.
                             self.wireguardOriginalConfiguration = tunnelConfiguration
+                            self.startWireguardEndpointWatchdog()
                             adapter.getRuntimeConfiguration { settings in
                                 completionHandler(settings?.data(using: .utf8))
                             }
@@ -212,6 +215,59 @@ extension PacketTunnelProvider {
             }
         } else {
             completionHandler(nil)
+        }
+    }
+
+    func startWireguardEndpointWatchdog() {
+        wireguardRefreshQueue.async { [weak self] in
+            guard let self, !self.wireguardEndpointStopped,
+                  let configuration = self.wireguardOriginalConfiguration else { return }
+            let hasDomain = configuration.peers.contains { peer in
+                if let endpoint = peer.endpoint, case .name = endpoint.host { return true }
+                return false
+            }
+            guard hasDomain else { return }
+            self.wireguardHealthTimer?.cancel()
+            self.wireguardHealthGeneration &+= 1
+            let generation = self.wireguardHealthGeneration
+            self.wireguardStatsInFlight = false
+            self.wireguardHealth = EndpointHealthPolicy(staleMs: self.wireguardHealthBudget)
+            let timer = DispatchSource.makeTimerSource(queue: self.wireguardRefreshQueue)
+            timer.schedule(deadline: .now() + 5, repeating: 5, leeway: .milliseconds(500))
+            timer.setEventHandler { [weak self] in
+                guard let self, !self.wireguardEndpointStopped, generation == self.wireguardHealthGeneration,
+                      !self.wireguardStatsInFlight, let adapter = self.wgAdapter else { return }
+                self.wireguardStatsInFlight = true
+                adapter.getRuntimeConfiguration { [weak self] text in
+                    self?.wireguardRefreshQueue.async { [weak self] in
+                        guard let self, generation == self.wireguardHealthGeneration else { return }
+                        self.wireguardStatsInFlight = false
+                        guard !self.wireguardEndpointStopped else { return }
+                        var values = [String: String]()
+                        for line in (text ?? "").split(separator: "\n") {
+                            let pair = line.split(separator: "=", maxSplits: 1)
+                            if pair.count == 2 { values[String(pair[0])] = String(pair[1]) }
+                        }
+                        self.wireguardHealth.staleMs = max(self.wireguardHealth.staleMs,
+                            EndpointHealthPolicy.staleBudget(rekey: values["rekey_after_time"], reject: values["reject_after_time"]))
+                        let action = self.wireguardHealth.sample(backend: text == nil ? 1 : 0,
+                            handshake: Int64(values["last_handshake_time_sec"] ?? "0") ?? 0,
+                            tx: UInt64(values["tx_bytes"] ?? "0") ?? 0, rx: UInt64(values["rx_bytes"] ?? "0") ?? 0,
+                            now: Int64(ProcessInfo.processInfo.systemUptime * 1000))
+                        switch action {
+                        case .none: break
+                        case .refresh: self.refreshWireguardEndpoint()
+                        case .exhausted:
+                            self.wireguardHealthTimer?.cancel()
+                            self.wireguardHealthTimer = nil
+                            self.reasserting = false
+                            self.cancelTunnelWithError(PacketTunnelProviderError.dnsResolutionFailure)
+                        }
+                    }
+                }
+            }
+            self.wireguardHealthTimer = timer
+            timer.resume()
         }
     }
 
@@ -255,6 +311,9 @@ extension PacketTunnelProvider {
     func stopWireguard(with reason: NEProviderStopReason, completionHandler: @escaping () -> Void) {
         wireguardRefreshQueue.sync {
             wireguardEndpointStopped = true
+            wireguardHealthGeneration &+= 1
+            wireguardHealthTimer?.cancel()
+            wireguardHealthTimer = nil
             wireguardRefreshPolicy.cancel()
             wireguardRefreshWork?.cancel()
             wireguardOriginalConfiguration = nil

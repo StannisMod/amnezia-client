@@ -43,6 +43,11 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
     var wireguardRefreshPolicy = EndpointRefreshPolicy()
     var wireguardRefreshWork: DispatchWorkItem?
     var wireguardEndpointStopped = true
+    var wireguardHealthTimer: DispatchSourceTimer?
+    var wireguardHealth = EndpointHealthPolicy()
+    var wireguardHealthBudget: Int64 = 240000
+    var wireguardStatsInFlight = false
+    var wireguardHealthGeneration: UInt64 = 0
     var routedAdapter: RoutingPacketTunnel?
     var ovpnAdapter: OpenVPNAdapter?
     private lazy var openVPNPacketFlowAdapter = PacketTunnelFlowAdapter(flow: packetFlow)
