@@ -142,6 +142,7 @@ final class RoutingPacketTunnel {
                     guard let self, !self.stopped, self.refreshPolicy.accepts(token),
                           lookup == self.lookupGeneration, self.handle > 0 else { return }
                     self.lookupDeadline?.cancel()
+                    self.lookupGeneration &+= 1 // Consume the result exactly once, including deadline races.
                     switch result {
                     case .failure:
                         self.refreshTransport(config: config, token: token)
