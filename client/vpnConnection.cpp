@@ -651,7 +651,33 @@ void VpnConnection::disconnectFromVpn()
                           });
 #endif
 
+#ifdef AMNEZIA_DESKTOP
+    // Domain endpoints stop asynchronously: the service must acknowledge real
+    // teardown before the protocol/socket owner can be released. Use queued
+    // completion so neither a synchronous stop nor an error destroys a signal
+    // sender while its own stop/notification stack is still running.
+    auto *waiter = new QObject(this);
+    const auto expected = m_vpnProtocol.toWeakRef();
+    const auto finished = [this, waiter, expected] {
+        const auto stopped = expected.toStrongRef();
+        if (stopped && m_vpnProtocol == stopped) m_vpnProtocol.clear();
+        waiter->deleteLater();
+    };
+    connect(m_vpnProtocol.data(), &VpnProtocol::connectionStateChanged, waiter,
+            [finished](Vpn::ConnectionState state) {
+                if (state == Vpn::Disconnected || state == Vpn::Error) finished();
+            }, Qt::QueuedConnection);
+    connect(m_vpnProtocol.data(), &VpnProtocol::protocolError, waiter,
+            [finished](ErrorCode) { finished(); }, Qt::QueuedConnection);
     m_vpnProtocol->stop();
+    // Some protocols are already stopped and emit no state transition.
+    if (m_vpnProtocol && (m_vpnProtocol->connectionState() == Vpn::Disconnected
+                          || m_vpnProtocol->connectionState() == Vpn::Error))
+        QTimer::singleShot(0, waiter, finished);
+    return;
+#else
+    m_vpnProtocol->stop();
+#endif
 
 #if !defined(Q_OS_ANDROID) && !defined(AMNEZIA_DESKTOP)
     m_vpnProtocol->deleteLater();

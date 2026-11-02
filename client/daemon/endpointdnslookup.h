@@ -40,7 +40,10 @@ public:
         m_resolver = resolver;
         m_port = dnsPort;
         m_addresses.clear(); m_replied.clear(); m_queries.clear();
-        const auto ace = QUrl::toAce(host).toLower();
+        auto ace = QUrl::toAce(host).toLower();
+        // Imported native profiles may retain an absolute DNS name. A single
+        // terminal dot denotes the root; empty interior labels remain invalid.
+        if (ace.endsWith('.')) ace.chop(1);
         QByteArray name;
         for (const auto &label : ace.split('.')) {
             if (label.isEmpty() || label.size() > 63) { finish(); return; }

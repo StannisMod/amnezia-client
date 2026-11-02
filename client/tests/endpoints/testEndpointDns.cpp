@@ -39,6 +39,37 @@ private slots:
         QTRY_VERIFY(completed);
         QVERIFY(validFirewall);
     }
+    void fullyQualifiedNames_data() {
+        QTest::addColumn<QString>("hostname");
+        QTest::addColumn<bool>("valid");
+        QTest::newRow("absolute") << QString("vpn.example.org.") << true;
+        QTest::newRow("interior empty label") << QString("vpn..example.org.") << false;
+        QTest::newRow("two terminal dots") << QString("vpn.example.org..") << false;
+    }
+    void fullyQualifiedNames() {
+        QFETCH(QString, hostname);
+        QFETCH(bool, valid);
+        QUdpSocket dns;
+        QVERIFY(dns.bind(QHostAddress(QHostAddress::LocalHost), quint16(0)));
+        EndpointDnsLookup lookup;
+        int queries = 0;
+        bool completed = false;
+        connect(&dns, &QUdpSocket::readyRead, this, [&] {
+            while (dns.hasPendingDatagrams()) {
+                QHostAddress sender; quint16 port;
+                QByteArray packet(4096, 0);
+                packet.resize(int(dns.readDatagram(packet.data(), packet.size(), &sender, &port)));
+                ++queries;
+                dns.writeDatagram(reply(packet), sender, port);
+            }
+        });
+        lookup.start(hostname, QHostAddress::LocalHost,
+            [](quint16, const QHostAddress &, bool) { return true; }, [&](const QList<QHostAddress> &addresses) {
+                QCOMPARE(!addresses.isEmpty(), valid); completed = true;
+            }, dns.localPort(), 200);
+        QTRY_VERIFY(completed);
+        QCOMPARE(queries, valid ? 2 : 0);
+    }
     void followsCnameAndRetainsIpv6Answers() {
         QUdpSocket dns;
         QVERIFY(dns.bind(QHostAddress(QHostAddress::LocalHost), quint16(0)));

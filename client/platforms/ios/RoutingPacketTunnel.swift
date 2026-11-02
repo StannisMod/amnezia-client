@@ -41,7 +41,8 @@ final class RoutingPacketTunnel {
                 guard !self.stopped, self.handle < 0, let provider = self.provider,
                       let protocolConfig = provider.protocolConfiguration as? NETunnelProviderProtocol,
                       !protocolConfig.includeAllNetworks else { throw RoutingError.invalidConfiguration }
-                let raw = try Self.sessionConfiguration(config, candidates: self.endpointCandidates)
+                let raw = try Self.sessionConfiguration(config, endpoint: Self.numericHost(
+                    try EndpointAddressResolver.addresses(config.hostName), port: config.port, candidates: self.endpointCandidates))
                 self.originalConfig = config // Keep the domain, not its bootstrap IP.
                 self.sessionData = raw
                 let settings = NEPacketTunnelNetworkSettings(tunnelRemoteAddress: "127.0.0.1")
@@ -146,7 +147,7 @@ final class RoutingPacketTunnel {
             // the current capture/backend while the new uplink acquires DNS.
             DispatchQueue.global(qos: .utility).async { [weak self] in
                 guard let self else { return }
-                let result = Result { try Self.sessionConfiguration(config, candidates: self.endpointCandidates) }
+                let result = Result { try EndpointAddressResolver.addresses(config.hostName) }
                 self.queue.async { [weak self] in
                     guard let self, !self.stopped, self.refreshPolicy.accepts(token),
                           lookup == self.lookupGeneration, self.handle > 0 else { return }
@@ -155,7 +156,17 @@ final class RoutingPacketTunnel {
                     switch result {
                     case .failure:
                         self.refreshTransport(config: config, token: token)
-                    case .success(let raw):
+                    case .success(let addresses):
+                        // Only an accepted lookup may consume a candidate. A
+                        // timed-out/superseded worker must not skip a usable IP.
+                        let raw: Data
+                        do {
+                            let endpoint = try Self.numericHost(addresses, port: config.port, candidates: self.endpointCandidates)
+                            raw = try Self.sessionConfiguration(config, endpoint: endpoint)
+                        } catch {
+                            self.refreshTransport(config: config, token: token)
+                            return
+                        }
                         // Reuse the same public packetFlow reader and capture.
                         // Transport workers finish before the replacement starts.
                         AmneziaRoutingStop(self.handle)
@@ -218,11 +229,10 @@ final class RoutingPacketTunnel {
         }
     }
 
-    private static func sessionConfiguration(_ config: WGConfig, candidates: EndpointAddressCandidates) throws -> Data {
+    private static func sessionConfiguration(_ config: WGConfig, endpoint: String) throws -> Data {
         guard let rulesText = config.routingConfig, let rulesData = rulesText.data(using: .utf8),
               let rules = try JSONSerialization.jsonObject(with: rulesData) as? [String: Any],
               config.allowedIPs.contains("0.0.0.0/0") else { throw RoutingError.invalidConfiguration }
-        let endpoint = try numericHost(config.hostName, port: config.port, candidates: candidates)
         let dns = config.dns1.isEmpty ? config.dns2 : config.dns1
         // The real resolver is explicit. Never bootstrap it with managed DNS.
         var v4 = in_addr(), v6 = in6_addr()
@@ -276,9 +286,9 @@ final class RoutingPacketTunnel {
 
     // Called before capture is installed. Resolve only the peer endpoint using
     // the native resolver; destination domains are never pre-resolved into rules.
-    private static func numericHost(_ hostname: String, port: Int, candidates: EndpointAddressCandidates) throws -> String {
+    private static func numericHost(_ addresses: [String], port: Int, candidates: EndpointAddressCandidates) throws -> String {
         guard port > 0 && port <= 65535 else { throw RoutingError.invalidConfiguration }
-        guard let value = candidates.select(try EndpointAddressResolver.addresses(hostname)) else { throw RoutingError.endpointResolution }
+        guard let value = candidates.select(addresses) else { throw RoutingError.endpointResolution }
         return value.contains(":") ? "[\(value)]:\(port)" : "\(value):\(port)"
     }
 
