@@ -353,7 +353,12 @@ void VpnConnection::connectToVpn(const QString &serverId, DockerContainer contai
     }
 #endif
 
-    m_remoteAddress = NetworkUtilities::getIPAddress(vpnConfiguration.value(configKey::hostName).toString());
+    const Proto transport = ProtocolUtils::protoFromString(vpnConfiguration.value(configKey::vpnProto).toString());
+    // AWG/WireGuard owns asynchronous endpoint resolution before activation.
+    // remoteAddress is used below only by the non-WireGuard legacy route path.
+    m_remoteAddress = (transport == Proto::Awg || transport == Proto::WireGuard)
+        ? vpnConfiguration.value(configKey::hostName).toString()
+        : NetworkUtilities::getIPAddress(vpnConfiguration.value(configKey::hostName).toString());
     setConnectionState(Vpn::ConnectionState::Connecting);
 
     m_vpnConfiguration = vpnConfiguration;
@@ -606,6 +611,12 @@ void VpnConnection::reconnectToVpn() {
 
     setConnectionState(Vpn::ConnectionState::Reconnecting);
 
+#ifdef AMNEZIA_DESKTOP
+    if (auto *wireguard = qobject_cast<WireguardProtocol *>(m_vpnProtocol.data())) {
+        wireguard->reconnect();
+        return;
+    }
+#endif
     m_vpnProtocol->stop();
     if (ErrorCode err = m_vpnProtocol->start(); err != ErrorCode::NoError) {
         setConnectionState(Vpn::ConnectionState::Error);

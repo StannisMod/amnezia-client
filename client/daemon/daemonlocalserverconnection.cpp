@@ -141,9 +141,15 @@ void DaemonLocalServerConnection::parseCommand(const QByteArray& data) {
 
   if (type == "deactivate") {
 #if defined(MZ_LINUX) || defined(MZ_WINDOWS)
-    if (DesktopRoutingProcess::instance()->isActive()) { DesktopRoutingProcess::instance()->stop(); return; }
+    if (DesktopRoutingProcess::instance()->isActive()) {
+      DesktopRoutingProcess::instance()->stop();
+      if (obj.value("request_ack").toBool() && !DesktopRoutingProcess::instance()->isActive())
+        write(QJsonObject{{"type", "deactivated"}});
+      return;
+    }
 #endif
-    Daemon::instance()->deactivate(true);
+    const bool cleaned = Daemon::instance()->deactivate(true);
+    if (obj.value("request_ack").toBool() && cleaned) write(QJsonObject{{"type", "deactivated"}});
     return;
   }
 

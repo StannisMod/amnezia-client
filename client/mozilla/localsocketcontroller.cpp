@@ -286,6 +286,13 @@ void LocalSocketController::deactivate() {
   emit disconnected();
 }
 
+void LocalSocketController::deactivateWithAck() {
+  // No synthetic completion. A disconnected socket does not prove that the
+  // privileged service has restored DNS and removed its capture routes.
+  if (m_daemonState != eReady || m_socket->state() != QLocalSocket::ConnectedState) return;
+  write(QJsonObject{{"type", "deactivate"}, {"request_ack", true}});
+}
+
 void LocalSocketController::checkStatus() {
   logger.debug() << "Check status";
 
@@ -415,6 +422,11 @@ void LocalSocketController::parseCommand(const QByteArray& command) {
     return;
   }
 
+  if (type == "deactivated") {
+    emit deactivated();
+    return;
+  }
+
   if (type == "status") {
 
     QJsonValue serverIpv4Gateway = obj.value("serverIpv4Gateway");
@@ -441,6 +453,10 @@ void LocalSocketController::parseCommand(const QByteArray& command) {
       return;
     }
 
+    if (obj.value("lastHandshakeMs").isDouble()) {
+      emit handshakeUpdated(static_cast<qint64>(obj.value("lastHandshakeMs").toDouble()),
+                            static_cast<quint64>(txBytes.toDouble()), static_cast<quint64>(rxBytes.toDouble()));
+    }
     emit statusUpdated(serverIpv4Gateway.toString(),
                        deviceIpv4Address.toString(), txBytes.toDouble(),
                        rxBytes.toDouble());

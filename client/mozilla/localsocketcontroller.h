@@ -27,6 +27,7 @@ class LocalSocketController final : public ControllerImpl {
   void activate(const QJsonObject& rawConfig) override;
 
   void deactivate() override;
+  void deactivateWithAck() override;
 
   void checkStatus() override;
 

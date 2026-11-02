@@ -77,6 +77,8 @@ namespace amnezia
         OpenVpnTapAdapterError = 702,
         AddressPoolError = 703,
         VpnEndpointResolutionFailed = 704,
+        VpnEndpointRecoveryFailed = 705,
+        VpnEndpointCleanupFailed = 706,
 
         // 3rd party utils errors
         OpenSslFailed = 800,
