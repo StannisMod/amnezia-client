@@ -15,7 +15,12 @@ SheetType {
     id: root
     objectName: "serverNameEditDrawer"
 
-    onOpened: vpnHost.textField.text = ServersUiController.vpnHostName(ServersUiController.processedServerId)
+    Connections {
+        target: root
+        function onAboutToShow() {
+            vpnHost.textField.text = ServersUiController.vpnHostName(ServersUiController.processedServerId)
+        }
+    }
 
     expandedHeight: content.implicitHeight + 16 + 8 + PageController.safeAreaBottomMargin + PageController.imeHeight
 
@@ -45,9 +50,10 @@ SheetType {
             id: vpnHost
             Layout.fillWidth: true
             visible: ServersUiController.isProcessedServerHasWriteAccess()
-            headerText: qsTr("AmneziaWG / WireGuard address (optional)")
+            headerText: qsTr("VPN address (AWG / WireGuard)")
             textField.maximumLength: 253
-            textField.placeholderText: qsTr("vpn.example.org; empty uses the server address")
+            textField.placeholderText: "vpn.example.org"
+            helperText: qsTr("Leave empty to use the server address. SSH access is unchanged.")
         }
 
         ButtonType {
