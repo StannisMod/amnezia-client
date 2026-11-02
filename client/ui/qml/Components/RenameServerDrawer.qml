@@ -15,6 +15,8 @@ SheetType {
     id: root
     objectName: "serverNameEditDrawer"
 
+    onOpened: vpnHost.textField.text = ServersUiController.vpnHostName(ServersUiController.processedServerId)
+
     expandedHeight: content.implicitHeight + 16 + 8 + PageController.safeAreaBottomMargin + PageController.imeHeight
 
     ColumnLayout {
@@ -39,6 +41,15 @@ SheetType {
             checkEmptyText: true
         }
 
+        TextFieldType {
+            id: vpnHost
+            Layout.fillWidth: true
+            visible: ServersUiController.isProcessedServerHasWriteAccess()
+            headerText: qsTr("AmneziaWG / WireGuard address (optional)")
+            textField.maximumLength: 253
+            textField.placeholderText: qsTr("vpn.example.org; empty uses the server address")
+        }
+
         ButtonType {
             id: saveButton
 
@@ -51,6 +62,15 @@ SheetType {
                     return
                 }
 
+                if (vpnHost.visible && vpnHost.textField.text !== ServersUiController.vpnHostName(ServersUiController.processedServerId)) {
+                    if (ServersUiController.isDefaultServerCurrentlyProcessed() && ConnectionController.isConnected) {
+                        PageController.showNotificationMessage(qsTr("Disconnect before changing the VPN address"))
+                        return
+                    }
+                    if (!ServersUiController.setVpnHostName(ServersUiController.processedServerId, vpnHost.textField.text)) {
+                        return
+                    }
+                }
                 if (serverName.textField.text !== root.serverNameText) {
                     ServersUiController.editServerName(ServersUiController.processedServerId, serverName.textField.text);
                 }

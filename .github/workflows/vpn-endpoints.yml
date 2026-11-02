@@ -1,0 +1,19 @@
+name: VPN endpoint regression tests
+on:
+  pull_request:
+    branches: [dev]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  endpoints:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Qt test dependencies
+        run: sudo apt-get update && sudo apt-get install -y qt6-base-dev cmake ninja-build
+      - name: Build and test endpoint handling
+        run: |
+          cmake -S client/tests/endpoints -B build-endpoints -G Ninja
+          cmake --build build-endpoints
+          ctest --test-dir build-endpoints --output-on-failure

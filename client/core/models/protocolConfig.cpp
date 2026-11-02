@@ -1,4 +1,5 @@
 #include "protocolConfig.h"
+#include "core/utils/vpnEndpoint.h"
 
 #include "core/utils/protocolEnum.h"
 #include "core/protocols/protocolUtils.h"
@@ -18,6 +19,19 @@ namespace amnezia
 
 using namespace ProtocolEnumNS;
 using namespace ProtocolUtils;
+
+void ProtocolConfig::setVpnHostName(const QString &host)
+{
+    std::visit([&host](auto &config) {
+        using T = std::decay_t<decltype(config)>;
+        if constexpr (std::is_same_v<T, AwgProtocolConfig> || std::is_same_v<T, WireGuardProtocolConfig>) {
+            if (config.clientConfig && !host.isEmpty()) {
+                config.clientConfig->hostName = host;
+                config.clientConfig->nativeConfig = vpnEndpoint::replacePeerHost(config.clientConfig->nativeConfig, host);
+            }
+        }
+    }, data);
+}
 
 Proto ProtocolConfig::type() const
 {

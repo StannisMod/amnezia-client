@@ -1,4 +1,5 @@
 #include "serversController.h"
+#include "core/utils/vpnEndpoint.h"
 #include "core/utils/serverConfigUtils.h"
 #include "core/utils/protocolEnum.h"
 #include "core/protocols/protocolUtils.h"
@@ -34,6 +35,23 @@ void ServersController::ensureDefaultServerValid()
     if (!firstId.isEmpty()) {
         setDefaultServer(firstId);
     }
+}
+
+QString ServersController::vpnHostName(const QString &serverId) const
+{
+    const auto config = m_serversRepository->selfHostedAdminConfig(serverId);
+    return config ? config->vpnHostName : QString();
+}
+
+bool ServersController::setVpnHostName(const QString &serverId, const QString &host)
+{
+    const QString normalized = vpnEndpoint::normalizeHost(host);
+    if (!host.trimmed().isEmpty() && normalized.isEmpty()) return false;
+    auto config = m_serversRepository->selfHostedAdminConfig(serverId);
+    if (!config) return false;
+    config->vpnHostName = normalized;
+    m_serversRepository->editServer(serverId, config->toJson(), serverConfigUtils::ConfigType::SelfHostedAdmin);
+    return true;
 }
 
 bool ServersController::renameServer(const QString &serverId, const QString &name)

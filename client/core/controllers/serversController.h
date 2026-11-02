@@ -36,6 +36,8 @@ public:
     ~ServersController() = default;
 
     // Server management
+    bool setVpnHostName(const QString &serverId, const QString &host);
+    QString vpnHostName(const QString &serverId) const;
     bool renameServer(const QString &serverId, const QString &name);
     void removeServer(const QString &serverId);
     void setDefaultServer(const QString &serverId);

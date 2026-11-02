@@ -10,6 +10,7 @@
 #include "utils/testUtils.h"
 #include "vpnConnection.h"
 #include "secureQSettings.h"
+#include "core/controllers/connectionController.h"
 
 using namespace amnezia;
 using namespace amnezia::test;
@@ -43,6 +44,62 @@ private slots:
         if (m_coreController->m_serversModel) {
             m_coreController->m_serversModel->updateModel(QVector<ServerDescription>(), QString{});
         }
+    }
+
+    void testVpnDomainPreservesSshAndRoundTrips() {
+        SelfHostedAdminServerConfig config = SelfHostedAdminServerConfig::fromJson({
+            {configKey::hostName, "192.0.2.10"}, {configKey::userName, "root"},
+            {configKey::password, "test-secret"}, {configKey::port, 22}
+        });
+        config.defaultContainer = DockerContainer::Awg2;
+        AwgProtocolConfig awg;
+        AwgClientConfig client{};
+        client.hostName = config.hostName;
+        client.port = 51820;
+        client.clientPrivateKey = "PRIVATE";
+        client.serverPublicKey = "PUBLIC";
+        client.presharedKey = "PSK";
+        client.nativeConfig = "[Interface]\nPrivateKey = PRIVATE\n[Peer]\nPublicKey = PUBLIC\nEndpoint = 192.0.2.10:51820\n";
+        awg.setClientConfig(client);
+        ContainerConfig container;
+        container.container = config.defaultContainer;
+        container.protocolConfig = awg;
+        config.containers[config.defaultContainer] = container;
+        auto *repository = m_coreController->m_serversRepository;
+        const QString id = repository->addServer("domain-test", config.toJson(), serverConfigUtils::ConfigType::SelfHostedAdmin);
+        auto *servers = m_coreController->m_serversController;
+        QVERIFY(servers->setVpnHostName(id, " VPN.Example.org "));
+        const auto saved = repository->selfHostedAdminConfig(id);
+        QVERIFY(saved.has_value());
+        QCOMPARE(saved->credentials().hostName, "192.0.2.10");
+        QCOMPARE(saved->vpnHostName, "vpn.example.org");
+        // Endpoint edits must not replace keys or mutate cached client profiles.
+        QCOMPARE(saved->containerConfig(config.defaultContainer).protocolConfig.getClientConfigJson().value(configKey::hostName).toString(), "192.0.2.10");
+
+        VpnConnection vpn(repository, m_coreController->m_appSettingsRepository);
+        ConnectionController connections(repository, m_coreController->m_appSettingsRepository, &vpn);
+        QJsonObject prepared;
+        DockerContainer selected = DockerContainer::None;
+        QCOMPARE(connections.prepareConnection(id, prepared, selected), ErrorCode::NoError);
+        QCOMPARE(prepared.value(configKey::hostName).toString(), "vpn.example.org");
+        const auto data = prepared.value(ProtocolUtils::key_proto_config_data(Proto::Awg)).toObject();
+        QCOMPARE(data.value(configKey::hostName).toString(), "vpn.example.org");
+        QCOMPARE(data.value(configKey::clientPrivKey).toString(), "PRIVATE");
+        QVERIFY(data.value(configKey::config).toString().contains("Endpoint = vpn.example.org:51820"));
+
+        const auto exported = m_coreController->m_exportController->generateFullAccessConfig(id);
+        QCOMPARE(exported.errorCode, ErrorCode::NoError);
+        const auto imported = m_coreController->m_importCoreController->extractConfigFromData(exported.config);
+        QCOMPARE(imported.errorCode, ErrorCode::NoError);
+        const auto restored = SelfHostedAdminServerConfig::fromJson(imported.config);
+        QCOMPARE(restored.hostName, "192.0.2.10");
+        QCOMPARE(restored.vpnHostName, "vpn.example.org");
+
+        QVERIFY(!servers->setVpnHostName(id, "https://wrong.example.org/path"));
+        QCOMPARE(servers->vpnHostName(id), "vpn.example.org");
+        QVERIFY(servers->setVpnHostName(id, ""));
+        QCOMPARE(connections.prepareConnection(id, prepared, selected), ErrorCode::NoError);
+        QCOMPARE(prepared.value(configKey::hostName).toString(), "192.0.2.10");
     }
 
     void testServerEditTriggersHandlers() {

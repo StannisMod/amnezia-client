@@ -3,9 +3,11 @@
 #include <QProcess>
 #include <QTcpSocket>
 #include <QThread>
+#include <QHostInfo>
 
 #include "wireGuardProtocol.h"
 #include "core/utils/networkUtilities.h"
+#include "core/utils/vpnEndpoint.h"
 
 #include "mozilla/localsocketcontroller.h"
 
@@ -58,13 +60,21 @@ void WireguardProtocol::stop()
 
 ErrorCode WireguardProtocol::startMzImpl()
 {
-    QString protocolName = m_rawConfig.value("protocol").toString();
-    QJsonObject vpnConfigData = m_rawConfig.value(protocolName + "_config_data").toObject();
-    vpnConfigData[configKey::hostName] = NetworkUtilities::getIPAddress(vpnConfigData.value(configKey::hostName).toString());
-    m_rawConfig.insert(protocolName + "_config_data", vpnConfigData);
-    m_rawConfig[configKey::hostName] = NetworkUtilities::getIPAddress(m_rawConfig[configKey::hostName].toString());
+    const QString protocolName = m_rawConfig.value(configKey::vpnProto).toString();
+    const auto configData = m_rawConfig.value(protocolName + "_config_data").toObject();
+    const QString host = configData.value(configKey::hostName).toString();
+    const bool allowIpv6 = m_rawConfig.contains("sing_box_routing");
+    const QHostAddress literal(host);
+    const QList<QHostAddress> addresses = literal.isNull()
+        ? QHostInfo::fromName(host).addresses() : QList<QHostAddress>{literal};
+    const QString address = amnezia::vpnEndpoint::preferredAddress(addresses, allowIpv6);
+    if (address.isEmpty()) {
+        setLastError(ErrorCode::VpnEndpointResolutionFailed);
+        return ErrorCode::VpnEndpointResolutionFailed;
+    }
 
-    m_impl->activate(m_rawConfig);
+    // Resolve before capture, retaining the domain for subsequent starts.
+    m_impl->activate(amnezia::vpnEndpoint::activationConfig(m_rawConfig, address));
     return ErrorCode::NoError;
 }
 

@@ -9,6 +9,7 @@ namespace amnezia
     namespace configKey
     {
         constexpr QLatin1String hostName("hostName");
+        constexpr QLatin1String vpnHostName("vpnHostName");
         constexpr QLatin1String userName("userName");
         constexpr QLatin1String password("password");
         constexpr QLatin1String port("port");

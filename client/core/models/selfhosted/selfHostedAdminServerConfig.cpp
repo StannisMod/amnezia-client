@@ -93,6 +93,10 @@ QJsonObject SelfHostedAdminServerConfig::toJson() const
         obj[configKey::hostName] = hostName;
     }
 
+    if (!vpnHostName.isEmpty()) {
+        obj[configKey::vpnHostName] = vpnHostName;
+    }
+
     QJsonArray containersArray;
     for (auto it = containers.begin(); it != containers.end(); ++it) {
         QJsonObject containerObj = it.value().toJson();
@@ -132,6 +136,7 @@ SelfHostedAdminServerConfig SelfHostedAdminServerConfig::fromJson(const QJsonObj
 
     config.description = json.value(configKey::description).toString();
     config.hostName = json.value(configKey::hostName).toString();
+    config.vpnHostName = json.value(configKey::vpnHostName).toString();
 
     QJsonArray containersArray = json.value(configKey::containers).toArray();
     for (const QJsonValue &val : containersArray) {
