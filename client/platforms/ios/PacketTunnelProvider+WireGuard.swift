@@ -180,19 +180,27 @@ extension PacketTunnelProvider {
 
             do {
                 let tunnelConfiguration = try TunnelConfiguration(fromWgQuickConfig: configString)
-                wgAdapter?.update(tunnelConfiguration: tunnelConfiguration) { [weak self] error in
-                    if let error {
-                        wg_log(.error, message: "Failed to switch tunnel configuration: \(error.localizedDescription)")
+                wireguardRefreshQueue.async { [weak self] in
+                    guard let self, !self.wireguardEndpointStopped, let adapter = self.wgAdapter else {
                         completionHandler(nil)
                         return
                     }
-
-                    self?.wgAdapter?.getRuntimeConfiguration { settings in
-                        var data: Data?
-                        if let settings {
-                            data = settings.data(using: .utf8)!
+                    self.wireguardRefreshWork?.cancel()
+                    let token = self.wireguardRefreshPolicy.begin()
+                    adapter.update(tunnelConfiguration: tunnelConfiguration) { [weak self] error in
+                        self?.wireguardRefreshQueue.async { [weak self] in
+                            guard let self, !self.wireguardEndpointStopped,
+                                  self.wireguardRefreshPolicy.accepts(token), error == nil else {
+                                completionHandler(nil)
+                                return
+                            }
+                            // A later network change must preserve the most
+                            // recent user-supplied keys/routes, not undo them.
+                            self.wireguardOriginalConfiguration = tunnelConfiguration
+                            adapter.getRuntimeConfiguration { settings in
+                                completionHandler(settings?.data(using: .utf8))
+                            }
                         }
-                        completionHandler(data)
                     }
                 }
             } catch {
