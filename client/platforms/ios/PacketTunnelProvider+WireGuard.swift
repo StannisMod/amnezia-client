@@ -62,6 +62,13 @@ extension PacketTunnelProvider {
             wg_log(.info, message: "Starting tunnel from the " +
                    (activationAttemptId == nil ? "OS directly, rather than the app" : "app"))
 
+            wireguardRefreshQueue.sync {
+                wireguardRefreshPolicy.cancel()
+                wireguardRefreshWork?.cancel()
+                wireguardOriginalConfiguration = tunnelConfiguration
+                wireguardEndpointStopped = false
+            }
+
             // Start the tunnel
             wgAdapter = WireGuardAdapter(with: self) { logLevel, message in
                 wg_log(logLevel.osLogLevel, message: message)
@@ -196,7 +203,51 @@ extension PacketTunnelProvider {
         }
     }
 
+    func refreshWireguardEndpoint() {
+        wireguardRefreshQueue.async { [weak self] in
+            guard let self, !self.wireguardEndpointStopped,
+                  let configuration = self.wireguardOriginalConfiguration else { return }
+            let hasDomain = configuration.peers.contains { peer in
+                if let endpoint = peer.endpoint, case .name = endpoint.host { return true }
+                return false
+            }
+            guard hasDomain else { return }
+            self.wireguardRefreshWork?.cancel()
+            let token = self.wireguardRefreshPolicy.begin()
+            self.reasserting = true
+            self.updateWireguardEndpoint(configuration: configuration, token: token)
+        }
+    }
+
+    private func updateWireguardEndpoint(configuration: TunnelConfiguration, token: UInt64) {
+        guard !wireguardEndpointStopped, wireguardRefreshPolicy.accepts(token), let adapter = wgAdapter else { return }
+        guard let delay = wireguardRefreshPolicy.nextDelay(for: token) else {
+            reasserting = false
+            cancelTunnelWithError(PacketTunnelProviderError.dnsResolutionFailure)
+            return
+        }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, !self.wireguardEndpointStopped, self.wireguardRefreshPolicy.accepts(token) else { return }
+            adapter.update(tunnelConfiguration: configuration) { [weak self] error in
+                self?.wireguardRefreshQueue.async { [weak self] in
+                    guard let self, !self.wireguardEndpointStopped, self.wireguardRefreshPolicy.accepts(token) else { return }
+                    if error == nil { self.reasserting = false }
+                    else { self.updateWireguardEndpoint(configuration: configuration, token: token) }
+                }
+            }
+        }
+        wireguardRefreshWork = work
+        wireguardRefreshQueue.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+
     func stopWireguard(with reason: NEProviderStopReason, completionHandler: @escaping () -> Void) {
+        wireguardRefreshQueue.sync {
+            wireguardEndpointStopped = true
+            wireguardRefreshPolicy.cancel()
+            wireguardRefreshWork?.cancel()
+            wireguardOriginalConfiguration = nil
+            reasserting = false
+        }
         if let routed = routedAdapter {
             routedAdapter = nil
             routed.stop(completion: completionHandler)

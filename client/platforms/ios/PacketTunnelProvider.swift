@@ -38,6 +38,11 @@ struct Constants {
 
 class PacketTunnelProvider: NEPacketTunnelProvider {
     var wgAdapter: WireGuardAdapter?
+    let wireguardRefreshQueue = DispatchQueue(label: "org.amnezia.wireguard-endpoint")
+    var wireguardOriginalConfiguration: TunnelConfiguration?
+    var wireguardRefreshPolicy = EndpointRefreshPolicy()
+    var wireguardRefreshWork: DispatchWorkItem?
+    var wireguardEndpointStopped = true
     var routedAdapter: RoutingPacketTunnel?
     var ovpnAdapter: OpenVPNAdapter?
     private lazy var openVPNPacketFlowAdapter = PacketTunnelFlowAdapter(flow: packetFlow)
@@ -99,10 +104,14 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
                 return
             }
 
-            // WireGuard/AWG and OpenVPN manages network changes internally in its own adapter.
-            if proto == .wireguard || proto == .openvpn {
+            // The adapter bumps sockets itself, but its saved resolvedEndpoints
+            // contain numeric bootstrap addresses. Rebuild from the original
+            // domain configuration to pick up changed DNS records as well.
+            if proto == .wireguard {
+                if path.status == .satisfied { self.refreshWireguardEndpoint() }
                 return
             }
+            if proto == .openvpn { return }
 
             if proto == .openvpn {
                 self.scheduleOpenVPNReconnect(reason: "NWPath changed")
