@@ -19,7 +19,7 @@ class LocalSocketController final : public ControllerImpl {
   Q_DISABLE_COPY_MOVE(LocalSocketController)
 
  public:
-  LocalSocketController();
+  explicit LocalSocketController(const QString &socketPath = QString());
   ~LocalSocketController();
 
   void initialize(const Device* device, const Keys* keys) override;
@@ -57,6 +57,7 @@ class LocalSocketController final : public ControllerImpl {
   } m_daemonState = eUnknown;
 
   QLocalSocket* m_socket = nullptr;
+  QString m_socketPath;
 
   QByteArray m_buffer;
 

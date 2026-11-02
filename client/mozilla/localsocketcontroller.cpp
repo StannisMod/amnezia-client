@@ -40,7 +40,7 @@ namespace {
 Logger logger("LocalSocketController");
 }
 
-LocalSocketController::LocalSocketController() {
+LocalSocketController::LocalSocketController(const QString &socketPath) : m_socketPath(socketPath) {
   MZ_COUNT_CTOR(LocalSocketController);
 
   m_socket = new QLocalSocket(this);
@@ -112,6 +112,7 @@ void LocalSocketController::initializeInternal() {
   }
 #endif
 
+  if (!m_socketPath.isEmpty()) path = m_socketPath;
   logger.debug() << "Connecting to:" << path;
   m_socket->connectToServer(path);
 }
@@ -393,6 +394,13 @@ void LocalSocketController::parseCommand(const QByteArray& command) {
 
   if (m_daemonState == eInitializing && type == "status") {
     m_daemonState = eReady;
+    // A leftover tunnel may never have completed a handshake and therefore
+    // have no valid connection date. Teardown must not depend on that date.
+    if (m_pendingConfirmedDeactivation) {
+      deactivateWithAck();
+      emit initialized(true, false, QDateTime());
+      return;
+    }
 
     QJsonValue connected = obj.value("connected");
     if (!connected.isBool()) {
