@@ -34,7 +34,7 @@ configure<SettingsExtension> { compileSdk=36; minSdk=28; buildToolsVersion="36.0
 }
 ''')
     (work / "gradle.properties").write_text("android.useAndroidX=true\norg.gradle.jvmargs=-Xmx2g\n")
-    command = [str(android / "gradlew"), "-p", str(work), ":awg:compileDebugKotlin", "--no-daemon"]
+    command = [str(android / "gradlew"), "-p", str(work), ":awg:compileDebugKotlin", ":utils:testDebugUnitTest", "--no-daemon"]
     for attempt in range(3):
         result = subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         print(result.stdout, end="", flush=True)

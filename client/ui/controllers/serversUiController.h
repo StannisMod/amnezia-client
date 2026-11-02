@@ -51,6 +51,8 @@ public slots:
     void removeServer(const QString &serverId);
     void removeServerAtIndex(int index);
 
+    Q_INVOKABLE QString vpnHostName(const QString &serverId) const;
+    Q_INVOKABLE bool setVpnHostName(const QString &serverId, const QString &host);
     void editServerName(const QString &serverId, const QString &name);
 
     void setDefaultServer(const QString &serverId);

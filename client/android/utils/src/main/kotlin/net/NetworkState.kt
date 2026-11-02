@@ -28,7 +28,7 @@ class NetworkState(
         Handler(context.mainLooper)
     }
 
-    private val connectivityManager: ConnectivityManager by lazy(NONE) {
+    private val connectivityManager: ConnectivityManager by lazy {
         context.getSystemService<ConnectivityManager>()!!
     }
 
@@ -64,6 +64,24 @@ class NetworkState(
                 state.lost(network)
             }
         }
+    }
+
+    fun resolveEndpoint(host: String): List<java.net.InetAddress> {
+        val networks = connectivityManager.allNetworks.mapNotNull { network ->
+            val capabilities = connectivityManager.getNetworkCapabilities(network) ?: return@mapNotNull null
+            if (!capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN) ||
+                !capabilities.hasCapability(NET_CAPABILITY_INTERNET)) return@mapNotNull null
+            network to capabilities.hasCapability(NET_CAPABILITY_VALIDATED)
+        }.sortedByDescending { it.second }
+        for ((network, _) in networks) {
+            try {
+                val addresses = network.getAllByName(host).toList()
+                if (addresses.isNotEmpty()) return addresses
+            } catch (_: java.net.UnknownHostException) {
+                // A replacement network can become usable before its DNS does.
+            }
+        }
+        throw java.net.UnknownHostException("VPN endpoint DNS is unavailable on the underlying networks")
     }
 
     suspend fun bindNetworkListener() {

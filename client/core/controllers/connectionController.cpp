@@ -155,6 +155,11 @@ ErrorCode ConnectionController::prepareConnection(const QString &serverId,
         containerConfigModel = cfg->containerConfig(container);
         dns = cfg->getDnsPair(m_appSettingsRepository->useAmneziaDns(), primaryDns, secondaryDns);
         hostName = cfg->hostName;
+        const Proto proto = ContainerUtils::defaultProtocol(container);
+        if (!cfg->vpnHostName.isEmpty() && (proto == Proto::Awg || proto == Proto::WireGuard)) {
+            hostName = cfg->vpnHostName;
+            containerConfigModel.protocolConfig.setVpnHostName(hostName);
+        }
         description = cfg->description;
         break;
     }

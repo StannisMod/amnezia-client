@@ -100,6 +100,7 @@ public:
     static void updateDNSServers(const QStringList& servers);
     static void updateAllowNets(const QStringList& servers);
     static void updateBlockNets(const QStringList& servers);
+    static bool setEndpointDnsAllowed(quint16 port, const QString &resolver, bool enabled);
     static bool setDomainRoutingAllowed(bool enabled);
 };
 

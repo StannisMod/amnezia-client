@@ -93,6 +93,12 @@ ExportController::ExportResult ExportController::generateConnectionConfig(const 
                                                                m_appSettingsRepository->primaryDns(),
                                                                m_appSettingsRepository->secondaryDns());
 
+    const Proto exportedProto = ContainerUtils::defaultProtocol(container);
+    if (!adminConfig->vpnHostName.isEmpty() && (exportedProto == Proto::Awg || exportedProto == Proto::WireGuard)) {
+        containerConfig.protocolConfig.setVpnHostName(adminConfig->vpnHostName);
+        adminConfig->hostName = adminConfig->vpnHostName;
+    }
+
     adminConfig->containers.clear();
     adminConfig->containers[container] = containerConfig;
     adminConfig->defaultContainer = container;
@@ -152,6 +158,10 @@ ExportController::NativeConfigResult ExportController::generateNativeConfig(cons
     ProtocolConfig newProtocolConfig = configurator->createConfig(credentials, container, modifiedContainerConfig, dnsSettings, result.errorCode);
     if (result.errorCode != ErrorCode::NoError) {
         return result;
+    }
+
+    if (!adminConfig->vpnHostName.isEmpty()) {
+        newProtocolConfig.setVpnHostName(adminConfig->vpnHostName);
     }
 
     ExportSettings exportSettings = { { dns.first, dns.second } };

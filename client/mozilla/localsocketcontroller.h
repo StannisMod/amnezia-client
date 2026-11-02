@@ -19,7 +19,7 @@ class LocalSocketController final : public ControllerImpl {
   Q_DISABLE_COPY_MOVE(LocalSocketController)
 
  public:
-  LocalSocketController();
+  explicit LocalSocketController(const QString &socketPath = QString());
   ~LocalSocketController();
 
   void initialize(const Device* device, const Keys* keys) override;
@@ -27,6 +27,9 @@ class LocalSocketController final : public ControllerImpl {
   void activate(const QJsonObject& rawConfig) override;
 
   void deactivate() override;
+  void deactivateWithAck() override;
+  void resolveEndpoint(const QString &host, std::function<void(QList<QHostAddress>)> complete) override;
+  void cancelEndpointLookup() override;
 
   void checkStatus() override;
 
@@ -56,10 +59,15 @@ class LocalSocketController final : public ControllerImpl {
   } m_daemonState = eUnknown;
 
   QLocalSocket* m_socket = nullptr;
+  QString m_socketPath;
 
   QByteArray m_buffer;
 
   QString m_deviceIpv4;
+  quint32 m_endpointLookupId = 0;
+  quint32 m_endpointResolverAttempt = 0;
+  std::function<void(QList<QHostAddress>)> m_endpointCompletion;
+  bool m_pendingConfirmedDeactivation = false;
   std::function<void(const QString&)> m_logCallback = nullptr;
 
   QTimer m_initializingTimer;

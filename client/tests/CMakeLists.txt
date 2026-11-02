@@ -97,6 +97,12 @@ if(NOT ANDROID)
         test_common
     )
 
+    if(AMNEZIA_DESKTOP OR WIN32 OR (UNIX AND NOT APPLE))
+        add_executable(test_protocol_disconnect testProtocolDisconnect.cpp)
+        target_link_libraries(test_protocol_disconnect PRIVATE Qt6::Test test_common)
+        add_test(NAME ProtocolDisconnectTest COMMAND test_protocol_disconnect)
+    endif()
+
     add_executable(test_signal_order
         testSignalOrder.cpp
     )

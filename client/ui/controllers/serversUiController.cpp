@@ -89,6 +89,21 @@ void ServersUiController::setDefaultContainerAtIndex(int index, int containerInd
     }
 }
 
+QString ServersUiController::vpnHostName(const QString &serverId) const
+{
+    return m_serversController->vpnHostName(serverId);
+}
+
+bool ServersUiController::setVpnHostName(const QString &serverId, const QString &host)
+{
+    if (!m_serversController->setVpnHostName(serverId, host)) {
+        emit errorOccurred(tr("Enter a domain name or IP address without a port or URL."));
+        return false;
+    }
+    updateModel();
+    return true;
+}
+
 void ServersUiController::editServerName(const QString &serverId, const QString &name)
 {
     if (serverId.isEmpty()) {

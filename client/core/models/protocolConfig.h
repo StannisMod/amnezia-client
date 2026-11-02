@@ -70,6 +70,9 @@ struct ProtocolConfig {
     void setClientConfigJson(const QJsonObject& json);
     void clearClientConfig();
     
+    // Applies only to single-peer AWG/WireGuard client profiles.
+    void setVpnHostName(const QString &host);
+
     QString nativeConfig() const;
     void setNativeConfig(const QString &config);
 

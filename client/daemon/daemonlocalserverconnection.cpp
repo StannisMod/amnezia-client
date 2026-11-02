@@ -5,6 +5,8 @@
 #include "daemonlocalserverconnection.h"
 
 #include <QJsonDocument>
+#include <QJsonArray>
+#include "killswitch.h"
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QLocalSocket>
@@ -113,7 +115,25 @@ void DaemonLocalServerConnection::parseCommand(const QByteArray& data) {
     return;
   }
 
+  if (type == "cancel_endpoint_lookup") { m_endpointDns.cancel(); return; }
+  if (type == "resolve_endpoint") {
+    const auto id = obj.value("lookup_id");
+    // Fixed public bootstrap resolvers: an IPC client cannot turn this into an
+    // arbitrary destination/port exception. A new attempt alternates resolvers.
+    const QHostAddress resolver(obj.value("alternate").toBool() ? "8.8.8.8" : "1.1.1.1");
+    m_endpointDns.start(obj.value("host").toString(), resolver,
+      [](quint16 port, const QHostAddress &address, bool enabled) {
+        return KillSwitch::instance()->endpointDnsAllowed(port, address, enabled);
+      }, [this, id](const QList<QHostAddress> &addresses) {
+        QJsonArray values;
+        for (const auto &address : addresses) values.append(address.toString());
+        write(QJsonObject{{"type", "endpoint_resolved"}, {"lookup_id", id}, {"addresses", values}});
+      });
+    return;
+  }
+
   if (type == "activate") {
+    m_endpointDns.cancel();
 #if defined(MZ_LINUX) || defined(MZ_WINDOWS)
     if (obj.contains("routing_profile")) {
       Daemon::instance()->deactivate(false);
@@ -140,10 +160,17 @@ void DaemonLocalServerConnection::parseCommand(const QByteArray& data) {
   }
 
   if (type == "deactivate") {
+    m_endpointDns.cancel();
 #if defined(MZ_LINUX) || defined(MZ_WINDOWS)
-    if (DesktopRoutingProcess::instance()->isActive()) { DesktopRoutingProcess::instance()->stop(); return; }
+    if (DesktopRoutingProcess::instance()->isActive()) {
+      DesktopRoutingProcess::instance()->stop();
+      if (obj.value("request_ack").toBool() && !DesktopRoutingProcess::instance()->isActive())
+        write(QJsonObject{{"type", "deactivated"}});
+      return;
+    }
 #endif
-    Daemon::instance()->deactivate(true);
+    const bool cleaned = Daemon::instance()->deactivate(true);
+    if (obj.value("request_ack").toBool() && cleaned) write(QJsonObject{{"type", "deactivated"}});
     return;
   }
 

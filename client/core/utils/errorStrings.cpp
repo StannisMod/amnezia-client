@@ -101,6 +101,9 @@ QString errorString(ErrorCode code) {
     // VPN errors
     case (ErrorCode::OpenVpnAdaptersInUseError): errorMessage = QObject::tr("Can't connect: another VPN connection is active"); break;
     case (ErrorCode::OpenVpnTapAdapterError): errorMessage = QObject::tr("Can't setup OpenVPN TAP network adapter"); break;
+    case (ErrorCode::VpnEndpointRecoveryFailed): errorMessage = QObject::tr("Could not restore the VPN connection after several attempts. Check the server and reconnect."); break;
+    case (ErrorCode::VpnEndpointCleanupFailed): errorMessage = QObject::tr("The VPN service did not confirm tunnel cleanup. Recovery was stopped to avoid using stale routes."); break;
+    case (ErrorCode::VpnEndpointResolutionFailed): errorMessage = QObject::tr("Could not resolve a usable VPN server address. Check its DNS records and your network connection."); break;
     case (ErrorCode::AddressPoolError): errorMessage = QObject::tr("VPN pool error: no available addresses"); break;
 
     case (ErrorCode::ImportInvalidConfigError): errorMessage = QObject::tr("The config does not contain any containers and credentials for connecting to the server"); break;

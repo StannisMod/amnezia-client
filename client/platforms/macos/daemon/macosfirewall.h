@@ -74,6 +74,7 @@ private:
     static bool isRootAnchorLoaded();
 
 public:
+    static bool setEndpointDnsAllowed(quint16 port, const QString &resolver, bool enabled);
     static void install();
     static void uninstall();
     static bool isInstalled();

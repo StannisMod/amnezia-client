@@ -4,6 +4,12 @@ import android.net.VpnService.Builder
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import org.amnezia.vpn.util.net.DomainEndpointRefresh
+import org.amnezia.vpn.util.net.EndpointHealthPolicy
+import android.os.SystemClock
 import kotlinx.coroutines.SupervisorJob
 import org.amnezia.awg.RoutingBackend
 import org.amnezia.awg.RoutingHost
@@ -31,6 +37,30 @@ import org.json.JSONObject
 private const val TAG = "Wireguard"
 
 open class Wireguard : Protocol() {
+    private val endpointLock = Any()
+    private var endpointCandidates = DomainEndpointRefresh.Candidates()
+    private var endpointGeneration = 0L
+    private var originalProfile: JSONObject? = null
+    private var endpointRefreshJob: Job? = null
+    private var endpointHealthJob: Job? = null
+    private var endpointHealthGeneration = 0L
+    private var endpointBackendEpoch = 0L
+
+    private fun endpointHost(profile: JSONObject): String =
+        profile.getJSONObject(profile.getString("protocol") + "_config_data").getString("hostName")
+
+    private suspend fun refreshEndpoint(profile: JSONObject): JSONObject {
+        val host = endpointHost(profile)
+        if (!DomainEndpointRefresh.isDomain(host)) return JSONObject(profile.toString())
+        val resolver = endpointResolver ?: throw VpnStartException("Underlying-network DNS is not configured")
+        val candidates = synchronized(endpointLock) { endpointCandidates }
+        val address = DomainEndpointRefresh.resolve(host, resolver, candidates = candidates)
+        return JSONObject(profile.toString()).apply {
+            put("hostName", address)
+            getJSONObject(getString("protocol") + "_config_data").put("hostName", address)
+        }
+    }
+
 
     @Volatile private var routedHandle = -1L
     @Volatile private var routedConfig: JSONObject? = null
@@ -122,6 +152,7 @@ open class Wireguard : Protocol() {
             // Do not silently retry the legacy backend or expose VPN flows.
             throw VpnStartException("Domain routing startup failed; check the profile and routing rules")
         }
+        ++endpointBackendEpoch
         val statusHandle = routedHandle
         routedStatusJob = routedScope.launch {
             var announced = false
@@ -183,6 +214,11 @@ open class Wireguard : Protocol() {
         }
 
     override fun internalInit() {
+        synchronized(endpointLock) {
+            ++endpointHealthGeneration
+            endpointHealthJob?.cancel()
+            endpointHealthJob = null
+        }
         if (!isInitialized) loadSharedLibrary(context, "wg-go")
         if (this::scope.isInitialized) {
             scope.cancel()
@@ -191,16 +227,30 @@ open class Wireguard : Protocol() {
     }
 
     override suspend fun startVpn(config: JSONObject, vpnBuilder: Builder, protect: (Int) -> Boolean) {
-        if (config.has("sing_box_routing")) {
-            if (tunnelHandle != -1) turnOffVpn()
-            startRouted(config, vpnBuilder, protect)
-            return
+        val generation = synchronized(endpointLock) {
+            endpointRefreshJob?.cancel()
+            ++endpointHealthGeneration
+            endpointHealthJob?.cancel()
+            endpointCandidates = DomainEndpointRefresh.Candidates()
+            originalProfile = JSONObject(config.toString())
+            ++endpointGeneration
         }
-        stopRouted()
-        routedConfig = null
-        val wireguardConfig = parseConfig(config)
-        start(wireguardConfig, vpnBuilder, protect)
-        this.config = wireguardConfig
+        val resolved = refreshEndpoint(config)
+        currentCoroutineContext().ensureActive()
+        synchronized(endpointLock) {
+            if (generation != endpointGeneration) return
+            if (resolved.has("sing_box_routing")) {
+                if (tunnelHandle != -1) turnOffVpn()
+                startRouted(resolved, vpnBuilder, protect)
+            } else {
+                stopRouted()
+                routedConfig = null
+                val wireguardConfig = parseConfig(resolved)
+                start(wireguardConfig, vpnBuilder, protect)
+                this.config = wireguardConfig
+            }
+            startEndpointWatchdog(config)
+        }
     }
 
     protected open fun parseConfig(config: JSONObject): WireguardConfig {
@@ -325,6 +375,7 @@ open class Wireguard : Protocol() {
             tunnelHandle = -1
             throw VpnStartException("Protect VPN interface: permission not granted or revoked")
         }
+        ++endpointBackendEpoch
         launchStatusJob()
     }
 
@@ -372,17 +423,88 @@ open class Wireguard : Protocol() {
         GoBackend.awgTurnOff(handleToClose)
     }
 
-    override fun stopVpn() {
-        if (routedConfig != null) { stopRouted(); state.value = DISCONNECTED; return }
-        if (tunnelHandle == -1) {
-            Log.w(TAG, "Tunnel already down")
-            return
+    private fun startEndpointWatchdog(profile: JSONObject) {
+        ++endpointHealthGeneration
+        endpointHealthJob?.cancel()
+        if (!DomainEndpointRefresh.isDomain(endpointHost(profile)) || endpointRecovery == null) return
+        val generation = endpointHealthGeneration
+        val data = profile.getJSONObject(profile.getString("protocol") + "_config_data")
+        val health = EndpointHealthPolicy(EndpointHealthPolicy.staleBudget(
+            data.optString("RekeyAfterTime"), data.optString("RejectAfterTime")))
+        endpointHealthJob = scope.launch {
+            while (true) {
+                delay(5000)
+                val action = synchronized(endpointLock) {
+                    if (generation != endpointHealthGeneration) return@launch
+                    val sample = if (routedHandle > 0) RoutingBackend.stats(routedHandle)?.let {
+                        longArrayOf(it[2], it[1], it[0]) // handshake, tx, rx
+                    } else if (tunnelHandle >= 0) GoBackend.awgGetConfig(tunnelHandle)?.let { text ->
+                        val values = text.lineSequence().map { it.split('=', limit = 2) }
+                            .filter { it.size == 2 }.associate { it[0] to it[1] }
+                        longArrayOf(values["last_handshake_time_sec"]?.toLongOrNull() ?: 0,
+                            values["tx_bytes"]?.toLongOrNull() ?: 0, values["rx_bytes"]?.toLongOrNull() ?: 0)
+                    } else null
+                    if (sample == null) health.sample(-endpointBackendEpoch, 0, 0, 0, SystemClock.elapsedRealtime())
+                    else health.sample(endpointBackendEpoch, sample[0], sample[1], sample[2], SystemClock.elapsedRealtime())
+                }
+                when (action) {
+                    EndpointHealthPolicy.Action.NONE -> Unit
+                    EndpointHealthPolicy.Action.REFRESH -> endpointRecovery?.invoke {
+                        synchronized(endpointLock) { generation == endpointHealthGeneration && originalProfile != null }
+                    }
+                    EndpointHealthPolicy.Action.EXHAUSTED -> {
+                        if (synchronized(endpointLock) { generation == endpointHealthGeneration })
+                            onError("VPN endpoint recovery exhausted; check the server and reconnect")
+                        return@launch
+                    }
+                }
+            }
         }
-        turnOffVpn()
+    }
+
+    override fun stopVpn() = synchronized(endpointLock) {
+        ++endpointGeneration
+        ++endpointHealthGeneration
+        endpointHealthJob?.cancel()
+        endpointHealthJob = null
+        endpointRefreshJob?.cancel()
+        endpointRefreshJob = null
+        originalProfile = null
+        if (routedConfig != null) stopRouted()
+        if (tunnelHandle != -1) turnOffVpn()
         state.value = DISCONNECTED
     }
 
     override fun reconnectVpn(vpnBuilder: Builder, protect: (Int) -> Boolean) {
+        val snapshot = synchronized(endpointLock) { originalProfile?.let { JSONObject(it.toString()) } }
+        if (snapshot != null && DomainEndpointRefresh.isDomain(endpointHost(snapshot))) {
+            synchronized(endpointLock) {
+                endpointRefreshJob?.cancel()
+                val generation = ++endpointGeneration
+                endpointRefreshJob = scope.launch {
+                    try {
+                        // Resolve first, retaining the existing capture/backend
+                        // while the replacement network's DNS is unavailable.
+                        val resolved = refreshEndpoint(snapshot)
+                        currentCoroutineContext().ensureActive()
+                        synchronized(endpointLock) {
+                            if (generation != endpointGeneration) return@launch
+                            if (resolved.has("sing_box_routing")) startRouted(resolved, vpnBuilder, protect)
+                            else {
+                                val parsed = parseConfig(resolved)
+                                start(parsed, vpnBuilder, protect, true)
+                                this@Wireguard.config = parsed
+                            }
+                        }
+                    } catch (cancelled: CancellationException) { throw cancelled }
+                    catch (_: Exception) {
+                        if (generation == synchronized(endpointLock) { endpointGeneration })
+                            onError("Could not refresh the VPN endpoint on the new network; reconnect or check DNS")
+                    }
+                }
+            }
+            return
+        }
         routedConfig?.let { startRouted(it, vpnBuilder, protect); return }
         val config = this.config ?: throw VpnException("Reconnect config is empty")
         start(config, vpnBuilder, protect, true)
