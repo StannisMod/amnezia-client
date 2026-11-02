@@ -126,7 +126,8 @@ public:
         m_timer.stop();
         m_backendMayExist = false;
         if (!m_wanted) { setPhase(Phase::Idle); return; }
-        retryWithoutTunnel();
+        if (m_attempts == 0) attempt(); // Initial connect or explicit restart.
+        else retryWithoutTunnel();
     }
 
 private:
@@ -214,7 +215,7 @@ private:
     QStringList m_addresses;
     int m_nextAddress = 0, m_attempts = 0, m_lookupId = -1;
     quint64 m_generation = 0;
-    bool m_wanted = false, m_allowIpv6 = false, m_backendMayExist = false;
+    bool m_wanted = false, m_allowIpv6 = false, m_backendMayExist = true; // Service state is unknown until first teardown ack.
     bool m_seenPeer = false, m_outboundPending = false;
     qint64 m_lastProgress = 0, m_handshake = 0;
     quint64 m_tx = 0, m_rx = 0;

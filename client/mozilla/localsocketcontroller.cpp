@@ -289,7 +289,9 @@ void LocalSocketController::deactivate() {
 void LocalSocketController::deactivateWithAck() {
   // No synthetic completion. A disconnected socket does not prove that the
   // privileged service has restored DNS and removed its capture routes.
+  m_pendingConfirmedDeactivation = true;
   if (m_daemonState != eReady || m_socket->state() != QLocalSocket::ConnectedState) return;
+  m_pendingConfirmedDeactivation = false;
   write(QJsonObject{{"type", "deactivate"}, {"request_ack", true}});
 }
 
@@ -414,6 +416,7 @@ void LocalSocketController::parseCommand(const QByteArray& command) {
     }
 
     emit initialized(true, connected.toBool(), datetime);
+    if (m_pendingConfirmedDeactivation) deactivateWithAck();
     return;
   }
 

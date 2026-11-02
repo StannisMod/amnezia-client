@@ -16,7 +16,31 @@ private:
         session.timing.resolveMs = 10000;
         session.timing.cleanupMs = 1000;
     }
+    static void startClean(Session &session, const QString &host, bool allowIpv6)
+    {
+        // Most tests start with an acknowledged empty service. The dedicated
+        // test below exercises the untrusted initial service state explicitly.
+        const auto previous = session.deactivate;
+        session.deactivate = [&session] { session.deactivated(); };
+        session.start(host, allowIpv6);
+        session.deactivate = previous;
+    }
 private slots:
+    void initialStartWaitsForCleanup()
+    {
+        Session session;
+        fast(session);
+        int queries = 0, stops = 0;
+        session.resolver = [&](const QString &, Session::Completion done) { ++queries; done({QHostAddress("192.0.2.1")}); };
+        session.deactivate = [&] { ++stops; };
+        session.start("vpn.example.org", false);
+        QCOMPARE(stops, 1);
+        QCOMPARE(queries, 0);
+        QCOMPARE(session.phase(), Phase::Stopping);
+        session.deactivated();
+        QCOMPARE(queries, 1);
+        QCOMPARE(session.phase(), Phase::Connecting);
+    }
     void rotatesOnlyAfterConfirmedCleanup()
     {
         Session session;
@@ -30,7 +54,7 @@ private slots:
         };
         session.activate = [&](const QString &address) { activated.append(address); };
         session.deactivate = [&] { ++stops; };
-        session.start("vpn.example.org", false);
+        startClean(session, "vpn.example.org", false);
         QCOMPARE(activated, QStringList{"192.0.2.1"});
         session.recover();
         QCOMPARE(session.phase(), Phase::Stopping);
@@ -57,7 +81,7 @@ private slots:
         session.resolver = [&](const QString &, Session::Completion done) {
             done({QHostAddress(++queries == 1 ? "192.0.2.1" : "192.0.2.9")});
         };
-        session.start("vpn.example.org", false);
+        startClean(session, "vpn.example.org", false);
         session.connected();
         session.recover();
         QCOMPARE(queries, 1);
@@ -73,7 +97,7 @@ private slots:
             fast(session);
             session.resolver = [&](const QString &, Session::Completion done) { late = done; };
             session.activate = [&](const QString &) { ++activated; };
-            session.start("vpn.example.org", false);
+            startClean(session, "vpn.example.org", false);
             QCOMPARE(session.phase(), Phase::Resolving);
             session.stop();
             late({QHostAddress("192.0.2.1")});
@@ -89,8 +113,8 @@ private slots:
         fast(session);
         QList<Session::Completion> lookups;
         session.resolver = [&](const QString &, Session::Completion done) { lookups.append(done); };
-        session.start("old.example.org", false);
-        session.start("new.example.org", false);
+        startClean(session, "old.example.org", false);
+        startClean(session, "new.example.org", false);
         lookups.first()({QHostAddress("192.0.2.1")});
         QCOMPARE(session.phase(), Phase::Resolving);
         lookups.last()({QHostAddress("192.0.2.2")});
@@ -106,7 +130,7 @@ private slots:
         session.activate = [&](const QString &) { ++activations; QTimer::singleShot(0, &session, [&] { session.recover(); }); };
         session.deactivate = [&] { session.deactivated(); };
         session.failed = [&](Failure error) { QCOMPARE(error, Failure::AttemptsExhausted); ++failures; };
-        session.start("vpn.example.org", false);
+        startClean(session, "vpn.example.org", false);
         QTRY_COMPARE(failures, 1);
         QCOMPARE(activations, 3);
         QCOMPARE(session.phase(), Phase::Failed);
@@ -121,7 +145,7 @@ private slots:
         session.resolver = [](const QString &, Session::Completion done) { done({QHostAddress("192.0.2.1")}); };
         session.activate = [&](const QString &) { ++activations; };
         session.failed = [&](Failure error) { QCOMPARE(error, Failure::Cleanup); ++failures; };
-        session.start("vpn.example.org", false);
+        startClean(session, "vpn.example.org", false);
         session.recover();
         QTRY_COMPARE(failures, 1);
         session.deactivated(); // A late acknowledgement cannot restart a failed session.
@@ -134,7 +158,7 @@ private slots:
         int activations = 0;
         session.resolver = [](const QString &, Session::Completion done) { done({QHostAddress("192.0.2.1")}); };
         session.activate = [&](const QString &) { ++activations; };
-        session.start("vpn.example.org", false);
+        startClean(session, "vpn.example.org", false);
         session.recover();
         session.stop();
         QCOMPARE(session.phase(), Phase::Stopping);
@@ -151,7 +175,7 @@ private slots:
         int stops = 0;
         session.resolver = [](const QString &, Session::Completion done) { done({QHostAddress("192.0.2.1")}); };
         session.deactivate = [&] { ++stops; };
-        session.start("vpn.example.org", false);
+        startClean(session, "vpn.example.org", false);
         QTRY_COMPARE(stops, 1);
         QCOMPARE(session.phase(), Phase::Stopping);
     }
@@ -164,12 +188,12 @@ private slots:
         int failures = 0;
         session.resolver = [](const QString &, Session::Completion) {};
         session.failed = [&](Failure error) { QCOMPARE(error, Failure::Resolution); ++failures; };
-        session.start("vpn.example.org", false);
+        startClean(session, "vpn.example.org", false);
         QTRY_COMPARE(failures, 1);
         session.resolver = [](const QString &, Session::Completion done) { done({QHostAddress("2001:db8::1")}); };
-        session.start("vpn.example.org", false);
+        startClean(session, "vpn.example.org", false);
         QCOMPARE(failures, 2);
-        session.start("vpn.example.org", true);
+        startClean(session, "vpn.example.org", true);
         QCOMPARE(session.address(), "2001:db8::1");
     }
     void idleAndHealthyTrafficDoNotTriggerRecovery()
@@ -180,7 +204,7 @@ private slots:
         int stops = 0;
         session.resolver = [](const QString &, Session::Completion done) { done({QHostAddress("192.0.2.1")}); };
         session.deactivate = [&] { ++stops; };
-        session.start("vpn.example.org", false);
+        startClean(session, "vpn.example.org", false);
         session.connected();
         session.observePeer(1000, 10, 10, 0);
         session.observePeer(1000, 10, 10, 1000); // Idle is healthy.
