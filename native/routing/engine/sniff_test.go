@@ -9,6 +9,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
+	"fmt"
 	"io"
 	"math/big"
 	"net"
@@ -56,6 +57,11 @@ func testRealIPSniff(t *testing.T, ctx context.Context, instance *box.Box, peer 
 				t.Fatal(err)
 			}
 			defer virtual.Close()
+			type observerResult struct {
+				label string
+				err   error
+			}
+			observed := make(chan observerResult, 3)
 			serve := func(l net.Listener, label string) {
 				for {
 					c, e := l.Accept()
@@ -63,25 +69,11 @@ func testRealIPSniff(t *testing.T, ctx context.Context, instance *box.Box, peer 
 						return
 					}
 					go func() {
+						// Report every observer phase. Previously an expired
+						// observer deadline was swallowed, leaving only a
+						// misleading client-side read timeout in CI.
 						defer c.Close()
-						c.SetDeadline(time.Now().Add(3 * time.Second))
-						if protocol == "tls" {
-							c = tls.Server(c, &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12})
-							if e := c.(*tls.Conn).Handshake(); e != nil {
-								return
-							}
-							var p [4]byte
-							if _, e := io.ReadFull(c, p[:]); e != nil || string(p[:]) != "ping" {
-								return
-							}
-						} else {
-							r, e := http.ReadRequest(bufio.NewReader(c))
-							if e != nil || r.Host == "" {
-								return
-							}
-							r.Body.Close()
-						}
-						io.WriteString(c, label)
+						observed <- observerResult{label, serveSniffObserver(c, protocol, cert, label)}
 					}()
 				}
 			}
@@ -101,7 +93,7 @@ func testRealIPSniff(t *testing.T, ctx context.Context, instance *box.Box, peer 
 					}
 				}
 				app, capture := net.Pipe()
-				app.SetDeadline(time.Now().Add(4 * time.Second))
+				app.SetDeadline(time.Now().Add(sniffOperationTimeout))
 				go instance.Router().RouteConnectionEx(ctx, capture, adapter.InboundContext{Inbound: TUNTag, Network: "tcp", Destination: M.Socksaddr{Addr: destination, Port: port}}, nil)
 				var client net.Conn = app
 				if protocol == "tls" {
@@ -110,6 +102,7 @@ func testRealIPSniff(t *testing.T, ctx context.Context, instance *box.Box, peer 
 						app.Close()
 						t.Fatal(tc, err)
 					}
+					app.SetDeadline(time.Now().Add(sniffOperationTimeout))
 					_, err = client.Write([]byte("ping"))
 				} else {
 					_, err = client.Write([]byte("GET / HTTP/1.1\r\nHost: " + tc.name + "\r\n\r\n"))
@@ -120,14 +113,34 @@ func testRealIPSniff(t *testing.T, ctx context.Context, instance *box.Box, peer 
 				}
 				response := make([]byte, len(tc.want))
 				_, err = io.ReadFull(client, response)
-				// The assertion concerns routing and verified TLS data, not a
-				// graceful close_notify exchange. net.Pipe has no send buffer;
-				// tls.Conn.Close can wait for its write deadline after the
-				// observer has stopped reading. Close the owned capture side.
-				app.Close()
 				if err != nil || string(response) != tc.want {
-					t.Fatalf("%s (%s, fake=%v): got %q, %v", protocol, tc.name, tc.fake, response, err)
+					app.Close()
+					select {
+					case result := <-observed:
+						t.Fatalf("%s (%s, fake=%v): got %q, %v; observer %s: %v", protocol, tc.name, tc.fake, response, err, result.label, result.err)
+					case <-time.After(sniffOperationTimeout):
+						t.Fatalf("%s (%s, fake=%v): got %q, %v; observer did not finish", protocol, tc.name, tc.fake, response, err)
+					}
 				}
+				// Keep the observer open until the authenticated marker has
+				// actually reached the client. This separates egress proof
+				// from TCP/TLS shutdown, as the QUIC fixture already does.
+				_, err = client.Write([]byte{1})
+				if err != nil {
+					app.Close()
+					t.Fatal("observer acknowledgement:", err)
+				}
+				select {
+				case result := <-observed:
+					app.Close()
+					if result.label != tc.want || result.err != nil {
+						t.Fatal("observer:", result.label, result.err)
+					}
+				case <-time.After(sniffOperationTimeout):
+					app.Close()
+					t.Fatal("observer did not consume acknowledgement")
+				}
+
 			}
 		})
 	}
@@ -212,6 +225,53 @@ func testRealIPSniff(t *testing.T, ctx context.Context, instance *box.Box, peer 
 		}
 	})
 
+}
+
+// Each phase gets an independent bound: a race-instrumented TLS handshake
+// must not consume the time reserved for reading the request and response.
+// The parent fixture still bounds the entire DNS/HTTP/TLS/QUIC sequence.
+const sniffOperationTimeout = 10 * time.Second
+
+func serveSniffObserver(conn net.Conn, protocol string, cert tls.Certificate, label string) error {
+	conn.SetDeadline(time.Now().Add(sniffOperationTimeout))
+	if protocol == "tls" {
+		tlsConn := tls.Server(conn, &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12})
+		if err := tlsConn.Handshake(); err != nil {
+			return fmt.Errorf("TLS handshake: %w", err)
+		}
+		conn = tlsConn
+	}
+	conn.SetDeadline(time.Now().Add(sniffOperationTimeout))
+	if protocol == "tls" {
+		var ping [4]byte
+		if _, err := io.ReadFull(conn, ping[:]); err != nil {
+			return fmt.Errorf("request read: %w", err)
+		}
+		if string(ping[:]) != "ping" {
+			return fmt.Errorf("unexpected request %q", ping)
+		}
+	} else {
+		request, err := http.ReadRequest(bufio.NewReader(conn))
+		if err != nil {
+			return fmt.Errorf("HTTP request: %w", err)
+		}
+		request.Body.Close()
+		if request.Host == "" {
+			return fmt.Errorf("missing HTTP Host")
+		}
+	}
+	conn.SetDeadline(time.Now().Add(sniffOperationTimeout))
+	if _, err := io.WriteString(conn, label); err != nil {
+		return fmt.Errorf("response write: %w", err)
+	}
+	var ack [1]byte
+	if _, err := io.ReadFull(conn, ack[:]); err != nil {
+		return fmt.Errorf("response acknowledgement: %w", err)
+	}
+	if ack[0] != 1 {
+		return fmt.Errorf("invalid response acknowledgement")
+	}
+	return nil
 }
 
 type sniffTestPackets struct {
