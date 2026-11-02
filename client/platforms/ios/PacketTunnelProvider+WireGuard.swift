@@ -250,6 +250,18 @@ extension PacketTunnelProvider {
                             let pair = line.split(separator: "=", maxSplits: 1)
                             if pair.count == 2 { values[String(pair[0])] = String(pair[1]) }
                         }
+                        // The vendor resolved the initial legacy activation.
+                        // Seed its actual numeric endpoint so the first watchdog
+                        // retry can move straight to another answer.
+                        if configuration.peers.count == 1, let text = values["endpoint"], let endpoint = Endpoint(from: text) {
+                            let candidates = self.wireguardCandidates[0] ?? EndpointAddressCandidates()
+                            switch endpoint.host {
+                            case .ipv4(let address): candidates.record(String(describing: address))
+                            case .ipv6(let address): candidates.record(String(describing: address))
+                            default: break
+                            }
+                            self.wireguardCandidates[0] = candidates
+                        }
                         self.wireguardHealth.staleMs = max(self.wireguardHealth.staleMs,
                             EndpointHealthPolicy.staleBudget(rekey: values["rekey_after_time"], reject: values["reject_after_time"]))
                         let action = self.wireguardHealth.sample(backend: text == nil ? 1 : 0,

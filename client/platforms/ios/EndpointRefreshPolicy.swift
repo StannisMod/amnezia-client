@@ -11,6 +11,10 @@ import Glibc
 final class EndpointAddressCandidates {
     private let lock = NSLock()
     private var tried = Set<String>()
+    func record(_ address: String) {
+        lock.lock(); defer { lock.unlock() }
+        tried.insert(address)
+    }
     func select(_ addresses: [String]) -> String? {
         lock.lock(); defer { lock.unlock() }
         var usable = [String]()

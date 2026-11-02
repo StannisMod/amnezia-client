@@ -61,7 +61,11 @@ def run(qt_probe, peer_binary, temporary):
     peer = dns = process = None
     events = queue.Queue()
     state = root / 'dns.json'
-    state.write_text(json.dumps({'address': '192.0.2.10'}))
+    def publish(address):
+        staging = state.with_suffix('.tmp')
+        staging.write_text(json.dumps({'address': address}))
+        staging.replace(state)
+    publish('192.0.2.10')
     def toggle(enabled): command(qt_probe, 'on' if enabled else 'off')
     def stop():
         nonlocal process
@@ -118,7 +122,7 @@ def run(qt_probe, peer_binary, temporary):
         time.sleep(.2)
         # The same peer process and exact profile keys span both migrations.
         for strict in (False, True):
-            state.write_text(json.dumps({'address': '192.0.2.10'}))
+            publish('192.0.2.10')
             toggle(strict)
             (root / 'stop').unlink(missing_ok=True)
             events = queue.Queue()
@@ -129,7 +133,7 @@ def run(qt_probe, peer_binary, temporary):
             threading.Thread(target=read_events, args=(process.stdout, events), daemon=True).start()
             wait_connected('192.0.2.10')
             assert tcp(resolve('vpn.test')) == 'VPN'
-            state.write_text(json.dumps({'address': '192.0.2.20'}))
+            publish('192.0.2.20')
             # Outbound traffic/keepalives and no inbound progress must trigger
             # the real session watchdog; there is no explicit reconnect call.
             traffic_stop = threading.Event()
@@ -144,6 +148,8 @@ def run(qt_probe, peer_binary, temporary):
             assert tcp(resolve('vpn.test')) == 'VPN'
             assert profile_file.read_bytes() == original, 'keys or saved domain were rewritten'
             stop()
+            rules = subprocess.check_output(['iptables-save'], text=True, timeout=10)
+            assert 'amnezia-endpoint-dns' not in rules, 'bootstrap firewall exception survived lookup/stop'
             if strict:
                 # An ordinary DNS socket is still blocked after the endpoint
                 # bootstrap exception has been removed.

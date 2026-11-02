@@ -39,6 +39,35 @@ private slots:
         QTRY_VERIFY(completed);
         QVERIFY(validFirewall);
     }
+    void followsCnameAndRetainsIpv6Answers() {
+        QUdpSocket dns;
+        QVERIFY(dns.bind(QHostAddress(QHostAddress::LocalHost), quint16(0)));
+        EndpointDnsLookup lookup;
+        bool completed = false;
+        connect(&dns, &QUdpSocket::readyRead, this, [&] {
+            while (dns.hasPendingDatagrams()) {
+                QHostAddress sender; quint16 port;
+                QByteArray packet(4096, 0);
+                packet.resize(int(dns.readDatagram(packet.data(), packet.size(), &sender, &port)));
+                const bool a = quint8(packet[packet.size() - 3]) == 1;
+                packet[2] = char(0x81); packet[3] = char(0x80); packet[7] = a ? 2 : 1;
+                if (a) {
+                    // vpn.example.org -> alias.example.org, then its address.
+                    packet += QByteArray::fromHex("c00c0005000100000000000805616c696173c010");
+                    packet += QByteArray::fromHex("05616c696173076578616d706c65036f72670000010001000000000004c0000209");
+                } else packet += QByteArray::fromHex("c00c001c000100000000001020010db8000000000000000000000009");
+                dns.writeDatagram(packet, sender, port);
+            }
+        });
+        lookup.start("vpn.example.org", QHostAddress::LocalHost,
+            [](quint16, const QHostAddress &, bool) { return true; }, [&](const QList<QHostAddress> &addresses) {
+                QCOMPARE(addresses.size(), 2);
+                QVERIFY(addresses.contains(QHostAddress("192.0.2.9")));
+                QVERIFY(addresses.contains(QHostAddress("2001:db8::9")));
+                completed = true;
+            }, dns.localPort(), 200);
+        QTRY_VERIFY(completed);
+    }
     void malformedAndUnrelatedRepliesCannotSupplyAnAddress() {
         QUdpSocket dns;
         QVERIFY(dns.bind(QHostAddress(QHostAddress::LocalHost), quint16(0)));

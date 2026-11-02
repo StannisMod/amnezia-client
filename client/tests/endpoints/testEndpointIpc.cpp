@@ -2,6 +2,7 @@
 #include <QLocalServer>
 #include <QLocalSocket>
 #include <QJsonDocument>
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QSignalSpy>
 #include <QTemporaryDir>
@@ -11,6 +12,44 @@ class TestEndpointIpc : public QObject
 {
     Q_OBJECT
 private slots:
+    void endpointReplyMustMatchTheCurrentLookup() {
+        QTemporaryDir directory;
+        QLocalServer server;
+        const auto path = directory.filePath("dns-test.sock");
+        QVERIFY(server.listen(path));
+        LocalSocketController controller(path);
+        QSignalSpy initialized(&controller, &ControllerImpl::initialized);
+        controller.initialize(nullptr, nullptr);
+        QTRY_VERIFY(server.hasPendingConnections());
+        QScopedPointer<QLocalSocket> service(server.nextPendingConnection());
+        QTRY_VERIFY(service->canReadLine()); service->readLine();
+        service->write("{\"type\":\"status\",\"connected\":false}\n"); service->flush();
+        QTRY_COMPARE(initialized.count(), 1);
+        int obsolete = 0, current = 0;
+        controller.resolveEndpoint("vpn.example.org", [&](auto) { ++obsolete; });
+        QTRY_VERIFY(service->canReadLine()); service->readLine(); // cancellation
+        QTRY_VERIFY(service->canReadLine());
+        const auto first = QJsonDocument::fromJson(service->readLine()).object();
+        QCOMPARE(first.value("type").toString(), "resolve_endpoint");
+        controller.cancelEndpointLookup();
+        controller.resolveEndpoint("vpn.example.org", [&](const QList<QHostAddress> &addresses) {
+            QCOMPARE(addresses, QList<QHostAddress>{QHostAddress("192.0.2.2")}); ++current;
+        });
+        QTRY_VERIFY(service->canReadLine()); service->readLine();
+        QTRY_VERIFY(service->canReadLine()); service->readLine();
+        QTRY_VERIFY(service->canReadLine());
+        const auto second = QJsonDocument::fromJson(service->readLine()).object();
+        QVERIFY(first.value("lookup_id") != second.value("lookup_id"));
+        QVERIFY(first.value("alternate") != second.value("alternate"));
+        for (const auto &request : {first, second}) {
+            const QJsonObject response{{"type", "endpoint_resolved"}, {"lookup_id", request.value("lookup_id")},
+                                      {"addresses", QJsonArray{request == first ? "192.0.2.1" : "192.0.2.2"}}};
+            service->write(QJsonDocument(response).toJson(QJsonDocument::Compact) + "\n");
+        }
+        service->flush();
+        QTRY_COMPARE(current, 1);
+        QCOMPARE(obsolete, 0);
+    }
     void cleanupWaitsForExplicitServiceAck()
     {
         QTemporaryDir directory;

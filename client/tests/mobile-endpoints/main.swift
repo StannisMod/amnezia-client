@@ -82,3 +82,9 @@ require(candidates.select(["192.0.2.1", "192.0.2.2"]) == "192.0.2.1", "finite cy
 require(candidates.select(["fe80::1%eth0"]) == nil, "scoped addresses are not portable endpoints")
 let resolvedLoopback = try EndpointAddressResolver.addresses("127.0.0.1")
 require(resolvedLoopback.contains("127.0.0.1"), "real numeric resolver")
+
+let legacyCandidates = EndpointAddressCandidates()
+legacyCandidates.record("192.0.2.1")
+require(legacyCandidates.select(["192.0.2.1", "192.0.2.2"]) == "192.0.2.2", "legacy activation seeds its actual endpoint")
+legacyCandidates.record("192.0.2.2")
+require(legacyCandidates.select(["192.0.2.1", "192.0.2.2", "192.0.2.3"]) == "192.0.2.3", "runtime observations retain prior failed candidates")
