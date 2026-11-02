@@ -660,6 +660,14 @@ Already installed containers were found on the server. All installed containers 
         <source>Server added successfully</source>
         <translation>Сервер успешно добавлен</translation>
     </message>
+    <message>
+        <source>Disconnect the VPN before updating the server protocol.</source>
+        <translation>Отключите VPN перед обновлением протокола на сервере.</translation>
+    </message>
+    <message>
+        <source>Protocol updated. Keys, users and connection settings were preserved.</source>
+        <translation>Протокол обновлён. Ключи, пользователи и настройки подключения сохранены.</translation>
+    </message>
 </context>
 <context>
     <name>InstalledAppsDrawer</name>
@@ -5228,6 +5236,22 @@ Create one from the current settings.</source>
         <source>Cannot remove active container</source>
         <translation>Невозможно удалить активный контейнер</translation>
     </message>
+    <message>
+        <source>Update protocol</source>
+        <translation>Обновить протокол</translation>
+    </message>
+    <message>
+        <source>Update server protocol?</source>
+        <translation>Обновить протокол на сервере?</translation>
+    </message>
+    <message>
+        <source>The VPN will briefly stop for all users. Keys, users and connection settings will be preserved. If validation fails, the previous container will be restored. Disconnect your VPN before continuing.</source>
+        <translation>VPN ненадолго отключится у всех пользователей. Ключи, пользователи и настройки подключения сохранятся. Если проверка не пройдёт, будет восстановлен прежний контейнер. Перед продолжением отключите свой VPN.</translation>
+    </message>
+    <message>
+        <source>Update</source>
+        <translation>Обновить</translation>
+    </message>
 </context>
 <context>
     <name>PageSettingsServersList</name>
@@ -7248,6 +7272,22 @@ FileZilla или другие SFTP-клиенты, а также смонтир�
         <location filename="../core/utils/serialization/ss.cpp" line="92"/>
         <source>Can&apos;t find the colon separator between hostname and port</source>
         <translation>Невозможно найти разделитель-двоеточие между именем хоста и портом</translation>
+    </message>
+    <message>
+        <source>The protocol update could not be prepared. The VPN was not replaced. Only standard WireGuard and AmneziaWG 3 containers are supported. Check the server update log or wait for another update to finish.</source>
+        <translation>Не удалось подготовить обновление протокола. Контейнер VPN не заменён. Поддерживаются стандартные контейнеры WireGuard и AmneziaWG 3. Проверьте журнал обновления на сервере или дождитесь завершения другого обновления.</translation>
+    </message>
+    <message>
+        <source>The updated protocol did not pass validation. The previous container was restored and the VPN is running again.</source>
+        <translation>Обновлённый протокол не прошёл проверку. Прежний контейнер восстановлен, VPN снова работает.</translation>
+    </message>
+    <message>
+        <source>The protocol update and automatic rollback failed. Check the server over SSH. Recovery data is saved in /var/lib/amnezia/updates.</source>
+        <translation>Обновление протокола и автоматический откат завершились ошибкой. Проверьте сервер через SSH. Данные для восстановления сохранены в /var/lib/amnezia/updates.</translation>
+    </message>
+    <message>
+        <source>The update result could not be confirmed. Check the server over SSH before retrying. Update logs and recovery data are stored in /var/lib/amnezia/updates.</source>
+        <translation>Не удалось подтвердить результат обновления. Перед повторной попыткой проверьте сервер через SSH. Журналы обновления и данные для восстановления находятся в /var/lib/amnezia/updates.</translation>
     </message>
 </context>
 <context>

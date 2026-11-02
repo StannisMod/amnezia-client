@@ -1,0 +1,27 @@
+name: State-preserving protocol updates
+on:
+  pull_request:
+    branches: [dev]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  transaction:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Shell syntax and transaction fault injection
+        run: |
+          sh -n client/server_scripts/update_wireguard.sh
+          python3 client/tests/protocol-update/test_transaction.py
+  existing-client:
+    strategy:
+      fail-fast: false
+      matrix:
+        kind: [wireguard, awg]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Existing-client traffic through update and automatic rollback
+        run: python3 client/tests/protocol-update/acceptance.py --kind '${{ matrix.kind }}'

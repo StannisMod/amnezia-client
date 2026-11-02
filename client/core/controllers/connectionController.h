@@ -49,6 +49,7 @@ public:
     ErrorCode lastConnectionError() const;
 
     bool isConnected() const;
+    bool isDisconnected() const;
     void setConnectionState(Vpn::ConnectionState state);
 
     QJsonObject createConnectionConfiguration(const QPair<QString, QString> &dns,

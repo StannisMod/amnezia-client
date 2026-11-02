@@ -69,6 +69,7 @@ public slots:
     void updateServerConfig(const QString &serverId, int containerIndex, int protocolIndex, bool closePage = true,
                             bool acceptXrayKeyLoss = false);
     void updateClientConfig(const QString &serverId, int containerIndex, int protocolIndex, bool closePage = true);
+    void updateProtocolSoftware(const QString &serverId, int containerIndex);
 
     void removeServer(const QString &serverId);
     void rebootServer(const QString &serverId);
