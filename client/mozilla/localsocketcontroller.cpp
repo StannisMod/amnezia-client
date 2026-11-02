@@ -85,6 +85,8 @@ void LocalSocketController::disconnectInternal() {
   m_daemonState = eReady;
   m_initializingRetry = 0;
   m_initializingTimer.stop();
+  m_endpointCompletion = nullptr;
+  ++m_endpointLookupId;
   emit disconnected();
 }
 
@@ -296,6 +298,21 @@ void LocalSocketController::deactivateWithAck() {
   write(QJsonObject{{"type", "deactivate"}, {"request_ack", true}});
 }
 
+void LocalSocketController::cancelEndpointLookup() {
+  m_endpointCompletion = nullptr;
+  ++m_endpointLookupId;
+  if (m_socket->state() == QLocalSocket::ConnectedState)
+    write(QJsonObject{{"type", "cancel_endpoint_lookup"}});
+}
+
+void LocalSocketController::resolveEndpoint(const QString &host, std::function<void(QList<QHostAddress>)> complete) {
+  cancelEndpointLookup();
+  if (m_daemonState != eReady || m_socket->state() != QLocalSocket::ConnectedState) { complete({}); return; }
+  m_endpointCompletion = std::move(complete);
+  write(QJsonObject{{"type", "resolve_endpoint"}, {"host", host}, {"lookup_id", double(m_endpointLookupId)},
+                    {"alternate", (m_endpointResolverAttempt++ % 2) != 0}});
+}
+
 void LocalSocketController::checkStatus() {
   logger.debug() << "Check status";
 
@@ -430,6 +447,18 @@ void LocalSocketController::parseCommand(const QByteArray& command) {
 
   if (m_daemonState != eReady) {
     logger.error() << "Unexpected command";
+    return;
+  }
+
+  if (type == "endpoint_resolved") {
+    if (obj.value("lookup_id").toDouble() != double(m_endpointLookupId) || !m_endpointCompletion) return;
+    QList<QHostAddress> addresses;
+    for (const auto &value : obj.value("addresses").toArray()) {
+      const QHostAddress address(value.toString());
+      if (!address.isNull()) addresses.append(address);
+    }
+    const auto complete = std::move(m_endpointCompletion);
+    complete(addresses);
     return;
   }
 

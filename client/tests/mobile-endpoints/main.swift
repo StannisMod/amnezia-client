@@ -72,3 +72,13 @@ for now in stride(from: Int64(0), through: 1000000, by: 5000) {
 require(refreshes == 6 && exhausted == 1, "finite mobile handshake recovery budget")
 require(EndpointHealthPolicy.staleBudget(rekey: "120-600", reject: "180") == 1230000, "long AWG timer ranges")
 print("Apple same-network endpoint health tests passed")
+
+let candidates = EndpointAddressCandidates()
+require(candidates.select(["2001:db8::1", "192.0.2.1", "192.0.2.2", "192.0.2.1"]) == "192.0.2.1", "IPv4 first and deduplicated")
+require(candidates.select(["192.0.2.2", "192.0.2.1", "2001:db8::1"]) == "192.0.2.2", "DNS reordering cannot repeat the failed IP")
+require(candidates.select(["192.0.2.1", "2001:db8::1", "192.0.2.2"]) == "2001:db8::1", "try remaining IPv6 answer")
+require(candidates.select(["192.0.2.1", "192.0.2.3"]) == "192.0.2.3", "prefer newly published IP")
+require(candidates.select(["192.0.2.1", "192.0.2.2"]) == "192.0.2.1", "finite cycle can retry after answers are exhausted")
+require(candidates.select(["fe80::1%eth0"]) == nil, "scoped addresses are not portable endpoints")
+let resolvedLoopback = try EndpointAddressResolver.addresses("127.0.0.1")
+require(resolvedLoopback.contains("127.0.0.1"), "real numeric resolver")

@@ -18,6 +18,7 @@ final class RoutingPacketTunnel {
     private var lookupGeneration: UInt64 = 0
     private var endpointHealthTimer: DispatchSourceTimer?
     private var endpointHealth = EndpointHealthPolicy()
+    private let endpointCandidates = EndpointAddressCandidates()
     private var backendEpoch: UInt64 = 0
 
     init(provider: NEPacketTunnelProvider) { self.provider = provider }
@@ -40,7 +41,7 @@ final class RoutingPacketTunnel {
                 guard !self.stopped, self.handle < 0, let provider = self.provider,
                       let protocolConfig = provider.protocolConfiguration as? NETunnelProviderProtocol,
                       !protocolConfig.includeAllNetworks else { throw RoutingError.invalidConfiguration }
-                let raw = try Self.sessionConfiguration(config)
+                let raw = try Self.sessionConfiguration(config, candidates: self.endpointCandidates)
                 self.originalConfig = config // Keep the domain, not its bootstrap IP.
                 self.sessionData = raw
                 let settings = NEPacketTunnelNetworkSettings(tunnelRemoteAddress: "127.0.0.1")
@@ -144,8 +145,9 @@ final class RoutingPacketTunnel {
             // getaddrinfo must not block the lifetime/packet-flow queue. Keep
             // the current capture/backend while the new uplink acquires DNS.
             DispatchQueue.global(qos: .utility).async { [weak self] in
-                let result = Result { try Self.sessionConfiguration(config) }
-                self?.queue.async { [weak self] in
+                guard let self else { return }
+                let result = Result { try Self.sessionConfiguration(config, candidates: self.endpointCandidates) }
+                self.queue.async { [weak self] in
                     guard let self, !self.stopped, self.refreshPolicy.accepts(token),
                           lookup == self.lookupGeneration, self.handle > 0 else { return }
                     self.lookupDeadline?.cancel()
@@ -216,11 +218,11 @@ final class RoutingPacketTunnel {
         }
     }
 
-    private static func sessionConfiguration(_ config: WGConfig) throws -> Data {
+    private static func sessionConfiguration(_ config: WGConfig, candidates: EndpointAddressCandidates) throws -> Data {
         guard let rulesText = config.routingConfig, let rulesData = rulesText.data(using: .utf8),
               let rules = try JSONSerialization.jsonObject(with: rulesData) as? [String: Any],
               config.allowedIPs.contains("0.0.0.0/0") else { throw RoutingError.invalidConfiguration }
-        let endpoint = try numericHost(config.hostName, port: config.port)
+        let endpoint = try numericHost(config.hostName, port: config.port, candidates: candidates)
         let dns = config.dns1.isEmpty ? config.dns2 : config.dns1
         // The real resolver is explicit. Never bootstrap it with managed DNS.
         var v4 = in_addr(), v6 = in6_addr()
@@ -274,17 +276,9 @@ final class RoutingPacketTunnel {
 
     // Called before capture is installed. Resolve only the peer endpoint using
     // the native resolver; destination domains are never pre-resolved into rules.
-    private static func numericHost(_ hostname: String, port: Int) throws -> String {
+    private static func numericHost(_ hostname: String, port: Int, candidates: EndpointAddressCandidates) throws -> String {
         guard port > 0 && port <= 65535 else { throw RoutingError.invalidConfiguration }
-        var hints = addrinfo()
-        hints.ai_family = AF_UNSPEC
-        hints.ai_socktype = SOCK_DGRAM
-        var result: UnsafeMutablePointer<addrinfo>?
-        guard getaddrinfo(hostname, String(port), &hints, &result) == 0, let first = result else { throw RoutingError.endpointResolution }
-        defer { freeaddrinfo(first) }
-        var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
-        guard getnameinfo(first.pointee.ai_addr, first.pointee.ai_addrlen, &host, socklen_t(host.count), nil, 0, NI_NUMERICHOST) == 0 else { throw RoutingError.endpointResolution }
-        let value = String(cString: host)
+        guard let value = candidates.select(try EndpointAddressResolver.addresses(hostname)) else { throw RoutingError.endpointResolution }
         return value.contains(":") ? "[\(value)]:\(port)" : "\(value):\(port)"
     }
 

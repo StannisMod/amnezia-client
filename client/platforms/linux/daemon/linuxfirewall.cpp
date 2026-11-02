@@ -596,3 +596,18 @@ void LinuxFirewall::teardownTrafficSplitting()
     execute(QStringLiteral("ip route flush table %1 2>/dev/null || true").arg(kRtableName));
     execute(QStringLiteral("ip route flush cache"));
 }
+
+// Only the privileged service's bound UDP socket may bootstrap its endpoint.
+// Keep the exception in our own root chain, so uninstall/crash recovery also
+// removes it. No system resolver or other UID gains an outbound DNS path.
+bool LinuxFirewall::setEndpointDnsAllowed(quint16 port, const QString &resolver, bool enabled)
+{
+    if (!isInstalled()) return true;
+    QStringList rule{"-p", "udp", "-m", "owner", "--uid-owner", "0", "--sport", QString::number(port),
+                     "-d", resolver, "--dport", "53", "-m", "comment", "--comment", "amnezia-endpoint-dns", "-j", "ACCEPT"};
+    QStringList args{"-w", enabled ? "-I" : "-D", kRootChain};
+    if (enabled) args << "1";
+    args << rule;
+    if (!enabled && executeIptables("iptables", QStringList{"-w", "-C", kRootChain} + rule, true) != 0) return true;
+    return executeIptables("iptables", args) == 0;
+}

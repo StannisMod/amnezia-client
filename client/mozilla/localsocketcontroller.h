@@ -28,6 +28,8 @@ class LocalSocketController final : public ControllerImpl {
 
   void deactivate() override;
   void deactivateWithAck() override;
+  void resolveEndpoint(const QString &host, std::function<void(QList<QHostAddress>)> complete) override;
+  void cancelEndpointLookup() override;
 
   void checkStatus() override;
 
@@ -62,6 +64,9 @@ class LocalSocketController final : public ControllerImpl {
   QByteArray m_buffer;
 
   QString m_deviceIpv4;
+  quint32 m_endpointLookupId = 0;
+  quint32 m_endpointResolverAttempt = 0;
+  std::function<void(QList<QHostAddress>)> m_endpointCompletion;
   bool m_pendingConfirmedDeactivation = false;
   std::function<void(const QString&)> m_logCallback = nullptr;
 

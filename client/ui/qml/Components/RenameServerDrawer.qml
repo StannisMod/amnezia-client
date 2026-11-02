@@ -69,7 +69,7 @@ SheetType {
                 }
 
                 if (vpnHost.visible && vpnHost.textField.text !== ServersUiController.vpnHostName(ServersUiController.processedServerId)) {
-                    if (ServersUiController.isDefaultServerCurrentlyProcessed() && ConnectionController.isConnected) {
+                    if (ServersUiController.isDefaultServerCurrentlyProcessed() && (ConnectionController.isConnected || ConnectionController.isConnectionInProgress)) {
                         PageController.showNotificationMessage(qsTr("Disconnect before changing the VPN address"))
                         return
                     }

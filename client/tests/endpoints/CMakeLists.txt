@@ -24,7 +24,7 @@ add_library(endpoint_protocol_compile OBJECT
     ../../daemon/daemon.cpp
     ../../daemon/daemonlocalserverconnection.cpp)
 target_include_directories(endpoint_protocol_compile PRIVATE
-    ../.. ../../mozilla/shared ../../.. ../../../common/logger)
+    ../.. ../../mozilla/shared ../../.. ../../../common/logger ../../../service/server)
 target_link_libraries(endpoint_protocol_compile PRIVATE Qt6::Core Qt6::Network Qt6::Qml)
 
 add_executable(test_endpoint_ipc
@@ -36,3 +36,17 @@ target_include_directories(test_endpoint_ipc PRIVATE
     ../../.. ../../mozilla/shared ../.. ../../../tests/linux-dns-cache/stubs)
 target_link_libraries(test_endpoint_ipc PRIVATE Qt6::Core Qt6::Network Qt6::Test)
 add_test(NAME EndpointIpc COMMAND test_endpoint_ipc)
+
+add_executable(test_endpoint_dns testEndpointDns.cpp)
+target_include_directories(test_endpoint_dns PRIVATE ../..)
+target_link_libraries(test_endpoint_dns PRIVATE Qt6::Core Qt6::Network Qt6::Test)
+add_test(NAME EndpointDns COMMAND test_endpoint_dns)
+
+# Build the exact session/IPC driver used by installed-service migration tests.
+add_executable(endpoint_acceptance_compile
+    ../../../scripts/routing/service-probe/endpoint.cpp
+    ../../mozilla/localsocketcontroller.cpp ../../mozilla/localsocketcontroller.h ../../mozilla/controllerimpl.h)
+target_include_directories(endpoint_acceptance_compile PRIVATE
+    ../.. ../../mozilla/shared ../../.. ../../../tests/linux-dns-cache/stubs)
+target_compile_definitions(endpoint_acceptance_compile PRIVATE MZ_LINUX)
+target_link_libraries(endpoint_acceptance_compile PRIVATE Qt6::Core Qt6::Network)

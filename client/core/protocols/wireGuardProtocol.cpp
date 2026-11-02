@@ -104,6 +104,10 @@ ErrorCode WireguardProtocol::start()
 void WireguardProtocol::setupEndpointSession()
 {
     using Session = amnezia::VpnEndpointSession;
+    m_endpointSession.resolver = [this](const QString &host, Session::Completion complete) {
+        m_impl->resolveEndpoint(host, std::move(complete));
+    };
+    m_endpointSession.cancelResolver = [this] { m_impl->cancelEndpointLookup(); };
     m_peerClock.start();
     m_peerPoll.setInterval(5000);
     connect(&m_peerPoll, &QTimer::timeout, this, [this] { m_impl->checkStatus(); });

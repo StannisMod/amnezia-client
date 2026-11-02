@@ -46,6 +46,7 @@ public:
     std::function<void(const QString &)> activate;
     std::function<void()> deactivate;
     std::function<void(Failure)> failed;
+    std::function<void()> cancelResolver;
     Resolver resolver; // Optional deterministic resolver for integration tests.
     Timing timing;
 
@@ -139,6 +140,7 @@ private:
     void cancelLookup()
     {
         ++m_generation;
+        if (cancelResolver) cancelResolver();
         if (m_lookupId >= 0) QHostInfo::abortHostLookup(m_lookupId);
         m_lookupId = -1;
     }

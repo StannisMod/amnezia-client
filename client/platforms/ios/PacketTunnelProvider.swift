@@ -42,6 +42,8 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
     var wireguardOriginalConfiguration: TunnelConfiguration?
     var wireguardRefreshPolicy = EndpointRefreshPolicy()
     var wireguardRefreshWork: DispatchWorkItem?
+    var wireguardLookupGeneration: UInt64 = 0
+    var wireguardCandidates = [Int: EndpointAddressCandidates]()
     var wireguardEndpointStopped = true
     var wireguardHealthTimer: DispatchSourceTimer?
     var wireguardHealth = EndpointHealthPolicy()

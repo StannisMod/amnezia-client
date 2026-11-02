@@ -6,6 +6,7 @@
 #define CONTROLLERIMPL_H
 
 #include <QObject>
+#include <QHostAddress>
 #include <functional>
 #include <QDateTime>
 
@@ -46,6 +47,8 @@ class ControllerImpl : public QObject {
 
   // Separate acknowledgement: disconnected may also mean a lost IPC socket.
   virtual void deactivateWithAck() { deactivate(); }
+  virtual void resolveEndpoint(const QString &, std::function<void(QList<QHostAddress>)> complete) { complete({}); }
+  virtual void cancelEndpointLookup() {}
 
   // This method is used to retrieve the VPN tunnel status (mainly the number
   // of bytes sent and received). It's called always when the VPN tunnel is

@@ -38,6 +38,7 @@ private const val TAG = "Wireguard"
 
 open class Wireguard : Protocol() {
     private val endpointLock = Any()
+    private var endpointCandidates = DomainEndpointRefresh.Candidates()
     private var endpointGeneration = 0L
     private var originalProfile: JSONObject? = null
     private var endpointRefreshJob: Job? = null
@@ -52,7 +53,8 @@ open class Wireguard : Protocol() {
         val host = endpointHost(profile)
         if (!DomainEndpointRefresh.isDomain(host)) return JSONObject(profile.toString())
         val resolver = endpointResolver ?: throw VpnStartException("Underlying-network DNS is not configured")
-        val address = DomainEndpointRefresh.resolve(host, resolver)
+        val candidates = synchronized(endpointLock) { endpointCandidates }
+        val address = DomainEndpointRefresh.resolve(host, resolver, candidates = candidates)
         return JSONObject(profile.toString()).apply {
             put("hostName", address)
             getJSONObject(getString("protocol") + "_config_data").put("hostName", address)
@@ -229,6 +231,7 @@ open class Wireguard : Protocol() {
             endpointRefreshJob?.cancel()
             ++endpointHealthGeneration
             endpointHealthJob?.cancel()
+            endpointCandidates = DomainEndpointRefresh.Candidates()
             originalProfile = JSONObject(config.toString())
             ++endpointGeneration
         }

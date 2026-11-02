@@ -13,6 +13,20 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class DomainEndpointRefreshTest {
+    @Test fun triesEveryAddressDespiteDnsReordering() = runBlocking {
+        val candidates = DomainEndpointRefresh.Candidates()
+        val a = InetAddress.getByName("192.0.2.1")
+        val b = InetAddress.getByName("192.0.2.2")
+        val v6 = InetAddress.getByName("2001:db8::1")
+        suspend fun next(answers: List<InetAddress>) = DomainEndpointRefresh.resolve("vpn.example.org", { answers }, candidates = candidates)
+        assertEquals("192.0.2.1", next(listOf(v6, a, b, a)))
+        assertEquals("192.0.2.2", next(listOf(b, a, v6)))
+        assertEquals("2001:db8:0:0:0:0:0:1", next(listOf(a, v6, b)))
+        val published = InetAddress.getByName("192.0.2.3")
+        assertEquals("192.0.2.3", next(listOf(a, published)))
+        candidates.clear()
+        assertEquals("192.0.2.1", next(listOf(a, b)))
+    }
     @Test fun distinguishesHostFromNumericEndpoints() {
         assertTrue(DomainEndpointRefresh.isDomain("vpn.example.org"))
         assertFalse(DomainEndpointRefresh.isDomain("192.0.2.1"))

@@ -37,12 +37,28 @@ object DomainEndpointRefresh {
     fun isDomain(host: String): Boolean = ':' !in host &&
         !Regex("^[0-9.]+$").matches(host.trim())
 
+    // Remember attempted answers, rather than indexing a potentially reordered
+    // DNS response. A newly published address is preferred over already tried IPs.
+    class Candidates {
+        private val tried = linkedSetOf<String>()
+        @Synchronized fun clear() { tried.clear() }
+        @Synchronized fun select(addresses: List<InetAddress>): String? {
+            val usable = addresses.sortedBy { if (it.address.size == 4) 0 else 1 }
+                .mapNotNull { it.hostAddress }.filter { '%' !in it }.distinct().take(16)
+            if (usable.isEmpty()) return null
+            val next = usable.firstOrNull { it !in tried } ?: usable.first().also { tried.clear() }
+            tried.add(next)
+            return next
+        }
+    }
+
     suspend fun resolve(
         host: String,
         resolver: (String) -> List<InetAddress>,
         attempts: Int = 6,
         timeoutMs: Long = 15000,
-        retryMs: Long = 1000
+        retryMs: Long = 1000,
+        candidates: Candidates = Candidates()
     ): String {
         require(attempts in 1..6 && timeoutMs > 0 && retryMs >= 0)
         repeat(attempts) { attempt ->
@@ -52,8 +68,7 @@ object DomainEndpointRefresh {
                     lookup(host, resolver)
                 }
                 currentCoroutineContext().ensureActive()
-                val address = addresses.firstOrNull { it.address.size == 4 } ?: addresses.firstOrNull()
-                address?.hostAddress?.let { return it }
+                candidates.select(addresses)?.let { return it }
             } catch (_: TimeoutCancellationException) {
                 currentCoroutineContext().ensureActive()
             } catch (cancelled: CancellationException) { throw cancelled }

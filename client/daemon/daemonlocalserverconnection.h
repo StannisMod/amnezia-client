@@ -6,6 +6,7 @@
 #define DAEMONLOCALSERVERCONNECTION_H
 
 #include <QObject>
+#include "endpointdnslookup.h"
 
 #include "daemonerrors.h"
 
@@ -33,6 +34,7 @@ class DaemonLocalServerConnection final : public QObject {
   QLocalSocket* m_socket = nullptr;
 
   QByteArray m_buffer;
+  EndpointDnsLookup m_endpointDns;
 };
 
 #endif  // DAEMONLOCALSERVERCONNECTION_H

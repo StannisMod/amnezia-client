@@ -2,9 +2,10 @@
 #define KILLSWITCH_H
 
 #include <QJsonObject>
+#include <QHostAddress>
 #include <QSharedPointer>
 
-#include "secureQSettings.h"
+class SecureQSettings;
 
 class KillSwitch : public QObject
 {
@@ -20,6 +21,7 @@ public:
     bool resetAllowedRange(const QStringList &ranges);
     bool addAllowedRange(const QStringList &ranges);
     bool isStrictKillSwitchEnabled();
+    bool endpointDnsAllowed(quint16 port, const QHostAddress &resolver, bool enabled);
     bool beginRoutedSession(const QString &helperPath);
     bool routedInterfaceReady(const QString &captureId);
     bool endRoutedSession();
