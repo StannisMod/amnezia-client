@@ -185,11 +185,13 @@ private slots:
         session.observePeer(1000, 10, 10, 0);
         session.observePeer(1000, 10, 10, 1000); // Idle is healthy.
         QCOMPARE(stops, 0);
-        session.observePeer(2000, 20, 10, 1001); // Rekey proves server reachability.
+        session.observePeer(1000, 11, 10, 1001); // First send after idle gets a full grace interval.
+        QCOMPARE(stops, 0);
+        session.observePeer(2000, 20, 10, 1002); // Rekey proves server reachability.
         session.observePeer(2000, 30, 20, 1100); // Incoming data resets the deadline.
         session.observePeer(2000, 40, 20, 1150);
         QCOMPARE(stops, 0);
-        session.observePeer(2000, 50, 20, 1201); // Outbound-only, no handshake or receive progress.
+        session.observePeer(2000, 50, 20, 1251); // Outbound-only, no handshake or receive progress.
         QCOMPARE(stops, 1);
         QCOMPARE(session.phase(), Phase::Stopping);
     }

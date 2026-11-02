@@ -93,17 +93,21 @@ public:
     void observePeer(qint64 handshakeMs, quint64 tx, quint64 rx, qint64 nowMs)
     {
         if (m_phase != Phase::Connected) return;
+        const bool sending = m_seenPeer && tx > m_tx;
         if (!m_seenPeer || handshakeMs != m_handshake || rx != m_rx || tx < m_tx) {
             m_lastProgress = nowMs;
             m_outboundPending = false;
             m_seenPeer = true;
-        } else if (tx > m_tx) {
+        } else if (sending && !m_outboundPending) {
+            // The first packet after a long idle period starts a fresh grace
+            // interval, rather than inheriting the idle session's old deadline.
+            m_lastProgress = nowMs;
             m_outboundPending = true;
         }
         m_handshake = handshakeMs;
         m_tx = tx;
         m_rx = rx;
-        if (m_outboundPending && nowMs - m_lastProgress >= timing.staleMs) recover();
+        if (sending && m_outboundPending && nowMs - m_lastProgress >= timing.staleMs) recover();
     }
 
     void recover()
