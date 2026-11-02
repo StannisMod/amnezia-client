@@ -1,0 +1,34 @@
+name: Mobile VPN endpoint checks
+on:
+  pull_request:
+    branches: [dev]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: mobile-endpoints-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+jobs:
+  android:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: {distribution: temurin, java-version: '17'}
+      - uses: android-actions/setup-android@v3
+      - run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
+      - name: Compile real protocol modules and run DNS/cancellation tests
+        run: python3 scripts/routing/check_android_kotlin.py --build-dir '${{ runner.temp }}/endpoint-kotlin-check'
+  apple:
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test endpoint retry policy and native config serialization
+        run: |
+          swiftc client/platforms/ios/WGConfig.swift client/platforms/ios/EndpointRefreshPolicy.swift client/tests/mobile-endpoints/main.swift -o "$RUNNER_TEMP/endpoint-tests"
+          "$RUNNER_TEMP/endpoint-tests"
+      - name: Typecheck real iOS packet-flow adapter
+        run: |
+          xcrun --sdk iphoneos swiftc -typecheck -target arm64-apple-ios15.0 -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" -import-objc-header native/routing/applebridge/amnezia_routing.h client/platforms/ios/WGConfig.swift client/platforms/ios/EndpointRefreshPolicy.swift client/platforms/ios/RoutingPacketTunnel.swift

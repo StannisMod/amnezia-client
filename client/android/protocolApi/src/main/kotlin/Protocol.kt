@@ -28,6 +28,11 @@ abstract class Protocol {
     protected lateinit var onError: (String) -> Unit
     protected var isInitialized: Boolean = false
     protected var lockdownEnabled: () -> Boolean = { false }
+    protected var endpointResolver: ((String) -> List<java.net.InetAddress>)? = null
+
+    fun configureEndpointResolver(resolver: (String) -> List<java.net.InetAddress>) {
+        endpointResolver = resolver
+    }
 
     fun initialize(context: Context, state: MutableStateFlow<ProtocolState>, onError: (String) -> Unit, lockdownEnabled: () -> Boolean = { false }) {
         this.context = context

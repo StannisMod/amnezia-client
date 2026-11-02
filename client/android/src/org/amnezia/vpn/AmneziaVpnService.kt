@@ -553,6 +553,7 @@ open class AmneziaVpnService : VpnService() {
                 protocol.initialize(applicationContext, protocolState, ::onError) {
                     Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && this@AmneziaVpnService.isLockdownEnabled
                 }
+                protocol.configureEndpointResolver(networkState::resolveEndpoint)
                 protocol.startVpn(config, Builder(), ::protect)
             }
         }

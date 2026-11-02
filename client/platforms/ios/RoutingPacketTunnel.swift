@@ -11,6 +11,11 @@ final class RoutingPacketTunnel {
     private var generation: UInt64 = 0
     private var stopped = false
     private var sessionData: Data?
+    private var originalConfig: WGConfig?
+    private var refreshPolicy = EndpointRefreshPolicy()
+    private var refreshWork: DispatchWorkItem?
+    private var lookupDeadline: DispatchWorkItem?
+    private var lookupGeneration: UInt64 = 0
 
     init(provider: NEPacketTunnelProvider) { self.provider = provider }
 
@@ -33,6 +38,7 @@ final class RoutingPacketTunnel {
                       let protocolConfig = provider.protocolConfiguration as? NETunnelProviderProtocol,
                       !protocolConfig.includeAllNetworks else { throw RoutingError.invalidConfiguration }
                 let raw = try Self.sessionConfiguration(config)
+                self.originalConfig = config // Keep the domain, not its bootstrap IP.
                 self.sessionData = raw
                 let settings = NEPacketTunnelNetworkSettings(tunnelRemoteAddress: "127.0.0.1")
                 settings.mtu = 1280
@@ -86,6 +92,11 @@ final class RoutingPacketTunnel {
     func stop(completion: @escaping () -> Void) {
         queue.async {
             self.stopped = true
+            self.provider?.reasserting = false
+            self.refreshPolicy.cancel()
+            self.refreshWork?.cancel()
+            self.lookupDeadline?.cancel()
+            self.lookupGeneration &+= 1
             self.generation &+= 1
             if self.handle > 0 { AmneziaRoutingStop(self.handle); self.handle = -1 }
             self.provider?.setTunnelNetworkSettings(nil) { _ in completion() }
@@ -95,17 +106,63 @@ final class RoutingPacketTunnel {
 
     func networkChanged() {
         queue.async {
-            guard !self.stopped, self.handle > 0, let raw = self.sessionData else { return }
-            // Keep the same public packetFlow reader and OS capture settings.
-            // Recreate transport sockets after the old workers are joined.
-            AmneziaRoutingStop(self.handle)
-            let context = Unmanaged.passRetained(self).toOpaque()
-            self.handle = raw.withUnsafeBytes { buffer in
-                AmneziaRoutingStart(UnsafeMutablePointer(mutating: buffer.bindMemory(to: CChar.self).baseAddress),
-                                    Int32(raw.count), context, Self.writePacket, Self.releaseHost)
-            }
-            if self.handle <= 0 { self.provider?.cancelTunnelWithError(RoutingError.backendFailed) }
+            guard !self.stopped, self.handle > 0, let config = self.originalConfig else { return }
+            self.refreshWork?.cancel()
+            self.lookupDeadline?.cancel()
+            self.lookupGeneration &+= 1
+            let token = self.refreshPolicy.begin()
+            self.provider?.reasserting = true
+            self.refreshTransport(config: config, token: token)
         }
+    }
+
+    private func refreshTransport(config: WGConfig, token: UInt64) {
+        guard !stopped, refreshPolicy.accepts(token), handle > 0 else { return }
+        guard let delay = refreshPolicy.nextDelay(for: token) else {
+            provider?.reasserting = false
+            provider?.cancelTunnelWithError(RoutingError.endpointResolution)
+            return
+        }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, !self.stopped, self.refreshPolicy.accepts(token), self.handle > 0 else { return }
+            self.lookupGeneration &+= 1
+            let lookup = self.lookupGeneration
+            let deadline = DispatchWorkItem { [weak self] in
+                guard let self, !self.stopped, self.refreshPolicy.accepts(token), lookup == self.lookupGeneration else { return }
+                self.lookupGeneration &+= 1 // A late DNS result cannot install a tunnel.
+                self.refreshTransport(config: config, token: token)
+            }
+            self.lookupDeadline = deadline
+            self.queue.asyncAfter(deadline: .now() + 15, execute: deadline)
+            // getaddrinfo must not block the lifetime/packet-flow queue. Keep
+            // the current capture/backend while the new uplink acquires DNS.
+            DispatchQueue.global(qos: .utility).async { [weak self] in
+                let result = Result { try Self.sessionConfiguration(config) }
+                self?.queue.async { [weak self] in
+                    guard let self, !self.stopped, self.refreshPolicy.accepts(token),
+                          lookup == self.lookupGeneration, self.handle > 0 else { return }
+                    self.lookupDeadline?.cancel()
+                    switch result {
+                    case .failure:
+                        self.refreshTransport(config: config, token: token)
+                    case .success(let raw):
+                        // Reuse the same public packetFlow reader and capture.
+                        // Transport workers finish before the replacement starts.
+                        AmneziaRoutingStop(self.handle)
+                        let context = Unmanaged.passRetained(self).toOpaque()
+                        self.handle = raw.withUnsafeBytes { buffer in
+                            AmneziaRoutingStart(UnsafeMutablePointer(mutating: buffer.bindMemory(to: CChar.self).baseAddress),
+                                                Int32(raw.count), context, Self.writePacket, Self.releaseHost)
+                        }
+                        self.sessionData = raw
+                        self.provider?.reasserting = false
+                        if self.handle <= 0 { self.provider?.cancelTunnelWithError(RoutingError.backendFailed) }
+                    }
+                }
+            }
+        }
+        refreshWork = work
+        queue.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
     func status(completion: @escaping (Data?) -> Void) {
