@@ -187,6 +187,10 @@ extension PacketTunnelProvider {
                     }
                     self.wireguardRefreshWork?.cancel()
                     let token = self.wireguardRefreshPolicy.begin()
+                    // Stage the latest requested profile before yielding to the
+                    // adapter: a simultaneous path change must use these keys
+                    // and routes, even while the adapter's update is pending.
+                    self.wireguardOriginalConfiguration = tunnelConfiguration
                     adapter.update(tunnelConfiguration: tunnelConfiguration) { [weak self] error in
                         self?.wireguardRefreshQueue.async { [weak self] in
                             guard let self, !self.wireguardEndpointStopped,
