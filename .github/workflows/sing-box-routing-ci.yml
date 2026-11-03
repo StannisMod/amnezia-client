@@ -59,6 +59,8 @@ jobs:
         working-directory: native/routing
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v6
+        with: {python-version: '3.12'}
       - uses: actions/setup-go@v5
         with:
           go-version-file: native/routing/go.mod
@@ -85,7 +87,8 @@ jobs:
             # several test processes on the shared Apple runner.
             package_args=(-p 1)
           fi
-          go test -mod=readonly -tags with_gvisor -race -count=3 "${package_args[@]}" -json ./... | tee test-results.jsonl
+          race_mod=$(python prepare_race.py --output "$RUNNER_TEMP")
+          go test -mod=readonly -modfile="$race_mod" -tags with_gvisor -race -count=3 "${package_args[@]}" -json ./... | tee test-results.jsonl
       - uses: actions/upload-artifact@v4
         if: always()
         with:

@@ -26,9 +26,10 @@ receipt and EOF. EOF takes microseconds here: the slow race measurement is not
 just waiting for the test server to close. Both WireGuard and AWG exhibit the
 slowdown; the DNS router adds little to the already slow instrumented tunnel.
 The ordinary macOS flow and DNS paths do not reproduce seconds of latency.
-CPU/block profiles are collected in the performance workflow to investigate
-the instrumented transport further; the precise cause is not established by
-these timings alone.
+The subsequent CPU/block profile in
+[run 41643494964](https://github.com/StannisMod/amnezia-client/actions/runs/41643494964)
+showed heavy activity in gVisor's TCP processor sleep/park loop and race calls.
+This led to the ARM64 race-only CAS defect described below.
 
 The AWG socket-buffer A/B requested 7 MiB, matching the pinned upstream bind.
 This did not materially improve the macOS race result. That runner reports
@@ -37,11 +38,31 @@ buffer errors like upstream and does not read back the effective size. This
 experiment therefore does **not** establish that socket-buffer tuning has no
 effect. Production socket/protection settings were not changed.
 
-The correctness test retains authenticated peer traffic, exact payload content,
-dual-stack TCP/UDP and real DNS assertions. Its bulk deadline is 30 seconds
-inside the existing one-minute session, accommodating the measured race cost
-and scheduling variation. Race detection and repeated tests remain enabled.
-Performance is measured separately in an ordinary build.
+## ARM64 race-only CAS fix
+
+Both pinned gVisor modules contain the defective `pkg/sync/race_arm64.s`:
+the replacement value overwrites the expected value in R1, while the store
+reads R2. Park callbacks can consequently fail to enter their waiting state.
+Google's upstream
+[fix 1b2946c4](https://github.com/google/gvisor/commit/1b2946c4fa59c1a64643bce962140b5686062601)
+loads the replacement into R2 instead. The file is built only with
+`race && arm64`; ordinary product binaries do not compile it.
+
+`prepare_race.py` verifies the pinned modules, copies them into a new private
+temporary directory and applies exactly that one-instruction upstream fix to
+each copy. Its temporary modfile redirects diagnostic builds to those copies.
+The repository's production go.mod/go.sum and the shared module cache remain
+unchanged. It refuses unexpected versions or assembly context. Remove this
+workaround when both pinned dependencies contain the upstream correction.
+
+`TestGVisorRaceCAS` checks successful replacement and rejection without
+mutation in both modules, independently of network timing. The ARM64 performance
+workflow requires this test to reproduce the original failure, then pass with
+the private fixed dependencies before running the same measurements again.
+
+The bulk correctness deadline is restored to its original **10 seconds**.
+Authenticated traffic, exact bytes, dual-stack TCP/UDP, DNS assertions,
+race detection and repetitions remain enabled.
 
 ## Installed Linux legacy versus routed path
 
@@ -71,7 +92,14 @@ go test -mod=readonly -tags with_gvisor -run '^$' -bench '^BenchmarkTunnelBulk' 
 go test -mod=readonly -tags with_gvisor -run '^$' -bench '^BenchmarkTunnelDNS' -benchtime=100x -count=1 ./cmd/android-fixture
 ```
 
-Repeat with `-race` to compare instrumentation. The workflow
+For race instrumentation, first prepare the pinned upstream fix:
+
+```sh
+race_mod=$(python3 prepare_race.py --output "${TMPDIR:-/tmp}")
+go test -mod=readonly -modfile="$race_mod" -tags with_gvisor -race -count=3 ./...
+```
+
+Use the same `-modfile` for race benchmarks. The workflow
 `.github/workflows/routing-performance.yml` runs these on Linux/macOS and also
 performs the installed legacy/native Linux comparison. Reports contain no VPN
 keys or profiles. These loopback fixtures do not exercise native mobile packet

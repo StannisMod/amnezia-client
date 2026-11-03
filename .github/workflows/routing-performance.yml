@@ -24,10 +24,28 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v6
+        with: {python-version: '3.12'}
       - uses: actions/setup-go@v5
         with:
           go-version-file: native/routing/go.mod
           cache-dependency-path: native/routing/go.sum
+      - name: Prepare the upstream ARM64 race CAS fix without editing module caches
+        run: |
+          set -euo pipefail
+          race_mod=$(python prepare_race.py --output "$RUNNER_TEMP")
+          echo "ROUTING_RACE_MODFILE=$race_mod" >> "$GITHUB_ENV"
+      - name: Prove the ARM64 race CAS regression before and after the fix
+        if: runner.arch == 'ARM64'
+        run: |
+          set -euo pipefail
+          if go test -mod=readonly -tags with_gvisor -race -run '^TestGVisorRaceCAS$' ./awg > race-cas-before.txt 2>&1; then
+            echo 'Expected the pinned dependency to reproduce the CAS defect'
+            exit 1
+          fi
+          cat race-cas-before.txt
+          grep -F 'CAS failed to swap expected value' race-cas-before.txt
+          go test -mod=readonly -modfile="$ROUTING_RACE_MODFILE" -tags with_gvisor -race -run '^TestGVisorRaceCAS$' -v ./awg | tee race-cas-after.txt
       - name: Compare ordinary and race-instrumented flow and DNS paths
         run: |
           set -euo pipefail
@@ -37,7 +55,7 @@ jobs:
           for mode in ordinary race; do
             # macOS ships Bash 3.2: an empty array trips nounset there.
             args=(-mod=readonly -tags with_gvisor)
-            if [ "$mode" = race ]; then args+=(-race); fi
+            if [ "$mode" = race ]; then args+=(-race "-modfile=$ROUTING_RACE_MODFILE"); fi
             go test "${args[@]}" -run '^$' -bench '^BenchmarkTunnelBulk' -benchtime=3x -count=1 -timeout=8m ./cmd/android-fixture | tee "flow-$mode.txt"
             go test "${args[@]}" -run '^$' -bench '^BenchmarkTunnelDNS' -benchtime=100x -count=1 -timeout=3m ./cmd/android-fixture | tee "dns-$mode.txt"
           done
@@ -45,7 +63,7 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           set -euo pipefail
-          go test -mod=readonly -tags with_gvisor -race -run '^$' -bench '^BenchmarkTunnel(Bulk|DNS)/(awg|awg_udp)$' -benchtime=3x -count=1 -timeout=3m -o race-profile.test -cpuprofile=race-cpu.pprof -blockprofile=race-block.pprof ./cmd/android-fixture | tee race-profile-run.txt
+          go test -mod=readonly -modfile="$ROUTING_RACE_MODFILE" -tags with_gvisor -race -run '^$' -bench '^BenchmarkTunnel(Bulk|DNS)/(awg|awg_udp)$' -benchtime=3x -count=1 -timeout=3m -o race-profile.test -cpuprofile=race-cpu.pprof -blockprofile=race-block.pprof ./cmd/android-fixture | tee race-profile-run.txt
           go tool pprof -top -nodecount=40 race-profile.test race-cpu.pprof | tee race-cpu-summary.txt
           go tool pprof -top -nodecount=40 race-profile.test race-block.pprof | tee race-block-summary.txt
       - uses: actions/upload-artifact@v4

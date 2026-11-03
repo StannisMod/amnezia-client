@@ -69,11 +69,7 @@ func TestEmulatorPeerLearnsEndpointAndServesIPv4IPv6(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer connection.Close()
-		// The macOS ARM64 comparison measured ~11ms without instrumentation
-		// and 6-7s with -race for the same authenticated 1MiB payload. This
-		// correctness check retains all bytes/observer assertions; throughput
-		// is measured separately, without using a race build as a product SLA.
-		connection.SetDeadline(time.Now().Add(30 * time.Second))
+		connection.SetDeadline(time.Now().Add(10 * time.Second))
 		if err := binary.Write(connection, binary.BigEndian, uint32(1<<20)); err != nil {
 			t.Fatal(err)
 		}
