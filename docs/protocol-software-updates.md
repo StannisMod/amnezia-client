@@ -73,9 +73,11 @@ a Docker boundary that injects build, copy, rename, create, start, restart,
 network, runtime state and rollback failures, plus HUP and concurrent requests.
 It needs neither Docker nor root.
 
-`client/tests/protocol-update/acceptance.py` runs only on disposable GitHub Actions
-VMs. The matrix uses the production WireGuard/AWG Dockerfiles and startup scripts,
+`client/tests/protocol-update/acceptance.py` runs on disposable GitHub Actions
+VMs or the explicitly marked nested Docker daemon provided by
+`scripts/local-tests/run.sh`. The tests use the production WireGuard/AWG Dockerfiles and startup scripts,
 establishes real peer traffic, updates without touching the client's profile,
 checks every state file, and injects an image that stays running without a VPN
 interface to verify rollback and restored client traffic. Full product builds
 remain necessary to validate the C++/QML integration on supported platforms.
+See `scripts/local-tests/README.md` for local Qt, VPN and full Linux build commands.

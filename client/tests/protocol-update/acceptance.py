@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Real unchanged-client traffic across update and rollback on a disposable CI VM.
+"""Real unchanged-client traffic across update and rollback in a disposable environment.
 
 Uses standard production Dockerfiles/startup and the production transaction.
-Never run against a user's host: container names match real Amnezia deployments.
+Use a CI VM or the marked nested Docker daemon from scripts/local-tests/run.sh.
+Never run against a user's main daemon: names match real Amnezia deployments.
 """
 import argparse
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -41,7 +43,9 @@ def ping(client):
 
 def main(kind):
     if os.environ.get("GITHUB_ACTIONS") != "true":
-        raise SystemExit("This test requires a disposable GitHub Actions VM.")
+        labels = json.loads(run("docker", "info", "--format", "{{json .Labels}}")) or []
+        if "amnezia.test-environment=disposable" not in labels:
+            raise SystemExit("Run on a disposable GitHub Actions VM or with scripts/local-tests/run.sh.")
     source = Path(__file__).resolve().parents[2] / "server_scripts"
     name = "amnezia-awg2" if kind == "awg" else "amnezia-wireguard"
     tool, iface = ("awg", "awg0") if kind == "awg" else ("wg", "wg0")

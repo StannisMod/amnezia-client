@@ -1,0 +1,14 @@
+FROM golang:1.27.1 AS go
+FROM amnezia-local-qt-tests
+COPY --from=go /usr/local/go /usr/local/go
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3-venv libsecret-1-dev libxkbcommon-x11-0 pkg-config \
+    autoconf automake libtool bison flex curl patchelf ccache \
+    && rm -rf /var/lib/apt/lists/*
+RUN python3 -m venv /opt/build-tools
+ENV PATH=/opt/build-tools/bin:/usr/local/go/bin:/opt/Qt/6.10.1/gcc_64/bin:$PATH
+RUN pip install --no-cache-dir conan==2.28.0 aqtinstall==3.3.0
+RUN aqt install-qt linux desktop 6.10.1 linux_gcc_64 \
+    -m qtremoteobjects qt5compat qtshadertools qthttpserver qtwebsockets -O /opt/Qt
+ENV CMAKE_PREFIX_PATH=/opt/Qt/6.10.1/gcc_64
+WORKDIR /work
