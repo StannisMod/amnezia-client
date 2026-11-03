@@ -11,6 +11,40 @@ permissions:
   contents: read
   actions: read
 jobs:
+  flow-and-dns-diagnostics:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: native/routing
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: native/routing/go.mod
+          cache-dependency-path: native/routing/go.sum
+      - name: Compare ordinary and race-instrumented flow and DNS paths
+        run: |
+          set -euo pipefail
+          for mode in ordinary race; do
+            args=()
+            if [ "$mode" = race ]; then args=(-race); fi
+            go test -mod=readonly -tags with_gvisor "${args[@]}" -run '^$' -bench '^BenchmarkTunnelBulk' -benchtime=3x -count=1 -timeout=8m ./cmd/android-fixture | tee "flow-$mode.txt"
+            go test -mod=readonly -tags with_gvisor "${args[@]}" -run '^$' -bench '^BenchmarkTunnelDNS' -benchtime=100x -count=1 -timeout=3m ./cmd/android-fixture | tee "dns-$mode.txt"
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: flow-dns-diagnostics-${{ matrix.os }}
+          path: |
+            native/routing/flow-*.txt
+            native/routing/dns-*.txt
+          if-no-files-found: error
   comparative-data-path:
     runs-on: ubuntu-22.04
     timeout-minutes: 25
