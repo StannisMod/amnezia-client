@@ -338,7 +338,9 @@ jobs:
 # ------------------------------------------------------
 
   Build-iOS:
-    runs-on: macos-latest
+    # Match the validated product build: Xcode 26.0's storyboard compiler
+    # cannot find its iOS platform on the current macos-latest image.
+    runs-on: macos-15
 
     needs: Bake-Prebuilts-iOS
     if: ${{ !cancelled() }}
