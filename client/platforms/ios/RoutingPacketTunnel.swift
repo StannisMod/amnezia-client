@@ -23,6 +23,7 @@ final class RoutingPacketTunnel {
     private let underlyingInterface: () -> String?
     private var networkSettings: NEPacketTunnelNetworkSettings?
     private var networkDNSSuppressed = false
+    private var networkDNSPaused = false
 
     init(provider: NEPacketTunnelProvider, underlyingInterface: @escaping () -> String? = { nil }) {
         self.provider = provider
@@ -88,14 +89,18 @@ final class RoutingPacketTunnel {
     }
 
     private func readPackets(generation: UInt64) {
-        guard !stopped, handle > 0, generation == self.generation, let provider else { return }
+        guard !stopped, (handle > 0 || networkDNSPaused), generation == self.generation, let provider else { return }
         provider.packetFlow.readPackets { [weak self] packets, _ in
             guard let self else { return }
             self.queue.async {
-                guard !self.stopped, self.handle > 0, generation == self.generation else { return }
-                for data in packets {
-                    data.withUnsafeBytes { buffer in
-                        _ = AmneziaRoutingFeed(self.handle, UnsafeMutablePointer(mutating: buffer.bindMemory(to: UInt8.self).baseAddress), Int32(data.count))
+                guard !self.stopped, (self.handle > 0 || self.networkDNSPaused), generation == self.generation else { return }
+                // Keep one packetFlow reader during DNS refresh, dropping
+                // captured traffic until a fresh scoped resolver is installed.
+                if self.handle > 0 {
+                    for data in packets {
+                        data.withUnsafeBytes { buffer in
+                            _ = AmneziaRoutingFeed(self.handle, UnsafeMutablePointer(mutating: buffer.bindMemory(to: UInt8.self).baseAddress), Int32(data.count))
+                        }
                     }
                 }
                 self.readPackets(generation: generation)
@@ -106,6 +111,7 @@ final class RoutingPacketTunnel {
     func stop(completion: @escaping () -> Void) {
         queue.async {
             self.stopped = true
+            self.networkDNSPaused = false
             self.provider?.reasserting = false
             self.refreshPolicy.cancel()
             self.endpointHealthTimer?.cancel()
@@ -122,16 +128,18 @@ final class RoutingPacketTunnel {
 
     func networkChanged() {
         queue.async {
-            guard !self.stopped, self.handle > 0, let config = self.originalConfig else { return }
+            guard !self.stopped, (self.handle > 0 || self.networkDNSPaused), let config = self.originalConfig else { return }
             self.refreshWork?.cancel()
             self.lookupDeadline?.cancel()
             self.lookupGeneration &+= 1
             let token = self.refreshPolicy.begin()
             self.provider?.reasserting = true
-            if Self.needsNetworkDNS(config), !self.networkDNSSuppressed, let settings = self.networkSettings, let provider = self.provider {
-                // Keep TUN capture and the existing backend running. Release
-                // only our DNS override while reading fresh public OS DNS;
-                // otherwise res_ninit would return our own 172.19.0.2 stub.
+            if Self.needsNetworkDNS(config), let settings = self.networkSettings, let provider = self.provider {
+                // Keep TUN capture, but close the stale resolver and sockets
+                // before reading DNS for the new network. Only the owned DNS
+                // override is released; captured application traffic is dropped.
+                self.networkDNSPaused = true
+                if self.handle > 0 { AmneziaRoutingStop(self.handle); self.handle = -1 }
                 self.networkDNSSuppressed = true
                 settings.dnsSettings = nil
                 provider.setTunnelNetworkSettings(settings) { error in
@@ -148,14 +156,14 @@ final class RoutingPacketTunnel {
     }
 
     private func refreshTransport(config: WGConfig, token: UInt64) {
-        guard !stopped, refreshPolicy.accepts(token), handle > 0 else { return }
+        guard !stopped, refreshPolicy.accepts(token), (handle > 0 || networkDNSPaused) else { return }
         guard let delay = refreshPolicy.nextDelay(for: token) else {
             provider?.reasserting = false
             provider?.cancelTunnelWithError(RoutingError.endpointResolution)
             return
         }
         let work = DispatchWorkItem { [weak self] in
-            guard let self, !self.stopped, self.refreshPolicy.accepts(token), self.handle > 0 else { return }
+            guard let self, !self.stopped, self.refreshPolicy.accepts(token), (self.handle > 0 || self.networkDNSPaused) else { return }
             self.lookupGeneration &+= 1
             let lookup = self.lookupGeneration
             let deadline = DispatchWorkItem { [weak self] in
@@ -165,14 +173,13 @@ final class RoutingPacketTunnel {
             }
             self.lookupDeadline = deadline
             self.queue.asyncAfter(deadline: .now() + 15, execute: deadline)
-            // getaddrinfo must not block the lifetime/packet-flow queue. Keep
-            // the current capture/backend while the new uplink acquires DNS.
+            // getaddrinfo must not block the lifetime/packet-flow queue.
             DispatchQueue.global(qos: .utility).async { [weak self] in
                 guard let self else { return }
                 let result = Result { try EndpointAddressResolver.addresses(config.hostName) }
                 self.queue.async { [weak self] in
                     guard let self, !self.stopped, self.refreshPolicy.accepts(token),
-                          lookup == self.lookupGeneration, self.handle > 0 else { return }
+                          lookup == self.lookupGeneration, (self.handle > 0 || self.networkDNSPaused) else { return }
                     self.lookupDeadline?.cancel()
                     self.lookupGeneration &+= 1 // Consume the result exactly once, including deadline races.
                     switch result {
@@ -199,7 +206,7 @@ final class RoutingPacketTunnel {
     }
 
     private func installRefreshedTransport(_ raw: Data, token: UInt64) {
-        guard !stopped, refreshPolicy.accepts(token), handle > 0 else { return }
+        guard !stopped, refreshPolicy.accepts(token), (handle > 0 || networkDNSPaused) else { return }
         if networkDNSSuppressed, let settings = networkSettings, let provider {
             let dns = NEDNSSettings(servers: ["172.19.0.2"])
             dns.matchDomains = [""]
@@ -215,13 +222,14 @@ final class RoutingPacketTunnel {
             return
         }
         // Preserve the sole packetFlow reader while replacing transport/cache.
-        AmneziaRoutingStop(handle)
+        if handle > 0 { AmneziaRoutingStop(handle) }
         let context = Unmanaged.passRetained(self).toOpaque()
         handle = raw.withUnsafeBytes { buffer in
             AmneziaRoutingStart(UnsafeMutablePointer(mutating: buffer.bindMemory(to: CChar.self).baseAddress),
                                 Int32(raw.count), context, Self.writePacket, Self.releaseHost)
         }
         backendEpoch &+= 1
+        networkDNSPaused = false
         sessionData = raw
         provider?.reasserting = false
         if handle <= 0 { provider?.cancelTunnelWithError(RoutingError.backendFailed) }

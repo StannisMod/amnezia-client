@@ -3,10 +3,12 @@
 package desktop
 
 import (
+	"context"
 	"errors"
 	"io"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/StannisMod/amnezia-client/native/routing/engine"
 	"golang.org/x/sys/windows"
@@ -54,6 +56,11 @@ func PreparePrivateCache(path string) (io.Closer, error) {
 func PrepareResolver(config *engine.SessionConfig) error {
 	if config.DNS != nil {
 		if config.DNS.NeedsNetwork() {
+			// Cold DNSClient/CIM initialization can exceed eight seconds. Both
+			// read-only queries share one finite startup budget, below the
+			// existing routed connection/handshake budget.
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
 			snapshot, err := windowsNetworkDNS()
 			if err != nil {
 				return err
@@ -64,11 +71,11 @@ func PrepareResolver(config *engine.SessionConfig) error {
 			}
 			config.DNSNetworkFingerprint = windowsDNSFingerprint(snapshot) + "/" + version
 			if config.DNS.PreserveNetworkDomains {
-				if err = addWindowsNRPT(&snapshot); err != nil {
+				if err = addWindowsNRPTContext(ctx, &snapshot); err != nil {
 					return err
 				}
 			}
-			if err = addWindowsEncryptedDNS(&snapshot); err != nil {
+			if err = addWindowsEncryptedDNSContext(ctx, &snapshot); err != nil {
 				return err
 			}
 			config.NetworkDNS = &snapshot

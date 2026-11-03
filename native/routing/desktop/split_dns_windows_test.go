@@ -3,12 +3,27 @@
 package desktop
 
 import (
+	"net/netip"
 	"strings"
 	"testing"
 
 	"github.com/StannisMod/amnezia-client/native/routing/dnspolicy"
 	"github.com/StannisMod/amnezia-client/native/routing/rules"
 )
+
+func TestWindowsDoHUpgradePreservesEndpointAndRejectsDowngrade(t *testing.T) {
+	snapshot := dnspolicy.NetworkSnapshot{Links: []dnspolicy.NetworkLink{{ID: "native", Default: true, Servers: []dnspolicy.NetworkServer{{Address: netip.MustParseAddr("192.0.2.53")}}}}}
+	if err := applyWindowsEncryptedDNS(&snapshot, []byte(`{"ServerAddress":"192.0.2.53","DohTemplate":"https://dns.example:8443/dns-query{?dns}"}`)); err != nil {
+		t.Fatal(err)
+	}
+	server := snapshot.Links[0].Servers[0]
+	if server.Transport != "https" || server.ServerName != "dns.example" || server.Port != 8443 || server.HTTPSPath != "/dns-query" {
+		t.Fatal("DoH endpoint/authentication metadata was changed")
+	}
+	if err := applyWindowsEncryptedDNS(&snapshot, []byte(`{"ServerAddress":"192.0.2.53","DohTemplate":"http://dns.example/dns-query"}`)); err == nil {
+		t.Fatal("plaintext downgrade accepted")
+	}
+}
 
 func TestWindowsNetworkDNSInventoryAndSystemPolicies(t *testing.T) {
 	snapshot, err := windowsNetworkDNS()

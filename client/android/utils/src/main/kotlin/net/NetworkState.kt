@@ -143,6 +143,9 @@ class NetworkState(
             override fun onLost(network: Network) {
                 Log.v(TAG, "onLost: $network")
                 state.lost(network)
+                dnsNetworks.entries.removeAll { it.value == network }
+                dnsFingerprints.remove(network)
+                if (preferredDnsNetwork == network) preferredDnsNetwork = null
             }
         }
     }

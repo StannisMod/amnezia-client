@@ -20,8 +20,12 @@ import (
 // Keep configured Windows DNS-over-HTTPS upgrades when importing a network
 // source. Never silently turn an enabled upgrade into ordinary UDP DNS.
 func addWindowsEncryptedDNS(snapshot *dnspolicy.NetworkSnapshot) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	return addWindowsEncryptedDNSContext(ctx, snapshot)
+}
+
+func addWindowsEncryptedDNSContext(ctx context.Context, snapshot *dnspolicy.NetworkSnapshot) error {
 	script := `[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); $ErrorActionPreference='Stop'; if(Get-Command Get-DnsClientDohServerAddress -ErrorAction SilentlyContinue) { @(Get-DnsClientDohServerAddress | Where-Object AutoUpgrade | Select-Object ServerAddress,DohTemplate) | ConvertTo-Json -Compress } else { '[]' }`
 	cmd := exec.CommandContext(ctx, "powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script)
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
@@ -29,6 +33,10 @@ func addWindowsEncryptedDNS(snapshot *dnspolicy.NetworkSnapshot) error {
 	if err != nil || len(raw) > 1<<20 {
 		return errors.New("native encrypted DNS settings unavailable")
 	}
+	return applyWindowsEncryptedDNS(snapshot, raw)
+}
+
+func applyWindowsEncryptedDNS(snapshot *dnspolicy.NetworkSnapshot, raw []byte) error {
 	raw = []byte(strings.TrimPrefix(strings.TrimSpace(string(raw)), "\ufeff"))
 	if len(raw) == 0 || string(raw) == "null" {
 		return nil
@@ -48,7 +56,11 @@ func addWindowsEncryptedDNS(snapshot *dnspolicy.NetworkSnapshot) error {
 		if e != nil {
 			return errors.New("invalid native encrypted DNS address")
 		}
-		template, e := url.Parse(strings.ReplaceAll(setting.DohTemplate, "{?dns}", ""))
+		text := strings.ReplaceAll(setting.DohTemplate, "{?dns}", "")
+		if strings.ContainsAny(text, "{}") {
+			return errors.New("unsupported system DoH template; configure explicit DNS")
+		}
+		template, e := url.Parse(text)
 		if e != nil || template.Scheme != "https" || template.Hostname() == "" || template.User != nil || template.Fragment != "" {
 			return errors.New("unsupported system DoH template; configure explicit DNS")
 		}
@@ -60,6 +72,13 @@ func addWindowsEncryptedDNS(snapshot *dnspolicy.NetworkSnapshot) error {
 			}
 		}
 		path := template.EscapedPath()
+		name := template.Hostname()
+		if literal, e := netip.ParseAddr(name); e == nil {
+			if literal.Unmap() != address.Unmap() {
+				return errors.New("system DoH literal address does not match its server")
+			}
+			name = "" // Validate the certificate against the numeric server address.
+		}
 		if path == "" {
 			path = "/dns-query"
 		}
@@ -72,7 +91,7 @@ func addWindowsEncryptedDNS(snapshot *dnspolicy.NetworkSnapshot) error {
 				if server.Address.Unmap() == address.Unmap() {
 					server.Transport = "https"
 					server.Port = uint16(port)
-					server.ServerName = template.Hostname()
+					server.ServerName = name
 					server.HTTPSPath = path
 				}
 			}

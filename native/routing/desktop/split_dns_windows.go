@@ -95,8 +95,12 @@ func windowsDNSPolicyVersion() (string, error) {
 }
 
 func addWindowsNRPT(snapshot *dnspolicy.NetworkSnapshot) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	return addWindowsNRPTContext(ctx, snapshot)
+}
+
+func addWindowsNRPTContext(ctx context.Context, snapshot *dnspolicy.NetworkSnapshot) error {
 	// Fixed, read-only command. No profile/domain text is interpolated into code.
 	script := `[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); $ErrorActionPreference='Stop'; @((Get-DnsClientNrptPolicy -Effective) | ForEach-Object { [pscustomobject]@{ namespaces=@($_.Namespace); servers=@($_.NameServers -split '[;,\s]+' | Where-Object { $_ }); secure=[bool]($_.DnsSecValidationRequired -or $_.DnsSecQueryIPsecRequired -or $_.DirectAccessQueryIPsecRequired -or $_.DirectAccessEnabled -or $_.DirectAccessDnsServers) } }) | ConvertTo-Json -Compress -Depth 4`
 	cmd := exec.CommandContext(ctx, "powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script)

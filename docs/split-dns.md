@@ -92,8 +92,9 @@ ambiguous network selection fails instead of falling back to public DNS.
   routing rules. Link-properties changes trigger the existing reconnection.
 - Apple reads the public `libresolv` default numeric DNS configuration before
   capture and binds DNS sockets to the provider's underlying interface. A path
-  change refreshes the snapshot while retaining TUN capture: only the owned DNS
-  override is temporarily removed, then restored before transport replacement.
+  change pauses the stale backend while retaining the sole TUN packet reader;
+  captured traffic is dropped during refresh. Only the owned DNS override is
+  temporarily removed, then restored before the fresh transport starts.
   The public snapshot covers conventional DNS addresses; it does not enumerate
   the complete scoped/corporate resolver graph or managed encrypted-DNS profiles.
   Configure those policies explicitly. A DNS-only change without a path change
