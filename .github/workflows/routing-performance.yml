@@ -41,6 +41,13 @@ jobs:
             go test "${args[@]}" -run '^$' -bench '^BenchmarkTunnelBulk' -benchtime=3x -count=1 -timeout=8m ./cmd/android-fixture | tee "flow-$mode.txt"
             go test "${args[@]}" -run '^$' -bench '^BenchmarkTunnelDNS' -benchtime=100x -count=1 -timeout=3m ./cmd/android-fixture | tee "dns-$mode.txt"
           done
+      - name: Profile the macOS race-instrumented transport
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          go test -mod=readonly -tags with_gvisor -race -run '^$' -bench '^BenchmarkTunnel(Bulk|DNS)/(awg|awg_udp)$' -benchtime=3x -count=1 -timeout=3m -o race-profile.test -cpuprofile=race-cpu.pprof -blockprofile=race-block.pprof ./cmd/android-fixture | tee race-profile-run.txt
+          go tool pprof -top -nodecount=40 race-profile.test race-cpu.pprof | tee race-cpu-summary.txt
+          go tool pprof -top -nodecount=40 race-profile.test race-block.pprof | tee race-block-summary.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -48,6 +55,9 @@ jobs:
           path: |
             native/routing/flow-*.txt
             native/routing/dns-*.txt
+            native/routing/race-*.txt
+            native/routing/race-*.pprof
+            native/routing/race-profile.test
           if-no-files-found: error
   comparative-data-path:
     runs-on: ubuntu-22.04
