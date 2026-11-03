@@ -31,7 +31,6 @@ jobs:
               - 'recipes/**'
               - 'conanfile.py'
               - 'cmake/conan_provider.cmake'
-              - 'cmake/platform_settings.cmake'
               - 'cmake/recipes_bootstrap.cmake'
 
   Bake-Prebuilts-Linux:
@@ -196,6 +195,8 @@ jobs:
     env:
       QT_VERSION: 6.10.1
       QIF_VERSION: 4.7
+      CMAKE_CONFIGURATION_TYPES: Release
+      CONAN_INSTALL_BUILD_CONFIGURATIONS: Release
       PROD_AGW_PUBLIC_KEY: ${{ secrets.PROD_AGW_PUBLIC_KEY }}
       PROD_S3_ENDPOINT: ${{ secrets.PROD_S3_ENDPOINT }}
       FALLBACK_S3_ENDPOINT: ${{ secrets.FALLBACK_S3_ENDPOINT }}
@@ -346,6 +347,8 @@ jobs:
       QT_VERSION: 6.10.1
       KEYCHAIN_PASSWORD: ""
       IOS_UNSIGNED_BUILD: ${{ secrets.IOS_SIGNING_CERT_BASE64 == '' && '1' || '0' }}
+      CMAKE_CONFIGURATION_TYPES: Release
+      CONAN_INSTALL_BUILD_CONFIGURATIONS: Release
 
       PROD_AGW_PUBLIC_KEY: ${{ secrets.PROD_AGW_PUBLIC_KEY }}
       PROD_S3_ENDPOINT: ${{ secrets.PROD_S3_ENDPOINT }}
@@ -443,11 +446,8 @@ jobs:
         APPSTORE_CONNECT_PRIVATE_KEY: ${{ secrets.APPSTORE_CONNECT_PRIVATE_KEY }}
       run: |
         set -o pipefail
-        deploy/build.sh -t ios | \
-          sed -e '/-Xcc -DPROD_AGW_PUBLIC_KEY/,/-Xcc/ { /-Xcc/!d; }' -e '/-Xcc -DPROD_AGW_PUBLIC_KEY/d' | \
-          sed -e '/-Xcc -DDEV_AGW_PUBLIC_KEY/,/-Xcc/ { /-Xcc/!d; }' -e '/-Xcc -DDEV_AGW_PUBLIC_KEY/d' | \
-          sed -e '/-DPROD_AGW_PUBLIC_KEY/,/-D/ { /-D/!d; }' -e '/-DPROD_AGW_PUBLIC_KEY/d' | \
-          sed -e '/-DDEV_AGW_PUBLIC_KEY/,/-D/ { /-D/!d; }' -e '/-DDEV_AGW_PUBLIC_KEY/d'
+        deploy/build.sh -t ios 2>&1 | \
+          sed -e '/-DPROD_AGW_PUBLIC_KEY/d' -e '/-DDEV_AGW_PUBLIC_KEY/d'
 
 # ------------------------------------------------------
 
@@ -669,6 +669,8 @@ jobs:
       QT_VERSION: 6.10.1
       KEYCHAIN_PASSWORD: ""
       MACOS_NE_UNSIGNED_BUILD: ${{ (secrets.MAC_APP_CERT_CERT == '' || secrets.MAC_APP_PROVISIONING_PROFILE == '' || secrets.MAC_NE_PROVISIONING_PROFILE == '') && '1' || '0' }}
+      CMAKE_CONFIGURATION_TYPES: Release
+      CONAN_INSTALL_BUILD_CONFIGURATIONS: Release
 
       MAC_TEAM_ID: ${{ secrets.MAC_TEAM_ID }}
 

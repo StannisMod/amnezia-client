@@ -274,6 +274,8 @@ jobs:
         id: build
         shell: cmd
         env:
+          CMAKE_CONFIGURATION_TYPES: Release
+          CONAN_INSTALL_BUILD_CONFIGURATIONS: Release
           QT_INSTALL_DIR: ${{ runner.temp }}
           AMNEZIA_BUILD_TESTS: 'ON'
         run: |
@@ -531,6 +533,8 @@ jobs:
         env:
           QT_INSTALL_DIR: ${{ runner.temp }}
           IOS_UNSIGNED_BUILD: '1'
+          CMAKE_CONFIGURATION_TYPES: Release
+          CONAN_INSTALL_BUILD_CONFIGURATIONS: Release
           # Exercise local recipes without depending on the optional binary mirror.
           AMNEZIA_CONAN_PREBUILTS: 'OFF'
         run: |
