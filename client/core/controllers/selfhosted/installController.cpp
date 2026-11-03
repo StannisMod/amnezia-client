@@ -397,6 +397,12 @@ ErrorCode InstallController::updateProtocolSoftware(const ServerCredentials &cre
     if (!scriptFile.open(QIODevice::ReadOnly)) {
         return ErrorCode::InternalError;
     }
+    // Windows checkouts may embed CRLF resources. Match scriptData()'s
+    // normalization before uploading bytes to the remote Unix shell.
+    const QByteArray updateScript = scriptFile.readAll().replace("\r", "");
+    if (updateScript.isEmpty()) {
+        return ErrorCode::InternalError;
+    }
     SshSession session;
     // All paths/arguments below are generated locally, never from a profile.
     const QString stage = QStringLiteral("/tmp/amnezia-update-") + QUuid::createUuid().toString(QUuid::WithoutBraces);
@@ -410,7 +416,7 @@ ErrorCode InstallController::updateProtocolSoftware(const ServerCredentials &cre
     if (error != ErrorCode::NoError || !output.contains(QStringLiteral("amnezia_stage=ok"))) {
         return error == ErrorCode::NoError ? ErrorCode::ProtocolUpdateRejected : error;
     }
-    error = session.uploadFileToHost(credentials, scriptFile.readAll(), stage + QStringLiteral("/update.sh"));
+    error = session.uploadFileToHost(credentials, updateScript, stage + QStringLiteral("/update.sh"));
     if (error == ErrorCode::NoError) {
         error = session.uploadFileToHost(credentials,
                                          amnezia::scriptData(ProtocolScriptType::dockerfile, container).toUtf8(),
