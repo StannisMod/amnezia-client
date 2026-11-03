@@ -6,6 +6,7 @@
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QThreadPool>
+#include <libssh/libssh.h>
 
 #include "utils/testCoreController.h"
 #include "core/models/serverDescription.h"
@@ -23,11 +24,14 @@ class TestServerEdit : public QObject
     Q_OBJECT
 
 private:
-    TestCoreController* m_coreController;
-    SecureQSettings* m_settings;
+    TestCoreController* m_coreController = nullptr;
+    SecureQSettings* m_settings = nullptr;
 
 private slots:
     void initTestCase() {
+        // QTEST_MAIN bypasses the application's main(), including libssh's
+        // explicit initialization required by the Windows SSH backend.
+        QCOMPARE(ssh_init(), SSH_OK);
         QString testOrg = "AmneziaVPN-Test-" + QUuid::createUuid().toString();
         m_settings = new SecureQSettings(testOrg, "amnezia-client", nullptr, false);
         
@@ -36,9 +40,12 @@ private slots:
     }
 
     void cleanupTestCase() {
-        m_settings->clearSettings();
+        if (m_settings) {
+            m_settings->clearSettings();
+        }
         delete m_coreController;
         delete m_settings;
+        ssh_finalize();
     }
 
     void init() {
