@@ -507,6 +507,7 @@ jobs:
     env:
       QT_VERSION: 6.10.1
       KEYCHAIN_PASSWORD: ""
+      MACOS_UNSIGNED_BUILD: ${{ (secrets.MAC_APP_CERT_CERT == '' || secrets.MAC_INSTALLER_SIGNER_CERT == '') && '1' || '0' }}
 
       PROD_AGW_PUBLIC_KEY: ${{ secrets.PROD_AGW_PUBLIC_KEY }}
       PROD_S3_ENDPOINT: ${{ secrets.PROD_S3_ENDPOINT }}
@@ -528,11 +529,13 @@ jobs:
       uses: ./.github/actions/setup-routing-go
 
     - uses: ./.github/actions/apple-setup-keychain
+      if: env.MACOS_UNSIGNED_BUILD != '1'
       id: setup-keychain
       with:
         keychain-password: ${{ env.KEYCHAIN_PASSWORD }}
 
     - uses: ./.github/actions/apple-install-cert
+      if: env.MACOS_UNSIGNED_BUILD != '1'
       with:
         keychain-path: ${{ steps.setup-keychain.outputs.keychain-path }}
         keychain-password: ${{ env.KEYCHAIN_PASSWORD }}
@@ -540,11 +543,16 @@ jobs:
         cert-password: ${{ secrets.MAC_APP_CERT_PW }}
 
     - uses: ./.github/actions/apple-install-cert
+      if: env.MACOS_UNSIGNED_BUILD != '1'
       with:
         keychain-path: ${{ steps.setup-keychain.outputs.keychain-path }}
         keychain-password: ${{ env.KEYCHAIN_PASSWORD }}
         cert-base64: ${{ secrets.MAC_INSTALLER_SIGNER_CERT }}
         cert-password: ${{ secrets.MAC_INSTALL_CERT_PW }}
+
+    - name: 'Explain unsigned validation'
+      if: env.MACOS_UNSIGNED_BUILD == '1'
+      run: echo '::notice::Distribution certificates are not configured. Building an unsigned macOS package for validation.'
 
     - name: 'Setup xcode'
       uses: maxim-lobanov/setup-xcode@v1
@@ -577,13 +585,13 @@ jobs:
     - name: 'Build project'
       env:
         QT_INSTALL_DIR: ${{ runner.temp }}
-        CODESIGN_SIGNATURE: ${{ secrets.MAC_SIGNER_ID }}
-        CODESIGN_INSTALLER_SIGNATURE: ${{ secrets.MAC_INSTALLER_SIGNER_ID }}
+        CODESIGN_SIGNATURE: ${{ env.MACOS_UNSIGNED_BUILD != '1' && secrets.MAC_SIGNER_ID || '' }}
+        CODESIGN_INSTALLER_SIGNATURE: ${{ env.MACOS_UNSIGNED_BUILD != '1' && secrets.MAC_INSTALLER_SIGNER_ID || '' }}
         CODESIGN_KEYCHAIN: ${{ steps.setup-keychain.outputs.keychain-path }}
         CODESIGN_INSTALLER_KEYCHAIN: ${{ steps.setup-keychain.outputs.keychain-path }}
-        NOTARYTOOL_TEAM_ID: ${{ secrets.MAC_TEAM_ID }}
-        NOTARYTOOL_EMAIL: ${{ secrets.APPLE_DEV_EMAIL }}
-        NOTARYTOOL_PASSWORD: ${{ secrets.APPLE_DEV_PASSWORD }}
+        NOTARYTOOL_TEAM_ID: ${{ env.MACOS_UNSIGNED_BUILD != '1' && secrets.MAC_TEAM_ID || '' }}
+        NOTARYTOOL_EMAIL: ${{ env.MACOS_UNSIGNED_BUILD != '1' && secrets.APPLE_DEV_EMAIL || '' }}
+        NOTARYTOOL_PASSWORD: ${{ env.MACOS_UNSIGNED_BUILD != '1' && secrets.APPLE_DEV_PASSWORD || '' }}
         AMNEZIA_BUILD_TESTS: ON
       shell: bash
       run: deploy/build.sh --generator Ninja --installer all
@@ -659,6 +667,8 @@ jobs:
 
     env:
       QT_VERSION: 6.10.1
+      KEYCHAIN_PASSWORD: ""
+      MACOS_NE_UNSIGNED_BUILD: ${{ (secrets.MAC_APP_CERT_CERT == '' || secrets.MAC_APP_PROVISIONING_PROFILE == '' || secrets.MAC_NE_PROVISIONING_PROFILE == '') && '1' || '0' }}
 
       MAC_TEAM_ID: ${{ secrets.MAC_TEAM_ID }}
 
@@ -685,13 +695,33 @@ jobs:
     - name: 'Install the required Go toolchain'
       uses: ./.github/actions/setup-routing-go
 
+    - uses: ./.github/actions/apple-setup-keychain
+      if: env.MACOS_NE_UNSIGNED_BUILD != '1'
+      id: setup-keychain
+      with:
+        keychain-password: ${{ env.KEYCHAIN_PASSWORD }}
+
+    - uses: ./.github/actions/apple-install-cert
+      if: env.MACOS_NE_UNSIGNED_BUILD != '1'
+      with:
+        keychain-path: ${{ steps.setup-keychain.outputs.keychain-path }}
+        keychain-password: ${{ env.KEYCHAIN_PASSWORD }}
+        cert-base64: ${{ secrets.MAC_APP_CERT_CERT }}
+        cert-password: ${{ secrets.MAC_APP_CERT_PW }}
+
     - uses: ./.github/actions/apple-setup-provisioning-profile
+      if: env.MACOS_NE_UNSIGNED_BUILD != '1'
       with:
         provisioning_profile_base64: ${{ secrets.MAC_APP_PROVISIONING_PROFILE }}
 
     - uses: ./.github/actions/apple-setup-provisioning-profile
+      if: env.MACOS_NE_UNSIGNED_BUILD != '1'
       with:
         provisioning_profile_base64: ${{ secrets.MAC_NE_PROVISIONING_PROFILE }}
+
+    - name: 'Explain unsigned validation'
+      if: env.MACOS_NE_UNSIGNED_BUILD == '1'
+      run: echo '::notice::macOS Network Extension signing is not configured. Compiling the app and extension for validation only.'
 
     - name: 'Setup xcode'
       uses: maxim-lobanov/setup-xcode@v1
@@ -710,12 +740,6 @@ jobs:
         set-env: 'true'
         extra: '--base ${{ env.QT_MIRROR }}'
 
-    - name: 'Setup gomobile'
-      run: |
-          export PATH=$PATH:~/go/bin
-          go install golang.org/x/mobile/cmd/gomobile@latest
-          gomobile init
-
     - name: 'Setup python'
       uses: actions/setup-python@v6
       with:
@@ -725,15 +749,16 @@ jobs:
       run: pip install "conan==2.28.0"
 
     - name: 'Build project'
-      run: |
-        export QT_BIN_DIR="${{ runner.temp }}/Qt/${{ env.QT_VERSION }}/macos/bin"
-        bash deploy/build_macos_ne.sh
+      shell: bash
+      env:
+        QT_INSTALL_DIR: ${{ runner.temp }}
+      run: deploy/build.sh -t macos-ne
 
     - name: 'Upload unpacked artifact'
       uses: actions/upload-artifact@v4
       with:
         name: AmneziaVPN_MacOS_unpacked
-        path: deploy/build/client/AmneziaVPN.app
+        path: deploy/build/client/Release/*.app
         retention-days: 7
 
 # ------------------------------------------------------

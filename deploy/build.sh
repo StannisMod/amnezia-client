@@ -213,9 +213,10 @@ args=()
 [[ -n "$QT_ANDROID_BUILD_ALL_ABIS" ]] && args+=("-DQT_ANDROID_BUILD_ALL_ABIS=$QT_ANDROID_BUILD_ALL_ABIS")
 [[ -n "$BUILD_PLAY" ]]                && args+=("-DANDROID_BUILD_PLAY=ON")
 
-# Compile the app and extension on CI without installing distribution secrets.
+# Compile Apple apps/extensions without distribution secrets when requested.
 # Empty by default: existing signed build behavior is unchanged.
-if [[ "$TARGET" == "ios" && "${IOS_UNSIGNED_BUILD:-}" == "1" ]]; then
+if [[ ( "$TARGET" == "ios" && "${IOS_UNSIGNED_BUILD:-}" == "1" ) \
+   || ( "$TARGET" == "macos-ne" && "${MACOS_NE_UNSIGNED_BUILD:-}" == "1" ) ]]; then
     args+=("-DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO"
            "-DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_REQUIRED=NO")
 fi
