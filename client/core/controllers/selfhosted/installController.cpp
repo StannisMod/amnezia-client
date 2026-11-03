@@ -6,6 +6,8 @@
 #include <QDebug>
 #include <QEventLoop>
 #include <QFutureWatcher>
+#include <QFile>
+#include <QUuid>
 #include <QRegularExpression>
 #include <QThread>
 #include <QtConcurrent>
@@ -383,6 +385,65 @@ ErrorCode InstallController::updateServerConfig(const QString &serverId, DockerC
     }
 
     return errorCode;
+}
+
+ErrorCode InstallController::updateProtocolSoftware(const ServerCredentials &credentials, DockerContainer container)
+{
+    if (!credentials.isValid()
+        || (container != DockerContainer::Awg2 && container != DockerContainer::WireGuard)) {
+        return ErrorCode::ProtocolUpdateRejected;
+    }
+    QFile scriptFile(QStringLiteral(":/server_scripts/update_wireguard.sh"));
+    if (!scriptFile.open(QIODevice::ReadOnly)) {
+        return ErrorCode::InternalError;
+    }
+    // Windows checkouts may embed CRLF resources. Match scriptData()'s
+    // normalization before uploading bytes to the remote Unix shell.
+    const QByteArray updateScript = scriptFile.readAll().replace("\r", "");
+    if (updateScript.isEmpty()) {
+        return ErrorCode::InternalError;
+    }
+    SshSession session;
+    // All paths/arguments below are generated locally, never from a profile.
+    const QString stage = QStringLiteral("/tmp/amnezia-update-") + QUuid::createUuid().toString(QUuid::WithoutBraces);
+    QString output;
+    auto collect = [&output](const QString &data, libssh::Client &) {
+        output += data;
+        return ErrorCode::NoError;
+    };
+    auto error = session.runScript(credentials,
+                                  QStringLiteral("umask 077 && mkdir %1 && echo amnezia_stage=ok").arg(stage), collect);
+    if (error != ErrorCode::NoError || !output.contains(QStringLiteral("amnezia_stage=ok"))) {
+        return error == ErrorCode::NoError ? ErrorCode::ProtocolUpdateRejected : error;
+    }
+    error = session.uploadFileToHost(credentials, updateScript, stage + QStringLiteral("/update.sh"));
+    if (error == ErrorCode::NoError) {
+        error = session.uploadFileToHost(credentials,
+                                         amnezia::scriptData(ProtocolScriptType::dockerfile, container).toUtf8(),
+                                         stage + QStringLiteral("/Dockerfile"));
+    }
+    if (error != ErrorCode::NoError) {
+        return error; // No server state has been touched yet.
+    }
+    output.clear();
+    const QString kind = container == DockerContainer::Awg2 ? QStringLiteral("awg") : QStringLiteral("wireguard");
+    error = session.runScript(credentials,
+                              QStringLiteral("sudo sh %1/update.sh %2 %1").arg(stage, kind), collect);
+    // libssh's existing runner does not propagate remote exit status. Require an
+    // explicit terminal result; missing output/SSH failure is an unknown outcome.
+    if (error != ErrorCode::NoError) {
+        return ErrorCode::ProtocolUpdateOutcomeUnknown;
+    }
+    const QString result = output.trimmed();
+    if (result == QLatin1String("amnezia_update=ok"))
+        return ErrorCode::NoError;
+    if (result == QLatin1String("amnezia_update=rolled_back"))
+        return ErrorCode::ProtocolUpdateRolledBack;
+    if (result == QLatin1String("amnezia_update=rollback_failed"))
+        return ErrorCode::ProtocolUpdateRollbackFailed;
+    if (result == QLatin1String("amnezia_update=rejected") || result == QLatin1String("amnezia_update=busy"))
+        return ErrorCode::ProtocolUpdateRejected;
+    return ErrorCode::ProtocolUpdateOutcomeUnknown;
 }
 
 ErrorCode InstallController::updateClientConfig(const QString &serverId, DockerContainer container, ContainerConfig &newConfig)

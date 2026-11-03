@@ -48,6 +48,10 @@ namespace amnezia
         ServerDataVolumeNotRemoved = 225,
         XrayKeyGenerationFailed = 226,
         XrayKeyMigrationNeedsConfirm = 227,
+        ProtocolUpdateRejected = 228,
+        ProtocolUpdateRolledBack = 229,
+        ProtocolUpdateRollbackFailed = 230,
+        ProtocolUpdateOutcomeUnknown = 231,
 
         // Ssh connection errors
         SshRequestDeniedError = 300,

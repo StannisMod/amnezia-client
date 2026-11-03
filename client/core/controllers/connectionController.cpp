@@ -42,6 +42,11 @@ bool ConnectionController::isConnected() const
     return m_vpnConnection && m_vpnConnection->connectionState() == Vpn::ConnectionState::Connected;
 }
 
+bool ConnectionController::isDisconnected() const
+{
+    return m_vpnConnection && m_vpnConnection->connectionState() == Vpn::ConnectionState::Disconnected;
+}
+
 void ConnectionController::setConnectionState(Vpn::ConnectionState state)
 {
     emit connectionStateChanged(state);

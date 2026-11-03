@@ -21,6 +21,13 @@ PageType {
     property bool isClearCacheVisible: !isUnsupportedContainer && ServersUiController.isProcessedServerHasWriteAccess() && !ContainersModel.isServiceContainer(ServersUiController.processedContainerIndex)
     property bool isOutdatedAwgContainer: ServersUiController.isProcessedContainerOutdatedAwg()
 
+    Connections {
+        target: InstallController
+        function onServerIsBusy(busy) {
+            PageController.showBusyIndicator(busy)
+        }
+    }
+
     ListViewType {
         id: listView
 
@@ -107,6 +114,25 @@ PageType {
             width: listView.width
 
             spacing: 0
+
+            ListItemType {
+                Layout.fillWidth: true
+                Layout.leftMargin: 16
+                Layout.rightMargin: 16
+                visible: !root.isUnsupportedContainer && !root.isOutdatedAwgContainer
+                         && ServersUiController.isProcessedServerHasWriteAccess()
+                         && ["awg", "wireguard"].indexOf(ContainerProps.containerTypeToString(ServersUiController.processedContainerIndex)) >= 0
+                text: qsTr("Update protocol")
+                onClicked: {
+                    var serverId = ServersUiController.processedServerId
+                    var containerIndex = ServersUiController.processedContainerIndex
+                    showQuestionDrawer(qsTr("Update server protocol?"),
+                        qsTr("The VPN will briefly stop for all users. Keys, users and connection settings will be preserved. If validation fails, the previous container will be restored. Disconnect your VPN before continuing."),
+                        qsTr("Update"), qsTr("Cancel"),
+                        function() { InstallController.updateProtocolSoftware(serverId, containerIndex) },
+                        function() {})
+                }
+            }
 
             ListItemType {
                 id: clearCacheButton

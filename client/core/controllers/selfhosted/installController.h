@@ -42,6 +42,8 @@ public:
     ErrorCode updateClientConfig(const QString &serverId, DockerContainer container, ContainerConfig &newConfig);
 
     ErrorCode rebootServer(const QString &serverId);
+    // Replaces only the server binary/image; never edits or revokes profiles.
+    static ErrorCode updateProtocolSoftware(const ServerCredentials &credentials, DockerContainer container);
     ErrorCode removeAllContainers(const QString &serverId);
     ErrorCode removeContainer(const QString &serverId, DockerContainer container);
 

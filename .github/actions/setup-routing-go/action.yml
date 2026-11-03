@@ -1,0 +1,9 @@
+name: Set up the routing Go toolchain
+description: Use the Go version required by the native routing module
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-go@v5
+      with:
+        go-version-file: native/routing/go.mod
+        cache-dependency-path: native/routing/go.sum

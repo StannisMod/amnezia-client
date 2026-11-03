@@ -429,7 +429,10 @@ enable_testing()
 
 if(NOT ANDROID)
     add_test(NAME MultipleImportsTest              COMMAND test_multiple_imports)
-    add_test(NAME ServerEditTest                   COMMAND test_server_edit)
+    # Windows GUI executables may not expose QTest's default console output.
+    # Keep a file report as well so a failing SSH/UI assertion is diagnosable.
+    add_test(NAME ServerEditTest COMMAND test_server_edit
+        -o "${CMAKE_CURRENT_BINARY_DIR}/server-edit-test.txt,txt" -o "-,txt" -v2)
     add_test(NAME DefaultServerChangeTest          COMMAND test_default_server_change)
     add_test(NAME ServerEdgeCasesTest              COMMAND test_server_edge_cases)
     add_test(NAME SignalOrderTest                  COMMAND test_signal_order)

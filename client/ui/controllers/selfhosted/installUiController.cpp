@@ -78,6 +78,7 @@ InstallUiController::InstallUiController(InstallController *installController,
       m_tProxyConfigModel(tProxyConfigModel),
       m_connectionController(connectionController)
 {
+    m_protocolSoftwareUpdatePool.setMaxThreadCount(1);
     connect(m_installController, &InstallController::configValidated, this, &InstallUiController::configValidated);
     connect(m_installController, &InstallController::validationErrorOccurred, this, &InstallUiController::installationErrorOccurred);
 }
@@ -307,6 +308,9 @@ void InstallUiController::updateClientConfig(const QString &serverId, int contai
 void InstallUiController::updateServerConfig(const QString &serverId, int containerIndex, int protocolIndex, bool closePage,
                                              bool acceptXrayKeyLoss)
 {
+    if (m_serverConfigUpdateInProgress) {
+        return;
+    }
     DockerContainer container = static_cast<DockerContainer>(containerIndex);
     Proto protocolType = static_cast<Proto>(protocolIndex);
 
@@ -377,6 +381,56 @@ void InstallUiController::updateServerConfig(const QString &serverId, int contai
     }
 
     emit installationErrorOccurred(errorCode);
+}
+
+void InstallUiController::updateProtocolSoftware(const QString &serverId, int containerIndex)
+{
+    if (m_serverConfigUpdateInProgress) {
+        return;
+    }
+    // SSH must survive stopping the server tunnel. Check every transitional
+    // state as well as Connected; a reconnect could otherwise race this call.
+    if (!m_connectionController->isDisconnected()) {
+        emit wrongInstallationUser(tr("Disconnect the VPN before updating the server protocol."));
+        return;
+    }
+    const DockerContainer container = static_cast<DockerContainer>(containerIndex);
+    const auto admin = m_serversController->selfHostedAdminConfig(serverId);
+    if (!admin.has_value() || !admin->containers.contains(container)
+        || (container != DockerContainer::WireGuard && container != DockerContainer::Awg2)) {
+        emit installationErrorOccurred(ErrorCode::ProtocolUpdateRejected);
+        return;
+    }
+    if (container == DockerContainer::Awg2) {
+        const auto config = admin->containerConfig(container);
+        const auto *awg = config.getAwgProtocolConfig();
+        if (!awg || !awg->serverConfig.hasAwg3Params()) {
+            emit installationErrorOccurred(ErrorCode::ProtocolUpdateRejected);
+            return;
+        }
+    }
+    // Take credentials on the owning thread. The worker has no repository/model
+    // access and never changes cached profiles or emits client revocations.
+    const auto credentials = admin->credentials();
+    m_serverConfigUpdateInProgress = true;
+    emit serverIsBusy(true);
+    auto *watcher = new QFutureWatcher<ErrorCode>(this);
+    connect(watcher, &QFutureWatcher<ErrorCode>::finished, this, [this, watcher]() {
+        const auto error = watcher->result();
+        watcher->deleteLater();
+        m_serverConfigUpdateInProgress = false;
+        emit serverIsBusy(false);
+        if (error == ErrorCode::NoError) {
+            emit updateContainerFinished(tr("Protocol updated. Keys, users and connection settings were preserved."), false);
+        } else {
+            emit installationErrorOccurred(error);
+        }
+    });
+    // SSH schedules its blocking calls on Qt's global pool. The outer task
+    // must not occupy that pool's only worker on a single-CPU machine.
+    watcher->setFuture(QtConcurrent::run(&m_protocolSoftwareUpdatePool, [credentials, container]() {
+        return InstallController::updateProtocolSoftware(credentials, container);
+    }));
 }
 
 void InstallUiController::setContainerEnabled(const QString &serverId, int containerIndex, bool enabled)

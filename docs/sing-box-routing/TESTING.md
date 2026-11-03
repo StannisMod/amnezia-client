@@ -47,10 +47,16 @@ git submodule update --init --recursive
 cd native/routing
 go mod download
 go mod verify
-go test -mod=readonly -tags with_gvisor -race -count=3 ./...
+race_mod=$(python3 prepare_race.py --output "${TMPDIR:-/tmp}")
+go test -mod=readonly -modfile="$race_mod" -tags with_gvisor -race -count=3 ./...
 go vet -tags with_gvisor ./...
 cd ../..
 ```
+
+The temporary modfile applies the upstream ARM64 race-only CAS fix to private
+copies of the two pinned gVisor modules; production dependencies and module
+caches are unchanged. See [PERFORMANCE.md](PERFORMANCE.md) for the regression
+proof, measured ordinary/race costs and removal criteria.
 
 Full-client entry points are `deploy/build.sh --generator Ninja --installer all`
 on Linux, `deploy/build.bat --installer all` on Windows,

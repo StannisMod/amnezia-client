@@ -3,6 +3,7 @@
 
 #include <QObject>
 #include <QProcess>
+#include <QThreadPool>
 
 #include "core/utils/containerEnum.h"
 #include "core/utils/containers/containerUtils.h"
@@ -69,6 +70,7 @@ public slots:
     void updateServerConfig(const QString &serverId, int containerIndex, int protocolIndex, bool closePage = true,
                             bool acceptXrayKeyLoss = false);
     void updateClientConfig(const QString &serverId, int containerIndex, int protocolIndex, bool closePage = true);
+    void updateProtocolSoftware(const QString &serverId, int containerIndex);
 
     void removeServer(const QString &serverId);
     void rebootServer(const QString &serverId);
@@ -168,6 +170,7 @@ private:
     QString m_privateKeyPassphrase;
 
     bool m_serverConfigUpdateInProgress = false;
+    QThreadPool m_protocolSoftwareUpdatePool;
 
     void updateProtocolConfigModel(const QString &serverId, int containerIndex, int protocolIndex);
 

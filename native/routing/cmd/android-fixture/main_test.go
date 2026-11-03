@@ -80,7 +80,7 @@ func TestEmulatorPeerLearnsEndpointAndServesIPv4IPv6(t *testing.T) {
 		}
 		data, err := io.ReadAll(io.LimitReader(reader, (1<<20)+1))
 		if err != nil || !bytes.Equal(data, bytes.Repeat([]byte{'Z'}, 1<<20)) {
-			t.Fatal("bulk payload differs", err)
+			t.Fatalf("bulk payload differs: received %d of %d bytes: %v", len(data), 1<<20, err)
 		}
 	})
 	c0, err := transport.DialContext(ctx, "udp", "10.77.0.2:53")

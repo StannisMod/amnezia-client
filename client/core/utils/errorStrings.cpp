@@ -78,6 +78,24 @@ QString errorString(ErrorCode code) {
     case(ErrorCode::ServerContainerRuntimeNotSupported): errorMessage = QObject::tr("Server error: The default container runtime available for installation on this server is not supported.\n Install Docker Engine on the server manually and try again."); break;
     case(ErrorCode::ContainerRuntimeServiceNotRunning): errorMessage = QObject::tr("Container runtime error: The container runtime service is not running.\n Check the container runtime service on the server, or wait about a minute and try again."); break;
 
+    case ErrorCode::ProtocolUpdateRejected:
+        errorMessage = QObject::tr("The protocol update could not be prepared. The VPN was not replaced. "
+                                   "Only standard WireGuard and AmneziaWG 3 containers are supported. "
+                                   "Check the server update log or wait for another update to finish.");
+        break;
+    case ErrorCode::ProtocolUpdateRolledBack:
+        errorMessage = QObject::tr("The updated protocol did not pass validation. "
+                                   "The previous container was restored and the VPN is running again.");
+        break;
+    case ErrorCode::ProtocolUpdateRollbackFailed:
+        errorMessage = QObject::tr("The protocol update and automatic rollback failed. "
+                                   "Check the server over SSH. Recovery data is saved in /var/lib/amnezia/updates.");
+        break;
+    case ErrorCode::ProtocolUpdateOutcomeUnknown:
+        errorMessage = QObject::tr("The update result could not be confirmed. Check the server over SSH before retrying. "
+                                   "Update logs and recovery data are stored in /var/lib/amnezia/updates.");
+        break;
+
     // Libssh errors
     case(ErrorCode::SshRequestDeniedError): errorMessage = QObject::tr("SSH request was denied"); break;
     case(ErrorCode::SshInterruptedError): errorMessage = QObject::tr("SSH request was interrupted"); break;
