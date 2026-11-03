@@ -54,7 +54,24 @@ func PreparePrivateCache(path string) (io.Closer, error) {
 func PrepareResolver(config *engine.SessionConfig) error {
 	if config.DNS != nil {
 		if config.DNS.NeedsNetwork() {
-			return errors.New("automatic network DNS domains are currently supported on Linux only; configure explicit DNS exceptions")
+			snapshot, err := windowsNetworkDNS()
+			if err != nil {
+				return err
+			}
+			version, err := windowsDNSPolicyVersion()
+			if err != nil {
+				return err
+			}
+			config.DNSNetworkFingerprint = windowsDNSFingerprint(snapshot) + "/" + version
+			if config.DNS.PreserveNetworkDomains {
+				if err = addWindowsNRPT(&snapshot); err != nil {
+					return err
+				}
+			}
+			if err = addWindowsEncryptedDNS(&snapshot); err != nil {
+				return err
+			}
+			config.NetworkDNS = &snapshot
 		}
 		return nil
 	}

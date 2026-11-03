@@ -61,14 +61,15 @@ func (c TransportConfig) outbound() (map[string]any, error) {
 // SessionConfig keeps legacy AWG JSON readable. Platform hosts own capture,
 // socket protection and OS restoration; new hosts supply an explicit transport.
 type SessionConfig struct {
-	DNSNetworkFingerprint string            `json:"dns_network_fingerprint,omitempty"`
-	Rules                 rules.Config      `json:"rules"`
-	AWG                   awg.Config        `json:"awg,omitempty"`
-	VPN                   *TransportConfig  `json:"vpn,omitempty"`
-	Resolver              netip.AddrPort    `json:"resolver"`
-	ResolverAction        rules.Action      `json:"resolver_action"`
-	Applications          *ApplicationScope `json:"applications,omitempty"`
-	DNS                   *dnspolicy.Config `json:"dns,omitempty"`
+	NetworkDNS            *dnspolicy.NetworkSnapshot `json:"network_dns,omitempty"`
+	DNSNetworkFingerprint string                     `json:"dns_network_fingerprint,omitempty"`
+	Rules                 rules.Config               `json:"rules"`
+	AWG                   awg.Config                 `json:"awg,omitempty"`
+	VPN                   *TransportConfig           `json:"vpn,omitempty"`
+	Resolver              netip.AddrPort             `json:"resolver"`
+	ResolverAction        rules.Action               `json:"resolver_action"`
+	Applications          *ApplicationScope          `json:"applications,omitempty"`
+	DNS                   *dnspolicy.Config          `json:"dns,omitempty"`
 }
 
 func (c SessionConfig) Transport() (TransportConfig, error) {

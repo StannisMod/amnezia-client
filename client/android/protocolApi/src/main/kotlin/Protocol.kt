@@ -29,6 +29,12 @@ abstract class Protocol {
     protected var isInitialized: Boolean = false
     protected var lockdownEnabled: () -> Boolean = { false }
     protected var endpointResolver: ((String) -> List<java.net.InetAddress>)? = null
+    protected var networkDnsSnapshot: (() -> JSONObject)? = null
+    protected var networkDnsProtect: ((Int, String) -> Boolean)? = null
+    fun configureNetworkDns(snapshot: () -> JSONObject, protect: (Int, String) -> Boolean) {
+        networkDnsSnapshot = snapshot
+        networkDnsProtect = protect
+    }
 
     protected var endpointRecovery: ((() -> Boolean) -> Unit)? = null
     fun configureEndpointRecovery(request: (() -> Boolean) -> Unit) { endpointRecovery = request }

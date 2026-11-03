@@ -207,9 +207,9 @@ PageType {
                             Label { text: policyRow.policyId }
                             CheckBox {
                                 id: networkSource
-                                visible: Qt.platform.os === "linux" || checked
-                                enabled: Qt.platform.os === "linux"
-                                text: qsTr("Use DNS from the current network (Linux)")
+                                visible: IpSplitTunnelingController.singBoxRoutingAvailable || checked
+                                enabled: IpSplitTunnelingController.singBoxRoutingAvailable
+                                text: qsTr("Use DNS from the current network")
                                 checked: policyRow.saved.source === "network"
                                 onClicked: { if (checked) { policyPath.currentIndex = 0; policyTransport.currentIndex = 0 } }
                             }
@@ -357,13 +357,13 @@ PageType {
                     }
                     CheckBox {
                         id: preserveNetworkDomains
-                        visible: Qt.platform.os === "linux"
+                        visible: Qt.platform.os === "linux" || Qt.platform.os === "windows" || checked
                         Layout.fillWidth: true
-                        text: qsTr("Preserve corporate DNS domains from the network (Linux)")
+                        text: qsTr("Preserve corporate DNS rules from the network (Linux / Windows)")
                     }
                     BodyTextType {
                         Layout.fillWidth: true
-                        text: qsTr("A suffix includes its root domain. Exact names win over suffixes; longer suffixes win. No automatic fallback to another policy. Automatic corporate DNS domains are available on Linux; other platforms need explicit DNS exceptions. Apps using their own DoH/DoT may bypass these rules.")
+                        text: qsTr("A suffix includes its root domain. Exact names win over suffixes; longer suffixes win. No automatic fallback to another policy. Corporate DNS rules are discovered on Linux and Windows; search suffixes alone do not create DNS rules. Apps using their own DoH/DoT may bypass these rules.")
                         wrapMode: Text.WordWrap
                     }
                 }

@@ -14,13 +14,14 @@ import (
 )
 
 type Resolver struct {
-	Source    string       `json:"source,omitempty"`
-	Interface string       `json:"interface,omitempty"`
-	Name      string       `json:"name,omitempty"`
-	Transport string       `json:"transport"`
-	Server    string       `json:"server"`
-	Port      uint16       `json:"port,omitempty"`
-	Path      rules.Action `json:"path"`
+	networkTLSOpportunistic bool
+	Source                  string       `json:"source,omitempty"`
+	Interface               string       `json:"interface,omitempty"`
+	Name                    string       `json:"name,omitempty"`
+	Transport               string       `json:"transport"`
+	Server                  string       `json:"server"`
+	Port                    uint16       `json:"port,omitempty"`
+	Path                    rules.Action `json:"path"`
 	// A named upstream must have an explicit numeric bootstrap on the SAME path.
 	Bootstrap  netip.AddrPort `json:"bootstrap,omitempty"`
 	ServerName string         `json:"server_name,omitempty"`
@@ -74,6 +75,12 @@ func validID(s string) bool {
 // A loopback DNS is permitted only on DIRECT; OS stubs need native preparation.
 func CheckAddress(a netip.Addr, path rules.Action) error {
 	a = a.Unmap()
+	if a.Zone() != "" {
+		if !a.IsLinkLocalUnicast() {
+			return errors.New("only link-local DNS addresses may have a scope")
+		}
+		a = a.WithZone("")
+	}
 	if !a.IsValid() || a.IsUnspecified() || a.IsMulticast() ||
 		netip.MustParsePrefix("198.18.0.0/15").Contains(a) || netip.MustParsePrefix("fc00::/18").Contains(a) ||
 		netip.MustParsePrefix("172.19.0.0/30").Contains(a) || netip.MustParsePrefix("fdfe:dcba:9876::/126").Contains(a) {
@@ -105,7 +112,7 @@ func (c Config) Normalize(route rules.Config) (Config, error) {
 		if p.Path != rules.Direct && p.Path != rules.VPN {
 			return Config{}, errors.New("DNS policy path must be explicit")
 		}
-		if p.Interface != "" && (p.Path != rules.Direct || len(p.Interface) > 64 || strings.ContainsAny(p.Interface, "/\\ \t\r\n\x00") || p.Interface == "amnrouting0") {
+		if p.Interface != "" && (p.Path != rules.Direct || len(p.Interface) > 128 || strings.ContainsAny(p.Interface, "/\\\t\r\n\x00") || strings.EqualFold(p.Interface, "amnrouting0") || strings.EqualFold(p.Interface, "AmneziaDomainRouting")) {
 			return Config{}, errors.New("invalid DNS interface binding")
 		}
 		if p.Source != "" {
@@ -283,6 +290,9 @@ func (c Config) Compile(route rules.Config, capture string) (map[string]any, err
 		}
 		if p.Transport == "tls" || p.Transport == "https" {
 			tls := map[string]any{"enabled": true}
+			if p.networkTLSOpportunistic {
+				tls["insecure"] = true
+			}
 			if p.ServerName != "" {
 				tls["server_name"] = p.ServerName
 			}

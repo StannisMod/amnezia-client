@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/StannisMod/amnezia-client/native/routing/awg"
+	"github.com/StannisMod/amnezia-client/native/routing/dnspolicy"
 	"github.com/StannisMod/amnezia-client/native/routing/engine"
 	"github.com/StannisMod/amnezia-client/native/routing/rules"
 	"github.com/StannisMod/amnezia-client/native/routing/wireguard"
@@ -28,6 +29,23 @@ import (
 	"github.com/sagernet/sing/common/control"
 	"golang.org/x/sys/unix"
 )
+
+func TestMobileNetworkDNSIsPreparedBeforeCapture(t *testing.T) {
+	var session engine.SessionConfig
+	if err := json.Unmarshal(sampleConfig(t), &session); err != nil {
+		t.Fatal(err)
+	}
+	session.DNS = &dnspolicy.Config{Version: 1, Default: "local", Policies: map[string]dnspolicy.Resolver{"local": {Source: "network", Transport: "udp", Path: rules.Direct}}}
+	raw, _ := json.Marshal(session)
+	if Validate(raw) == nil {
+		t.Fatal("missing native snapshot was silently accepted")
+	}
+	session.NetworkDNS = &dnspolicy.NetworkSnapshot{Links: []dnspolicy.NetworkLink{{ID: "native", Interface: "network-42", Default: true, Servers: []dnspolicy.NetworkServer{{Address: netip.MustParseAddr("192.168.10.53")}}}}}
+	raw, _ = json.Marshal(session)
+	if err := Validate(raw); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func sampleConfig(t *testing.T, transport ...string) []byte {
 	t.Helper()

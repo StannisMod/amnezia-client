@@ -20,8 +20,14 @@ final class RoutingPacketTunnel {
     private var endpointHealth = EndpointHealthPolicy()
     private let endpointCandidates = EndpointAddressCandidates()
     private var backendEpoch: UInt64 = 0
+    private let underlyingInterface: () -> String?
+    private var networkSettings: NEPacketTunnelNetworkSettings?
+    private var networkDNSSuppressed = false
 
-    init(provider: NEPacketTunnelProvider) { self.provider = provider }
+    init(provider: NEPacketTunnelProvider, underlyingInterface: @escaping () -> String? = { nil }) {
+        self.provider = provider
+        self.underlyingInterface = underlyingInterface
+    }
 
     private static let writePacket: AmneziaPacketWriter = { context, bytes, size in
         guard let context, let bytes, size > 0 else { return 0 }
@@ -42,7 +48,7 @@ final class RoutingPacketTunnel {
                       let protocolConfig = provider.protocolConfiguration as? NETunnelProviderProtocol,
                       !protocolConfig.includeAllNetworks else { throw RoutingError.invalidConfiguration }
                 let raw = try Self.sessionConfiguration(config, endpoint: Self.numericHost(
-                    try EndpointAddressResolver.addresses(config.hostName), port: config.port, candidates: self.endpointCandidates))
+                    try EndpointAddressResolver.addresses(config.hostName), port: config.port, candidates: self.endpointCandidates), networkInterface: self.underlyingInterface())
                 self.originalConfig = config // Keep the domain, not its bootstrap IP.
                 self.sessionData = raw
                 let settings = NEPacketTunnelNetworkSettings(tunnelRemoteAddress: "127.0.0.1")
@@ -56,6 +62,7 @@ final class RoutingPacketTunnel {
                 let dns = NEDNSSettings(servers: ["172.19.0.2"])
                 dns.matchDomains = [""]
                 settings.dnsSettings = dns
+                self.networkSettings = settings
                 provider.setTunnelNetworkSettings(settings) { error in
                     self.queue.async {
                         guard !self.stopped else { completion(RoutingError.stopped); return }
@@ -121,7 +128,22 @@ final class RoutingPacketTunnel {
             self.lookupGeneration &+= 1
             let token = self.refreshPolicy.begin()
             self.provider?.reasserting = true
-            self.refreshTransport(config: config, token: token)
+            if Self.needsNetworkDNS(config), !self.networkDNSSuppressed, let settings = self.networkSettings, let provider = self.provider {
+                // Keep TUN capture and the existing backend running. Release
+                // only our DNS override while reading fresh public OS DNS;
+                // otherwise res_ninit would return our own 172.19.0.2 stub.
+                self.networkDNSSuppressed = true
+                settings.dnsSettings = nil
+                provider.setTunnelNetworkSettings(settings) { error in
+                    self.queue.async {
+                        guard !self.stopped, self.refreshPolicy.accepts(token) else { return }
+                        if let error { provider.cancelTunnelWithError(error); return }
+                        self.refreshTransport(config: config, token: token)
+                    }
+                }
+            } else {
+                self.refreshTransport(config: config, token: token)
+            }
         }
     }
 
@@ -162,29 +184,47 @@ final class RoutingPacketTunnel {
                         let raw: Data
                         do {
                             let endpoint = try Self.numericHost(addresses, port: config.port, candidates: self.endpointCandidates)
-                            raw = try Self.sessionConfiguration(config, endpoint: endpoint)
+                            raw = try Self.sessionConfiguration(config, endpoint: endpoint, networkInterface: self.underlyingInterface())
                         } catch {
                             self.refreshTransport(config: config, token: token)
                             return
                         }
-                        // Reuse the same public packetFlow reader and capture.
-                        // Transport workers finish before the replacement starts.
-                        AmneziaRoutingStop(self.handle)
-                        let context = Unmanaged.passRetained(self).toOpaque()
-                        self.handle = raw.withUnsafeBytes { buffer in
-                            AmneziaRoutingStart(UnsafeMutablePointer(mutating: buffer.bindMemory(to: CChar.self).baseAddress),
-                                                Int32(raw.count), context, Self.writePacket, Self.releaseHost)
-                        }
-                        self.backendEpoch &+= 1
-                        self.sessionData = raw
-                        self.provider?.reasserting = false
-                        if self.handle <= 0 { self.provider?.cancelTunnelWithError(RoutingError.backendFailed) }
+                        self.installRefreshedTransport(raw, token: token)
                     }
                 }
             }
         }
         refreshWork = work
         queue.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+
+    private func installRefreshedTransport(_ raw: Data, token: UInt64) {
+        guard !stopped, refreshPolicy.accepts(token), handle > 0 else { return }
+        if networkDNSSuppressed, let settings = networkSettings, let provider {
+            let dns = NEDNSSettings(servers: ["172.19.0.2"])
+            dns.matchDomains = [""]
+            settings.dnsSettings = dns
+            provider.setTunnelNetworkSettings(settings) { error in
+                self.queue.async {
+                    guard !self.stopped, self.refreshPolicy.accepts(token) else { return }
+                    if let error { provider.cancelTunnelWithError(error); return }
+                    self.networkDNSSuppressed = false
+                    self.installRefreshedTransport(raw, token: token)
+                }
+            }
+            return
+        }
+        // Preserve the sole packetFlow reader while replacing transport/cache.
+        AmneziaRoutingStop(handle)
+        let context = Unmanaged.passRetained(self).toOpaque()
+        handle = raw.withUnsafeBytes { buffer in
+            AmneziaRoutingStart(UnsafeMutablePointer(mutating: buffer.bindMemory(to: CChar.self).baseAddress),
+                                Int32(raw.count), context, Self.writePacket, Self.releaseHost)
+        }
+        backendEpoch &+= 1
+        sessionData = raw
+        provider?.reasserting = false
+        if handle <= 0 { provider?.cancelTunnelWithError(RoutingError.backendFailed) }
     }
 
     private func startEndpointWatchdog(config: WGConfig) {
@@ -229,7 +269,14 @@ final class RoutingPacketTunnel {
         }
     }
 
-    private static func sessionConfiguration(_ config: WGConfig, endpoint: String) throws -> Data {
+    private static func needsNetworkDNS(_ config: WGConfig) -> Bool {
+        guard let text = config.routingDNSConfig, let data = text.data(using: .utf8),
+              let policy = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return false }
+        return policy["preserve_network_domains"] as? Bool == true ||
+            (policy["policies"] as? [String: [String: Any]])?.values.contains { $0["source"] as? String == "network" } == true
+    }
+
+    private static func sessionConfiguration(_ config: WGConfig, endpoint: String, networkInterface: String? = nil) throws -> Data {
         guard let rulesText = config.routingConfig, let rulesData = rulesText.data(using: .utf8),
               let rules = try JSONSerialization.jsonObject(with: rulesData) as? [String: Any],
               config.allowedIPs.contains("0.0.0.0/0") else { throw RoutingError.invalidConfiguration }
@@ -287,11 +334,27 @@ final class RoutingPacketTunnel {
             guard let data = text.data(using: .utf8),
                   let policy = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw RoutingError.invalidConfiguration }
             session["dns"] = policy
+            if needsNetworkDNS(config) {
+                guard let networkInterface, !networkInterface.isEmpty,
+                      let serversText = AmneziaRoutingSystemDNS() else { throw RoutingError.invalidConfiguration }
+                defer { free(serversText) }
+                let data = Data(String(cString: serversText).utf8)
+                guard let servers = try JSONSerialization.jsonObject(with: data) as? [[String: Any]], !servers.isEmpty else { throw RoutingError.invalidConfiguration }
+                session["network_dns"] = ["routing_domains_available": false, "links": [[
+                    "id": "apple-underlay", "interface": networkInterface, "name": networkInterface,
+                    "default": true, "servers": servers
+                ]]]
+            }
         } else {
             session["resolver"] = dns.contains(":") ? "[\(dns)]:53" : "\(dns):53"
             session["resolver_action"] = config.routingDNSPath ?? "vpn"
         }
-        return try JSONSerialization.data(withJSONObject: session)
+        let raw = try JSONSerialization.data(withJSONObject: session)
+        let valid = raw.withUnsafeBytes { buffer in
+            AmneziaRoutingValidate(UnsafeMutablePointer(mutating: buffer.bindMemory(to: CChar.self).baseAddress), Int32(raw.count))
+        }
+        guard valid == 1 else { throw RoutingError.invalidConfiguration }
+        return raw
     }
 
     // Called before capture is installed. Resolve only the peer endpoint using

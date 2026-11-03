@@ -4879,6 +4879,18 @@ Create one from the current settings.</source>
         <source>Disconnect before changing DNS settings</source>
         <translation>Отключите VPN перед изменением DNS-настроек</translation>
     </message>
+    <message>
+        <source>Use DNS from the current network</source>
+        <translation>Использовать DNS текущей сети</translation>
+    </message>
+    <message>
+        <source>Preserve corporate DNS rules from the network (Linux / Windows)</source>
+        <translation>Учитывать корпоративные DNS-правила сети (Linux / Windows)</translation>
+    </message>
+    <message>
+        <source>A suffix includes its root domain. Exact names win over suffixes; longer suffixes win. No automatic fallback to another policy. Corporate DNS rules are discovered on Linux and Windows; search suffixes alone do not create DNS rules. Apps using their own DoH/DoT may bypass these rules.</source>
+        <translation>Суффикс включает сам домен и его поддомены. Точное имя важнее суффикса, длинный суффикс — короткого. Автоматического перехода на другую политику нет. Корпоративные правила определяются на Linux и Windows; поисковые суффиксы сами по себе не создают DNS-правил. Собственный DoH/DoT приложений может обходить эти правила.</translation>
+    </message>
 </context>
 <context>
     <name>PageSettingsKillSwitch</name>
@@ -7508,6 +7520,14 @@ FileZilla или другие SFTP-клиенты, а также смонтир�
     <message>
         <source>Conflicting DNS rules for the same domain.</source>
         <translation>Конфликтующие DNS-правила для одного домена.</translation>
+    </message>
+    <message>
+        <source>Automatic corporate DNS rules require Linux or Windows. Configure explicit exceptions on this platform.</source>
+        <translation>Автоматические корпоративные DNS-правила доступны на Linux и Windows. На этой платформе задайте исключения вручную.</translation>
+    </message>
+    <message>
+        <source>Network DNS discovery is unavailable on this platform.</source>
+        <translation>Получение DNS текущей сети недоступно на этой платформе.</translation>
     </message>
 </context>
 <context>

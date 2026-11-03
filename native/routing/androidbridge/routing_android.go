@@ -43,6 +43,14 @@ func RoutingValidate(raw string) int32 {
 //export RoutingStart
 func RoutingStart(fd int32, raw string, host C.uintptr_t) int64 {
 	hooks := mobile.Hooks{
+		ProtectInterface: func(fd int, name string) error {
+			text := C.CString(name)
+			defer C.free(unsafe.Pointer(text))
+			if C.amnezia_routing_protect_interface(host, C.int(fd), text) != 1 {
+				return errors.New("native DNS network socket binding failed")
+			}
+			return nil
+		},
 		Protect: func(fd int) error {
 			if C.amnezia_routing_protect(host, C.int(fd)) != 1 {
 				return errors.New("native socket protection failed")

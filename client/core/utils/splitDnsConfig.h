@@ -11,9 +11,9 @@ inline QString validate(const QJsonObject &config)
 {
     if (config.value("version").toInt() != 1)
         return QObject::tr("Unsupported split DNS settings version.");
-#if !defined(Q_OS_LINUX) || defined(Q_OS_ANDROID)
+#if (!defined(Q_OS_LINUX) || defined(Q_OS_ANDROID)) && !defined(Q_OS_WIN)
     if (config.value("preserve_network_domains").toBool())
-        return QObject::tr("Automatic network DNS discovery is currently available on Linux only. Use explicit DNS servers on this platform.");
+        return QObject::tr("Automatic corporate DNS rules require Linux or Windows. Configure explicit exceptions on this platform.");
 #endif
     const auto policies = config.value("policies").toObject();
     if (policies.isEmpty() || policies.size() > 64)
@@ -30,12 +30,12 @@ inline QString validate(const QJsonObject &config)
             || (p.contains("port") && (port < 1 || port > 65535)))
             return QObject::tr("Check the DNS policy identifier, transport, port and route.");
         if (p.value("source").toString() == "network") {
-#if defined(Q_OS_LINUX) && !defined(Q_OS_ANDROID)
+#if defined(Q_OS_LINUX) || defined(Q_OS_WIN) || defined(Q_OS_IOS)
             if (path != "direct" || (transport != "udp" && transport != "tcp") || !server.isEmpty())
                 return QObject::tr("DNS from the current network requires direct UDP or TCP.");
             continue;
 #else
-            return QObject::tr("Automatic network DNS discovery is currently available on Linux only. Use explicit DNS servers on this platform.");
+            return QObject::tr("Network DNS discovery is unavailable on this platform.");
 #endif
         }
         const QHostAddress address(server);

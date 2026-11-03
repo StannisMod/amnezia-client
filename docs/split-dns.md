@@ -70,35 +70,48 @@ connection does not control the application's preceding encrypted DNS request.
 
 ## DNS from the network
 
-Linux supports **Use DNS from the current network** and **Preserve corporate DNS
-domains from the network**. The privileged helper reads systemd-resolved's
-per-link server/domain inventory before installing VPN DNS and excludes its own
-interface and unusable/stub addresses. Search expansion remains with the OS;
-search domains also become DNS suffix policies for fully expanded questions.
-Original network interfaces' resolver settings are not rewritten.
+**Use DNS from the current network** is available in routed sessions on Linux,
+Windows, Android and iOS. Platforms provide a native snapshot before replacing
+system DNS; the common compiler selects a numeric server and an explicitly
+scoped DIRECT socket path. Own capture/stub addresses are rejected. Missing or
+ambiguous network selection fails instead of falling back to public DNS.
 
-Network-source policies use one selected link's first numeric server with an
-explicit UDP/TCP transport. Leave the interface empty only when exactly one
-eligible DNS default-route interface exists; otherwise select the interface.
-Corporate domains use that link's first numeric server over UDP. Automatic
-discovery covers conventional per-link DNS; it does not reproduce the OS's
-encrypted-DNS transport configuration or all systemd-resolved features. Configure
-DoT/DoH explicitly when those transport requirements matter. Multiple interfaces
-claiming the same corporate suffix are rejected rather than queried in parallel.
-There is no implicit secondary-server failover.
+- Linux reads systemd-resolved's per-link inventory and binds protected sockets
+  to the selected interface. Corporate routing/search domains can be imported.
+- Windows reads native adapter DNS addresses, DNS suffix metadata and default
+  route metrics. Effective NRPT rules, including exact names and suffix rules,
+  can be imported separately; adapter search suffixes alone do not become DNS
+  policies. DNS sockets bind to the original interface LUID/family index.
+  Enabled system DoH auto-upgrades are imported with their endpoint/TLS name;
+  unsupported templates and security-dependent NRPT rules fail explicitly.
+- Android reads non-VPN `LinkProperties`, retains the actual `Network` handle,
+  and binds protected sockets with `Network.bindSocket`. Strict Private DNS
+  retains DoT with hostname/certificate validation. Opportunistic Private DNS
+  retains encrypted, unauthenticated DoT, matching the OS mode; it never falls
+  back to plaintext. Search suffixes remain metadata, not invented corporate
+  routing rules. Link-properties changes trigger the existing reconnection.
+- Apple reads the public `libresolv` default numeric DNS configuration before
+  capture and binds DNS sockets to the provider's underlying interface. A path
+  change refreshes the snapshot while retaining TUN capture: only the owned DNS
+  override is temporarily removed, then restored before transport replacement.
+  The public snapshot covers conventional DNS addresses; it does not enumerate
+  the complete scoped/corporate resolver graph or managed encrypted-DNS profiles.
+  Configure those policies explicitly. A DNS-only change without a path change
+  requires reconnection. Native SDK/device validation is recorded separately.
 
-These sockets are both exempted from capture and bound to the selected network
-interface. Ordinary DIRECT sockets retain destination-specific native routing.
-A monitored inventory change stops the prepared session with capture protection
-retained. Reconnect reads a new snapshot; the existing network-change machinery
-can trigger reconnection, while a DNS-only change may require user reconnection.
-Shutdown stops DNS monitoring before reverting the owned VPN link.
+**Preserve corporate DNS rules from the network** is available on Linux and
+Windows. On Android/iOS, requesting this unsupported discovery fails explicitly;
+use DNS exceptions. Search expansion stays with the OS. Windows adapter suffixes
+and Android search lists are not treated as proof of per-domain DNS routing.
+Linux's per-link domains already participate in systemd-resolved query routing.
 
-Automatic network DNS discovery is currently Linux-only. Windows, Android and
-iOS accept the same explicit policies and exceptions. A network-source policy
-restored on those platforms is rejected, never silently replaced with public
-DNS. Ordinary macOS/macOS NE do not gain routed-core availability from this
-change. Native SDK/device validation remains separate from Go cross-compilation.
+The selected link's first usable numeric server is used. There is no implicit
+secondary-server failover or multi-interface DNS race. Linux/Windows monitor the
+prepared inventory/policy generation and stop stale sessions with capture
+protection retained. Reconnect collects a new snapshot. Original interface DNS
+settings are not rewritten; shutdown stops monitoring before restoring owned VPN
+DNS. Ordinary DIRECT traffic continues using destination-specific native routes.
+Ordinary macOS/macOS NE do not gain routed-core availability from this change.
 
 ## Stored settings and native schema
 
@@ -134,9 +147,9 @@ Example of the native `dns` field:
 }
 ```
 
-Linux network-source policies use `"source":"network"`, `"server":""`,
-`"path":"direct"` and optionally `"interface":"eth0"`. Corporate-domain
-discovery uses `"preserve_network_domains":true`. Prepared network rules and
+Network-source policies use `"source":"network"`, `"server":""`,
+`"path":"direct"` and optionally a native interface name/identity. Corporate-domain
+discovery on Linux/Windows uses `"preserve_network_domains":true`. Prepared network rules and
 the inventory fingerprint are runtime data, not saved user configuration.
 
 ## Verification
@@ -168,3 +181,8 @@ Qt tests cover settings round trips, invalid-rule rejection, retained disabled
 configuration and fresh-install routing defaults. The DNS page also has an
 actual QML editor/save round-trip test. Linux checks do not constitute Windows,
 Android or Apple device/SDK acceptance.
+
+The network-source parity follow-up adds shared snapshot preparation tests,
+strict/opportunistic Private DNS checks, Windows native inventory/NRPT/DoH read
+checks, mobile pre-capture validation and JNI/Apple scoped socket hooks. Apple C
+ABI tests on Linux verify ownership/packet flow, not Apple DNS runtime behavior.

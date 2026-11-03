@@ -62,6 +62,12 @@ private slots:
         evaluate("saveButton.clicked()");
         QVERIFY(core.m_appSettingsRepository->isSplitDnsEnabled());
         QCOMPARE(core.m_appSettingsRepository->splitDnsConfig(), config);
+        evaluate("var draft = collectDnsDraft(); draft.policies.direct.source = 'network'; draft.policies.direct.server = ''; dnsDraft = draft");
+        QCoreApplication::processEvents();
+        evaluate("saveButton.clicked()");
+        QCOMPARE(core.m_appSettingsRepository->splitDnsConfig().value("policies").toObject().value("direct").toObject().value("source").toString(), QString("network"));
+        QVERIFY(core.m_settingsUiController->saveSplitDnsConfig(config).isEmpty());
+        evaluate("loadDnsDraft()");
         evaluate("var changed = collectDnsDraft(); delete changed.policies.direct; dnsDraft = changed");
         QCoreApplication::processEvents();
         value = evaluate("collectDnsDraft()");

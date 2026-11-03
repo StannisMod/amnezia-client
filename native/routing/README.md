@@ -10,7 +10,7 @@ stress failures and device/signing gaps are tracked in
 Do not infer physical-device or Internet-egress acceptance from compilation.
 
 Optional per-domain split DNS, including **DNS by site route**, explicit DNS
-exceptions and Linux network/corporate DNS discovery, is described in
+exceptions, native network DNS sources and Linux/Windows corporate DNS discovery, is described in
 [`../../docs/split-dns.md`](../../docs/split-dns.md). Its isolated local acceptance
 results are in [`../../docs/testing/split-dns-acceptance.json`](../../docs/testing/split-dns-acceptance.json).
 

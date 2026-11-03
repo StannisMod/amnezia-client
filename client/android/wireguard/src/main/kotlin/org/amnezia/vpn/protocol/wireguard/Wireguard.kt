@@ -98,6 +98,9 @@ open class Wireguard : Protocol() {
             put("rules", config.getJSONObject("sing_box_routing"))
             if (splitDNS != null) {
                 put("dns", splitDNS)
+                if (splitDNS.optBoolean("preserve_network_domains") || splitDNS.getJSONObject("policies").keys().asSequence().any {
+                    splitDNS.getJSONObject("policies").getJSONObject(it).optString("source") == "network"
+                }) put("network_dns", networkDnsSnapshot?.invoke() ?: throw VpnStartException("Underlying-network DNS is unavailable"))
             } else {
                 val resolverValue = config.optString("dns1").ifBlank { config.optString("dns2") }
                 if (resolverValue.isBlank()) throw VpnStartException("A numeric DNS resolver is required for domain routing")
@@ -152,7 +155,7 @@ open class Wireguard : Protocol() {
         buildVpnInterface(capture, vpnBuilder)
         vpnBuilder.establish().use { descriptor ->
             if (descriptor == null) throw VpnStartException("Cannot establish the routed VPN interface")
-            routedHandle = RoutingBackend.start(descriptor.detachFd(), session, RoutingHost(protect))
+            routedHandle = RoutingBackend.start(descriptor.detachFd(), session, RoutingHost(protect, networkDnsProtect))
         }
         if (routedHandle <= 0) {
             routedHandle = -1L
