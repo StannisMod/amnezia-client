@@ -243,7 +243,7 @@ def main():
         profile["sing_box_routing"] = {"version": 1, "default": "vpn", "rules": [
             {"kind": "cidr", "value": "192.168.0.1", "action": "direct"},
             {"kind": "cidr", "value": "192.168.0.104", "action": "direct"},
-            {"kind": "suffix", "value": "*.selectel.org", "action": "direct"},
+            {"kind": "suffix", "value": "*.corp.example.test", "action": "direct"},
             {"kind": "suffix", "value": "*.ru", "action": "direct"},
             {"kind": "domain", "value": "vpn.test", "action": "vpn"},
             {"kind": "cidr", "value": "203.0.113.0/24", "action": "direct"},
@@ -267,8 +267,8 @@ def main():
             ns_ip("rule", "del", "pref", "99", "fwmark", "0x40000000/0x40000000", "lookup", "main")
             start()
             identities = application({"names": [["direct.ru", "DIRECT", 1], ["vpn.test", "VPN", 1], ["cname.test", "VPN", 1], ["ipv6.test", "VPN", 28]], "direct": ["203.0.113.20"], "loopback": ["127.0.0.1", "::1"]})
-            application({"names": [["selectel.org", "DIRECT", 1], ["api.selectel.org", "DIRECT", 1], ["example.ru", "DIRECT", 1], ["example.com", "VPN", 1]]})
-            report["reported_user_domain_rules"] = "PASS"
+            application({"names": [["corp.example.test", "DIRECT", 1], ["git.corp.example.test", "DIRECT", 1], ["example.ru", "DIRECT", 1], ["example.com", "VPN", 1]]})
+            report["synthetic_domain_rules"] = "PASS"
             assert identities["direct.ru"] != identities["vpn.test"]
             application({"quic_probe":str(args.quic_probe.resolve()), "quic_ca":str(ca), "quic_names":[["direct.ru","DIRECT",1],["vpn.test","VPN",1],["ipv6.test","VPN",28]]})
             marked = ns_ip("route", "get", "203.0.113.20", "mark", "0x40000000")
