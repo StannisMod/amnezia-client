@@ -31,11 +31,15 @@ jobs:
       - name: Compare ordinary and race-instrumented flow and DNS paths
         run: |
           set -euo pipefail
+          if [ "$RUNNER_OS" = macOS ]; then
+            sysctl net.inet.udp.recvspace net.inet.udp.maxdgram kern.ipc.maxsockbuf
+          fi
           for mode in ordinary race; do
-            args=()
-            if [ "$mode" = race ]; then args=(-race); fi
-            go test -mod=readonly -tags with_gvisor "${args[@]}" -run '^$' -bench '^BenchmarkTunnelBulk' -benchtime=3x -count=1 -timeout=8m ./cmd/android-fixture | tee "flow-$mode.txt"
-            go test -mod=readonly -tags with_gvisor "${args[@]}" -run '^$' -bench '^BenchmarkTunnelDNS' -benchtime=100x -count=1 -timeout=3m ./cmd/android-fixture | tee "dns-$mode.txt"
+            # macOS ships Bash 3.2: an empty array trips nounset there.
+            args=(-mod=readonly -tags with_gvisor)
+            if [ "$mode" = race ]; then args+=(-race); fi
+            go test "${args[@]}" -run '^$' -bench '^BenchmarkTunnelBulk' -benchtime=3x -count=1 -timeout=8m ./cmd/android-fixture | tee "flow-$mode.txt"
+            go test "${args[@]}" -run '^$' -bench '^BenchmarkTunnelDNS' -benchtime=100x -count=1 -timeout=3m ./cmd/android-fixture | tee "dns-$mode.txt"
           done
       - uses: actions/upload-artifact@v4
         if: always()
