@@ -78,6 +78,7 @@ InstallUiController::InstallUiController(InstallController *installController,
       m_tProxyConfigModel(tProxyConfigModel),
       m_connectionController(connectionController)
 {
+    m_protocolSoftwareUpdatePool.setMaxThreadCount(1);
     connect(m_installController, &InstallController::configValidated, this, &InstallUiController::configValidated);
     connect(m_installController, &InstallController::validationErrorOccurred, this, &InstallUiController::installationErrorOccurred);
 }
@@ -425,7 +426,9 @@ void InstallUiController::updateProtocolSoftware(const QString &serverId, int co
             emit installationErrorOccurred(error);
         }
     });
-    watcher->setFuture(QtConcurrent::run([credentials, container]() {
+    // SSH schedules its blocking calls on Qt's global pool. The outer task
+    // must not occupy that pool's only worker on a single-CPU machine.
+    watcher->setFuture(QtConcurrent::run(&m_protocolSoftwareUpdatePool, [credentials, container]() {
         return InstallController::updateProtocolSoftware(credentials, container);
     }));
 }

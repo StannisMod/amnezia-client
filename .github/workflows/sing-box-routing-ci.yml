@@ -79,7 +79,13 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          go test -mod=readonly -tags with_gvisor -race -count=3 -json ./... | tee test-results.jsonl
+          package_args=()
+          if [ "$RUNNER_OS" = macOS ]; then
+            # Avoid multiplying the race-instrumented VPN fixtures across
+            # several test processes on the shared Apple runner.
+            package_args=(-p 1)
+          fi
+          go test -mod=readonly -tags with_gvisor -race -count=3 "${package_args[@]}" -json ./... | tee test-results.jsonl
       - uses: actions/upload-artifact@v4
         if: always()
         with:

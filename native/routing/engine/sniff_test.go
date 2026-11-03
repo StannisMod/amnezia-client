@@ -9,6 +9,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
+	"fmt"
 	"io"
 	"math/big"
 	"net"
@@ -26,6 +27,10 @@ import (
 	M "github.com/sagernet/sing/common/metadata"
 	"github.com/sagernet/sing/service"
 )
+
+// Allow a bounded integration exchange through the race-instrumented userspace
+// VPN stack on shared runners, including transport/handshake retransmission.
+const sniffStreamTimeout = 15 * time.Second
 
 // The browser has already resolved the name outside managed DNS (e.g. DoH).
 // Both names connect to the same real IP; only Host/SNI can select the exit.
@@ -56,6 +61,17 @@ func testRealIPSniff(t *testing.T, ctx context.Context, instance *box.Box, peer 
 				t.Fatal(err)
 			}
 			defer virtual.Close()
+			serverErrors := make(chan string, 8)
+			dumpServerErrors := func() {
+				for {
+					select {
+					case message := <-serverErrors:
+						t.Log(message)
+					default:
+						return
+					}
+				}
+			}
 			serve := func(l net.Listener, label string) {
 				for {
 					c, e := l.Accept()
@@ -64,24 +80,36 @@ func testRealIPSniff(t *testing.T, ctx context.Context, instance *box.Box, peer 
 					}
 					go func() {
 						defer c.Close()
-						c.SetDeadline(time.Now().Add(3 * time.Second))
+						started := time.Now()
+						reportError := func(stage string, err error) {
+							select {
+							case serverErrors <- fmt.Sprintf("%s %s after %s: %v", label, stage, time.Since(started), err):
+							default:
+							}
+						}
+						c.SetDeadline(time.Now().Add(sniffStreamTimeout))
 						if protocol == "tls" {
 							c = tls.Server(c, &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12})
 							if e := c.(*tls.Conn).Handshake(); e != nil {
+								reportError("TLS handshake", e)
 								return
 							}
 							var p [4]byte
 							if _, e := io.ReadFull(c, p[:]); e != nil || string(p[:]) != "ping" {
+								reportError("TLS request", e)
 								return
 							}
 						} else {
 							r, e := http.ReadRequest(bufio.NewReader(c))
 							if e != nil || r.Host == "" {
+								reportError("HTTP request", e)
 								return
 							}
 							r.Body.Close()
 						}
-						io.WriteString(c, label)
+						if _, err := io.WriteString(c, label); err != nil {
+							reportError("response", err)
+						}
 					}()
 				}
 			}
@@ -110,13 +138,14 @@ func testRealIPSniff(t *testing.T, ctx context.Context, instance *box.Box, peer 
 				} else {
 					app, capture = net.Pipe()
 				}
-				app.SetDeadline(time.Now().Add(4 * time.Second))
+				app.SetDeadline(time.Now().Add(sniffStreamTimeout))
 				go instance.Router().RouteConnectionEx(ctx, capture, adapter.InboundContext{Inbound: TUNTag, Network: "tcp", Destination: M.Socksaddr{Addr: destination, Port: port}}, nil)
 				var client net.Conn = app
 				if protocol == "tls" {
 					client = tls.Client(app, &tls.Config{RootCAs: roots, ServerName: tc.name, MinVersion: tls.VersionTLS12})
 					if err := client.(*tls.Conn).Handshake(); err != nil {
 						app.Close()
+						dumpServerErrors()
 						t.Fatal(tc, err)
 					}
 					_, err = client.Write([]byte("ping"))
@@ -125,6 +154,7 @@ func testRealIPSniff(t *testing.T, ctx context.Context, instance *box.Box, peer 
 				}
 				if err != nil {
 					app.Close()
+					dumpServerErrors()
 					t.Fatal(tc, err)
 				}
 				response := make([]byte, len(tc.want))
@@ -133,6 +163,7 @@ func testRealIPSniff(t *testing.T, ctx context.Context, instance *box.Box, peer 
 				// the owned stream without waiting for a TLS shutdown exchange.
 				app.Close()
 				if err != nil || string(response) != tc.want {
+					dumpServerErrors()
 					t.Fatalf("%s (%s, fake=%v): got %q, %v", protocol, tc.name, tc.fake, response, err)
 				}
 			}

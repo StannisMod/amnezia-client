@@ -3,6 +3,9 @@
 #include <QUuid>
 #include <QSignalSpy>
 #include <QTest>
+#include <QTcpServer>
+#include <QTcpSocket>
+#include <QThreadPool>
 
 #include "utils/testCoreController.h"
 #include "core/models/serverDescription.h"
@@ -100,6 +103,56 @@ private slots:
         QVERIFY(servers->setVpnHostName(id, ""));
         QCOMPARE(connections.prepareConnection(id, prepared, selected), ErrorCode::NoError);
         QCOMPARE(prepared.value(configKey::hostName).toString(), "192.0.2.10");
+    }
+
+    void testSoftwareUpdateWithSingleGlobalWorker() {
+        QTcpServer endpoint;
+        QVERIFY(endpoint.listen(QHostAddress::LocalHost));
+        bool reachedSsh = false;
+        connect(&endpoint, &QTcpServer::newConnection, &endpoint, [&]() {
+            reachedSsh = true;
+            while (endpoint.hasPendingConnections()) {
+                auto *socket = endpoint.nextPendingConnection();
+                socket->abort(); // Fail SSH before authentication or commands.
+                socket->deleteLater();
+            }
+        });
+        SelfHostedAdminServerConfig config = SelfHostedAdminServerConfig::fromJson({
+            {configKey::hostName, "127.0.0.1"}, {configKey::userName, "test"},
+            {configKey::password, "test-only"}, {configKey::port, endpoint.serverPort()}
+        });
+        config.defaultContainer = DockerContainer::WireGuard;
+        ContainerConfig container;
+        container.container = config.defaultContainer;
+        container.protocolConfig = WireGuardProtocolConfig{};
+        config.containers[config.defaultContainer] = container;
+        const QString id = m_coreController->m_serversRepository->addServer(
+                "software-update-pool-test", config.toJson(), serverConfigUtils::ConfigType::SelfHostedAdmin);
+        auto *controller = m_coreController->m_installUiController;
+        qRegisterMetaType<ErrorCode>();
+        QSignalSpy error(controller, &InstallUiController::installationErrorOccurred);
+        QSignalSpy busy(controller, &InstallUiController::serverIsBusy);
+        QVERIFY(error.isValid());
+        QVERIFY(busy.isValid());
+        auto *globalPool = QThreadPool::globalInstance();
+        const int originalLimit = globalPool->maxThreadCount();
+        globalPool->setMaxThreadCount(1);
+        controller->updateProtocolSoftware(id, static_cast<int>(config.defaultContainer));
+        const bool completed = !error.isEmpty() || error.wait(3000);
+        // Drain a regressed implementation before asserting, so a blocked
+        // global worker cannot hang cleanup or the remaining test cases.
+        globalPool->setMaxThreadCount(qMax(2, originalLimit));
+        if (!completed) {
+            error.wait(3000);
+        }
+        globalPool->setMaxThreadCount(originalLimit);
+        QVERIFY2(completed, "Software update deadlocked Qt's single-worker global pool");
+        QVERIFY(reachedSsh);
+        QCOMPARE(error.count(), 1);
+        QVERIFY(error.at(0).at(0).toInt() != static_cast<int>(ErrorCode::NoError));
+        QCOMPARE(busy.count(), 2);
+        QCOMPARE(busy.at(0).at(0).toBool(), true);
+        QCOMPARE(busy.at(1).at(0).toBool(), false);
     }
 
     void testServerEditTriggersHandlers() {

@@ -3,6 +3,7 @@
 
 #include <QObject>
 #include <QProcess>
+#include <QThreadPool>
 
 #include "core/utils/containerEnum.h"
 #include "core/utils/containers/containerUtils.h"
@@ -169,6 +170,7 @@ private:
     QString m_privateKeyPassphrase;
 
     bool m_serverConfigUpdateInProgress = false;
+    QThreadPool m_protocolSoftwareUpdatePool;
 
     void updateProtocolConfigModel(const QString &serverId, int containerIndex, int protocolIndex);
 
