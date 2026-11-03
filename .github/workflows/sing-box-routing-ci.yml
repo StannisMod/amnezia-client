@@ -52,7 +52,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-22.04, windows-2022, macos-15]
+        os: [ubuntu-22.04, windows-2022, macos-15, macos-15-intel]
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -486,7 +486,9 @@ jobs:
 
   client-ios:
     needs: cancel-superseded
-    runs-on: macos-15
+    # iOS remains arm64; use an Intel build host while hosted macOS arm64
+    # capacity is constrained. Both native macOS CPU lanes remain above.
+    runs-on: macos-15-intel
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
