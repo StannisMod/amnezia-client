@@ -236,7 +236,9 @@ final class RoutingPacketTunnel {
         let dns = config.dns1.isEmpty ? config.dns2 : config.dns1
         // The real resolver is explicit. Never bootstrap it with managed DNS.
         var v4 = in_addr(), v6 = in6_addr()
-        guard inet_pton(AF_INET, dns, &v4) == 1 || inet_pton(AF_INET6, dns, &v6) == 1 else { throw RoutingError.invalidConfiguration }
+        if config.routingDNSConfig == nil {
+            guard inet_pton(AF_INET, dns, &v4) == 1 || inet_pton(AF_INET6, dns, &v6) == 1 else { throw RoutingError.invalidConfiguration }
+        }
         let parameterNames = ["HeaderProtectionKey": "header_protection_key", "ContentPaddingAddition": "content_padding_addition",
                               "RekeyAfterTime": "rekey_after_time", "RekeyTimeout": "rekey_timeout", "RejectAfterTime": "reject_after_time",
                               "KeepaliveTimeout": "keepalive_timeout", "MaxHandshakeAttempts": "max_handshake_attempts",
@@ -279,9 +281,17 @@ final class RoutingPacketTunnel {
             awg.removeValue(forKey: "parameters")
             awg["keepalive"] = keepalive
         }
-        return try JSONSerialization.data(withJSONObject: ["rules": rules, "vpn": ["type": transport, transport: awg],
-                    "cache_path": support.appendingPathComponent("routing-fakeip-v1.db").path,
-                    "resolver": dns.contains(":") ? "[\(dns)]:53" : "\(dns):53", "resolver_action": config.routingDNSPath ?? "vpn"])
+        var session: [String: Any] = ["rules": rules, "vpn": ["type": transport, transport: awg],
+                    "cache_path": support.appendingPathComponent("routing-fakeip-v1.db").path]
+        if let text = config.routingDNSConfig {
+            guard let data = text.data(using: .utf8),
+                  let policy = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw RoutingError.invalidConfiguration }
+            session["dns"] = policy
+        } else {
+            session["resolver"] = dns.contains(":") ? "[\(dns)]:53" : "\(dns):53"
+            session["resolver_action"] = config.routingDNSPath ?? "vpn"
+        }
+        return try JSONSerialization.data(withJSONObject: session)
     }
 
     // Called before capture is installed. Resolve only the peer endpoint using

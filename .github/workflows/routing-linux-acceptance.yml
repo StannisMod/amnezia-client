@@ -6,16 +6,58 @@ on:
       - .github/workflows/routing-linux-acceptance.yml
       - native/routing/**
       - scripts/routing/run_linux_acceptance.py
+      - scripts/routing/run_split_dns_acceptance.py
+      - scripts/routing/split-dns-ci/**
   pull_request:
     branches: [dev]
     paths:
       - .github/workflows/routing-linux-acceptance.yml
       - native/routing/**
       - scripts/routing/run_linux_acceptance.py
+      - scripts/routing/run_split_dns_acceptance.py
+      - scripts/routing/split-dns-ci/**
   workflow_dispatch:
 permissions:
   contents: read
 jobs:
+  split-dns-system-resolver:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        transport: [awg, wireguard]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: native/routing/go.mod
+          cache-dependency-path: native/routing/go.sum
+      - name: Build the DNS capture helper and isolated VPN DNS observer
+        working-directory: native/routing
+        env:
+          CGO_ENABLED: '0'
+        run: |
+          mkdir -p "$RUNNER_TEMP/split-dns-bin" "$RUNNER_TEMP/split-dns-report"
+          go build -mod=readonly -tags with_gvisor -o "$RUNNER_TEMP/split-dns-bin/amnezia-routing" ./cmd/amnezia-routing
+          go build -mod=readonly -tags with_gvisor -o "$RUNNER_TEMP/split-dns-bin/android-fixture" ./cmd/android-fixture
+      - name: Two DNS policies, corporate system resolver, reconnect and restoration
+        run: |
+          docker build -t amnezia-split-dns-test scripts/routing/split-dns-ci
+          docker run --rm --privileged --network none \
+            --volume "$GITHUB_WORKSPACE/scripts/routing:/tests:ro" \
+            --volume "$RUNNER_TEMP/split-dns-bin:/inputs:ro" \
+            --volume "$RUNNER_TEMP/split-dns-report:/artifacts" \
+            amnezia-split-dns-test python3 -u /tests/run_split_dns_acceptance.py \
+            --helper /inputs/amnezia-routing --peer /inputs/android-fixture \
+            --report /artifacts/report.json --transport "${{ matrix.transport }}" \
+            --confirm-disposable-container
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: split-dns-system-resolver-${{ matrix.transport }}
+          path: ${{ runner.temp }}/split-dns-report
+          if-no-files-found: error
   namespace-capture:
     strategy:
       fail-fast: false

@@ -81,5 +81,8 @@ func compileSession(raw []byte) ([]byte, string, error) {
 		return nil, "", errors.New("invalid trailing routing configuration")
 	}
 	compiled, err := config.Compile()
+	if config.DNS != nil && config.DNS.NeedsNetwork() {
+		return nil, "", errors.New("native network DNS discovery is unavailable on this platform")
+	}
 	return compiled, config.CachePath, err
 }

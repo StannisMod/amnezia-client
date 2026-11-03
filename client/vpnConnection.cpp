@@ -354,6 +354,16 @@ void VpnConnection::connectToVpn(const QString &serverId, DockerContainer contai
 #endif
 
     const Proto transport = ProtocolUtils::protoFromString(vpnConfiguration.value(configKey::vpnProto).toString());
+    bool splitDnsSupported = false;
+#if defined(Q_OS_ANDROID) || defined(Q_OS_IOS) || defined(Q_OS_LINUX) || defined(Q_OS_WIN)
+    splitDnsSupported = m_appSettingsRepository->isSingBoxRoutingEnabled()
+        && ProtocolUtils::supportsDomainRouting(transport);
+#endif
+    if (m_appSettingsRepository->isSplitDnsEnabled() && !splitDnsSupported) {
+        setConnectionState(Vpn::ConnectionState::Error);
+        emit vpnProtocolError(ErrorCode::NotSupportedOnThisPlatform);
+        return;
+    }
     // AWG/WireGuard owns asynchronous endpoint resolution before activation.
     // remoteAddress is used below only by the non-WireGuard legacy route path.
     m_remoteAddress = (transport == Proto::Awg || transport == Proto::WireGuard)
@@ -530,6 +540,9 @@ void VpnConnection::appendSplitTunnelingConfig()
         const QHostAddress dns(m_vpnConfiguration.value(configKey::dns1).toString());
         const bool localResolver = dns.isLoopback() || (!m_appSettingsRepository->useAmneziaDns() && dns.isPrivateUse());
         m_vpnConfiguration.insert("sing_box_dns_path", localResolver ? "direct" : "vpn");
+        const auto splitDns = m_appSettingsRepository->splitDnsConfig();
+        if (m_appSettingsRepository->isSplitDnsEnabled()) m_vpnConfiguration.insert("sing_box_dns", splitDns);
+        else m_vpnConfiguration.remove("sing_box_dns");
         // Only the flow engine applies destinations. The OS captures all flows
         // selected by the existing per-application VPN scope.
         m_vpnConfiguration.insert(configKey::splitTunnelType, amnezia::RouteMode::VpnAllSites);
@@ -537,6 +550,7 @@ void VpnConnection::appendSplitTunnelingConfig()
     } else {
         m_vpnConfiguration.remove("sing_box_routing");
         m_vpnConfiguration.remove("sing_box_dns_path");
+        m_vpnConfiguration.remove("sing_box_dns");
     }
 #endif
 

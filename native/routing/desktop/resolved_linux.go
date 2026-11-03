@@ -31,17 +31,18 @@ type resolvedDomain struct {
 // clear its DNS list. Watch the actual link properties rather than treating
 // three successful resolvectl commands as lasting configuration ownership.
 type resolvedLink struct {
-	conn    *dbus.Conn
-	manager dbus.BusObject
-	link    dbus.BusObject
-	index   int32
-	cancel  context.CancelFunc
-	done    chan struct{}
-	err     error // published by closing done
-	once    sync.Once
+	conn               *dbus.Conn
+	manager            dbus.BusObject
+	link               dbus.BusObject
+	index              int32
+	cancel             context.CancelFunc
+	done               chan struct{}
+	err                error // published by closing done
+	once               sync.Once
+	networkFingerprint string
 }
 
-func startResolvedLink(ctx context.Context, index int) (*resolvedLink, error) {
+func startResolvedLink(ctx context.Context, index int, fingerprint ...string) (*resolvedLink, error) {
 	runCtx, cancel := context.WithCancel(ctx)
 	conn, err := dbus.ConnectSystemBus(dbus.WithContext(runCtx))
 	if err != nil {
@@ -49,6 +50,9 @@ func startResolvedLink(ctx context.Context, index int) (*resolvedLink, error) {
 		return nil, errors.New("system resolver bus unavailable")
 	}
 	r := &resolvedLink{conn: conn, manager: conn.Object(resolvedService, "/org/freedesktop/resolve1"), index: int32(index), cancel: cancel, done: make(chan struct{})}
+	if len(fingerprint) > 0 {
+		r.networkFingerprint = fingerprint[0]
+	}
 	setupCtx, setupCancel := context.WithTimeout(runCtx, 5*time.Second)
 	defer setupCancel()
 	var path dbus.ObjectPath
@@ -147,6 +151,15 @@ func (r *resolvedLink) apply(ctx context.Context) error {
 }
 
 func (r *resolvedLink) reconcile(ctx context.Context) error {
+	if r.networkFingerprint != "" {
+		links, err := networkDNSInventory(ctx, r.conn)
+		if err != nil {
+			return err
+		}
+		if networkDNSFingerprint(links) != r.networkFingerprint {
+			return errors.New("underlying network DNS changed; reconnect required")
+		}
+	}
 	var properties map[string]dbus.Variant
 	if err := r.link.CallWithContext(ctx, "org.freedesktop.DBus.Properties.GetAll", 0, resolvedInterface).Store(&properties); err != nil {
 		return err

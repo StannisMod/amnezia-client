@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/StannisMod/amnezia-client/native/routing/awg"
+	"github.com/StannisMod/amnezia-client/native/routing/dnspolicy"
 	"github.com/StannisMod/amnezia-client/native/routing/engine"
 	"github.com/StannisMod/amnezia-client/native/routing/rules"
 	"github.com/StannisMod/amnezia-client/native/routing/wireguard"
@@ -35,14 +36,15 @@ func text(v any) string {
 // checked independently by the service.
 func ProfileSession(raw []byte) (engine.SessionConfig, error) {
 	var profile struct {
-		Protocol  string         `json:"protocol"`
-		DNS       string         `json:"dns1"`
-		DNSPath   rules.Action   `json:"sing_box_dns_path"`
-		Rules     rules.Config   `json:"sing_box_routing"`
-		AWG       map[string]any `json:"awg_config_data"`
-		WireGuard map[string]any `json:"wireguard_config_data"`
-		AppScope  int            `json:"appSplitTunnelType"`
-		Apps      []string       `json:"splitTunnelApps"`
+		Protocol  string            `json:"protocol"`
+		DNS       string            `json:"dns1"`
+		DNSPath   rules.Action      `json:"sing_box_dns_path"`
+		SplitDNS  *dnspolicy.Config `json:"sing_box_dns"`
+		Rules     rules.Config      `json:"sing_box_routing"`
+		AWG       map[string]any    `json:"awg_config_data"`
+		WireGuard map[string]any    `json:"wireguard_config_data"`
+		AppScope  int               `json:"appSplitTunnelType"`
+		Apps      []string          `json:"splitTunnelApps"`
 	}
 	if len(raw) > 4<<20 {
 		return engine.SessionConfig{}, errors.New("routing profile exceeds size limit")
@@ -53,10 +55,10 @@ func ProfileSession(raw []byte) (engine.SessionConfig, error) {
 		return engine.SessionConfig{}, errors.New("unsupported routed desktop transport")
 	}
 	resolver, err := netip.ParseAddr(profile.DNS)
-	if err != nil {
+	if err != nil && profile.SplitDNS == nil {
 		return engine.SessionConfig{}, errors.New("a numeric DNS resolver is required")
 	}
-	config := engine.SessionConfig{Rules: profile.Rules, Resolver: netip.AddrPortFrom(resolver, 53), ResolverAction: profile.DNSPath}
+	config := engine.SessionConfig{Rules: profile.Rules, Resolver: netip.AddrPortFrom(resolver, 53), ResolverAction: profile.DNSPath, DNS: profile.SplitDNS}
 	if profile.AppScope < 0 || profile.AppScope > 2 {
 		return config, errors.New("invalid desktop application scope")
 	}
@@ -198,6 +200,22 @@ func ProfileSession(raw []byte) (engine.SessionConfig, error) {
 		config.AWG = awg.Config{}
 	}
 
+	if config.DNS != nil && config.DNS.NeedsNetwork() {
+		if _, err := config.DNS.Normalize(config.Rules); err != nil {
+			return config, err
+		}
+		if _, err := config.Rules.Normalize(); err != nil {
+			return config, err
+		}
+		transport, err := config.Transport()
+		if err != nil {
+			return config, err
+		}
+		if _, err = transport.Capabilities(); err != nil {
+			return config, err
+		}
+		return config, nil
+	}
 	if _, err := config.Compile(); err != nil {
 		return config, err
 	}

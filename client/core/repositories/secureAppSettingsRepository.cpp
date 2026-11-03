@@ -94,6 +94,22 @@ void SecureAppSettingsRepository::setSecondaryDns(const QString &dns)
     setValue("Conf/secondaryDns", dns);
 }
 
+QJsonObject SecureAppSettingsRepository::splitDnsConfig() const
+{
+    return QJsonObject::fromVariantMap(value("Conf/splitDnsV1").toMap());
+}
+
+void SecureAppSettingsRepository::setSplitDnsConfig(const QJsonObject &config)
+{
+    if (!config.isEmpty()) setValue("Conf/splitDnsV1", config.toVariantMap());
+    setValue("Conf/splitDnsEnabled", !config.isEmpty());
+}
+
+bool SecureAppSettingsRepository::isSplitDnsEnabled() const
+{
+    return value("Conf/splitDnsEnabled", false).toBool();
+}
+
 namespace {
     QString routeModeString(RouteMode mode) {
         switch (mode) {
@@ -217,7 +233,11 @@ QJsonObject SecureAppSettingsRepository::domainRoutingConfig() const
 {
     const auto saved = value("Conf/domainRoutingV1").toMap();
     if (!saved.isEmpty()) return QJsonObject::fromVariantMap(saved);
-    return amnezia::routing::fromLegacySites(true, routeMode(), vpnSites(routeMode()));
+    const auto sites = vpnSites(routeMode());
+    // A fresh install starts with no custom rules and the VPN default, even
+    // when the legacy editor selected its empty include-list mode on startup.
+    if (sites.isEmpty()) return {{"version", 1}, {"default", "vpn"}, {"rules", QJsonArray{}}};
+    return amnezia::routing::fromLegacySites(true, routeMode(), sites);
 }
 
 void SecureAppSettingsRepository::setDomainRoutingConfig(const QJsonObject &config)

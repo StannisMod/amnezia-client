@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/netip"
 
+	"github.com/StannisMod/amnezia-client/native/routing/dnspolicy"
 	"github.com/StannisMod/amnezia-client/native/routing/rules"
 )
 
@@ -17,18 +18,21 @@ type RoutingConfig struct {
 	Resolver       netip.AddrPort
 	ResolverAction rules.Action
 	Applications   *ApplicationScope
+	DNS            *dnspolicy.Config
 }
 
 // compile is internal: hosts cannot inject an arbitrary raw sing-box outbound.
 func (c RoutingConfig) compile(vpn map[string]any) ([]byte, error) {
-	if !c.Resolver.IsValid() || c.Resolver.Port() == 0 {
-		return nil, errors.New("numeric DNS resolver is required")
-	}
-	if c.ResolverAction != rules.Direct && c.ResolverAction != rules.VPN {
-		return nil, errors.New("DNS resolver path must be explicit")
-	}
-	if c.ResolverAction == rules.VPN && c.Resolver.Addr().IsLoopback() {
-		return nil, errors.New("a local DNS stub requires the native DIRECT path")
+	if c.DNS == nil {
+		if !c.Resolver.IsValid() || c.Resolver.Port() == 0 {
+			return nil, errors.New("numeric DNS resolver is required")
+		}
+		if c.ResolverAction != rules.Direct && c.ResolverAction != rules.VPN {
+			return nil, errors.New("DNS resolver path must be explicit")
+		}
+		if c.ResolverAction == rules.VPN && c.Resolver.Addr().IsLoopback() {
+			return nil, errors.New("a local DNS stub requires the native DIRECT path")
+		}
 	}
 	compiled, e := c.Rules.Compile()
 	if e != nil {
@@ -64,6 +68,17 @@ func (c RoutingConfig) compile(vpn map[string]any) ([]byte, error) {
 			"final": "upstream", "reverse_mapping": false,
 		},
 		"route": route,
+	}
+	if c.DNS != nil {
+		dns, err := c.DNS.Compile(c.Rules, TUNTag)
+		if err != nil {
+			return nil, err
+		}
+		config["dns"] = dns
+		config["outbounds"] = append(config["outbounds"].([]any), c.DNS.InterfaceOutbounds()...)
+		// A fixed default_domain_resolver bypasses per-domain DNS rules in
+		// sing-box dialers. Our outbounds use DNSRouter.Lookup without pinning.
+		delete(route, "default_domain_resolver")
 	}
 	return json.Marshal(config)
 }

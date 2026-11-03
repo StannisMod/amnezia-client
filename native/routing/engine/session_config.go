@@ -7,6 +7,7 @@ import (
 	"reflect"
 
 	"github.com/StannisMod/amnezia-client/native/routing/awg"
+	"github.com/StannisMod/amnezia-client/native/routing/dnspolicy"
 	"github.com/StannisMod/amnezia-client/native/routing/rules"
 	"github.com/StannisMod/amnezia-client/native/routing/tunnel"
 	"github.com/StannisMod/amnezia-client/native/routing/wireguard"
@@ -60,12 +61,14 @@ func (c TransportConfig) outbound() (map[string]any, error) {
 // SessionConfig keeps legacy AWG JSON readable. Platform hosts own capture,
 // socket protection and OS restoration; new hosts supply an explicit transport.
 type SessionConfig struct {
-	Rules          rules.Config      `json:"rules"`
-	AWG            awg.Config        `json:"awg,omitempty"`
-	VPN            *TransportConfig  `json:"vpn,omitempty"`
-	Resolver       netip.AddrPort    `json:"resolver"`
-	ResolverAction rules.Action      `json:"resolver_action"`
-	Applications   *ApplicationScope `json:"applications,omitempty"`
+	DNSNetworkFingerprint string            `json:"dns_network_fingerprint,omitempty"`
+	Rules                 rules.Config      `json:"rules"`
+	AWG                   awg.Config        `json:"awg,omitempty"`
+	VPN                   *TransportConfig  `json:"vpn,omitempty"`
+	Resolver              netip.AddrPort    `json:"resolver"`
+	ResolverAction        rules.Action      `json:"resolver_action"`
+	Applications          *ApplicationScope `json:"applications,omitempty"`
+	DNS                   *dnspolicy.Config `json:"dns,omitempty"`
 }
 
 func (c SessionConfig) Transport() (TransportConfig, error) {
@@ -99,5 +102,5 @@ func (c SessionConfig) Compile() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return (RoutingConfig{Rules: c.Rules, Resolver: c.Resolver, ResolverAction: c.ResolverAction, Applications: c.Applications}).compile(vpn)
+	return (RoutingConfig{Rules: c.Rules, Resolver: c.Resolver, ResolverAction: c.ResolverAction, Applications: c.Applications, DNS: c.DNS}).compile(vpn)
 }

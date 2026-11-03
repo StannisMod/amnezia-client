@@ -20,9 +20,14 @@ import (
 type Underlay struct {
 	DialContext  func(context.Context, string, string) (net.Conn, error)
 	ListenPacket func(context.Context, string, string) (net.PacketConn, error)
+	// OnInterface is optional and used only by explicitly scoped DNS policies.
+	// Ordinary DIRECT must keep destination-specific native routing.
+	OnInterface  func(string) (Underlay, error)
 }
 
-type directOptions struct{}
+type directOptions struct {
+	Interface string `json:"interface,omitempty"`
+}
 type nativeDirect struct {
 	outbound.Adapter
 	host Underlay
@@ -30,11 +35,22 @@ type nativeDirect struct {
 }
 
 func registerDirect(r *outbound.Registry, host Underlay) {
-	outbound.Register[directOptions](r, "direct", func(ctx context.Context, _ adapter.Router, _ log.ContextLogger, tag string, _ directOptions) (adapter.Outbound, error) {
-		if host.DialContext == nil || host.ListenPacket == nil {
+	outbound.Register[directOptions](r, "direct", func(ctx context.Context, _ adapter.Router, _ log.ContextLogger, tag string, options directOptions) (adapter.Outbound, error) {
+		selected := host
+		if options.Interface != "" {
+			if host.OnInterface == nil {
+				return nil, errors.New("native DNS interface binding is unavailable")
+			}
+			var err error
+			selected, err = host.OnInterface(options.Interface)
+			if err != nil {
+				return nil, err
+			}
+		}
+		if selected.DialContext == nil || selected.ListenPacket == nil {
 			return nil, errors.New("DIRECT requires native protected sockets")
 		}
-		return &nativeDirect{Adapter: outbound.NewAdapter("direct", tag, []string{"tcp", "udp"}, nil), host: host, dns: service.FromContext[adapter.DNSRouter](ctx)}, nil
+		return &nativeDirect{Adapter: outbound.NewAdapter("direct", tag, []string{"tcp", "udp"}, nil), host: selected, dns: service.FromContext[adapter.DNSRouter](ctx)}, nil
 	})
 }
 func (d *nativeDirect) addresses(ctx context.Context, dst M.Socksaddr) ([]netip.Addr, error) {

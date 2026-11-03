@@ -52,6 +52,12 @@ func PreparePrivateCache(path string) (io.Closer, error) {
 }
 
 func PrepareResolver(config *engine.SessionConfig) error {
+	if config.DNS != nil {
+		if config.DNS.NeedsNetwork() {
+			return errors.New("automatic network DNS domains are currently supported on Linux only; configure explicit DNS exceptions")
+		}
+		return nil
+	}
 	if config.Resolver.Addr().IsLoopback() {
 		return errors.New("a native numeric upstream resolver is required on Windows")
 	}
