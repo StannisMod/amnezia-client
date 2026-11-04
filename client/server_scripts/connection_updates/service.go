@@ -222,6 +222,9 @@ func admin(dir, command string, req request) (map[string]any, error) {
 	if e := os.MkdirAll(dir, 0700); e != nil {
 		return nil, e
 	}
+	if e := os.Chmod(dir, 0700); e != nil {
+		return nil, e
+	}
 	lock, e := os.OpenFile(filepath.Join(dir, ".lock"), os.O_CREATE|os.O_RDWR, 0600)
 	if e != nil {
 		return nil, e

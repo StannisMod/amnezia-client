@@ -197,8 +197,14 @@ func pemPrivateKey(b []byte) []byte {
 }
 
 func TestCapacityAndRateLimits(t *testing.T) {
-	dir := t.TempDir()
+	dir := filepath.Join(t.TempDir(), "volume")
+	if e := os.Mkdir(dir, 0755); e != nil {
+		t.Fatal(e)
+	}
 	mustAdmin(t, dir, "init", request{Host: "127.0.0.1"})
+	if st, e := os.Stat(dir); e != nil || st.Mode().Perm() != 0700 {
+		t.Fatal("pre-existing volume directory is not private")
+	}
 	original, _ := os.ReadFile(filepath.Join(dir, "state.json"))
 	s, e := readState(dir)
 	if e != nil {
