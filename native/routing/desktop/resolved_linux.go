@@ -139,6 +139,9 @@ func (r *resolvedLink) apply(ctx context.Context) error {
 		name string
 		args []any
 	}{
+		// This hop terminates inside our TUN, not at the native upstream.
+		// Encryption requirements are applied by the selected DNS policy.
+		{"SetLinkDNSOverTLS", []any{r.index, "no"}},
 		{"SetLinkDomains", []any{r.index, []resolvedDomain{{".", true}}}},
 		{"SetLinkDefaultRoute", []any{r.index, true}},
 		{"SetLinkDNS", []any{r.index, []resolvedDNS{{2, []byte{172, 19, 0, 2}}}}},
@@ -167,6 +170,7 @@ func (r *resolvedLink) reconcile(ctx context.Context) error {
 	var dns []resolvedDNS
 	var domains []resolvedDomain
 	var defaultRoute bool
+	var dnsOverTLS string
 	if err := properties["DNS"].Store(&dns); err != nil {
 		return err
 	}
@@ -176,7 +180,10 @@ func (r *resolvedLink) reconcile(ctx context.Context) error {
 	if err := properties["DefaultRoute"].Store(&defaultRoute); err != nil {
 		return err
 	}
-	if len(dns) == 1 && dns[0].Family == 2 && string(dns[0].Address) == string([]byte{172, 19, 0, 2}) && len(domains) == 1 && domains[0] == (resolvedDomain{".", true}) && defaultRoute {
+	if err := properties["DNSOverTLS"].Store(&dnsOverTLS); err != nil {
+		return err
+	}
+	if dnsOverTLS == "no" && len(dns) == 1 && dns[0].Family == 2 && string(dns[0].Address) == string([]byte{172, 19, 0, 2}) && len(domains) == 1 && domains[0] == (resolvedDomain{".", true}) && defaultRoute {
 		return nil
 	}
 	return r.apply(ctx)

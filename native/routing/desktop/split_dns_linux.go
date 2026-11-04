@@ -22,9 +22,11 @@ import (
 )
 
 type networkDNSServer struct {
-	Index   int32
-	Family  int32
-	Address []byte
+	Index      int32
+	Family     int32
+	Address    []byte
+	Port       uint16
+	ServerName string
 }
 type networkDNSDomain struct {
 	Index       int32
@@ -34,7 +36,7 @@ type networkDNSDomain struct {
 type networkDNSLink struct {
 	Index        int32
 	Name         string
-	Servers      []netip.Addr
+	Servers      []dnspolicy.NetworkServer
 	Domains      []string
 	DefaultRoute bool
 }
@@ -49,8 +51,12 @@ func networkDNSInventory(ctx context.Context, conn *dbus.Conn) ([]networkDNSLink
 	}
 	var servers []networkDNSServer
 	var domains []networkDNSDomain
-	if err := properties["DNS"].Store(&servers); err != nil {
-		return nil, errors.New("native DNS server inventory unavailable")
+	if err := properties["DNSEx"].Store(&servers); err != nil {
+		return nil, errors.New("native extended DNS server inventory unavailable; configure explicit DNS policies")
+	}
+	var globalTLS string
+	if err := properties["DNSOverTLS"].Store(&globalTLS); err != nil {
+		return nil, errors.New("native DNS encryption setting unavailable")
 	}
 	if err := properties["Domains"].Store(&domains); err != nil {
 		return nil, errors.New("native DNS domain inventory unavailable")
@@ -88,10 +94,13 @@ func networkDNSInventory(ctx context.Context, conn *dbus.Conn) ([]networkDNSLink
 			continue
 		}
 		a = a.Unmap()
+		if a.Is6() && a.IsLinkLocalUnicast() {
+			a = a.WithZone(link.Name)
+		}
 		if err := dnspolicy.CheckAddress(a, rules.Direct); err != nil {
 			continue
 		}
-		link.Servers = append(link.Servers, a)
+		link.Servers = append(link.Servers, dnspolicy.NetworkServer{Address: a, Port: s.Port, ServerName: s.ServerName})
 	}
 	var result []networkDNSLink
 	for _, link := range links {
@@ -102,15 +111,26 @@ func networkDNSInventory(ctx context.Context, conn *dbus.Conn) ([]networkDNSLink
 			continue
 		}
 		var path dbus.ObjectPath
-		var property dbus.Variant
 		if err := manager.CallWithContext(ctx, resolvedManager+".GetLink", 0, link.Index).Store(&path); err != nil {
 			return nil, errors.New("native DNS link inventory changed")
 		}
-		if err := conn.Object(resolvedService, path).CallWithContext(ctx, "org.freedesktop.DBus.Properties.Get", 0, resolvedInterface, "DefaultRoute").Store(&property); err != nil {
+		var linkProperties map[string]dbus.Variant
+		if err := conn.Object(resolvedService, path).CallWithContext(ctx, "org.freedesktop.DBus.Properties.GetAll", 0, resolvedInterface).Store(&linkProperties); err != nil {
+			return nil, errors.New("native DNS link settings unavailable")
+		}
+		if err := linkProperties["DefaultRoute"].Store(&link.DefaultRoute); err != nil {
 			return nil, errors.New("native DNS default route unavailable")
 		}
-		if err := property.Store(&link.DefaultRoute); err != nil {
-			return nil, errors.New("native DNS default route unavailable")
+		var linkTLS string
+		if err := linkProperties["DNSOverTLS"].Store(&linkTLS); err != nil {
+			return nil, errors.New("native DNS link encryption setting unavailable")
+		}
+		for i, server := range link.Servers {
+			prepared, err := networkDNSTransport(server, globalTLS, linkTLS)
+			if err != nil {
+				return nil, err
+			}
+			link.Servers[i] = prepared
 		}
 		sort.Strings(link.Domains)
 		result = append(result, *link)
@@ -124,32 +144,45 @@ func networkDNSFingerprint(links []networkDNSLink) string {
 	return fmt.Sprintf("%x", sha256.Sum256(raw))
 }
 
-func addNetworkDNS(config *dnspolicy.Config, links []networkDNSLink) error {
-	seen := map[string]string{}
-	config.NetworkRules = nil
-	for _, link := range links {
-		if len(link.Domains) == 0 {
-			continue
-		}
-		id := fmt.Sprintf("network-%d", link.Index)
-		if _, exists := config.Policies[id]; exists {
-			return errors.New("DNS policy identifier is reserved by a network interface")
-		}
-		// Deliberately use one server. A secondary server is not implicitly a
-		// fallback policy, and simultaneous multi-link queries may leak names.
-		config.Policies[id] = dnspolicy.Resolver{Name: "Network DNS", Transport: "udp", Server: link.Servers[0].String(), Path: rules.Direct, Interface: link.Name}
-		for _, domain := range link.Domains {
-			if previous, exists := seen[domain]; exists {
-				if previous != id {
-					return errors.New("corporate DNS domain belongs to multiple interfaces; configure explicit DNS exceptions and disable automatic domains")
-				}
-				continue
-			}
-			seen[domain] = id
-			config.NetworkRules = append(config.NetworkRules, dnspolicy.Rule{Kind: rules.Suffix, Value: domain, Policy: id})
-		}
+// DNSOverTLS on a link overrides the manager setting; an empty link value
+// inherits it. Opportunistic mode stays encrypted here: never retry plaintext.
+func networkDNSTransport(server dnspolicy.NetworkServer, global, link string) (dnspolicy.NetworkServer, error) {
+	mode := link
+	if mode == "" {
+		mode = global
 	}
-	config.PreserveNetworkDomains = false
+	switch mode {
+	case "no":
+		server.Transport = "udp"
+		server.ServerName = ""
+	case "yes", "opportunistic":
+		server.Transport = "tls"
+		server.OpportunisticTLS = mode == "opportunistic"
+	default:
+		return dnspolicy.NetworkServer{}, errors.New("unsupported native DNS encryption mode; configure explicit DNS policies")
+	}
+	return server, nil
+}
+
+func linuxDNSSnapshot(links []networkDNSLink) dnspolicy.NetworkSnapshot {
+	snapshot := dnspolicy.NetworkSnapshot{RoutingDomainsAvailable: true}
+	for _, link := range links {
+		snapshot.Links = append(snapshot.Links, dnspolicy.NetworkLink{
+			ID: dnspolicy.NetworkID(uint64(link.Index)), Interface: link.Name,
+			Default: link.DefaultRoute, Servers: link.Servers, Domains: link.Domains,
+		})
+	}
+	return snapshot
+}
+
+func addNetworkDNS(config *dnspolicy.Config, links []networkDNSLink) error {
+	c := *config
+	c.PreserveNetworkDomains = true
+	prepared, err := linuxDNSSnapshot(links).Prepare(c)
+	if err != nil {
+		return err
+	}
+	*config = prepared
 	return nil
 }
 
@@ -181,25 +214,14 @@ func prepareNetworkDNS(config *engine.SessionConfig) error {
 }
 
 func bindNetworkDNS(config *dnspolicy.Config, links []networkDNSLink) error {
-	for id, p := range config.Policies {
-		if p.Source != "network" {
-			continue
-		}
-		var candidates []networkDNSLink
-		for _, link := range links {
-			if p.Interface != "" && link.Name == p.Interface || p.Interface == "" && link.DefaultRoute {
-				candidates = append(candidates, link)
-			}
-		}
-		if len(candidates) != 1 {
-			return errors.New("network DNS is missing or ambiguous; select a network interface or enter a numeric DNS server")
-		}
-		selected := candidates[0]
-		p.Source = ""
-		p.Interface = selected.Name
-		p.Server = selected.Servers[0].String()
-		config.Policies[id] = p
+	c := *config
+	c.PreserveNetworkDomains = false
+	prepared, err := linuxDNSSnapshot(links).Prepare(c)
+	if err != nil {
+		return err
 	}
+	prepared.PreserveNetworkDomains = config.PreserveNetworkDomains
+	*config = prepared
 	return nil
 }
 

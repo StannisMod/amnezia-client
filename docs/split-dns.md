@@ -78,6 +78,12 @@ ambiguous network selection fails instead of falling back to public DNS.
 
 - Linux reads systemd-resolved's per-link inventory and binds protected sockets
   to the selected interface. Corporate routing/search domains can be imported.
+  Extended server ports and TLS authentication names are retained. Per-link
+  DNS-over-TLS overrides the global mode; unset links inherit it. Strict mode
+  validates certificates, while opportunistic mode uses encrypted,
+  unauthenticated TLS without plaintext fallback. Missing encryption metadata
+  fails preparation. Only the managed TUN's internal DNS hop disables DoT;
+  the original network links retain their settings.
 - Windows reads native adapter DNS addresses, DNS suffix metadata and default
   route metrics. Effective NRPT rules, including exact names and suffix rules,
   can be imported separately; adapter search suffixes alone do not become DNS
@@ -130,6 +136,10 @@ validation. Unsupported transports cannot fall back to a legacy VPN backend
 while split DNS is enabled. Disabling domain routing first requires disabling
 split DNS. A fresh install has an empty custom routing list and a VPN default;
 saved user rules are preserved.
+
+Selecting an API-backed server still allows disabling a previously enabled
+split DNS setting. This does not change that server's custom-DNS restrictions
+or overwrite the saved policy draft.
 
 Example of the native `dns` field:
 

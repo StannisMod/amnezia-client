@@ -86,14 +86,14 @@ PageType {
 
                 spacing: 12
 
-                enabled: !root.isServerFromApi && !ConnectionController.isConnected
+                enabled: !ConnectionController.isConnected
 
 
                 CheckBox {
                     id: splitDnsEnabled
                     Layout.fillWidth: true
                     text: qsTr("Different DNS for domains")
-                    enabled: IpSplitTunnelingController.singBoxRoutingEnabled && !ConnectionController.isConnected
+                    enabled: checked || (!root.isServerFromApi && IpSplitTunnelingController.singBoxRoutingEnabled)
                 }
                 BodyTextType {
                     Layout.fillWidth: true
@@ -103,6 +103,7 @@ PageType {
                 }
                 TextFieldType {
                     id: primaryDns
+                    enabled: !root.isServerFromApi
 
                     Layout.fillWidth: true
 
@@ -117,6 +118,7 @@ PageType {
 
                 TextFieldType {
                     id: secondaryDns
+                    enabled: !root.isServerFromApi
 
                     Layout.fillWidth: true
 
@@ -131,7 +133,7 @@ PageType {
 
                 ColumnLayout {
                     visible: splitDnsEnabled.checked
-                    enabled: !ConnectionController.isConnected
+                    enabled: !root.isServerFromApi && !ConnectionController.isConnected
                     Layout.fillWidth: true
                     spacing: 12
                     CheckBox {
@@ -384,10 +386,11 @@ PageType {
 
         spacing: 12
 
-        enabled: !root.isServerFromApi && !ConnectionController.isConnected
+        enabled: !ConnectionController.isConnected
 
         ButtonType {
             id: restoreDefaultButton
+            enabled: !root.isServerFromApi || SettingsController.splitDnsEnabled
 
             Layout.fillWidth: true
 
@@ -400,10 +403,12 @@ PageType {
                 var noButtonText = qsTr("Cancel")
 
                 var yesButtonFunction = function() {
-                    SettingsController.primaryDns = "1.1.1.1"
-                    primaryDns.textField.text = SettingsController.primaryDns
-                    SettingsController.secondaryDns = "1.0.0.1"
-                    secondaryDns.textField.text = SettingsController.secondaryDns
+                    if (!root.isServerFromApi) {
+                        SettingsController.primaryDns = "1.1.1.1"
+                        primaryDns.textField.text = SettingsController.primaryDns
+                        SettingsController.secondaryDns = "1.0.0.1"
+                        secondaryDns.textField.text = SettingsController.secondaryDns
+                    }
                     SettingsController.saveSplitDnsConfig({})
                     root.loadDnsDraft()
                     PageController.showNotificationMessage(qsTr("Settings have been reset"))
@@ -417,6 +422,7 @@ PageType {
 
         ButtonType {
             id: saveButton
+            enabled: !root.isServerFromApi || (SettingsController.splitDnsEnabled && !splitDnsEnabled.checked)
 
             Layout.fillWidth: true
 
@@ -427,7 +433,7 @@ PageType {
                     PageController.showNotificationMessage(qsTr("Disconnect before changing DNS settings"))
                     return
                 }
-                if (primaryDns.textField.text === "") {
+                if (!root.isServerFromApi && primaryDns.textField.text === "") {
                     primaryDns.errorText = qsTr("Primary DNS cannot be empty")
                     return
                 }
@@ -439,10 +445,10 @@ PageType {
                     return
                 }
 
-                if (primaryDns.textField.text !== SettingsController.primaryDns) {
+                if (!root.isServerFromApi && primaryDns.textField.text !== SettingsController.primaryDns) {
                     SettingsController.primaryDns = primaryDns.textField.text
                 }
-                if (secondaryDns.textField.text !== SettingsController.secondaryDns) {
+                if (!root.isServerFromApi && secondaryDns.textField.text !== SettingsController.secondaryDns) {
                     SettingsController.secondaryDns = secondaryDns.textField.text
                 }
                 root.loadDnsDraft()

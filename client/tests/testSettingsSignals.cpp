@@ -76,9 +76,21 @@ private slots:
         evaluate("saveButton.clicked()");
         QCOMPARE(core.m_appSettingsRepository->splitDnsConfig(), config);
         evaluate("loadDnsDraft()");
+        // Selecting an API server must still allow turning off the global flag.
+        page->setProperty("isServerFromApi", true);
+        QVERIFY(evaluate("splitDnsEnabled.enabled").toBool());
+        QVERIFY(!evaluate("primaryDns.enabled").toBool());
+        QVERIFY(evaluate("restoreDefaultButton.enabled").toBool());
+        QVERIFY(!evaluate("saveButton.enabled").toBool());
+        const auto primaryBeforeApi = core.m_appSettingsRepository->primaryDns();
+        evaluate("splitDnsEnabled.checked = false; primaryDns.textField.text = ''");
+        QVERIFY(evaluate("saveButton.enabled").toBool());
         evaluate("splitDnsEnabled.checked = false; saveButton.clicked()");
         QVERIFY(!core.m_appSettingsRepository->isSplitDnsEnabled());
         QCOMPARE(core.m_appSettingsRepository->splitDnsConfig(), config);
+        QCOMPARE(core.m_appSettingsRepository->primaryDns(), primaryBeforeApi);
+        QVERIFY(!evaluate("splitDnsEnabled.enabled").toBool());
+        QVERIFY(!evaluate("saveButton.enabled").toBool());
         settings.clearSettings();
     }
     void testSplitDnsSettingsPersistWithoutChangingLegacyDns() {

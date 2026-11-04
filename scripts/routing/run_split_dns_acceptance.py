@@ -154,6 +154,7 @@ def main():
         resolver_user = pwd.getpwnam("systemd-resolve")
         Path("/run/systemd/resolve").mkdir(parents=True, exist_ok=True)
         os.chown("/run/systemd/resolve", resolver_user.pw_uid, resolver_user.pw_gid)
+        Path("/etc/systemd/resolved.conf").write_text("[Resolve]\nDNSOverTLS=yes\n")
         processes.append(subprocess.Popen(["/usr/lib/systemd/systemd-resolved"], stdout=subprocess.DEVNULL))
         for attempt in range(100):
             result = subprocess.run(["resolvectl", "status"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -164,6 +165,7 @@ def main():
             raise AssertionError("systemd-resolved did not start")
         Path("/etc/resolv.conf").write_text("nameserver 127.0.0.53\nsearch corp.example\n")
         run("resolvectl", "dns", "corp0", "10.88.0.53")
+        run("resolvectl", "dnsovertls", "corp0", "no")
         run("resolvectl", "domain", "corp0", "corp.example")
         run("resolvectl", "default-route", "corp0", "no")
         log = temporary / "direct-dns.log"
@@ -224,6 +226,33 @@ def main():
         connect("reconnected.corp.example", "DIRECT")
         stop()
         assert dns_state() == before
+        # Native encrypted DNS must never reach the plaintext observer, even
+        # when the TLS endpoint is unavailable. Exercise both network-source
+        # selection and the automatically imported corporate-domain policy.
+        run("resolvectl", "dns", "corp0", "10.88.0.53:8853#dns.corp.example")
+        for mode in ("yes", "", "opportunistic"):
+            run("resolvectl", "dnsovertls", "corp0", mode)
+            start(profile)
+            assert subprocess.check_output(["resolvectl", "dnsovertls", "amnrouting0"], text=True).strip().endswith("no")
+            for suffix in ("corp.example", "direct.test"):
+                name = "tls-" + (mode or "inherited") + "." + suffix
+                # Query managed DNS directly: resolved's corporate rule could
+                # otherwise choose its own TLS client before entering our TUN.
+                from run_linux_acceptance import resolve
+                address = resolve(name)
+                try:
+                    connect(name, "DIRECT", address)
+                except OSError:
+                    pass
+                else:
+                    raise AssertionError("unavailable TLS DNS unexpectedly resolved " + name)
+                assert name + "." not in direct_names(), "native DoT silently downgraded to plaintext"
+                assert name + "." not in vpn_names(), "native DoT crossed policy boundaries"
+            stop()
+        run("resolvectl", "dnsovertls", "corp0", "no")
+        run("resolvectl", "dns", "corp0", "10.88.0.53")
+        assert dns_state() == before
+        report["native_dot_no_plaintext_downgrade"] = "PASS"
         report.update(split_dns="PASS", corporate_systemd_resolved="PASS", network_dns_change="PASS", dns_restoration="PASS")
     finally:
         if child is not None:
