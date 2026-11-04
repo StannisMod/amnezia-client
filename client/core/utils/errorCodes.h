@@ -136,6 +136,8 @@ namespace amnezia
         FatalError = 1204,
         AbortError = 1205,
 
+        ConnectionUpdateTokenRevocationPending = 1400,
+
         // Billing errors
         BillingCanceled = 1300,
         BillingError = 1301,

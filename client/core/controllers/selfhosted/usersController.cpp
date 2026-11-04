@@ -1,4 +1,5 @@
 #include "usersController.h"
+#include "connectionUpdatesController.h"
 
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -802,6 +803,13 @@ ErrorCode UsersController::revokeClient(const QString &serverId, const int index
 
     QString clientId = m_clientsTable.at(index).toObject().value(configKey::clientId).toString();
     ErrorCode errorCode = ErrorCode::NoError;
+    ErrorCode tokenError = ErrorCode::NoError;
+    if (!adminConfig->connectionUpdates.isEmpty() && (container == DockerContainer::WireGuard || container == DockerContainer::Awg2)) {
+        QJsonObject response;
+        tokenError = ConnectionUpdatesController::command(credentials, "revoke", {
+            { "container", ContainerUtils::containerToString(container) }, { "clientPublicKey", clientId } }, response);
+    }
+
 
     switch(container)
     {
@@ -841,6 +849,10 @@ ErrorCode UsersController::revokeClient(const QString &serverId, const int index
         emit clientRevoked(index);
     }
 
+    if (errorCode == ErrorCode::NoError && tokenError != ErrorCode::NoError) {
+        rememberPendingUpdateRevocation(serverId, container, clientId);
+        errorCode = ErrorCode::ConnectionUpdateTokenRevocationPending;
+    }
     emit clientsUpdated(m_clientsTable);
     emit revokeFinished(errorCode);
 
@@ -889,6 +901,13 @@ ErrorCode UsersController::revokeClient(const QString &serverId, const Container
     if (row < 0) {
         return errorCode;
     }
+    ErrorCode tokenError = ErrorCode::NoError;
+    if (!adminConfig->connectionUpdates.isEmpty() && (container == DockerContainer::WireGuard || container == DockerContainer::Awg2)) {
+        QJsonObject response;
+        tokenError = ConnectionUpdatesController::command(credentials, "revoke", {
+            { "container", ContainerUtils::containerToString(container) }, { "clientPublicKey", clientId } }, response);
+    }
+
 
     switch (container)
     {
@@ -917,6 +936,23 @@ ErrorCode UsersController::revokeClient(const QString &serverId, const Container
         emit clientsUpdated(m_clientsTable);
     }
 
+    if (errorCode == ErrorCode::NoError && tokenError != ErrorCode::NoError) {
+        rememberPendingUpdateRevocation(serverId, container, clientId);
+        return ErrorCode::ConnectionUpdateTokenRevocationPending;
+    }
     return errorCode;
 }
 
+
+void UsersController::rememberPendingUpdateRevocation(const QString &serverId, DockerContainer container, const QString &clientPublicKey)
+{
+    auto profile = m_serversRepository->serverJsonById(serverId);
+    if (!profile) return;
+    auto metadata = profile->value("connectionUpdates").toObject();
+    auto pending = metadata.value("pendingRevocations").toArray();
+    const QJsonObject entry { { "container", ContainerUtils::containerToString(container) }, { "clientPublicKey", clientPublicKey } };
+    if (!pending.contains(entry)) pending.append(entry);
+    metadata["pendingRevocations"] = pending;
+    (*profile)["connectionUpdates"] = metadata;
+    m_serversRepository->editServer(serverId, *profile, serverConfigUtils::SelfHostedAdmin);
+}

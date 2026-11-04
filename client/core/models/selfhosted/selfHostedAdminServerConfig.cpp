@@ -84,6 +84,7 @@ QPair<QString, QString> SelfHostedAdminServerConfig::getDnsPair(bool isAmneziaDn
 QJsonObject SelfHostedAdminServerConfig::toJson() const
 {
     QJsonObject obj;
+    if (!connectionUpdates.isEmpty()) obj["connectionUpdates"] = connectionUpdates;
     obj[configKey::formatVersion] = serverConfigUtils::currentConfigFormatVersion;
 
     if (!description.isEmpty()) {
@@ -134,6 +135,7 @@ SelfHostedAdminServerConfig SelfHostedAdminServerConfig::fromJson(const QJsonObj
 {
     SelfHostedAdminServerConfig config;
 
+    config.connectionUpdates = json.value("connectionUpdates").toObject();
     config.description = json.value(configKey::description).toString();
     config.hostName = json.value(configKey::hostName).toString();
     config.vpnHostName = json.value(configKey::vpnHostName).toString();

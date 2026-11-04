@@ -19,6 +19,7 @@ namespace amnezia
 using namespace ContainerEnumNS;
 
 struct SelfHostedAdminServerConfig {
+    QJsonObject connectionUpdates;
     QString description;
     QString displayName;
     QString hostName;

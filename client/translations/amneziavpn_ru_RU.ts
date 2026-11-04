@@ -191,6 +191,10 @@
         <source>Preparing...</source>
         <translation>Подготовка...</translation>
     </message>
+    <message>
+        <source>Checking connection updates...</source>
+        <translation>Проверка обновлений подключения…</translation>
+    </message>
 </context>
 <context>
     <name>ContextMenuType</name>
@@ -5133,6 +5137,34 @@ Create one from the current settings.</source>
         <source>Cannot reset API config during active connection</source>
         <translation>Невозможно сбросить конфигурацию API во время активного соединения</translation>
     </message>
+    <message>
+        <source>Set up connection updates</source>
+        <translation>Настроить обновления подключений</translation>
+    </message>
+    <message>
+        <source>Share profiles that can receive signed settings from your server. Uses TCP port 8443.</source>
+        <translation>Выдавайте профили, которые получают подписанные настройки с вашего сервера. Используется TCP-порт 8443.</translation>
+    </message>
+    <message>
+        <source>Enable connection updates?</source>
+        <translation>Включить обновления подключений?</translation>
+    </message>
+    <message>
+        <source>Install the update service on your VPS using SSH. Allow TCP port 8443 in the VPS firewall. Existing VPN connections will be kept.</source>
+        <translation>Сервис обновлений будет установлен на VPS через SSH. Разрешите TCP-порт 8443 в межсетевом экране VPS. Текущие VPN-подключения сохранятся.</translation>
+    </message>
+    <message>
+        <source>Enable</source>
+        <translation>Включить</translation>
+    </message>
+    <message>
+        <source>Update connection</source>
+        <translation>Обновить подключение</translation>
+    </message>
+    <message>
+        <source>Keep the device key and local routing settings</source>
+        <translation>Сохранить ключ устройства и локальные правила маршрутизации</translation>
+    </message>
 </context>
 <context>
     <name>PageSettingsServerInfo</name>
@@ -5259,6 +5291,22 @@ Create one from the current settings.</source>
     <message>
         <source>Update</source>
         <translation>Обновить</translation>
+    </message>
+    <message>
+        <source>Publish connection settings</source>
+        <translation>Опубликовать настройки подключения</translation>
+    </message>
+    <message>
+        <source>Publish connection settings?</source>
+        <translation>Опубликовать настройки подключения?</translation>
+    </message>
+    <message>
+        <source>Recipients of updatable profiles will receive the current server address and protocol parameters. Their device keys and local routing rules will be kept.</source>
+        <translation>Получатели обновляемых профилей получат текущий адрес сервера и параметры протокола. Их ключи устройств и локальные правила маршрутизации сохранятся.</translation>
+    </message>
+    <message>
+        <source>Publish</source>
+        <translation>Опубликовать</translation>
     </message>
 </context>
 <context>
@@ -6222,6 +6270,26 @@ Create one from the current settings.</source>
         <location filename="../ui/qml/Pages2/PageShare.qml" line="168"/>
         <source>Cancel</source>
         <translation>Отменить</translation>
+    </message>
+    <message>
+        <source>Allow connection updates</source>
+        <translation>Разрешить обновления подключения</translation>
+    </message>
+    <message>
+        <source>The recipient keeps their device key and local routing settings. Requires a compatible Amnezia app.</source>
+        <translation>Ключ устройства и локальные правила маршрутизации получателя сохранятся. Требуется совместимое приложение Amnezia.</translation>
+    </message>
+    <message>
+        <source>Revoke update token</source>
+        <translation>Отозвать токен обновлений</translation>
+    </message>
+    <message>
+        <source>Revoke update token?</source>
+        <translation>Отозвать токен обновлений?</translation>
+    </message>
+    <message>
+        <source>This stops future settings updates. VPN access stays active until you revoke the user.</source>
+        <translation>Новые настройки перестанут поступать. Доступ к VPN сохранится, пока вы не отзовёте доступ пользователя.</translation>
     </message>
 </context>
 <context>
@@ -7297,6 +7365,10 @@ FileZilla или другие SFTP-клиенты, а также смонтир�
         <source>The update result could not be confirmed. Check the server over SSH before retrying. Update logs and recovery data are stored in /var/lib/amnezia/updates.</source>
         <translation>Не удалось подтвердить результат обновления. Перед повторной попыткой проверьте сервер через SSH. Журналы обновления и данные для восстановления находятся в /var/lib/amnezia/updates.</translation>
     </message>
+    <message>
+        <source>VPN access revoked. The update token could not be revoked yet. Retry setup or publish settings when the update service is available.</source>
+        <translation>Доступ к VPN отозван. Токен обновлений пока не удалось отозвать. Повторите настройку или публикацию, когда сервис обновлений будет доступен.</translation>
+    </message>
 </context>
 <context>
     <name>RadioItemType</name>
@@ -7754,6 +7826,57 @@ Remove the server from the app to continue.</source>
         <location filename="../ui/qml/main2.qml" line="320"/>
         <source>Cannot remove server during active connection</source>
         <translation>Невозможно удалить сервер во время активного соединения</translation>
+    </message>
+</context>
+<context>
+    <name>ConnectionUpdatesController</name>
+    <message>
+        <source>Disconnect the VPN before managing connection updates.</source>
+        <translation>Отключите VPN перед управлением обновлениями подключений.</translation>
+    </message>
+    <message>
+        <source>Server access is unavailable.</source>
+        <translation>Нет доступа к серверу.</translation>
+    </message>
+    <message>
+        <source>Connection updates support WireGuard and AWG 2/3 profiles.</source>
+        <translation>Обновления подключений поддерживаются для профилей WireGuard и AWG 2/3.</translation>
+    </message>
+    <message>
+        <source>Set a valid VPN server address first.</source>
+        <translation>Сначала укажите корректный адрес VPN-сервера.</translation>
+    </message>
+    <message>
+        <source>Connection update operation failed. The existing VPN profile was kept.</source>
+        <translation>Не удалось выполнить операцию обновления. Текущий профиль VPN сохранён.</translation>
+    </message>
+    <message>
+        <source>The profile changed during installation. Run setup again to load the server keys.</source>
+        <translation>Профиль изменился во время установки. Повторите настройку, чтобы загрузить ключи сервера.</translation>
+    </message>
+    <message>
+        <source>Connection updates enabled on TCP port 8443. Allow this port in your VPS firewall.</source>
+        <translation>Обновления подключений включены на TCP-порту 8443. Разрешите этот порт в межсетевом экране VPS.</translation>
+    </message>
+    <message>
+        <source>Connection settings published.</source>
+        <translation>Настройки подключения опубликованы.</translation>
+    </message>
+    <message>
+        <source>Update token revoked. Use Revoke access to also disable the VPN peer.</source>
+        <translation>Токен обновлений отозван. Чтобы отключить доступ к VPN, отзовите доступ пользователя.</translation>
+    </message>
+    <message>
+        <source>Disconnect the VPN before updating this connection.</source>
+        <translation>Отключите VPN перед обновлением подключения.</translation>
+    </message>
+    <message>
+        <source>Connection updated. Your device key and local routing settings were kept.</source>
+        <translation>Подключение обновлено. Ключ устройства и локальные правила маршрутизации сохранены.</translation>
+    </message>
+    <message>
+        <source>Could not verify the connection update. The existing profile was kept.</source>
+        <translation>Не удалось проверить обновление подключения. Текущий профиль сохранён.</translation>
     </message>
 </context>
 </TS>
