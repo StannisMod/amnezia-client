@@ -1,0 +1,3 @@
+FROM amnezia-local-qt-tests
+RUN apt-get update && apt-get install -y --no-install-recommends pkg-config libssh-dev openssh-server openssh-client \
+    && rm -rf /var/lib/apt/lists/*
