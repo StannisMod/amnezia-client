@@ -568,8 +568,15 @@ func run() error {
 		return e
 	}
 	defer readiness.Close()
-	server := http.Server{Addr: ":8443", Handler: handler(dir, book), ReadHeaderTimeout: 5 * time.Second, WriteTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 8192, TLSConfig: &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{cert}}, ErrorLog: log.New(io.Discard, "", 0)}
+	server := deliveryHTTPServer(dir, book, cert)
 	return server.ListenAndServeTLS("", "")
+}
+func deliveryHTTPServer(dir string, book *readinessBook, certificate tls.Certificate) *http.Server {
+	return &http.Server{Addr: ":8443", Handler: handler(dir, book),
+		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second,
+		WriteTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 8192,
+		TLSConfig: &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{certificate}},
+		ErrorLog:  log.New(io.Discard, "", 0)}
 }
 func main() {
 	if e := run(); e != nil {

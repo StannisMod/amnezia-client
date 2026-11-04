@@ -113,7 +113,9 @@ Receipts live only in the server's memory for up to 24 hours and are invalidated
 by token revocation or changed settings. A restart clears them. A private root-only
 Unix socket in a bounded `/run/amnezia-updates` tmpfs lets the SSH CLI query counts;
 there is no network administration endpoint. The data volume and serving root
-filesystem remain read-only. Old basic subscription clients/servers still exchange
+filesystem remain read-only. Both header and full-request read deadlines bound
+slow/incomplete acknowledgement bodies; token holders cannot retain handler slots
+indefinitely by withholding upload bytes. Old basic subscription clients/servers still exchange
 schema-v1 signed settings, but cannot satisfy this new rollout readiness gate.
 
 ## Validation
