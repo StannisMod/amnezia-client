@@ -63,3 +63,8 @@ bash scripts/local-tests/connection-updates-deploy.sh rollout
 It checks device-key readiness, unchanged identities, protected fresh traffic and
 rollback after signed publication. The full SDK wrapper also supports linked Git
 worktrees using a private copy of their Git metadata; host metadata stays read-only.
+
+Generic Apple CI and the unsigned iPhoneOS ARM64 build use the standard
+`macos-15-intel` host when the hosted ARM64 pool cannot acquire runners.
+Native ARM64 race-CAS/performance diagnostics stay in `routing-performance.yml`;
+they are not replaced by Intel measurements.
