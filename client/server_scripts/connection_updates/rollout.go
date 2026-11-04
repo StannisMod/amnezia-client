@@ -96,7 +96,7 @@ func (e *rolloutEngine) feed(ctx context.Context, action string, req request) (m
 	if json.Unmarshal(out, &result) != nil {
 		return nil, errors.New("invalid delivery response")
 	}
-	if action == "publish" || action == "publish-if" {
+	if action == "publish" || action == "publish-if" || action == "publish-if-live" {
 		var ok bool
 		if json.Unmarshal(result["ok"], &ok) != nil || !ok {
 			return nil, errors.New("publication not confirmed")
@@ -456,7 +456,7 @@ func (e *rolloutEngine) execute(ctx context.Context) (result rolloutResult) {
 		if json.Unmarshal(info["stateTag"], &tag) != nil {
 			return
 		}
-		if _, err = e.feed(ctx, "publish-if", request{Container: rolloutContainer, Settings: e.oldSettings, ExpectedState: tag}); err != nil {
+		if _, err = e.feed(ctx, "publish-if-live", request{Container: rolloutContainer, Settings: e.oldSettings, ExpectedState: tag, ClientPublicKeys: peers}); err != nil {
 			result.Reason = "publication_failed"
 			return
 		}
@@ -577,7 +577,7 @@ func (e *rolloutEngine) execute(ctx context.Context) (result rolloutResult) {
 		return
 	}
 	e.publicationAttempted = true
-	if _, err = e.feed(ctx, "publish-if", request{Container: rolloutContainer, Settings: newSettings, ExpectedState: expectedTag}); err != nil {
+	if _, err = e.feed(ctx, "publish-if-live", request{Container: rolloutContainer, Settings: newSettings, ExpectedState: expectedTag, ClientPublicKeys: peers}); err != nil {
 		result.Reason = "publication_failed"
 		return
 	}

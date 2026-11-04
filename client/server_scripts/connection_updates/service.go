@@ -37,6 +37,7 @@ import (
 
 const maxState = 4 << 20
 const maxSettings = 32 << 10
+const maxAdminRequest = maxState + maxSettings
 const payloadType = "amnezia-connection-update"
 
 var idPattern = regexp.MustCompile(`^[a-f0-9]{32}$`)
@@ -243,7 +244,7 @@ func stateTag(s *state) string {
 	return hex.EncodeToString(digest[:])
 }
 func info(s *state) map[string]any {
-	return map[string]any{"version": 1, "stateTag": stateTag(s), "features": []string{"coverage-v1", "conditional-publication-v1", "awg3-header-protection-v1", "rollout-readiness-v1"}, "host": s.Host, "publicKey": []byte(ed25519.PrivateKey(s.SigningKey).Public().(ed25519.PublicKey)), "certificate": s.Certificate}
+	return map[string]any{"version": 1, "stateTag": stateTag(s), "features": []string{"coverage-v1", "conditional-publication-v1", "awg3-header-protection-v1", "rollout-readiness-v1", "live-publication-v1"}, "host": s.Host, "publicKey": []byte(ed25519.PrivateKey(s.SigningKey).Public().(ed25519.PublicKey)), "certificate": s.Certificate}
 }
 func probe(s *state) error {
 	certificate, e := x509.ParseCertificate(s.Certificate)
@@ -357,15 +358,33 @@ func admin(dir, command string, req request) (map[string]any, error) {
 		out["missing"] = missing
 		out["covered"] = len(seen) - missing
 		return out, nil
-	case "publish", "publish-if":
-		if command == "publish-if" && (req.ExpectedState == "" || req.ExpectedState != stateTag(s)) {
+	case "publish", "publish-if", "publish-live", "publish-if-live":
+		if strings.HasPrefix(command, "publish-if") && (req.ExpectedState == "" || req.ExpectedState != stateTag(s)) {
 			return nil, errors.New("subscription state changed")
 		}
 		if e = settingsOK(req.Settings, req.Container); e != nil {
 			return nil, e
 		}
+		liveOnly := strings.HasSuffix(command, "-live")
+		peers := map[string]bool{}
+		if liveOnly {
+			if req.ClientPublicKeys == nil {
+				return nil, errors.New("live peer list required")
+			}
+			for _, key := range req.ClientPublicKeys {
+				if !keyOK(key) {
+					return nil, errors.New("invalid live peer key")
+				}
+				peers[key] = true
+			}
+		}
 		for id, r := range s.Records {
 			if r.Container == req.Container && !r.Revoked {
+				if liveOnly && !peers[r.ClientPublicKey] {
+					r.Revoked = true
+					s.Records[id] = r
+					continue
+				}
 				if r.Revision == ^uint64(0) {
 					return nil, errors.New("revision exhausted")
 				}
@@ -507,7 +526,7 @@ func run() error {
 		command = os.Args[1]
 	}
 	if command == "activate-awg3" {
-		b, e := io.ReadAll(io.LimitReader(os.Stdin, 65537))
+		b, e := io.ReadAll(io.LimitReader(os.Stdin, maxAdminRequest+1))
 		if e != nil {
 			return errors.New("invalid request")
 		}
@@ -521,8 +540,8 @@ func run() error {
 		return json.NewEncoder(os.Stdout).Encode(result)
 	}
 	if command != "serve" {
-		b, e := io.ReadAll(io.LimitReader(os.Stdin, 65537))
-		if e != nil || len(b) > 65536 {
+		b, e := io.ReadAll(io.LimitReader(os.Stdin, maxAdminRequest+1))
+		if e != nil || len(b) > maxAdminRequest {
 			return errors.New("invalid request")
 		}
 		var req request

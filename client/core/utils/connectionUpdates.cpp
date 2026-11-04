@@ -58,6 +58,14 @@ bool identityMatches(const QJsonObject &client)
         && pub == QByteArray(reinterpret_cast<char *>(derived), 32);
 }
 }
+bool parsePeerList(const QString &output, QStringList &peers)
+{
+    const QString marker = "\namnezia_peers=ok\n";
+    if (!output.endsWith(marker)) return false;
+    const auto values = output.left(output.size() - marker.size()).split(QRegularExpression("\\s+"), Qt::SkipEmptyParts);
+    for (const auto &key : values) if (decode(key, 32).isEmpty()) return false;
+    peers = values; return true;
+}
 QJsonObject invitationMetadata(const QJsonObject &administratorMetadata)
 {
     QJsonObject result;

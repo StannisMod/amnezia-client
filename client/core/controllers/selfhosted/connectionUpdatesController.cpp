@@ -105,10 +105,10 @@ ErrorCode ConnectionUpdatesController::fetchPublicSettings(const ServerCredentia
     }
     if (peers) {
         output.clear();
-        error = ssh.runScript(credentials, QString("sudo docker exec %1 %2 show %3 peers").arg(name, binary, iface),
+        error = ssh.runScript(credentials, QString("sudo docker exec %1 %2 show %3 peers && printf '\\namnezia_peers=ok\\n'").arg(name, binary, iface),
             [&](const QString &data, libssh::Client &) { output += data; return ErrorCode::NoError; });
         if (error != ErrorCode::NoError) return error;
-        *peers = output.split(QRegularExpression("\\s+"), Qt::SkipEmptyParts);
+        if (!connectionUpdates::parsePeerList(output, *peers)) return ErrorCode::InternalError;
     }
     settings = candidate; return ErrorCode::NoError;
 }
@@ -124,7 +124,7 @@ bool ConnectionUpdatesController::enabled(const QString &id) const
 }
 ErrorCode ConnectionUpdatesController::command(const ServerCredentials &credentials, const QString &action, const QJsonObject &request, QJsonObject &response)
 {
-    if (action != "issue" && action != "publish" && action != "revoke" && action != "info") return ErrorCode::InternalError;
+    if (action != "issue" && action != "publish" && action != "publish-live" && action != "revoke" && action != "info") return ErrorCode::InternalError;
     SshSession ssh;
     const auto path = "/tmp/amnezia-update-request-" + QUuid::createUuid().toString(QUuid::Id128);
     auto error = ssh.runScript(credentials, "umask 077 && mkdir '" + path + "'");
@@ -165,6 +165,9 @@ void ConnectionUpdatesController::administer(const QString &id, const QString &a
     connect(watcher, &QFutureWatcher<AdminResult>::finished, this, [this, watcher, id, action, original] {
         const auto result = watcher->result(); watcher->deleteLater(); setBusy(false);
         if (result.error != ErrorCode::NoError) { emit finished(false, tr("Connection update operation failed. The existing VPN profile was kept.")); return; }
+        if (result.outcome == "upgrade_required") {
+            emit finished(false, tr("Run Set up connection updates again to upgrade the delivery service without changing issued tokens.")); return;
+        }
         if (action == "activate-awg3") {
             if (result.outcome != "applied") {
                 QString message;
@@ -229,13 +232,24 @@ void ConnectionUpdatesController::administer(const QString &id, const QString &a
         }
         result.error = flushPendingRevocations(credentials, admin->connectionUpdates);
         if (result.error != ErrorCode::NoError) return result;
+        if (action == "publish") {
+            QJsonObject info; result.error = command(credentials, "info", {}, info);
+            if (result.error != ErrorCode::NoError) return result;
+            if (info.value("publicKey") != admin->connectionUpdates.value("publicKey") || info.value("certificate") != admin->connectionUpdates.value("certificate")) {
+                result.error = ErrorCode::InternalError; return result;
+            }
+            if (!info.value("features").toArray().contains("live-publication-v1")) {
+                result.outcome = "upgrade_required"; return result;
+            }
+        }
         if (action == "activate-awg3") {
             result.error = ErrorCode::NoError; result.outcome = "rejected";
             QJsonObject info;
             const auto infoError = command(credentials, "info", {}, info);
             if (infoError != ErrorCode::NoError) { result.error = infoError; return result; }
             if (!info.value("features").toArray().contains("awg3-header-protection-v1")
-                || !info.value("features").toArray().contains("rollout-readiness-v1")) {
+                || !info.value("features").toArray().contains("rollout-readiness-v1")
+                || !info.value("features").toArray().contains("live-publication-v1")) {
                 result.reason = "delivery_service_upgrade_required"; return result;
             }
             const auto client = admin->containerConfig(container).protocolConfig.getClientConfigJson();
@@ -267,12 +281,14 @@ void ConnectionUpdatesController::administer(const QString &id, const QString &a
         QJsonObject request { { "container", ContainerUtils::containerToString(container) } };
         if (action == "revoke") request["clientPublicKey"] = clientKey;
         else {
-            QJsonObject settings;
-            result.error = fetchPublicSettings(credentials, container, host, settings);
+            QJsonObject settings; QStringList peers;
+            result.error = fetchPublicSettings(credentials, container, host, settings, &peers);
             if (result.error != ErrorCode::NoError) return result;
             request["settings"] = settings;
+            request["clientPublicKeys"] = QJsonArray::fromStringList(peers);
         }
-        result.error = command(credentials, action, request, result.metadata); return result;
+        const auto remoteAction = action == "publish" ? QString("publish-live") : action;
+        result.error = command(credentials, remoteAction, request, result.metadata); return result;
     }));
 }
 void ConnectionUpdatesController::refresh(const QString &id) { fetch(id, true); }

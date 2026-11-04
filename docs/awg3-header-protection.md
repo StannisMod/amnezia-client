@@ -68,7 +68,11 @@ never receives the host Docker socket. The orchestrator:
   Only known explicit-zero defaults, off flags and roaming peer endpoints are
   normalized; identities and peer AllowedIPs/PSKs remain strict.
 - Publishes the new public parameters atomically to active subscriptions, using
-  a state tag to reject an intervening token/publication change.
+  a state tag to reject an intervening token/publication change. In that same
+  commit it revokes tokens for identities absent from the actual VPN interface;
+  removed peers cannot receive the new shared protection parameters, even when
+  a previous local revocation retry was lost. Ordinary publication also uses the
+  authoritative peer list. Rollback never resurrects these revoked tokens.
 
 Failure restores the original saved configuration, restarts the original daemon
 and verifies the old effective configuration. If publication may have happened,

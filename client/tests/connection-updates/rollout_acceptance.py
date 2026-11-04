@@ -133,7 +133,7 @@ def main():
         wrappers.mkdir()
         actual_docker = shutil.which("docker")
         wrapper = wrappers / "docker"
-        wrapper.write_text("#!/usr/bin/env python3\nimport os,subprocess,sys\nreal=" + repr(actual_docker) + "\nargs=sys.argv[1:]\nif args and args[0]=='run' and args[-1]=='publish-if':\n result=subprocess.run([real,*args],stdin=sys.stdin.buffer)\n sys.exit(42 if result.returncode==0 else result.returncode)\nos.execv(real,[real,*args])\n")
+        wrapper.write_text("#!/usr/bin/env python3\nimport os,subprocess,sys\nreal=" + repr(actual_docker) + "\nargs=sys.argv[1:]\nif args and args[0]=='run' and args[-1] in ('publish-if','publish-if-live'):\n result=subprocess.run([real,*args],stdin=sys.stdin.buffer)\n sys.exit(42 if result.returncode==0 else result.returncode)\nos.execv(real,[real,*args])\n")
         wrapper.chmod(0o755)
         environment = dict(os.environ, PATH=str(wrappers) + os.pathsep + os.environ["PATH"])
         failed = subprocess.run([str(host_binary), "activate-awg3"], input=json.dumps(request), text=True, capture_output=True, env=environment, check=True)

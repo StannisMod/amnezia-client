@@ -287,3 +287,56 @@ func TestRejectsMalformedEndpointBeforePublishing(t *testing.T) {
 		}
 	}
 }
+
+func TestLivePublicationRevokesRemovedPeersAtomically(t *testing.T) {
+	dir := t.TempDir()
+	mustAdmin(t, dir, "init", request{Host: "127.0.0.1"})
+	a := request{Container: "amnezia-awg2", ClientPublicKey: testKey('A'), Settings: testSettings("vpn.example.test")}
+	b := a
+	b.ClientPublicKey = testKey('B')
+	mustAdmin(t, dir, "issue", a)
+	mustAdmin(t, dir, "issue", b)
+	wg := a
+	wg.Container = "amnezia-wireguard"
+	mustAdmin(t, dir, "issue", wg)
+	info := mustAdmin(t, dir, "info", request{})
+	tag := info["stateTag"].(string)
+	if _, e := admin(dir, "publish-if-live", request{Container: a.Container, Settings: a.Settings, ExpectedState: tag}); e == nil {
+		t.Fatal("missing authoritative peer list accepted")
+	}
+	mustAdmin(t, dir, "publish-if-live", request{Container: a.Container, Settings: testSettings("vpn2.example.test"), ExpectedState: tag, ClientPublicKeys: []string{a.ClientPublicKey}})
+	state, e := readState(dir)
+	if e != nil {
+		t.Fatal(e)
+	}
+	for _, rec := range state.Records {
+		if rec.Container == "amnezia-wireguard" {
+			if rec.Revoked || rec.Revision != 1 {
+				t.Fatal("other protocol was changed")
+			}
+			continue
+		}
+		if rec.ClientPublicKey == a.ClientPublicKey {
+			if rec.Revoked || rec.Revision != 2 {
+				t.Fatal("live peer not updated")
+			}
+		} else if !rec.Revoked || rec.Revision != 1 {
+			t.Fatal("removed peer received new configuration")
+		}
+	}
+	// Rollback changes parameters, never resurrects access to revoked feeds.
+	mustAdmin(t, dir, "publish", request{Container: a.Container, Settings: a.Settings})
+	state, _ = readState(dir)
+	for _, rec := range state.Records {
+		if rec.Container == a.Container && rec.ClientPublicKey == b.ClientPublicKey && !rec.Revoked {
+			t.Fatal("rollback resurrected removed peer")
+		}
+	}
+	mustAdmin(t, dir, "publish-live", request{Container: a.Container, Settings: a.Settings, ClientPublicKeys: []string{}})
+	state, _ = readState(dir)
+	for _, rec := range state.Records {
+		if rec.Container == a.Container && !rec.Revoked {
+			t.Fatal("empty live interface retained an active token")
+		}
+	}
+}

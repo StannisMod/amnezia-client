@@ -104,6 +104,16 @@ private slots:
         auto zero = payload(profile()); zero["ackChallenge"] = QString::fromLatin1(QByteArray(32, '\0').toBase64());
         QVERIFY(connectionUpdates::readinessProof(profile(), sign(zero), 2000000001).isEmpty());
     }
+    void peerListRequiresSuccessfulTerminalMarker()
+    {
+        const auto pub = QString::fromLatin1(publicKey(deviceSeed, EVP_PKEY_X25519).toBase64());
+        QStringList peers { "keep" };
+        QVERIFY(!connectionUpdates::parsePeerList("", peers)); QCOMPARE(peers, QStringList { "keep" });
+        QVERIFY(!connectionUpdates::parsePeerList(pub + "\n", peers));
+        QVERIFY(!connectionUpdates::parsePeerList("bad-key\n\namnezia_peers=ok\n", peers));
+        QVERIFY(connectionUpdates::parsePeerList(pub + "\n\namnezia_peers=ok\n", peers)); QCOMPARE(peers, QStringList { pub });
+        QVERIFY(connectionUpdates::parsePeerList("\namnezia_peers=ok\n", peers)); QVERIFY(peers.isEmpty());
+    }
     void goInteroperability()
     {
         QFile file(QStringLiteral(":/connection-updates/interop.json")); QVERIFY(file.open(QIODevice::ReadOnly));

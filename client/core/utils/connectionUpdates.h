@@ -4,10 +4,12 @@
 #include <QJsonObject>
 #include <QByteArray>
 #include <QString>
+#include <QStringList>
 
 namespace amnezia::connectionUpdates {
 inline constexpr char metadataKey[] = "connectionUpdates";
 // All outputs are assigned only after full authentication and validation.
+bool parsePeerList(const QString &output, QStringList &peers);
 bool validateProfile(const QJsonObject &profile);
 QJsonObject invitationMetadata(const QJsonObject &administratorMetadata);
 QJsonObject publicSettings(const QJsonObject &client, bool awg);

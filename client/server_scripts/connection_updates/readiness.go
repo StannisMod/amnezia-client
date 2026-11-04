@@ -179,7 +179,7 @@ func serveReadiness(path, dir string, book *readinessBook) (net.Listener, error)
 				defer c.Close()
 				_ = c.SetDeadline(time.Now().Add(5 * time.Second))
 				var req request
-				if json.NewDecoder(io.LimitReader(c, 65537)).Decode(&req) != nil {
+				if json.NewDecoder(io.LimitReader(c, maxAdminRequest+1)).Decode(&req) != nil {
 					return
 				}
 				s, e := readState(dir)

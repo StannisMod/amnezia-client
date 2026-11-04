@@ -167,6 +167,12 @@ ExportController::ExportResult ExportController::generateConnectionUpdates(const
     if (!admin || !admin->credentials().isValid() || !admin->containers.contains(container)
         || (container != DockerContainer::WireGuard && container != DockerContainer::Awg2)
         || admin->connectionUpdates.value("version").toInt() != 1) { result.errorCode = ErrorCode::InternalError; return result; }
+    QJsonObject info;
+    result.errorCode = ConnectionUpdatesController::command(admin->credentials(), "info", {}, info);
+    if (result.errorCode != ErrorCode::NoError) return result;
+    if (info.value("publicKey") != admin->connectionUpdates.value("publicKey") || info.value("certificate") != admin->connectionUpdates.value("certificate")) {
+        result.errorCode = ErrorCode::InternalError; return result;
+    }
     const auto host = vpnEndpoint::normalizeHost(admin->vpnHostName.isEmpty() ? admin->hostName : admin->vpnHostName);
     QJsonObject settings; QStringList peers;
     result.errorCode = ConnectionUpdatesController::fetchPublicSettings(admin->credentials(), container, host, settings, &peers);

@@ -51,7 +51,7 @@ func (f *fakeRolloutDocker) call(ctx context.Context, args []string, input []byt
 			f.t.Fatal("invalid request")
 		}
 		action := args[len(args)-1]
-		if action == "publish-if" && f.fail == "before-publication" {
+		if (action == "publish-if" || action == "publish-if-live") && f.fail == "before-publication" {
 			return nil, errors.New("injected")
 		}
 		result, err := admin(f.stateDir, action, req)
@@ -59,7 +59,7 @@ func (f *fakeRolloutDocker) call(ctx context.Context, args []string, input []byt
 			return nil, err
 		}
 		raw, err := json.Marshal(result)
-		if action == "publish-if" {
+		if action == "publish-if" || action == "publish-if-live" {
 			f.published = true
 			if f.fail == "after-publication" {
 				return nil, errors.New("lost response")
