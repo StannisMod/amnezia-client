@@ -1,7 +1,7 @@
 # Protocol software updates
 
 Self-hosted administrators can select **Update protocol** in the protocol page
-for a standard WireGuard or AmneziaWG 3 container. Disconnect the local VPN
+for a standard WireGuard or AmneziaWG 2/3 container. Disconnect the local VPN
 first; this also avoids losing the management SSH connection during cutover.
 The operation runs off the UI thread and blocks repeated requests in this client.
 Plan a maintenance window: all peers briefly lose connectivity at cutover.
@@ -16,12 +16,17 @@ the domain endpoint introduced in PR #7 remains unchanged.
 1. Require a running VPN interface and a standard container layout: default
    bridge networking, one UDP port published unchanged on all IPv4 interfaces,
    no custom mounts other than `/lib/modules`, and a supported restart policy.
-   AmneziaWG additionally requires the AWG 3 header protection parameter on the
-   server, regardless of the version recorded in the client.
+   AmneziaWG accepts existing AWG 3 settings or AWG 2 parameters (S3/S4 or header
+   ranges). The live server configuration is authoritative, not cached version
+   metadata. AWG 2 migration additionally requires a userspace TUN interface;
+   kernel-module installations are rejected before the build/stop phase.
 2. Record the original Docker metadata and tool versions (also the userspace
    daemon version for AWG). Build the bundled Dockerfile with `--pull` while the
    original VPN keeps serving. Record the target versions and immutable image ID.
    An unsupported/missing binary or failed build leaves the original running.
+   For AWG 2 migration, the candidate daemon must identify its main Go module
+   as AWG 3. This avoids treating an old/mistagged image as a completed migration;
+   a missing build identity is rejected before the old VPN is stopped.
 3. Disable automatic restart of the old container, stop it, and copy the entire
    `/opt/amnezia` tree, including keys, protocol parameters, peer config,
    `clientsTable`, and the already configured startup script. Reject concurrent
@@ -31,7 +36,9 @@ the domain endpoint introduced in PR #7 remains unchanged.
    networks. No new key material is generated.
 5. Require a live VPN interface and an effective `showconf` matching the original
    runtime. Compare each peer's PSK/allowed IPs with its public key, ignoring only
-   roaming endpoints and ordering. Repeat validation after a container restart.
+   roaming endpoints and ordering. Explicit `RandomTrailers = off` and
+   `DisableCookies = off` from new tools are equivalent to absent legacy fields;
+   enabled values are still compared. Repeat validation after a container restart.
 6. Restore the original restart policy. Keep the stopped original container and
    protected on-server snapshot for recovery; do not prune them automatically.
 
@@ -61,9 +68,20 @@ and containers require manual cleanup after acceptance, and consume disk space.
 
 ## Compatibility and validation
 
-The first version supports updates within the existing WireGuard/AWG 3 settings.
-It does **not** migrate AWG 1/2 to AWG 3, replace protocol parameters, or deliver
-new configs to clients. Version strings are recorded for diagnosis; readiness is
+AWG 2 userspace servers can update to the bundled AWG 3 software while retaining
+their AWG 2-compatible wire settings. The container name, protocol/profile version,
+all keys, peers, startup script and client profiles stay the same. The existing
+and replacement interfaces must remain userspace interfaces, including after a
+restart. This does not upgrade the host kernel module or support the separate
+legacy `amnezia-awg` (1.x) container.
+
+Updating software does **not** activate HeaderProtectionKey or other AWG 3
+protections. Enabling them requires a separate configuration rollout to supporting
+clients; that rollout is outside this compatible update. An AWG 2 version label in
+the client still describes its preserved protocol parameters, not the daemon's
+software release. No local version metadata or cached profile is rewritten.
+
+Version strings are recorded for diagnosis; readiness is
 based on successful configuration application, identity preservation and restart,
 not a comparison of upstream version labels (the AWG daemon uses a date version).
 Custom container layouts and stopped/broken source containers are rejected.
@@ -81,3 +99,13 @@ checks every state file, and injects an image that stays running without a VPN
 interface to verify rollback and restored client traffic. Full product builds
 remain necessary to validate the C++/QML integration on supported platforms.
 See `scripts/local-tests/README.md` for local Qt, VPN and full Linux build commands.
+
+The `awg2` acceptance cases build the real daemon v0.2.19
+(`1cc94272ca8e9e223a5fe76382f5880f09d3c12d`) and tools v1.0.20250901
+(`5e882890fbca2316f8ca40e992789d24f67f0118`). Two profiles cover fixed headers and
+padding, and header ranges/zero padding/I1. The fixture selects userspace in
+awg-quick explicitly, independent of host modules; the production startup script
+and updater run as shipped. A live AWG 2 client must survive server replacement,
+then pass a fresh handshake with its original profile, and pass traffic again
+after a failed replacement rolls back. The client daemon binary/profile and
+server state are checked unchanged; no production VPS is involved.
