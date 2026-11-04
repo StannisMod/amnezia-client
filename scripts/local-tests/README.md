@@ -9,7 +9,10 @@ bash scripts/local-tests/build-full.sh
 
 The first command runs the production-shell fault-injection tests, Qt endpoint
 and routing contract tests, and real WireGuard/AWG update/rollback acceptance.
-Use `qt`, `vpn`, `wireguard` or `awg` instead of `all` to select a suite.
+Use `qt`, `vpn`, `wireguard`, `awg` or `awg2` instead of `all` to select a suite.
+`awg2` runs both real AWG 2-to-3 compatible-update profiles; `all`/`vpn` also
+include standard WireGuard and protected AWG 3 updates. The old daemon/tools are
+built from pinned source commits in `client/tests/protocol-update/Dockerfile.awg2`.
 
 The second command builds the Linux application, service and Qt regression tests
 with Go 1.27.1 and Qt 6.10.1, then runs the regression suite. It downloads SDKs

@@ -1,0 +1,28 @@
+# Test fixture only: real AWG 2 daemon and tools on the standard container.
+ARG AWG3_BASE
+FROM golang:1.27.1-alpine AS legacy-daemon
+RUN apk add --no-cache git
+WORKDIR /source
+RUN git init && git remote add origin https://github.com/amnezia-vpn/amneziawg-go.git && \
+    git fetch --depth=1 origin 1cc94272ca8e9e223a5fe76382f5880f09d3c12d && \
+    git checkout --detach FETCH_HEAD && \
+    test "$(git rev-parse HEAD)" = 1cc94272ca8e9e223a5fe76382f5880f09d3c12d && \
+    go mod download && go mod verify && \
+    CGO_ENABLED=0 go build -trimpath -o /out/amneziawg-go .
+
+FROM alpine:3.19 AS legacy-tools
+RUN apk add --no-cache git build-base linux-headers
+WORKDIR /source
+RUN git init && git remote add origin https://github.com/amnezia-vpn/amneziawg-tools.git && \
+    git fetch --depth=1 origin 5e882890fbca2316f8ca40e992789d24f67f0118 && \
+    git checkout --detach FETCH_HEAD && \
+    test "$(git rev-parse HEAD)" = 5e882890fbca2316f8ca40e992789d24f67f0118 && \
+    make -C src
+
+FROM ${AWG3_BASE}
+COPY --from=legacy-daemon /out/amneziawg-go /usr/bin/amneziawg-go
+COPY --from=legacy-tools /source/src/wg /usr/bin/awg
+COPY --from=legacy-tools /source/src/wg-quick/linux.bash /usr/bin/awg-quick
+# Select userspace explicitly in this fixture, even on hosts with a kernel
+# module. The updater separately checks tun_flags on old/replacement interfaces.
+RUN sed -i '/^add_if() {$/,/^}$/c\add_if() {\n\tcmd amneziawg-go "$INTERFACE"\n}' /usr/bin/awg-quick

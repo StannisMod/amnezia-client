@@ -19,9 +19,15 @@ jobs:
       fail-fast: false
       matrix:
         kind: [wireguard, awg]
+        legacy_profile: [basic]
+        include:
+          - kind: awg2
+            legacy_profile: basic
+          - kind: awg2
+            legacy_profile: ranges
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - name: Existing-client traffic through update and automatic rollback
-        run: python3 client/tests/protocol-update/acceptance.py --kind '${{ matrix.kind }}'
+        run: python3 client/tests/protocol-update/acceptance.py --kind '${{ matrix.kind }}' --legacy-profile '${{ matrix.legacy_profile }}'

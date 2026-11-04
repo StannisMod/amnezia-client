@@ -98,7 +98,7 @@ ColumnLayout {
         visible: root.outdatedWarningVisible
 
         variant: NotificationType.Warning
-        text: qsTr("AmneziaWG 2.0 is outdated and no longer supported. Continued use requires a fresh installation of the AmneziaWG 3.1 container.")
+        text: qsTr("Older AWG settings are in use. Check protocol settings for software update options. New AWG 3 protections require updating client configurations.")
     }
 
     HomeInfoButton {

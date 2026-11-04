@@ -71,12 +71,22 @@ def docker():
         c = containers[lookup(a[1])]
         if a[2] == "cat":
             out = s.get("disk_conf", CONF)
+        elif a[2] == "test":
+            if s.get("kernel") or (c["identity"] == "new" and failure == "kernel-replacement"):
+                code = 1
         elif a[3] == "--version":
             out = "tools v1.0.test"
         elif a[3] == "show":
             code = 0 if c["running"] and c.get("healthy", True) else 1
         elif a[3] == "showconf":
-            out = CONF
+            out = s.get("disk_conf", CONF)
+            if c["identity"] == "new" and failure == "enable-protection":
+                out = out.replace("[Peer]", "HeaderProtectionKey = unexpected\n[Peer]", 1)
+            if c["identity"] == "new" and failure in ("off-defaults", "enable-trailers"):
+                flags = "RandomTrailers = off\nDisableCookies = off\n"
+                if failure == "enable-trailers":
+                    flags = flags.replace("RandomTrailers = off", "RandomTrailers = on")
+                out = out.replace("[Peer]", flags + "[Peer]", 1)
             if c["identity"] == "new" and failure == "peer-loss":
                 out = out.replace("PresharedKey = alice-psk", "PresharedKey = WRONG")
             if c["identity"] == "new" and failure == "swap-peers":
@@ -86,7 +96,10 @@ def docker():
     elif cmd == "image":
         out = "sha256:candidate"
     elif cmd == "run":
-        out = "tools v1.0.test"
+        if "-c" in a:
+            code = 1 if failure == "old-target" else 0
+        else:
+            out = "tools v1.0.test"
     elif cmd == "build":
         assert containers[name]["running"], "old VPN must serve throughout build"
     elif cmd == "update":
@@ -220,10 +233,37 @@ class TransactionTest(unittest.TestCase):
     def test_rollback_failure_is_reported(self):
         self.assertEqual(self.run_case("rollback-failure")[0], "rollback_failed")
 
-    def test_legacy_awg_is_rejected_before_build(self):
+    def test_awg1_settings_are_rejected_before_build(self):
         result, s = self.run_case(kind="awg", disk_conf=CONF.replace("HeaderProtectionKey = protection\n", ""))
         self.assertEqual(result, "rejected")
         self.assertFalse(any(a[0] in ("build", "stop") for a in s["calls"]))
+
+    def test_awg2_settings_are_preserved_without_enabling_protection(self):
+        for settings in ("S3 = 0\nS4 = 0\n", "H1 = 1001-1010\n"):
+            config = CONF.replace("HeaderProtectionKey = protection\n", settings)
+            with self.subTest(settings=settings):
+                result, s = self.run_case(kind="awg", disk_conf=config)
+                self.assertEqual(result, "ok", s["log"])
+                result, s = self.run_case("enable-protection", kind="awg", disk_conf=config)
+                self.assertEqual(result, "rolled_back", s["log"])
+                result, s = self.run_case("off-defaults", kind="awg", disk_conf=config)
+                self.assertEqual(result, "ok", s["log"])
+                result, s = self.run_case("enable-trailers", kind="awg", disk_conf=config)
+                self.assertEqual(result, "rolled_back", s["log"])
+
+    def test_awg2_kernel_migration_is_not_silently_claimed(self):
+        config = CONF.replace("HeaderProtectionKey = protection\n", "S3 = 0\nS4 = 0\n")
+        result, s = self.run_case(kind="awg", disk_conf=config, kernel=True)
+        self.assertEqual(result, "rejected", s["log"])
+        self.assertFalse(any(a[0] in ("build", "stop") for a in s["calls"]))
+        result, s = self.run_case("kernel-replacement", kind="awg", disk_conf=config)
+        self.assertEqual(result, "rolled_back", s["log"])
+
+    def test_awg2_target_must_actually_contain_awg3(self):
+        config = CONF.replace("HeaderProtectionKey = protection\n", "S3 = 0\nS4 = 0\n")
+        result, s = self.run_case("old-target", kind="awg", disk_conf=config)
+        self.assertEqual(result, "rejected", s["log"])
+        self.assertFalse(any(a[0] == "stop" for a in s["calls"]))
 
     def test_custom_layout_is_rejected(self):
         for options in (dict(mounts="/lib/modules\n/opt/amnezia\n"), dict(network="host"), dict(host_ip="127.0.0.1")):

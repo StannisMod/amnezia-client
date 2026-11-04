@@ -529,8 +529,8 @@
     <name>HomeServerSummary</name>
     <message>
         <location filename="../ui/qml/Components/HomeServerSummary.qml" line="101"/>
-        <source>AmneziaWG 2.0 is outdated and no longer supported. Continued use requires a fresh installation of the AmneziaWG 3.1 container.</source>
-        <translation>AmneziaWG 2.0 устарел и больше не поддерживается. Для дальнейшего использования требуется новая установка контейнера AmneziaWG 3.1.</translation>
+        <source>Older AWG settings are in use. Check protocol settings for software update options. New AWG 3 protections require updating client configurations.</source>
+        <translation>Используются прежние параметры AWG. Возможность обновления ПО можно проверить в настройках протокола. Для новых защит AWG 3 нужно обновить клиентские конфигурации.</translation>
     </message>
 </context>
 <context>
@@ -5239,6 +5239,14 @@ Create one from the current settings.</source>
     <message>
         <source>Update protocol</source>
         <translation>Обновить протокол</translation>
+    </message>
+    <message>
+        <source>Server software updates preserve the current AWG parameters and client profiles. Enabling new AWG 3 protections requires a separate update of client configurations.</source>
+        <translation>Обновление серверного ПО сохраняет текущие параметры AWG и профили клиентов. Для включения новых защит AWG 3 потребуется отдельно обновить клиентские конфигурации.</translation>
+    </message>
+    <message>
+        <source>Existing AWG 2 clients will keep using their current profiles. New AWG 3 protections will not be enabled by this software update.</source>
+        <translation>Существующие клиенты AWG 2 продолжат использовать свои профили. Это обновление ПО не включает новые защиты AWG 3.</translation>
     </message>
     <message>
         <source>Update server protocol?</source>
