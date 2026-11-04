@@ -186,6 +186,8 @@ QString errorString(ErrorCode code) {
     case(ErrorCode::FatalError): errorMessage =  QObject::tr("QFile error: A fatal error occurred"); break;
     case(ErrorCode::AbortError): errorMessage =  QObject::tr("QFile error: The operation was aborted"); break;
 
+    case(ErrorCode::ConnectionUpdateTokenRevocationPending): errorMessage = QObject::tr("VPN access revoked. The update token could not be revoked yet. Retry setup or publish settings when the update service is available."); break;
+
     // Billing errors
     case(ErrorCode::BillingCanceled): errorMessage = QObject::tr("Transaction was canceled by the user"); break;
     case(ErrorCode::BillingError): errorMessage = QObject::tr("Billing error"); break;

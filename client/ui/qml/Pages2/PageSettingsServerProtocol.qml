@@ -123,6 +123,21 @@ PageType {
                 Layout.fillWidth: true
                 Layout.leftMargin: 16
                 Layout.rightMargin: 16
+                visible: ConnectionUpdatesController.enabledServers.indexOf(ServersUiController.processedServerId) >= 0
+                    && ["awg", "wireguard"].indexOf(ContainerProps.containerTypeToString(ServersUiController.processedContainerIndex)) >= 0
+                text: qsTr("Publish connection settings")
+                onClicked: showQuestionDrawer(qsTr("Publish connection settings?"),
+                    qsTr("Recipients of updatable profiles will receive the current server address and protocol parameters. Their device keys and local routing rules will be kept."),
+                    qsTr("Publish"), qsTr("Cancel"), function() {
+                        PageController.showBusyIndicator(true)
+                        ConnectionUpdatesController.publish(ServersUiController.processedServerId, ServersUiController.processedContainerIndex)
+                    }, function() {})
+            }
+
+            ListItemType {
+                Layout.fillWidth: true
+                Layout.leftMargin: 16
+                Layout.rightMargin: 16
                 visible: !root.isUnsupportedContainer
                          && ServersUiController.isProcessedServerHasWriteAccess()
                          && ["awg", "wireguard"].indexOf(ContainerProps.containerTypeToString(ServersUiController.processedContainerIndex)) >= 0

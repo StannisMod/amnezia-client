@@ -48,6 +48,7 @@ public slots:
     ErrorCode revokeClient(const QString &serverId, const ContainerConfig &containerConfig, const DockerContainer container);
 
 private:
+    void rememberPendingUpdateRevocation(const QString &serverId, DockerContainer container, const QString &clientPublicKey);
     bool isClientExists(const QString &clientId, const QJsonArray &clientsTable);
     int clientIndexById(const QString &clientId, const QJsonArray &clientsTable);
     void migration(const QByteArray &clientsTableString, QJsonArray &clientsTable);

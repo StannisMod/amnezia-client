@@ -1,0 +1,162 @@
+#include "connectionUpdates.h"
+
+#include <QCryptographicHash>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QRegularExpression>
+#include <QSslCertificate>
+#include <QUrl>
+#include <openssl/evp.h>
+#include <memory>
+
+#include "constants/configKeys.h"
+#include "vpnEndpoint.h"
+
+namespace amnezia::connectionUpdates {
+namespace {
+using Key = std::unique_ptr<EVP_PKEY, decltype(&EVP_PKEY_free)>;
+using Context = std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)>;
+QByteArray decode(const QJsonValue &v, int size = -1)
+{
+    if (!v.isString()) return {};
+    const auto encoded = v.toString().toLatin1();
+    const auto result = QByteArray::fromBase64Encoding(encoded, QByteArray::AbortOnBase64DecodingErrors);
+    if (!result || result.decoded.toBase64() != encoded || (size >= 0 && result.decoded.size() != size)) return {};
+    return result.decoded;
+}
+bool supported(const QString &container)
+{
+    return container == "amnezia-wireguard" || container == "amnezia-awg2";
+}
+QString protocol(const QString &container) { return container == "amnezia-wireguard" ? "wireguard" : "awg"; }
+bool validSettings(const QJsonObject &s, bool awg)
+{
+    QStringList keys = { "hostName", "port", "server_pub_key" };
+    if (awg) keys += configKey::awgProtocolKeys();
+    for (auto it = s.begin(); it != s.end(); ++it) {
+        if (!keys.contains(it.key())) return false;
+        if (it.key() != "port") {
+            if (!it->isString() || it->toString().size() > 4096 || it->toString().contains(QRegularExpression("[\\x00\\r\\n]"))) return false;
+        }
+    }
+    const auto host = s.value("hostName").toString();
+    return !vpnEndpoint::normalizeHost(host).isEmpty() && host == vpnEndpoint::normalizeHost(host)
+        && s.value("port").isDouble() && s.value("port").toInt() >= 1 && s.value("port").toInt() <= 65535
+        && s.value("port").toDouble() == s.value("port").toInt() && !decode(s.value("server_pub_key"), 32).isEmpty();
+}
+bool identityMatches(const QJsonObject &client)
+{
+    const auto priv = decode(client.value(configKey::clientPrivKey), 32);
+    const auto pub = decode(client.value(configKey::clientPubKey), 32);
+    if (priv.isEmpty() || pub.isEmpty()) return false;
+    Key key(EVP_PKEY_new_raw_private_key(EVP_PKEY_X25519, nullptr,
+        reinterpret_cast<const unsigned char *>(priv.constData()), priv.size()), EVP_PKEY_free);
+    unsigned char derived[32]; size_t size = sizeof(derived);
+    return key && EVP_PKEY_get_raw_public_key(key.get(), derived, &size) == 1 && size == 32
+        && pub == QByteArray(reinterpret_cast<char *>(derived), 32);
+}
+}
+QJsonObject invitationMetadata(const QJsonObject &administratorMetadata)
+{
+    QJsonObject result;
+    for (const auto *key : { "version", "url", "certificate", "publicKey" }) result[key] = administratorMetadata.value(key);
+    return result;
+}
+QJsonObject publicSettings(const QJsonObject &client, bool awg)
+{
+    QJsonObject result;
+    QStringList keys = { "hostName", "port", "server_pub_key" };
+    if (awg) keys += configKey::awgProtocolKeys();
+    for (const auto &key : keys) if (client.contains(key)) result[key] = client.value(key);
+    return result;
+}
+bool validateProfile(const QJsonObject &profile)
+{
+    const auto m = profile.value(metadataKey).toObject();
+    if (m.value("version").toDouble(-1) != 1 || !profile.value(configKey::userName).toString().isEmpty()
+        || !profile.value(configKey::password).toString().isEmpty() || profile.contains("api_config")) return false;
+    static const QRegularExpression id("^[a-f0-9]{32}$"), token("^[A-Za-z0-9_-]{43}$"), revision("^(0|[1-9][0-9]{0,19})$");
+    if (!id.match(m.value("id").toString()).hasMatch() || !token.match(m.value("token").toString()).hasMatch()
+        || decode(m.value("publicKey"), 32).isEmpty() || !revision.match(m.value("revision").toString()).hasMatch()) return false;
+    bool ok; m.value("revision").toString().toULongLong(&ok); if (!ok) return false;
+    const QUrl url(m.value("url").toString(), QUrl::StrictMode);
+    if (!url.isValid() || url.scheme() != "https" || vpnEndpoint::normalizeHost(url.host()).isEmpty()
+        || !url.userInfo().isEmpty() || url.hasQuery() || url.hasFragment()
+        || url.path() != "/v1/connections/" + m.value("id").toString() || url.port(443) < 1 || url.port(443) > 65535) return false;
+    const auto cert = decode(m.value("certificate"));
+    if (cert.isEmpty() || cert.size() > 16384 || QSslCertificate(cert, QSsl::Der).isNull()) return false;
+    const auto containers = profile.value(configKey::containers).toArray();
+    if (containers.size() != 1) return false;
+    const auto c = containers.first().toObject(); const auto name = c.value(configKey::container).toString();
+    if (!supported(name) || m.value("container").toString() != name || profile.value(configKey::defaultContainer).toString() != name) return false;
+    const auto client = QJsonDocument::fromJson(c.value(protocol(name)).toObject().value(configKey::lastConfig).toString().toUtf8()).object();
+    return identityMatches(client) && client.value(configKey::clientPubKey) == m.value("clientPublicKey")
+        && validSettings(publicSettings(client, name != "amnezia-wireguard"), name != "amnezia-wireguard");
+}
+QString updateNativeConfig(const QString &native, const QJsonObject &settings, bool awg)
+{
+    // Rewrite only server-controlled fields. Preserve Interface keys, addresses,
+    // routing/DNS and all local fields; never accept script hooks from a feed.
+    auto lines = native.split('\n'); QStringList result; QString section;
+    const auto awgKeys = configKey::awgProtocolKeys();
+    auto appendSettings = [&] {
+        if (section == "Interface" && awg) {
+            for (const auto &k : awgKeys) if (settings.contains(k)) result << k + " = " + settings.value(k).toString();
+        } else if (section == "Peer") {
+            const auto host = settings.value("hostName").toString();
+            result << "PublicKey = " + settings.value("server_pub_key").toString();
+            result << "Endpoint = " + (host.contains(':') ? "[" + host + "]" : host) + ":" + QString::number(settings.value("port").toInt());
+        }
+    };
+    for (const auto &line : lines) {
+        const auto trimmed = line.trimmed();
+        if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+            appendSettings(); section = trimmed.mid(1, trimmed.size() - 2); result << line; continue;
+        }
+        const auto key = trimmed.section('=', 0, 0).trimmed();
+        if ((section == "Interface" && awg && awgKeys.contains(key)) || (section == "Peer" && (key == "Endpoint" || key == "PublicKey"))) continue;
+        result << line;
+    }
+    appendSettings(); return result.join('\n');
+}
+bool apply(const QJsonObject &profile, const QByteArray &envelope, qint64 now, QJsonObject &updated)
+{
+    if (envelope.size() > 65536 || !validateProfile(profile)) return false;
+    const auto m = profile.value(metadataKey).toObject();
+    const auto e = QJsonDocument::fromJson(envelope).object();
+    const auto bytes = decode(e.value("payload")); const auto sig = decode(e.value("signature"), 64); const auto pub = decode(m.value("publicKey"), 32);
+    if (bytes.isEmpty() || sig.isEmpty()) return false;
+    Key key(EVP_PKEY_new_raw_public_key(EVP_PKEY_ED25519, nullptr, reinterpret_cast<const unsigned char *>(pub.constData()), pub.size()), EVP_PKEY_free);
+    Context ctx(EVP_MD_CTX_new(), EVP_MD_CTX_free);
+    if (!key || !ctx || EVP_DigestVerifyInit(ctx.get(), nullptr, nullptr, nullptr, key.get()) != 1
+        || EVP_DigestVerify(ctx.get(), reinterpret_cast<const unsigned char *>(sig.constData()), sig.size(),
+                            reinterpret_cast<const unsigned char *>(bytes.constData()), bytes.size()) != 1) return false;
+    const auto p = QJsonDocument::fromJson(bytes).object();
+    const auto issued = p.value("issuedAt").toInteger(-1), expires = p.value("expiresAt").toInteger(-1);
+    if (p.value("type") != "amnezia-connection-update" || p.value("version").toDouble(-1) != 1 || p.value("id") != m.value("id")
+        || p.value("clientPublicKey") != m.value("clientPublicKey") || p.value("container") != m.value("container")
+        || p.value("issuedAt").toDouble(-1) != static_cast<double>(issued)
+        || p.value("expiresAt").toDouble(-1) != static_cast<double>(expires)
+        || issued < 0 || issued > now + 300 || expires <= now || expires <= issued || expires - issued > 600
+        || issued < m.value("issuedAt").toInteger(0)) return false;
+    bool ok; const auto revisionText = p.value("revision").toString(); const auto revision = revisionText.toULongLong(&ok);
+    if (!ok || revision == 0 || QString::number(revision) != revisionText || revision < m.value("revision").toString().toULongLong()) return false;
+    const auto settings = p.value("settings").toObject(); const bool awg = m.value("container") != "amnezia-wireguard";
+    if (!validSettings(settings, awg)) return false;
+    const auto hash = QString::fromLatin1(QCryptographicHash::hash(QJsonDocument(settings).toJson(QJsonDocument::Compact), QCryptographicHash::Sha256).toHex());
+    if (revisionText == m.value("revision").toString() && hash != m.value("settingsHash").toString()) return false;
+    QJsonObject result = profile; auto metadata = m;
+    metadata["revision"] = revisionText; metadata["issuedAt"] = issued; metadata["settingsHash"] = hash;
+    result[metadataKey] = metadata; result[configKey::hostName] = settings.value("hostName");
+    auto containers = profile.value(configKey::containers).toArray(); auto container = containers.first().toObject();
+    const auto protoName = protocol(m.value("container").toString()); auto proto = container.value(protoName).toObject();
+    auto client = QJsonDocument::fromJson(proto.value(configKey::lastConfig).toString().toUtf8()).object();
+    if (awg) for (const auto &k : configKey::awgProtocolKeys()) { client.remove(k); proto.remove(k); }
+    for (auto it = settings.begin(); it != settings.end(); ++it) { client[it.key()] = it.value(); if (awg && configKey::awgProtocolKeys().contains(it.key())) proto[it.key()] = it.value(); }
+    client[configKey::config] = updateNativeConfig(client.value(configKey::config).toString(), settings, awg);
+    proto[configKey::port] = QString::number(settings.value("port").toInt());
+    proto[configKey::lastConfig] = QString::fromUtf8(QJsonDocument(client).toJson(QJsonDocument::Compact));
+    container[protoName] = proto; containers[0] = container; result[configKey::containers] = containers;
+    updated = result; return true;
+}
+}

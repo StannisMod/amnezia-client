@@ -87,12 +87,42 @@ PageType {
     }
 
     property list<QtObject> serverActions: [
+        connectionUpdatesSetup,
+        connectionUpdatesRefresh,
         check,
         reboot,
         remove,
         clear,
         reset,
     ]
+
+    QtObject {
+        id: connectionUpdatesSetup
+        property bool isVisible: root.isServerWithWriteAccess
+        readonly property string title: qsTr("Set up connection updates")
+        readonly property string description: qsTr("Share profiles that can receive signed settings from your server. Uses TCP port 8443.")
+        readonly property bool isDestructive: false
+        readonly property var clickedHandler: function() {
+            showQuestionDrawer(qsTr("Enable connection updates?"),
+                qsTr("Install the update service on your VPS using SSH. Allow TCP port 8443 in the VPS firewall. Existing VPN connections will be kept."),
+                qsTr("Enable"), qsTr("Cancel"), function() {
+                    PageController.showBusyIndicator(true)
+                    ConnectionUpdatesController.install(ServersUiController.processedServerId)
+                }, function() {})
+        }
+    }
+
+    QtObject {
+        id: connectionUpdatesRefresh
+        property bool isVisible: !root.isServerWithWriteAccess && ConnectionUpdatesController.updatableServers.indexOf(ServersUiController.processedServerId) >= 0
+        readonly property string title: qsTr("Update connection")
+        readonly property string description: qsTr("Keep the device key and local routing settings")
+        readonly property bool isDestructive: false
+        readonly property var clickedHandler: function() {
+            PageController.showBusyIndicator(true)
+            ConnectionUpdatesController.refresh(ServersUiController.processedServerId)
+        }
+    }
 
     QtObject {
         id: check

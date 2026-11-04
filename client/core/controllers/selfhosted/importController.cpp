@@ -1,4 +1,5 @@
 #include "importController.h"
+#include "core/utils/connectionUpdates.h"
 
 #include <QDataStream>
 #include <QDebug>
@@ -410,6 +411,12 @@ void ImportController::importConfig(const QJsonObject &config)
         return;
     }
 
+    if (config.contains(connectionUpdates::metadataKey)
+        && serverConfigUtils::configTypeFromJson(config) != serverConfigUtils::SelfHostedAdmin
+        && !connectionUpdates::validateProfile(config)) {
+        emit importErrorOccurred(ErrorCode::ImportInvalidConfigError, false);
+        return;
+    }
     ServerCredentials credentials;
     credentials.hostName = config.value(configKey::hostName).toString();
     credentials.port = config.value(configKey::port).toInt();
@@ -444,7 +451,6 @@ void ImportController::importConfig(const QJsonObject &config)
         }
     } else {
         qDebug() << "Failed to import profile";
-        qDebug().noquote() << QJsonDocument(config).toJson();
         emit importErrorOccurred(ErrorCode::ImportInvalidConfigError, false);
     }
 }

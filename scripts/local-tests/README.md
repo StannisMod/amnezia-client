@@ -42,3 +42,14 @@ Full-build source copies, dependencies and artifacts live in the dedicated
 `amnezia-local-full-build` Docker volume. SDK/test images remain cached locally.
 The full-build source copy is writable so Qt translation tools cannot alter the
 original checkout. Linux tests here do not replace Windows or Apple SDK builds.
+
+Self-hosted signed connection updates have a separate disposable deployment check:
+
+```sh
+bash scripts/local-tests/connection-updates-deploy.sh
+```
+
+It tests the production installer, pinned HTTPS, publication durability and token
+revocation. Go race tests run from `client/server_scripts/connection_updates`;
+client/controller security tests are included in the full build's CTest suite.
+See [connection updates](../../docs/selfhosted-connection-updates.md).

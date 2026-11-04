@@ -25,10 +25,10 @@ void ExportUiController::generateFullAccessConfig(const QString &serverId)
     applyExportResult(result);
 }
 
-void ExportUiController::generateConnectionConfig(const QString &serverId, int containerIndex, const QString &clientName)
+void ExportUiController::generateConnectionConfig(const QString &serverId, int containerIndex, const QString &clientName, bool updatable)
 {
     clearPreviousConfig();
-    auto result = m_exportController->generateConnectionConfig(serverId, containerIndex, clientName);
+    auto result = m_exportController->generateConnectionConfig(serverId, containerIndex, clientName, updatable);
     applyExportResult(result);
 }
 

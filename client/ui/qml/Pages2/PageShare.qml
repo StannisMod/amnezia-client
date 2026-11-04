@@ -47,7 +47,7 @@ PageType {
 
             switch (type) {
             case PageShare.ConfigType.AmneziaConnection: {
-                ExportController.generateConnectionConfig(serverId, containerIndex, clientNameTextField.textField.text);
+                ExportController.generateConnectionConfig(serverId, containerIndex, clientNameTextField.textField.text, updatableConnection.visible && updatableConnection.checked);
                 configCaption = qsTr("Save AmneziaVPN config")
                 configExtension = ".vpn"
                 configFileName = "amnezia_config"
@@ -147,6 +147,19 @@ PageType {
             clientInfoDrawer.dataSent = data.dataSent || ""
             clientInfoDrawer.allowedIps = data.allowedIps || ""
             clientInfoDrawer.open()
+        }
+
+        updatesAvailable: ConnectionUpdatesController.enabledServers.indexOf(ServersUiController.processedServerId) >= 0
+                          && ["awg", "wireguard"].indexOf(ContainerProps.containerTypeToString(ServersUiController.processedContainerIndex)) >= 0
+        onRevokeUpdatesRequested: {
+            var key = clientInfoDrawer.clientId
+            showQuestionDrawer(qsTr("Revoke update token?"), qsTr("This stops future settings updates. VPN access stays active until you revoke the user."),
+                qsTr("Revoke"), qsTr("Cancel"), function() {
+                    clientInfoDrawer.close()
+                    PageController.showBusyIndicator(true)
+                    ConnectionUpdatesController.revoke(ServersUiController.processedServerId,
+                        ServersUiController.processedContainerIndex, key)
+                }, function() {})
         }
 
         onRenameRequested: function(newName) {
@@ -313,6 +326,20 @@ PageType {
                 textField.maximumLength: 20
 
                 checkEmptyText: true
+            }
+
+            SwitchType {
+                id: updatableConnection
+                Layout.fillWidth: true
+                Layout.topMargin: 16
+                Layout.leftMargin: 16
+                Layout.rightMargin: 16
+                visible: accessTypeSelector.currentIndex === 0
+                         && root.connectionTypesModel[exportTypeSelector.currentIndex].type === PageShare.ConfigType.AmneziaConnection
+                         && ["awg", "wireguard"].indexOf(ContainerProps.containerTypeToString(ServersUiController.processedContainerIndex)) >= 0
+                         && ConnectionUpdatesController.enabledServers.indexOf(ServersUiController.processedServerId) >= 0
+                text: qsTr("Allow connection updates")
+                descriptionText: qsTr("The recipient keeps their device key and local routing settings. Requires a compatible Amnezia app.")
             }
 
             DropDownType {
