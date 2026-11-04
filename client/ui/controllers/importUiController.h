@@ -12,6 +12,7 @@ class ImportUiController : public QObject
     Q_PROPERTY(QString config READ getConfig NOTIFY importConfigChanged)
     Q_PROPERTY(QString configFileName READ getConfigFileName NOTIFY importConfigChanged)
     Q_PROPERTY(QString maliciousWarningText READ getMaliciousWarningText NOTIFY importConfigChanged)
+    Q_PROPERTY(bool isUpdateInvitation READ isUpdateInvitation NOTIFY importConfigChanged)
     Q_PROPERTY(bool isNativeWireGuardConfig READ isNativeWireGuardConfig NOTIFY importConfigChanged)
 
 public:
@@ -27,6 +28,7 @@ public slots:
     QString getConfigFileName();
     QString getMaliciousWarningText();
     bool isNativeWireGuardConfig();
+    bool isUpdateInvitation() const { return m_config.value("type") == "amnezia-update-invitation"; }
     void processNativeWireGuardConfig();
     QString readTextFile(const QString &fileName);
 
@@ -44,6 +46,7 @@ public slots:
 
 signals:
     void importFinished();
+    void updatesAttached(const QString &serverId);
     void importErrorOccurred(ErrorCode errorCode, bool goToPageHome);
     void qrDecodingFinished();
     void restoreAppConfig(const QByteArray &data);

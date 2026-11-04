@@ -66,6 +66,44 @@ private slots:
         const auto invitation = connectionUpdates::invitationMetadata(admin);
         QCOMPARE(invitation.keys(), QStringList({ "certificate", "publicKey", "url", "version" }));
     }
+    void attachKeepsExistingIdentityAndReplayState()
+    {
+        auto staticProfile = profile(); const auto metadata = staticProfile.take("connectionUpdates").toObject();
+        const QJsonObject invitation { { "type", "amnezia-update-invitation" }, { "version", 1 },
+            { "existingServerPublicKey", client(staticProfile, false).value("server_pub_key") }, { "connectionUpdates", metadata } };
+        QJsonObject attached; QVERIFY(connectionUpdates::attachInvitation(staticProfile, invitation, attached));
+        auto unchanged = attached; unchanged.remove("connectionUpdates"); QCOMPARE(unchanged, staticProfile);
+        QJsonObject refreshed; QVERIFY(connectionUpdates::apply(attached, sign(payload(attached)), 2000000001, refreshed));
+        auto replay = refreshed; auto m = replay["connectionUpdates"].toObject(); m["futureLocalField"] = "keep"; replay["connectionUpdates"] = m;
+        QJsonObject reattached; QVERIFY(connectionUpdates::attachInvitation(replay, invitation, reattached));
+        QCOMPARE(reattached.value("connectionUpdates"), replay.value("connectionUpdates"));
+        auto wrong = invitation; wrong["existingServerPublicKey"] = QString::fromLatin1(QByteArray(32, 'X').toBase64());
+        QVERIFY(!connectionUpdates::attachInvitation(staticProfile, wrong, reattached));
+        wrong = staticProfile; wrong["userName"] = "root"; QVERIFY(!connectionUpdates::attachInvitation(wrong, invitation, reattached));
+    }
+    void administratorMergeKeepsSshAndOtherContainers()
+    {
+        auto admin = profile(true); admin["hostName"] = "192.0.2.10"; admin["vpnHostName"] = "vpn1.example.test"; admin["userName"] = "root"; admin["port"] = 22;
+        auto containers = admin["containers"].toArray(); const auto other = profile()["containers"].toArray().at(0); containers.append(other); admin["containers"] = containers;
+        QJsonObject merged; QVERIFY(connectionUpdates::mergeServerSettings(admin, "amnezia-awg2", settings(true), true, merged));
+        QCOMPARE(merged.value("hostName"), admin.value("hostName")); QCOMPARE(merged.value("vpnHostName"), admin.value("vpnHostName"));
+        QCOMPARE(merged.value("port"), admin.value("port")); QCOMPARE(merged["containers"].toArray()[1], other);
+        QCOMPARE(client(merged, true).value("client_priv_key"), client(admin, true).value("client_priv_key"));
+        QCOMPARE(client(merged, true).value("HeaderProtectionKey"), settings(true).value("HeaderProtectionKey"));
+    }
+    void readinessProofMatchesGoWithoutSendingPrivateKey()
+    {
+        QFile file(":/connection-updates/readiness-interop.json"); QVERIFY(file.open(QIODevice::ReadOnly));
+        const auto fixture = QJsonDocument::fromJson(file.readAll()).object();
+        const auto envelope = QJsonDocument(fixture.value("envelope").toObject()).toJson(QJsonDocument::Compact);
+        const auto proof = connectionUpdates::readinessProof(profile(), envelope, 2000000001);
+        QCOMPARE(proof.size(), 32); QCOMPARE(QString::fromLatin1(proof.toBase64()), fixture.value("proof").toString());
+        auto wrong = QJsonDocument::fromJson(envelope).object(); wrong["signature"] = QString::fromLatin1(QByteArray(64, 'X').toBase64());
+        QVERIFY(connectionUpdates::readinessProof(profile(), QJsonDocument(wrong).toJson(), 2000000001).isEmpty());
+        QVERIFY(connectionUpdates::readinessProof(profile(), envelope, 2000000601).isEmpty());
+        auto zero = payload(profile()); zero["ackChallenge"] = QString::fromLatin1(QByteArray(32, '\0').toBase64());
+        QVERIFY(connectionUpdates::readinessProof(profile(), sign(zero), 2000000001).isEmpty());
+    }
     void goInteroperability()
     {
         QFile file(QStringLiteral(":/connection-updates/interop.json")); QVERIFY(file.open(QIODevice::ReadOnly));

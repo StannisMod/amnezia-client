@@ -32,6 +32,14 @@ void ExportUiController::generateConnectionConfig(const QString &serverId, int c
     applyExportResult(result);
 }
 
+bool ExportUiController::generateConnectionUpdates(const QString &serverId, int containerIndex, const QString &clientPublicKey)
+{
+    clearPreviousConfig();
+    const auto result = m_exportController->generateConnectionUpdates(serverId, containerIndex, clientPublicKey);
+    applyExportResult(result);
+    return result.errorCode == ErrorCode::NoError;
+}
+
 void ExportUiController::generateOpenVpnConfig(const QString &serverId, const QString &clientName)
 {
     clearPreviousConfig();

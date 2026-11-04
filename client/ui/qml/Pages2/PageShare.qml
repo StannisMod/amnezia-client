@@ -151,6 +151,17 @@ PageType {
 
         updatesAvailable: ConnectionUpdatesController.enabledServers.indexOf(ServersUiController.processedServerId) >= 0
                           && ["awg", "wireguard"].indexOf(ContainerProps.containerTypeToString(ServersUiController.processedContainerIndex)) >= 0
+        onShareUpdatesRequested: {
+            clientInfoDrawer.close()
+            PageController.showBusyIndicator(true)
+            var success = ExportController.generateConnectionUpdates(ServersUiController.processedServerId,
+                ServersUiController.processedContainerIndex, clientInfoDrawer.clientId)
+            PageController.showBusyIndicator(false)
+            if (success) PageController.goToShareConnectionPage(qsTr("Connection updates"),
+                qsTr("Send this link to the user who already has the VPN profile. Their existing device key will be kept."),
+                qsTr("Save update invitation"), ".vpn", "amnezia_updates")
+        }
+
         onRevokeUpdatesRequested: {
             var key = clientInfoDrawer.clientId
             showQuestionDrawer(qsTr("Revoke update token?"), qsTr("This stops future settings updates. VPN access stays active until you revoke the user."),

@@ -67,6 +67,7 @@ namespace
         const QString backupPattern = "Servers/serversList";
         const QString xraySettingsPattern = "serverConfig";
 
+        if (QJsonDocument::fromJson(config.toUtf8()).object().value("type") == "amnezia-update-invitation") return ConfigTypes::Amnezia;
         if (config.contains(backupPattern)) {
             return ConfigTypes::Backup;
         } else if (config.contains(amneziaConfigPattern) || config.contains(amneziaFreeConfigPattern)
@@ -411,6 +412,20 @@ void ImportController::importConfig(const QJsonObject &config)
         return;
     }
 
+    if (config.value("type") == "amnezia-update-invitation") {
+        QString match; QJsonObject attached;
+        for (const auto &id : m_serversRepository->orderedServerIds()) {
+            if (m_serversRepository->serverKind(id) != serverConfigUtils::SelfHostedUser) continue;
+            QJsonObject candidate;
+            if (connectionUpdates::attachInvitation(*m_serversRepository->serverJsonById(id), config, candidate)) {
+                if (!match.isEmpty()) { emit importErrorOccurred(ErrorCode::ConnectionUpdateAttachmentMismatch, false); return; }
+                match = id; attached = candidate;
+            }
+        }
+        if (match.isEmpty()) { emit importErrorOccurred(ErrorCode::ConnectionUpdateAttachmentMismatch, false); return; }
+        m_serversRepository->editServer(match, attached, serverConfigUtils::SelfHostedUser);
+        emit updatesAttached(match); return;
+    }
     if (config.contains(connectionUpdates::metadataKey)
         && serverConfigUtils::configTypeFromJson(config) != serverConfigUtils::SelfHostedAdmin
         && !connectionUpdates::validateProfile(config)) {

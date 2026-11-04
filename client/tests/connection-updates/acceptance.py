@@ -7,6 +7,8 @@ import subprocess
 import urllib.request
 import ssl
 import time
+import shutil
+import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[2] / "server_scripts/connection_updates"
 
@@ -19,13 +21,13 @@ def command(action, request):
                  "amnezia-connection-updates:1", action, data=json.dumps(request).encode())
     return json.loads(result)
 
-def main():
+def exercise(build):
     labels = json.loads(run("docker", "info", "--format", "{{json .Labels}}"))
     assert "amnezia.test-environment=disposable" in labels, "requires an isolated Docker daemon"
-    info = json.loads(run("sh", str(ROOT / "install.sh"), str(ROOT), "127.0.0.1"))
+    info = json.loads(run("sh", str(ROOT / "install.sh"), str(build), "127.0.0.1"))
     assert info["version"] == 1
     initial = info.copy()
-    again = json.loads(run("sh", str(ROOT / "install.sh"), str(ROOT), "127.0.0.1"))
+    again = json.loads(run("sh", str(ROOT / "install.sh"), str(build), "127.0.0.1"))
     assert initial == again, "idempotent install changed keys"
     settings = {"hostName": "vpn1.example.test", "port": 51820,
                 "server_pub_key": base64.b64encode(b"P" * 32).decode()}
@@ -52,6 +54,32 @@ def main():
     settings["hostName"] = "vpn2.example.test"
     command("publish", {"container": request["container"], "settings": settings})
     assert fetch()["revision"] == "2"
+    old_id = run("docker", "inspect", "-f", "{{.Id}}", "amnezia-connection-updates").strip()
+    dockerfile = build / "Dockerfile"
+    dockerfile.write_text(dockerfile.read_text() + "\nLABEL amnezia.fixture.upgrade=1\n")
+    upgraded = json.loads(run("sh", str(ROOT / "install.sh"), str(build), "127.0.0.1"))
+    assert upgraded["publicKey"] == initial["publicKey"]
+    assert upgraded["certificate"] == initial["certificate"]
+    current_id = run("docker", "inspect", "-f", "{{.Id}}", "amnezia-connection-updates").strip()
+    assert current_id != old_id, "software update did not replace the service"
+    assert fetch()["revision"] == "2", "software update lost tokens or counters"
+    # A candidate that cannot serve must restore the previous immutable container.
+    dockerfile.write_text(dockerfile.read_text() + '\nCMD ["unknown-command"]\n')
+    try:
+        run("sh", str(ROOT / "install.sh"), str(build), "127.0.0.1")
+    except subprocess.CalledProcessError:
+        pass
+    else:
+        raise AssertionError("broken delivery service reported success")
+    restored_id = run("docker", "inspect", "-f", "{{.Id}}", "amnezia-connection-updates").strip()
+    assert restored_id == current_id, "failed upgrade did not restore original service"
+    for attempt in range(50):
+        try:
+            assert fetch()["revision"] == "2"
+            break
+        except urllib.error.URLError:
+            if attempt == 49: raise
+            time.sleep(0.1)
     run("docker", "restart", "amnezia-connection-updates")
     for attempt in range(50):
         try:
@@ -68,7 +96,13 @@ def main():
         assert error.code == 401
     else:
         raise AssertionError("revoked token accepted")
-    print("PASS: install, pinned TLS, issue, publish, restart, revoke; existing identity preserved")
+    print("PASS: install, pinned TLS, issue, publish, service upgrade/rollback, restart, revoke; identity preserved")
+
+def main():
+    with tempfile.TemporaryDirectory() as stage:
+        build = pathlib.Path(stage) / "source"
+        shutil.copytree(ROOT, build)
+        exercise(build)
 
 if __name__ == "__main__":
     main()

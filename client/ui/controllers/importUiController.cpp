@@ -27,6 +27,7 @@ ImportUiController::ImportUiController(ImportController* importController, QObje
 #endif
 
     connect(m_importController, &ImportController::importFinished, this, &ImportUiController::importFinished);
+    connect(m_importController, &ImportController::updatesAttached, this, &ImportUiController::updatesAttached);
     connect(m_importController, &ImportController::importErrorOccurred, this, &ImportUiController::importErrorOccurred);
     connect(m_importController, &ImportController::restoreAppConfig, this, &ImportUiController::restoreAppConfig);
 }

@@ -10,6 +10,7 @@
 #include <openssl/x509v3.h>
 
 #include "connection-updates/fixtures.h"
+#include "core/utils/connectionUpdates.h"
 #include "core/controllers/selfhosted/connectionUpdatesController.h"
 #include "core/controllers/selfhosted/importController.h"
 #include "core/controllers/selfhosted/exportController.h"
@@ -27,6 +28,9 @@ public:
     QSslKey key;
     QByteArray body, location, authorization;
     int status = 200, requests = 0, delay = 0;
+    bool advertiseAck = false;
+    int ackStatus = 204, acknowledgements = 0, ackDelay = 0;
+    QByteArray acknowledgementBody, ackLocation;
     FeedServer()
     {
         EVP_PKEY_CTX *ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_EC, nullptr);
@@ -50,10 +54,23 @@ public:
         socket->setPeerVerifyMode(QSslSocket::VerifyNone);
         connect(socket, &QSslSocket::disconnected, socket, &QObject::deleteLater);
         connect(socket, &QSslSocket::readyRead, this, [this, socket, buffer = QByteArray(), sent = false]() mutable {
-            buffer += socket->readAll(); if (sent || !buffer.contains("\r\n\r\n")) return; sent = true; ++requests;
-            for (const auto &line : buffer.split('\n')) if (line.toLower().startsWith("authorization:")) authorization = line.trimmed();
-            const auto response = "HTTP/1.1 " + QByteArray::number(status) + " Result\r\nContent-Length: " + QByteArray::number(body.size()) + "\r\nConnection: close\r\n" + (location.isEmpty() ? QByteArray() : "Location: " + location + "\r\n") + "\r\n" + body;
-            QTimer::singleShot(delay, socket, [socket, response] { socket->write(response); socket->disconnectFromHost(); });
+            buffer += socket->readAll(); const auto end = buffer.indexOf("\r\n\r\n");
+            if (sent || end < 0) return;
+            int length = 0;
+            for (const auto &line : buffer.left(end).split('\n')) {
+                if (line.toLower().startsWith("content-length:")) length = line.mid(line.indexOf(':') + 1).trimmed().toInt();
+                if (line.toLower().startsWith("authorization:")) authorization = line.trimmed();
+            }
+            if (buffer.size() - end - 4 < length) return;
+            sent = true; const bool receipt = buffer.startsWith("POST ");
+            if (receipt) { ++acknowledgements; acknowledgementBody = buffer.mid(end + 4, length); } else ++requests;
+            const auto responseBody = receipt ? QByteArray() : body;
+            const auto redirect = receipt ? ackLocation : location;
+            const auto code = receipt ? ackStatus : status;
+            const auto response = "HTTP/1.1 " + QByteArray::number(code) + " Result\r\nContent-Length: " + QByteArray::number(responseBody.size())
+                + "\r\nConnection: close\r\n" + (redirect.isEmpty() ? QByteArray() : "Location: " + redirect + "\r\n")
+                + (!receipt && advertiseAck ? QByteArray("X-Amnezia-Update-Features: ack-v1\r\n") : QByteArray()) + "\r\n" + responseBody;
+            QTimer::singleShot(receipt ? ackDelay : delay, socket, [socket, response] { socket->write(response); socket->disconnectFromHost(); });
         });
         socket->startServerEncryption();
     }
@@ -65,7 +82,9 @@ public:
     }
     void setUpdate(const QJsonObject &p)
     {
-        auto data = payload(p); const auto now = QDateTime::currentSecsSinceEpoch(); data["issuedAt"] = now; data["expiresAt"] = now + 600; body = sign(data);
+        auto data = payload(p); const auto now = QDateTime::currentSecsSinceEpoch(); data["issuedAt"] = now; data["expiresAt"] = now + 600;
+        if (advertiseAck) data["ackChallenge"] = QString::fromLatin1(publicKey(QByteArray(32, 'R'), EVP_PKEY_X25519).toBase64());
+        body = sign(data);
     }
 };
 class TestConnectionUpdatesController : public QObject {
@@ -93,6 +112,36 @@ private slots:
         auto renamed = snapshot; renamed["description"] = "Edited during request"; servers.editServer(id, renamed, serverConfigUtils::SelfHostedUser);
         QTRY_COMPARE(finished.count(), 2); QVERIFY(!finished[1][0].toBool()); QCOMPARE(*servers.serverJsonById(id), renamed);
         settings.clearSettings();
+    }
+    void verifiedFetchConfirmsDeviceReadiness()
+    {
+        FeedServer feed; feed.advertiseAck = true; QVERIFY(feed.listen(QHostAddress::LocalHost)); auto p = feed.bootstrap(); feed.setUpdate(p);
+        SecureQSettings settings("Amnezia-Updates-" + QUuid::createUuid().toString(), "test", nullptr, false);
+        SecureServersRepository servers(&settings); SecureAppSettingsRepository app(&settings); VpnConnection vpn(&servers, &app); ConnectionController connection(&servers, &app, &vpn);
+        const auto id = servers.addServer({}, p, serverConfigUtils::SelfHostedUser); const auto original = *servers.serverJsonById(id);
+        ConnectionUpdatesController updates(&servers, &connection); QSignalSpy finished(&updates, &ConnectionUpdatesController::finished);
+        updates.refresh(id); QTRY_COMPARE(finished.count(), 1); QVERIFY(finished[0][0].toBool()); QCOMPARE(feed.requests, 1); QCOMPARE(feed.acknowledgements, 1);
+        const auto receipt = QJsonDocument::fromJson(feed.acknowledgementBody).object();
+        QCOMPARE(receipt.value("proof").toString(), QString::fromLatin1(connectionUpdates::readinessProof(original, feed.body, QDateTime::currentSecsSinceEpoch()).toBase64()));
+        QVERIFY(!feed.acknowledgementBody.contains("client_priv_key")); QVERIFY(!feed.acknowledgementBody.contains(client(p, false).value("client_priv_key").toString().toLatin1()));
+        FeedServer other; QVERIFY(other.listen(QHostAddress::LocalHost));
+        feed.ackStatus = 302; feed.ackLocation = QString("https://127.0.0.1:%1/stolen").arg(other.serverPort()).toLatin1();
+        updates.refresh(id); QTRY_COMPARE(finished.count(), 2); QVERIFY(finished[1][0].toBool()); QCOMPARE(other.requests, 0); QCOMPARE(other.acknowledgements, 0);
+        QVERIFY(finished[1][1].toString() != finished[0][1].toString());
+        settings.clearSettings();
+    }
+    void cancellingDuringReadinessDoesNotConnect()
+    {
+        FeedServer feed; feed.advertiseAck = true; feed.ackDelay = 200; QVERIFY(feed.listen(QHostAddress::LocalHost)); auto p = feed.bootstrap(); feed.setUpdate(p);
+        SecureQSettings settings("Amnezia-Updates-" + QUuid::createUuid().toString(), "test", nullptr, false);
+        SecureServersRepository servers(&settings); SecureAppSettingsRepository app(&settings); VpnConnection vpn(&servers, &app); ConnectionController connection(&servers, &app, &vpn);
+        disconnect(&connection, &ConnectionController::openConnectionRequested, &vpn, &VpnConnection::connectToVpn);
+        const auto id = servers.addServer({}, p, serverConfigUtils::SelfHostedUser); servers.setDefaultServer(id);
+        ServersController serverController(&servers, &app); ConnectionUpdatesController updates(&servers, &connection);
+        ConnectionUiController ui(&connection, &serverController); ui.setConnectionUpdatesController(&updates);
+        QSignalSpy attempts(&connection, &ConnectionController::openConnectionRequested);
+        ui.openConnection(); QTRY_COMPARE(feed.acknowledgements, 1); QVERIFY(updates.busy()); ui.closeConnection();
+        QTRY_VERIFY(!updates.busy()); QCOMPARE(attempts.count(), 0); settings.clearSettings();
     }
     void rejectsTransportAndRetainsCachedProfile_data()
     {
@@ -135,6 +184,32 @@ private slots:
         auto bad = profile(); auto badMetadata = bad["connectionUpdates"].toObject(); badMetadata["token"] = "bad"; bad["connectionUpdates"] = badMetadata;
         QSignalSpy errors(&importer, &ImportController::importErrorOccurred); importer.importConfig(bad);
         QCOMPARE(errors.count(), 1); QCOMPARE(servers.serversCount(), 2);
+        settings.clearSettings();
+    }
+    void invitationAttachesWithoutAddingOrSelectingServer()
+    {
+        SecureQSettings settings("Amnezia-Updates-" + QUuid::createUuid().toString(), "test", nullptr, false);
+        SecureServersRepository servers(&settings); SecureAppSettingsRepository app(&settings);
+        auto original = profile(); const auto metadata = original.take("connectionUpdates").toObject();
+        const auto target = servers.addServer({}, original, serverConfigUtils::SelfHostedUser);
+        auto other = profile(); auto containers = other["containers"].toArray(); auto container = containers[0].toObject(); auto proto = container["wireguard"].toObject();
+        auto differentClient = client(other, false); differentClient["server_pub_key"] = QString::fromLatin1(QByteArray(32, 'X').toBase64());
+        proto["last_config"] = QString::fromUtf8(QJsonDocument(differentClient).toJson()); container["wireguard"] = proto; containers[0] = container; other["containers"] = containers;
+        const auto selected = servers.addServer({}, other, serverConfigUtils::SelfHostedUser); servers.setDefaultServer(selected);
+        ImportController importer(&servers, &app); QSignalSpy imported(&importer, &ImportController::importFinished), attached(&importer, &ImportController::updatesAttached), errors(&importer, &ImportController::importErrorOccurred);
+        const QJsonObject invitation { { "type", "amnezia-update-invitation" }, { "version", 1 },
+            { "existingServerPublicKey", client(original, false).value("server_pub_key") }, { "connectionUpdates", metadata } };
+        const auto url = "vpn://" + QString::fromLatin1(qCompress(QJsonDocument(invitation).toJson(), 8).toBase64(QByteArray::Base64UrlEncoding | QByteArray::OmitTrailingEquals));
+        const auto extracted = importer.extractConfigFromData(url); QCOMPARE(extracted.errorCode, ErrorCode::NoError);
+        importer.importConfig(extracted.config); QCOMPARE(attached.count(), 1); QCOMPARE(attached[0][0].toString(), target); QCOMPARE(imported.count(), 0);
+        QCOMPARE(servers.serversCount(), 2); QCOMPARE(servers.defaultServerId(), selected);
+        auto retained = *servers.serverJsonById(target); retained.remove("connectionUpdates");
+        QCOMPARE(client(retained, false), client(original, false));
+        QCOMPARE(retained.value("description"), original.value("description"));
+        QCOMPARE(retained.value("dns1"), original.value("dns1"));
+        QCOMPARE(retained.value("splitTunnelSites"), original.value("splitTunnelSites"));
+        servers.addServer({}, *servers.serverJsonById(target), serverConfigUtils::SelfHostedUser);
+        importer.importConfig(invitation); QCOMPARE(errors.count(), 1); QCOMPARE(attached.count(), 1); QCOMPARE(servers.serversCount(), 3);
         settings.clearSettings();
     }
     void ordinaryProfileCanRetryAfterError()

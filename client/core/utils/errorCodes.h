@@ -137,6 +137,7 @@ namespace amnezia
         AbortError = 1205,
 
         ConnectionUpdateTokenRevocationPending = 1400,
+        ConnectionUpdateAttachmentMismatch = 1401,
 
         // Billing errors
         BillingCanceled = 1300,

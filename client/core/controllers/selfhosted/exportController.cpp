@@ -2,6 +2,7 @@
 #include "connectionUpdatesController.h"
 #include "core/utils/connectionUpdates.h"
 #include <QUrl>
+#include "core/utils/vpnEndpoint.h"
 
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -155,6 +156,37 @@ ExportController::ExportResult ExportController::generateConnectionConfig(const 
     result.config = generateVpnUrl(compressedConfig);
     result.qrCodes = generateQrCodesFromConfig(compressedConfig);
 
+    return result;
+}
+
+ExportController::ExportResult ExportController::generateConnectionUpdates(const QString &serverId, int containerIndex, const QString &clientPublicKey)
+{
+    ExportResult result;
+    auto admin = m_serversRepository->selfHostedAdminConfig(serverId);
+    const auto container = static_cast<DockerContainer>(containerIndex);
+    if (!admin || !admin->credentials().isValid() || !admin->containers.contains(container)
+        || (container != DockerContainer::WireGuard && container != DockerContainer::Awg2)
+        || admin->connectionUpdates.value("version").toInt() != 1) { result.errorCode = ErrorCode::InternalError; return result; }
+    const auto host = vpnEndpoint::normalizeHost(admin->vpnHostName.isEmpty() ? admin->hostName : admin->vpnHostName);
+    QJsonObject settings; QStringList peers;
+    result.errorCode = ConnectionUpdatesController::fetchPublicSettings(admin->credentials(), container, host, settings, &peers);
+    if (result.errorCode != ErrorCode::NoError) return result;
+    if (!peers.contains(clientPublicKey)) { result.errorCode = ErrorCode::InternalError; return result; }
+    QJsonObject response;
+    result.errorCode = ConnectionUpdatesController::command(admin->credentials(), "issue", {
+        { "container", ContainerUtils::containerToString(container) }, { "clientPublicKey", clientPublicKey }, { "settings", settings } }, response);
+    if (result.errorCode != ErrorCode::NoError) return result;
+    if (response.value("publicKey") != admin->connectionUpdates.value("publicKey") || response.value("certificate") != admin->connectionUpdates.value("certificate")) {
+        result.errorCode = ErrorCode::InternalError; return result;
+    }
+    auto metadata = connectionUpdates::invitationMetadata(admin->connectionUpdates);
+    for (const auto *key : { "id", "token" }) metadata[key] = response.value(key);
+    metadata["clientPublicKey"] = clientPublicKey; metadata["container"] = ContainerUtils::containerToString(container); metadata["revision"] = "0";
+    QUrl url(metadata.value("url").toString()); url.setPath("/v1/connections/" + response.value("id").toString()); metadata["url"] = url.toString();
+    const QJsonObject invitation { { "type", "amnezia-update-invitation" }, { "version", 1 },
+        { "existingServerPublicKey", settings.value("server_pub_key") }, { connectionUpdates::metadataKey, metadata } };
+    const auto compressed = qCompress(QJsonDocument(invitation).toJson(QJsonDocument::Compact), 8);
+    result.config = generateVpnUrl(compressed); result.qrCodes = generateQrCodesFromConfig(compressed);
     return result;
 }
 

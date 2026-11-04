@@ -186,6 +186,7 @@ QString errorString(ErrorCode code) {
     case(ErrorCode::FatalError): errorMessage =  QObject::tr("QFile error: A fatal error occurred"); break;
     case(ErrorCode::AbortError): errorMessage =  QObject::tr("QFile error: The operation was aborted"); break;
 
+    case(ErrorCode::ConnectionUpdateAttachmentMismatch): errorMessage = QObject::tr("This update invitation must match exactly one existing self-hosted AmneziaVPN app profile. Import the original profile first."); break;
     case(ErrorCode::ConnectionUpdateTokenRevocationPending): errorMessage = QObject::tr("VPN access revoked. The update token could not be revoked yet. Retry setup or publish settings when the update service is available."); break;
 
     // Billing errors

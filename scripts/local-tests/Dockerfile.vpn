@@ -1,3 +1,3 @@
 FROM docker:29-dind
-RUN apk add --no-cache python3 sudo util-linux diffutils coreutils
+RUN apk add --no-cache python3 openssl sudo util-linux diffutils coreutils
 ENV PYTHONDONTWRITEBYTECODE=1

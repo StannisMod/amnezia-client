@@ -12,6 +12,7 @@ class ConnectionUpdatesController : public QObject {
     Q_OBJECT
     Q_PROPERTY(bool busy READ busy NOTIFY busyChanged)
     Q_PROPERTY(QStringList enabledServers READ enabledServers NOTIFY configurationChanged)
+    Q_PROPERTY(QStringList protectionServers READ protectionServers NOTIFY configurationChanged)
     Q_PROPERTY(QStringList updatableServers READ updatableServers NOTIFY configurationChanged)
 public:
     explicit ConnectionUpdatesController(SecureServersRepository *servers, ConnectionController *connection, QObject *parent = nullptr);
@@ -19,6 +20,11 @@ public:
     bool busy() const { return m_busy; }
     QStringList enabledServers() const;
     QStringList updatableServers() const;
+    QStringList protectionServers() const;
+    Q_INVOKABLE bool canEnableHeaderProtection(const QString &serverId, int container) const;
+    Q_INVOKABLE void enableHeaderProtection(const QString &serverId, int container);
+    static ErrorCode fetchPublicSettings(const ServerCredentials &credentials, DockerContainer container,
+                                         const QString &host, QJsonObject &settings, QStringList *peers = nullptr);
     Q_INVOKABLE bool available(const QString &serverId) const;
     Q_INVOKABLE bool enabled(const QString &serverId) const;
     Q_INVOKABLE void refresh(const QString &serverId);
