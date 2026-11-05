@@ -9,7 +9,7 @@
 #include <QHostInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
-#include <QTemporaryFile>
+#include <QThread>
 #include <QUuid>
 #include <QtConcurrent>
 #include <stdexcept>
@@ -37,14 +37,16 @@ void install(PinnedSshSession &ssh, const QJsonObject &j) {
     const QString dir = stagePath(j);
     execute(ssh, "umask 077; mkdir -p -- "+quote(dir)+"; test ! -L "+quote(dir)+
             " && test \"$(stat -c '%a:%u' -- "+quote(dir)+")\" = \"700:$(id -u)\"");
-    QFile script(":/server_scripts/migration/agent.py");
-    if (!script.open(QIODevice::ReadOnly)) throw std::runtime_error("missing_migration_agent");
-    const auto hash = QCryptographicHash::hash(script.readAll(), QCryptographicHash::Sha256).toHex();
-    script.seek(0);
-    const auto path = quote(dir+"/agent.py");
-    const auto present = execute(ssh, "if test -e "+path+"; then test ! -L "+path+" && sha256sum -- "+path+"; fi").trimmed();
-    if (present.isEmpty()) check(ssh.upload(script, dir+"/agent.py", script.size()));
-    else if (!present.startsWith(QString::fromLatin1(hash)+" ")) throw std::runtime_error("migration_agent_changed");
+    for (const auto &name : {"agent.py", "relay.py"}) {
+        QFile script(":/server_scripts/migration/"+QString::fromLatin1(name));
+        if (!script.open(QIODevice::ReadOnly)) throw std::runtime_error("missing_migration_agent");
+        const auto hash = QCryptographicHash::hash(script.readAll(), QCryptographicHash::Sha256).toHex();
+        script.seek(0);
+        const auto path = quote(dir+"/"+name);
+        const auto present = execute(ssh, "if test -e "+path+"; then test ! -L "+path+" && sha256sum -- "+path+"; fi").trimmed();
+        if (present.isEmpty()) check(ssh.upload(script, dir+"/"+name, script.size()));
+        else if (!present.startsWith(QString::fromLatin1(hash)+" ")) throw std::runtime_error("migration_agent_changed");
+    }
 }
 QString privileged(const QString &command) {
     return "if test \"$(id -u)\" = 0; then "+command+"; else sudo -n "+command+"; fi";
@@ -77,11 +79,37 @@ QString explain(const QString &code) {
         return ServerMigrationController::tr("The target already uses a required name, port or network. Choose an empty target; existing resources will be kept.");
     return ServerMigrationController::tr("The migration stopped. Check the saved operation before retrying or restoring the source. Details: %1").arg(code);
 }
-struct TransferCleanup {
-    PinnedSshSession &ssh;
-    QString path;
-    ~TransferCleanup() { ssh.execute("rm -f -- "+quote(path), 5000); }
-};
+QJsonObject relay(PinnedSshSession &target, const QJsonObject &j, const QString &action, QJsonObject req = {}, bool authorizeSource = true) {
+    req["action"] = action; req["operation"] = j["operation"];
+    if (authorizeSource) {
+        if (j["transport"].toString() != "server-pull-v1") throw std::runtime_error("unsupported_legacy_migration_transport");
+        req["source"] = j["source"]; req["sourceIdentity"] = j["sourceIdentity"];
+    }
+    const auto path = stagePath(j)+"/request-"+QUuid::createUuid().toString(QUuid::Id128)+".json";
+    QBuffer input; input.setData(QJsonDocument(req).toJson(QJsonDocument::Compact)); input.open(QIODevice::ReadOnly);
+    struct Cleanup { PinnedSshSession &ssh; QString path; ~Cleanup() { ssh.execute("rm -f -- "+quote(path), 5000); } } cleanup{target, path};
+    check(target.upload(input, path, input.size()));
+    const auto r = target.execute(privileged("python3 "+quote(stagePath(j)+"/relay.py")+" "+quote(path)), 1800000, 65536);
+    check(r.error);
+    QJsonParseError error;
+    const auto result = QJsonDocument::fromJson(r.output, &error).object();
+    if (error.error != QJsonParseError::NoError || result["version"].toInt() != 1) throw std::runtime_error("unknown_relay_result_check_status");
+    if (!result["ok"].toBool() || r.exitCode != 0) throw std::runtime_error(result["reason"].toString("relay_failed_check_status").toStdString());
+    return result;
+}
+QJsonObject sourceCommand(PinnedSshSession &target, const QJsonObject &j, const QString &command) {
+    return relay(target, j, "source-command", {{"command", command}});
+}
+QJsonObject waitForCopy(PinnedSshSession &target, const QJsonObject &j, const std::shared_ptr<std::atomic_bool> &stopping) {
+    for (int attempt = 0; attempt < 1800; ++attempt) {
+        if (stopping->load()) throw std::runtime_error("pull_still_running_on_target_check_status");
+        const auto result = relay(target, j, "poll-stage", {}, false);
+        if (result["phase"] == "interrupted") throw std::runtime_error("pull_job_interrupted_check_status");
+        if (result["phase"] != "running") return result;
+        QThread::sleep(1);
+    }
+    throw std::runtime_error("pull_still_running_on_target_check_status");
+}
 void dns(const QString &host, const QString &target) {
     const auto result = QHostInfo::fromName(host);
     if (result.error() != QHostInfo::NoError || result.addresses().isEmpty()) throw std::runtime_error("domain_not_resolved");
@@ -97,7 +125,7 @@ ServerMigrationController::ServerMigrationController(SecureServersRepository *se
     m_journal = QJsonDocument::fromJson(settings->value(storage).toByteArray()).object();
     if (!m_journal.isEmpty()) m_details = tr("An unfinished migration is saved. Check its status before continuing.");
 }
-ServerMigrationController::~ServerMigrationController() { m_pool.waitForDone(); }
+ServerMigrationController::~ServerMigrationController() { m_stopping->store(true); m_pool.waitForDone(); }
 void ServerMigrationController::persist() { if (m_journal.isEmpty()) m_settings->remove(storage); else m_settings->setValue(storage, QJsonDocument(m_journal).toJson(QJsonDocument::Compact)); emit changed(); }
 void ServerMigrationController::work(const std::function<QJsonObject(QJsonObject)> &fn) {
     if (m_busy) return;
@@ -136,50 +164,39 @@ void ServerMigrationController::discover(const QString &id, const QString &host,
     if (!target.isValid() || port > 65535) { m_details = tr("Enter the target SSH address, login and credentials."); emit changed(); return; }
     m_journal = {{"serverId", id}, {"phase", "discovering"}, {"domain", domain}, {"original", admin->toJson()},
                  {"source", credentials(admin->credentials())}, {"target", credentials(target)},
-                 {"operation", QUuid::createUuid().toString(QUuid::Id128)}};
+                 {"transport", "server-pull-v1"}, {"operation", QUuid::createUuid().toString(QUuid::Id128)}};
     persist();
     work([](QJsonObject j) {
-        const auto old = credentials(j["source"].toObject()), next = credentials(j["target"].toObject());
-        const auto a = PinnedSshSession::discover(old.hostName, old.port), b = PinnedSshSession::discover(next.hostName, next.port);
-        check(a.error); check(b.error);
+        const auto next = credentials(j["target"].toObject());
+        const auto b = PinnedSshSession::discover(next.hostName, next.port);
+        check(b.error);
         if (QHostAddress(b.address).protocol() != QAbstractSocket::IPv4Protocol) throw std::runtime_error("first_version_requires_ipv4_target");
-        if (a.address == b.address) throw std::runtime_error("source_and_target_are_the_same_host");
-        j["sourceIdentity"] = identity(a); j["targetIdentity"] = identity(b); j["phase"] = "fingerprints";
-        j["message"] = QString("Source: %1\n%2\n\nTarget: %3\n%4").arg(a.address, a.fingerprint, b.address, b.fingerprint);
+        j["targetIdentity"] = identity(b); j["phase"] = "target-fingerprint";
+        j["message"] = QString("Target: %1\n%2").arg(b.address, b.fingerprint);
         return j;
     });
 }
 void ServerMigrationController::stage() {
+    if (phase() == "target-fingerprint") {
+        work([stopping = m_stopping](QJsonObject j) {
+            PinnedSshSession target; openSession(target, j, "target"); install(target, j);
+            const auto old = credentials(j["source"].toObject());
+            const auto a = relay(target, j, "discover-source", {{"host", old.hostName}, {"port", old.port}}, false)["identity"].toObject();
+            if (a["address"] == j["targetIdentity"].toObject()["address"]) throw std::runtime_error("source_and_target_are_the_same_host");
+            j["sourceIdentity"] = a; j["phase"] = "fingerprints";
+            j["message"] = QString("Source: %1\n%2\n\nTarget: %3\n%4").arg(a["address"].toString(), a["fingerprint"].toString(),
+                j["targetIdentity"].toObject()["address"].toString(), j["targetIdentity"].toObject()["fingerprint"].toString());
+            return j;
+        });
+        return;
+    }
     if (phase() != "fingerprints") return;
     m_journal["phase"] = "copying"; persist();
-    work([](QJsonObject j) {
-        PinnedSshSession source, target; openSession(source, j, "source"); openSession(target, j, "target");
-        install(source, j); install(target, j);
-        const auto snapshot = agent(source, j, "export");
-        const auto dir = stagePath(j);
-        TransferCleanup sourceCleanup{source, dir+"/bundle.tar"}, targetCleanup{target, dir+"/incoming.tar"};
-        execute(source, "umask 077; "+privileged("cat -- "+quote(snapshot["file"].toString()))+" > "+quote(dir+"/bundle.tar"), 1800000);
-        QTemporaryFile local;
-        if (!local.open()) throw std::runtime_error("private_temporary_file_failed");
-        local.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner);
-        check(source.download(dir+"/bundle.tar", local, snapshot["bytes"].toVariant().toLongLong(), QByteArray::fromHex(snapshot["sha256"].toString().toLatin1())));
-        if (!local.flush() || !local.seek(0)) throw std::runtime_error("temporary_file_write_failed");
-        check(target.upload(local, dir+"/incoming.tar", local.size()));
-        agent(target, j, "receive");
-        const auto verified = agent(target, j, "import", {{"sha256", snapshot["sha256"]}});
-        if (verified["state"] != snapshot["state"]) throw std::runtime_error("target_state_mismatch");
-        agent(source, j, "source-check");
-        try {
-            const auto probes = agent(target, j, "probe-create", {{"address", j["targetIdentity"].toObject()["address"]}});
-            agent(source, j, "probe-run", {{"configs", probes["configs"]}, {"address", j["targetIdentity"].toObject()["address"]}});
-            agent(target, j, "probe-remove");
-            agent(target, j, "probe-confirm");
-        } catch (...) {
-            try { agent(target, j, "probe-remove"); } catch (...) {}
-            throw;
-        }
-        agent(target, j, "verify");
-        j["snapshot"] = snapshot; j["phase"] = "staged";
+    work([stopping = m_stopping](QJsonObject j) {
+        PinnedSshSession target; openSession(target, j, "target"); install(target, j);
+        relay(target, j, "start-stage", {{"targetAddress", j["targetIdentity"].toObject()["address"]}});
+        const auto result = waitForCopy(target, j, stopping);
+        j["snapshot"] = result["source"]; j["phase"] = "staged";
         j["message"] = ServerMigrationController::tr("Copy and external VPN path verified. The old server is still running. Change the domain A/AAAA records to the target, then switch servers.");
         return j;
     });
@@ -199,11 +216,11 @@ void ServerMigrationController::cutover() {
         dns(j["domain"].toString(), address);
         const auto deliveryHost = j["snapshot"].toObject()["deliveryHost"].toString();
         if (!deliveryHost.isEmpty()) dns(deliveryHost, address);
-        PinnedSshSession source, target; openSession(source, j, "source"); openSession(target, j, "target");
+        PinnedSshSession target; openSession(target, j, "target");
         agent(target, j, "verify");
-        const auto status = agent(source, j, "status");
-        if (status["phase"] == "exported") agent(source, j, "source-check");
-        agent(source, j, "source-stop"); agent(target, j, "activate");
+        const auto status = sourceCommand(target, j, "status");
+        if (status["phase"] == "exported") sourceCommand(target, j, "source-check");
+        sourceCommand(target, j, "source-stop"); agent(target, j, "activate");
         j["phase"] = "active"; j["message"] = ServerMigrationController::tr("The target is active. Source containers are retained and stopped.");
         return j;
     });
@@ -211,10 +228,19 @@ void ServerMigrationController::cutover() {
 }
 void ServerMigrationController::recover() {
     if (m_journal.isEmpty()) return;
-    work([](QJsonObject j) {
-        PinnedSshSession source, target; openSession(source, j, "source"); openSession(target, j, "target");
-        install(source, j); install(target, j);
-        const auto a = agent(source, j, "status"), b = agent(target, j, "status");
+    work([stopping = m_stopping](QJsonObject j) {
+        PinnedSshSession target; openSession(target, j, "target");
+        install(target, j);
+        if (j["phase"] == "copying") {
+            const auto job = relay(target, j, "poll-stage", {}, false);
+            if (job["phase"] == "running" || job.contains("source")) {
+                const auto result = job["phase"] == "running" ? waitForCopy(target, j, stopping) : job;
+                j["snapshot"] = result["source"]; j["phase"] = "staged";
+                j["message"] = ServerMigrationController::tr("The server-to-server copy has completed. You can now update DNS and switch servers.");
+                return j;
+            }
+        }
+        const auto a = sourceCommand(target, j, "status"), b = agent(target, j, "status");
         const auto ap = a["phase"].toString(), bp = b["phase"].toString();
         const auto running = b["running"].toObject();
         bool targetRunning = !running.isEmpty() && running.size() == b["containers"].toArray().size();
@@ -226,17 +252,9 @@ void ServerMigrationController::recover() {
         else if (ap == "absent" && bp == "absent") j["phase"] = "aborted";
         else if (ap == "exported" && bp == "ready") { j["phase"] = "staged"; j["snapshot"] = a; }
         if (ap == "exported" && (bp == "validated" || bp == "staged")) {
-            agent(target, j, "probe-remove");
-            agent(target, j, "verify");
-            const auto probes = agent(target, j, "probe-create", {{"address", j["targetIdentity"].toObject()["address"]}});
-            try {
-                agent(source, j, "probe-run", {{"configs", probes["configs"]}, {"address", j["targetIdentity"].toObject()["address"]}});
-                agent(target, j, "probe-remove"); agent(target, j, "probe-confirm");
-            } catch (...) {
-                try { agent(target, j, "probe-remove"); } catch (...) {}
-                throw;
-            }
-            j["snapshot"] = a; j["phase"] = "staged";
+            relay(target, j, "start-stage", {{"targetAddress", j["targetIdentity"].toObject()["address"]}});
+            const auto result = waitForCopy(target, j, stopping);
+            j["snapshot"] = result["source"]; j["phase"] = "staged";
         }
         j["message"] = "Source: "+ap+"; target: "+bp;
         return j;
@@ -246,27 +264,9 @@ void ServerMigrationController::rollback() {
     if (m_journal.isEmpty() || phase() == "fingerprints" || phase() == "discovering") return;
     m_journal["phase"] = "rolling-back"; persist();
     work([](QJsonObject j) {
-        PinnedSshSession source, target; openSession(source, j, "source"); openSession(target, j, "target");
-        install(source, j); install(target, j);
-        const auto a = agent(source, j, "status"), b = agent(target, j, "status");
-        if (b["phase"] == "active" || b["phase"] == "rollback-exported" || (b["phase"] == "stopped" && a["phase"] == "stopped")) {
-            const auto latest = agent(target, j, "rollback-export");
-            if (latest.contains("file")) {
-                const auto dir = stagePath(j);
-                TransferCleanup targetCleanup{target, dir+"/rollback.tar"}, sourceCleanup{source, dir+"/rollback.tar"};
-                execute(target, "umask 077; "+privileged("cat -- "+quote(latest["file"].toString()))+" > "+quote(dir+"/rollback.tar"));
-                QTemporaryFile local;
-                if (!local.open()) throw std::runtime_error("private_temporary_file_failed");
-                local.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner);
-                check(target.download(dir+"/rollback.tar", local, latest["bytes"].toVariant().toLongLong(), QByteArray::fromHex(latest["sha256"].toString().toLatin1())));
-                if (!local.flush() || !local.seek(0)) throw std::runtime_error("temporary_file_write_failed");
-                check(source.upload(local, dir+"/rollback.tar", local.size()));
-                agent(source, j, "rollback-import", {{"sha256", latest["sha256"]}});
-            }
-        } else {
-            agent(target, j, "abort");
-        }
-        if (a["phase"] != "absent") agent(source, j, "abort");
+        PinnedSshSession target; openSession(target, j, "target");
+        install(target, j);
+        relay(target, j, "rollback");
         j["phase"] = "rolled-back";
         j["message"] = ServerMigrationController::tr("Source restarted. Restore its DNS records before reconnecting. Target containers are retained and stopped.");
         return j;
@@ -274,18 +274,17 @@ void ServerMigrationController::rollback() {
 }
 void ServerMigrationController::dismiss() {
     if (m_journal.isEmpty()) return;
-    if (m_busy || (!m_journal.isEmpty() && phase() != "fingerprints" && phase() != "discovering" && phase() != "rolled-back" && phase() != "active" && phase() != "aborted" && phase() != "finalizing")) return;
-    if (phase() == "fingerprints" || phase() == "discovering") {
+    if (m_busy || (!m_journal.isEmpty() && phase() != "fingerprints" && phase() != "target-fingerprint" && phase() != "discovering" && phase() != "rolled-back" && phase() != "active" && phase() != "aborted" && phase() != "finalizing")) return;
+    if (phase() == "fingerprints" || phase() == "target-fingerprint" || phase() == "discovering") {
         m_journal = {}; m_details.clear(); m_settings->remove(storage); emit changed(); return;
     }
     m_journal["phase"] = "finalizing"; persist();
     work([](QJsonObject j) {
-        PinnedSshSession source, target; openSession(source, j, "source"); openSession(target, j, "target");
-        install(source, j); install(target, j);
-        agent(source, j, "finalize"); agent(target, j, "finalize");
+        PinnedSshSession target; openSession(target, j, "target");
+        install(target, j);
+        sourceCommand(target, j, "finalize"); agent(target, j, "finalize");
         const auto dir = stagePath(j);
-        execute(source, "rm -f -- "+quote(dir+"/agent.py")+" "+quote(dir+"/bundle.tar")+" "+quote(dir+"/rollback.tar")+"; if test -d "+quote(dir)+"; then rmdir -- "+quote(dir)+"; fi");
-        execute(target, "rm -f -- "+quote(dir+"/agent.py")+" "+quote(dir+"/incoming.tar")+" "+quote(dir+"/rollback.tar")+"; if test -d "+quote(dir)+"; then rmdir -- "+quote(dir)+"; fi");
+        execute(target, "rm -f -- "+quote(dir+"/agent.py")+" "+quote(dir+"/relay.py")+"; if test -d "+quote(dir)+"; then rmdir -- "+quote(dir)+"; fi");
         return QJsonObject{};
     });
 }

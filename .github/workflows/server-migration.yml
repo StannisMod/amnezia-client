@@ -13,8 +13,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Archive boundaries and replay floors
-        run: python3 client/tests/migration/test_agent.py
+        run: |
+          python3 client/tests/migration/test_agent.py
+          python3 client/tests/migration/test_relay.py
       - name: SSH identity before authentication and verified SFTP
         run: bash scripts/local-tests/migration-ssh.sh
       - name: Two isolated hosts with real WG, AWG, DNS, signed HTTPS and rollback
         run: bash scripts/local-tests/migration-scenario.sh
+      - name: New-host SSH pull while old SSH is blocked from the administrator
+        run: bash scripts/local-tests/migration-relay.sh

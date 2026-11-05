@@ -2,14 +2,19 @@
 
 In **Server → Management → Move server**, enter the new server's SSH address,
 port, login and password or unencrypted private key. Compare both SSH SHA256
-fingerprints with the server consoles before accepting them. Subsequent SSH
-connections use the reviewed IP addresses and host keys, including after DNS
-changes. Credentials are not sent during fingerprint discovery.
+fingerprints with the server consoles before accepting them. The app connects
+only to the new server. The new server opens the old server's SSH connection and
+pulls the archive directly; the administrator device never relays backup data.
+This supports an old server whose SSH is blocked from the administrator's network
+but remains reachable from the new server. Subsequent connections use reviewed
+literal IP addresses and host keys, including after DNS changes. Credentials are
+not sent during fingerprint discovery.
 
 The first version supports running standard `amnezia-wireguard`,
 `amnezia-awg2`, optional `amnezia-dns` and optional
 `amnezia-connection-updates`. Both hosts need Linux, a rootful local Docker daemon,
-Python 3.9 or newer, and root or passwordless sudo access. Encrypted SSH private
+Python 3.9 or newer, and root or passwordless sudo access. The new host also
+needs the OpenSSH client (`ssh` and `ssh-keyscan`). Encrypted SSH private
 keys must be unlocked before using this flow. The target must use the same CPU
 architecture and have the required container names, ports, volume and DNS network
 available. The target SSH address must resolve to IPv4 in this version. Custom
@@ -25,10 +30,19 @@ Migrating a server cannot change offline devices' immutable numeric URLs.
    users, protocols, DNS configuration or subscriptions during the move. Before
    starting, reduce DNS TTL and wait out the previous TTL if a short cutover is
    needed. Open the existing VPN UDP ports and, when used, TCP 8443 on the target.
-2. Approve the two SSH identities. Copy stages private Docker snapshots and the
-   subscription volume through a private temporary file on this device. Each
-   transfer is size bounded and SHA256 checked. The snapshots are never pushed to
-   a registry. The source continues serving, with brief Docker commit pauses.
+2. First approve the new server's SSH fingerprint. It discovers the old server's
+   fingerprint without authenticating; compare and approve that fingerprint too.
+   Only then does the app send the old server's SSH credentials to the new host,
+   through its pinned SSH connection. The new host uses temporary mode0600 key or
+   password files under a root-only directory; credentials never appear in process
+   arguments, environment values, logs or job results, and are removed when the
+   operation finishes. Passwords use OpenSSH ASKPASS; SSH agent forwarding is off.
+   The new server is a trusted recipient of these administrative credentials.
+   Copying runs as a detached job on the new server and continues if the app's
+   control connection drops or the app exits. Reopen the saved operation to poll
+   its result. Private snapshots are streamed directly over the new-to-old pinned
+   SSH connection, size bounded and SHA256 checked; no registry push is used.
+   The source continues serving, with brief Docker commit pauses.
 3. The candidate starts on the target with automatic restart disabled. The app
    verifies the original configuration, live peers and delivery identity. Temporary
    test peers exercise each VPN through the target's published UDP port from the
@@ -63,7 +77,10 @@ existing settings implementation does not encrypt server credentials or this
 journal. Do not share the settings directory. No passwords, peer secrets, archive
 contents or private keys are printed in operation messages.
 
-After an interrupted transfer or SSH reply, use **Check saved operation**. A
+After an interrupted control connection or SSH reply, use **Check saved operation**.
+While the detached pull is running, the saved job can be polled without sending
+source credentials again. Source commands, cutover, rollback and finalization all
+continue through the new host; direct old-host SSH from the app is never needed. A
 journaled stop can be retried without replacing containers. A verified candidate's
 external probe can be repeated. A partial import can be aborted; cleanup is
 restricted to this operation's unpredictable resource labels. An unknown result
@@ -93,6 +110,7 @@ ends the app's automatic rollback/recovery for this operation.
 python3 client/tests/migration/test_agent.py
 bash scripts/local-tests/migration-ssh.sh
 bash scripts/local-tests/migration-scenario.sh
+bash scripts/local-tests/migration-relay.sh
 bash scripts/local-tests/build-full.sh
 ```
 
@@ -103,3 +121,10 @@ migration, DNS through each tunnel, temporary external probes, the old HTTPS
 certificate and bearer token, Ed25519 verification, refusal of source drift,
 retry after a lost cutover reply, and rollback after publication without lowering
 a replay floor. Reserved `example.test` names are used in fixtures.
+
+The relay acceptance additionally blocks old SSH from an administrator network
+actor while allowing it from the new host. It proves unauthenticated discovery,
+wrong-key rejection before password authentication, real password and key auth,
+a detached pull after its start command exits, direct archive/rollback transfer,
+unchanged client traffic and removal of temporary source credentials. Cold test
+images include OpenSSL and OpenSSH explicitly rather than relying on a cached image.

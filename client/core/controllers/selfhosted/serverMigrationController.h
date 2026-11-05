@@ -4,6 +4,8 @@
 #include <QJsonObject>
 #include <QThreadPool>
 #include <functional>
+#include <atomic>
+#include <memory>
 #include "core/repositories/secureServersRepository.h"
 #include "secureQSettings.h"
 class ConnectionController;
@@ -45,5 +47,6 @@ private:
     QJsonObject m_journal;
     QString m_details;
     bool m_busy = false;
+    std::shared_ptr<std::atomic_bool> m_stopping = std::make_shared<std::atomic_bool>(false);
 };
 #endif

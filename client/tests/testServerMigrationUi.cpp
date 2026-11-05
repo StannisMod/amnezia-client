@@ -13,16 +13,22 @@
 class TestServerMigrationUi : public QObject {
     Q_OBJECT
 private slots:
+    void loadsWizardAndRestoresPendingOperation_data() {
+        QTest::addColumn<QString>("phase");
+        for (const auto &phase : {"target-fingerprint", "fingerprints", "copying", "switching", "active"})
+            QTest::newRow(phase) << QString::fromLatin1(phase);
+    }
     void loadsWizardAndRestoresPendingOperation() {
+        QFETCH(QString, phase);
         SecureQSettings settings("AmneziaMigrationUi-"+QUuid::createUuid().toString(), "test", nullptr, false);
-        QJsonObject saved{{"phase", "switching"}, {"domain", "vpn.example.test"}, {"serverId", "synthetic-server"},
+        QJsonObject saved{{"phase", phase}, {"domain", "vpn.example.test"}, {"serverId", "synthetic-server"},
                           {"targetIdentity", QJsonObject{{"address", "192.0.2.17"}}}};
         settings.setValue("Conf/serverMigration", QJsonDocument(saved).toJson());
         auto vpn = QSharedPointer<VpnConnection>::create(nullptr, nullptr);
         TestCoreController core(vpn, &settings, nullptr, nullptr);
         auto *controller = core.findChild<ServerMigrationController *>();
         QVERIFY(controller);
-        QCOMPARE(controller->phase(), QString("switching"));
+        QCOMPARE(controller->phase(), phase);
         QCOMPARE(controller->domain(), QString("vpn.example.test"));
         QCOMPARE(controller->targetAddress(), QString("192.0.2.17"));
         QVERIFY(!controller->busy());

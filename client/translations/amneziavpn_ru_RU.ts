@@ -8141,8 +8141,8 @@ Remove the server from the app to continue.</source>
         <translation>Перенести сервер</translation>
     </message>
     <message>
-        <source>Move standard WireGuard/AWG, DNS and signed subscriptions to another Linux server with Docker and Python 3.9+. The VPN and subscription DNS names stay the same. Keep both servers until all clients reconnect. A brief interruption is possible during switching.</source>
-        <translation>Перенос стандартных WireGuard/AWG, DNS и подписок с подписью на другой Linux-сервер с Docker и Python 3.9+. Домены VPN и подписок сохраняются. Сохраните оба сервера, пока все клиенты не переподключатся. При переключении возможен краткий перерыв.</translation>
+        <source>Move standard WireGuard/AWG, DNS and signed subscriptions to another Linux server with Docker, Python 3.9+ and the OpenSSH client. The VPN and subscription DNS names stay the same. Keep both servers until all clients reconnect. A brief interruption is possible during switching.</source>
+        <translation>Перенос стандартных WireGuard/AWG, DNS и подписок с подписью на другой Linux-сервер с Docker, Python 3.9+ и клиентом OpenSSH. Домены VPN и подписок сохраняются. Сохраните оба сервера, пока все клиенты не переподключатся. При переключении возможен краткий перерыв.</translation>
     </message>
     <message>
         <source>The target must be empty, use the same CPU architecture and allow passwordless sudo. Open its VPN UDP ports and subscription TCP port 8443. Do not edit users or server settings during migration.</source>
@@ -8214,6 +8214,22 @@ Target: %2</source>
         <source>Close</source>
         <translation>Закрыть</translation>
     </message>
+    <message>
+        <source>The new server pulls the archive directly from the old server over SSH. This device only controls the move; direct SSH access from here to the old server is not required. Copying continues on the new server if this device disconnects.</source>
+        <translation>Новый сервер сам забирает архив со старого по SSH. Это устройство только управляет переносом; прямой доступ к SSH старого сервера с него не требуется. Копирование продолжится на новом сервере, если это устройство отключится.</translation>
+    </message>
+    <message>
+        <source>The new server will temporarily receive the old server's SSH login credentials to copy data and manage cutover or rollback. They are removed from the new server after each operation. Confirm the old server fingerprint before allowing this.</source>
+        <translation>Новый сервер временно получит данные входа по SSH на старый сервер для копирования, переключения и отката. После каждой операции они удаляются с нового сервера. Подтвердите отпечаток старого сервера перед передачей данных входа.</translation>
+    </message>
+    <message>
+        <source>Trust target and discover source from there</source>
+        <translation>Подтвердить новый сервер и проверить с него старый</translation>
+    </message>
+    <message>
+        <source>Compare the target SSH fingerprint with its console. After approval, it will discover the old server key without sending old-server credentials.</source>
+        <translation>Сверьте отпечаток нового сервера с его консолью. После подтверждения он узнает ключ старого сервера без передачи данных входа на старый сервер.</translation>
+    </message>
 </context>
 <context>
     <name>ServerMigrationController</name>
@@ -8284,6 +8300,10 @@ Target: %2</source>
     <message>
         <source>The migration stopped. Check the saved operation before retrying or restoring the source. Details: %1</source>
         <translation>Перенос остановлен. Проверьте сохранённую операцию перед повторной попыткой или возвратом на старый сервер. Подробности: %1</translation>
+    </message>
+    <message>
+        <source>The server-to-server copy has completed. You can now update DNS and switch servers.</source>
+        <translation>Копирование между серверами завершено. Теперь можно обновить DNS и переключить серверы.</translation>
     </message>
 </context>
 </TS>
