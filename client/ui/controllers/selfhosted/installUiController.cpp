@@ -404,7 +404,9 @@ void InstallUiController::updateProtocolSoftware(const QString &serverId, int co
     if (container == DockerContainer::Awg2) {
         const auto config = admin->containerConfig(container);
         const auto *awg = config.getAwgProtocolConfig();
-        if (!awg || !awg->serverConfig.hasAwg3Params()) {
+        // The remote transaction validates the live AWG 2/3 configuration.
+        // Preserve its parameters even if local version metadata is stale.
+        if (!awg) {
             emit installationErrorOccurred(ErrorCode::ProtocolUpdateRejected);
             return;
         }

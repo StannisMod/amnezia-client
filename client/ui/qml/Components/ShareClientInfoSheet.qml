@@ -17,6 +17,9 @@ SheetType {
     property string dataSent
     property string allowedIps
 
+    property bool updatesAvailable: false
+    signal revokeUpdatesRequested()
+
     signal renameRequested(string newName)
     signal revokeRequested()
 
@@ -115,6 +118,15 @@ SheetType {
                 clientNameEditor.textField.text = root.clientName
                 clientNameEditDrawer.open()
             }
+        }
+
+        ButtonType {
+            Layout.fillWidth: true
+            Layout.topMargin: 12
+            visible: root.updatesAvailable
+            variant: ButtonType.Secondary
+            text: qsTranslate("PageShare", "Revoke update token")
+            onClicked: root.revokeUpdatesRequested()
         }
 
         ButtonType {

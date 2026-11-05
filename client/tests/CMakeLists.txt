@@ -61,6 +61,10 @@ target_include_directories(test_common PUBLIC
 )
 
 if(NOT ANDROID)
+    add_executable(test_connection_updates_controller testConnectionUpdatesController.cpp)
+    target_link_libraries(test_connection_updates_controller PRIVATE Qt6::Test test_common)
+    add_test(NAME ConnectionUpdatesControllerTest COMMAND test_connection_updates_controller)
+
     add_executable(test_multiple_imports
         testMultipleImports.cpp
     )
@@ -459,4 +463,5 @@ amnezia_copy_runtime_dlls()
 
 if(NOT ANDROID)
     add_subdirectory(routing)
+    add_subdirectory(connection-updates)
 endif()

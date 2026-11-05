@@ -41,12 +41,15 @@ def ping(client):
     raise RuntimeError("Unchanged client failed to pass VPN traffic")
 
 
-def main(kind):
+def main(kind, legacy_profile="basic"):
     if os.environ.get("GITHUB_ACTIONS") != "true":
         labels = json.loads(run("docker", "info", "--format", "{{json .Labels}}")) or []
         if "amnezia.test-environment=disposable" not in labels:
             raise SystemExit("Run on a disposable GitHub Actions VM or with scripts/local-tests/run.sh.")
     source = Path(__file__).resolve().parents[2] / "server_scripts"
+    legacy = kind == "awg2"
+    if legacy:
+        kind = "awg"
     name = "amnezia-awg2" if kind == "awg" else "amnezia-wireguard"
     tool, iface = ("awg", "awg0") if kind == "awg" else ("wg", "wg0")
     state_dir = "awg" if kind == "awg" else "wireguard"
@@ -60,8 +63,17 @@ def main(kind):
         build = root / "build"
         build.mkdir()
         dockerfile = (source / kind / "Dockerfile").read_text()
+        if legacy:
+            # Test the real daemon versions, independent of host kernel modules.
+            dockerfile += '\nRUN sed -i \'/^add_if() {$/,/^}$/c\\add_if() {\\n\\tcmd amneziawg-go "$INTERFACE"\\n}\' /usr/bin/awg-quick\n'
         (build / "Dockerfile").write_text(dockerfile)
         run("docker", "build", "-t", original, str(build))
+        target_image = original
+        if legacy:
+            original += "-awg2"
+            fixture = Path(__file__).with_name("Dockerfile.awg2")
+            run("docker", "build", "--build-arg", f"AWG3_BASE={target_image}",
+                "-f", str(fixture), "-t", original, str(fixture.parent))
 
         def key(command, value=None):
             return run("docker", "run", "--rm", "-i", "--entrypoint", tool, original, command, input=value).strip()
@@ -71,13 +83,20 @@ def main(kind):
         awg = ""
         if kind == "awg":
             awg = ("Jc = 4\nJmin = 10\nJmax = 50\nS1 = 12\nS2 = 12\nS3 = 12\nS4 = 12\n"
-                   "H1 = 1\nH2 = 2\nH3 = 3\nH4 = 4\nHeaderProtectionKey = " + key("genkey") + "\n")
+                   "H1 = 1\nH2 = 2\nH3 = 3\nH4 = 4\n")
+            if not legacy:
+                awg += "HeaderProtectionKey = " + key("genkey") + "\n"
+            elif legacy_profile == "ranges":
+                awg = ("Jc = 4\nJmin = 10\nJmax = 50\nS1 = 12\nS2 = 24\nS3 = 0\nS4 = 0\n"
+                       "H1 = 1001-1010\nH2 = 2001-2010\nH3 = 3001-3010\nH4 = 4001-4010\n"
+                       "I1 = <b 0xf6ab3267fa><r 10>\n")
         state = root / "state"
         folder = state / state_dir
         folder.mkdir(parents=True)
         config = (f"[Interface]\nPrivateKey = {server_key}\nAddress = 10.87.0.1/24\nListenPort = 51820\n{awg}\n"
                   f"[Peer]\nPublicKey = {client_public}\nPresharedKey = {psk}\nAllowedIPs = 10.87.0.2/32\n")
         (folder / f"{iface}.conf").write_text(config)
+        (folder / f"{iface}.conf").chmod(0o600)
         (folder / "wireguard_server_private_key.key").write_text(server_key)
         (folder / "wireguard_server_public_key.key").write_text(server_public)
         (folder / "wireguard_psk.key").write_text(psk)
@@ -100,9 +119,12 @@ def main(kind):
         client_config.write_text(f"[Interface]\nPrivateKey = {client_key}\nAddress = 10.87.0.2/32\n{awg}\n"
                                 f"[Peer]\nPublicKey = {server_public}\nPresharedKey = {psk}\n"
                                 "AllowedIPs = 10.87.0.1/32\nEndpoint = 127.0.0.1:51820\nPersistentKeepalive = 1\n")
+        client_config.chmod(0o600)
         run("docker", "cp", str(client_config), client + ":/tmp/updateclient.conf")
         run("docker", "exec", client, tool + "-quick", "up", "/tmp/updateclient.conf")
         ping(client)
+        client_pid = run("docker", "exec", client, "pidof", "amneziawg-go").strip() if legacy else None
+        old_daemon_hash = run("docker", "exec", name, "sha256sum", "/usr/bin/amneziawg-go").split()[0] if legacy else None
 
         def update(file):
             stage = Path("/tmp/amnezia-update-" + str(uuid.uuid4()))
@@ -114,10 +136,46 @@ def main(kind):
             return result.stdout.strip()
 
         before_id = run("docker", "inspect", "-f", "{{.Id}}", name).strip()
-        assert update(dockerfile) == "amnezia_update=ok"
+        if legacy:
+            assert update(f"FROM {original}\n") == "amnezia_update=rejected"
+            assert run("docker", "inspect", "-f", "{{.Id}}", name).strip() == before_id
+            ping(client)
+            broken = dockerfile + '\nENTRYPOINT ["sh", "-c", "tail -f /dev/null"]\n'
+            assert update(broken) == "amnezia_update=rolled_back"
+            assert run("docker", "inspect", "-f", "{{.Id}}", name).strip() == before_id
+            assert run("docker", "exec", name, "sha256sum", "/usr/bin/amneziawg-go").split()[0] == old_daemon_hash
+            assert run("docker", "exec", client, "pidof", "amneziawg-go").strip() == client_pid
+            ping(client)
+            print(f"awg2/{legacy_profile}: failed migration restored the original AWG 2 daemon and client traffic")
+        outcome = update(dockerfile)
+        if outcome != "amnezia_update=ok":
+            for log in Path("/var/lib/amnezia/updates").glob(f"{name}-*/update.log"):
+                print(log.read_text()[-5000:])
+                expected = log.with_name("expected.normalized")
+                actual = log.with_name("actual.normalized")
+                if expected.exists() and actual.exists():
+                    changed = set(expected.read_text().splitlines()) ^ set(actual.read_text().splitlines())
+                    fields = sorted({line.rsplit("|", 1)[-1].split(" = ", 1)[0] for line in changed})
+                    print("Changed runtime fields (values redacted):", fields)
+                    safe = {"H1", "H2", "H3", "H4", "S1", "S2", "S3", "S4", "RandomTrailers", "DisableCookies"}
+                    print("Non-secret protocol differences:", sorted(line.rsplit("|", 1)[-1] for line in changed
+                          if line.rsplit("|", 1)[-1].split(" = ", 1)[0] in safe))
+            raise AssertionError(f"Update did not commit: {outcome}")
         after_id = run("docker", "inspect", "-f", "{{.Id}}", name).strip()
         assert before_id != after_id
         ping(client)  # The client's keys, endpoint and config have not changed.
+        assert run("docker", "exec", client, "cat", "/tmp/updateclient.conf") == client_config.read_text()
+        if legacy:
+            assert run("docker", "exec", client, "pidof", "amneziawg-go").strip() == client_pid
+            assert run("docker", "exec", client, "sha256sum", "/usr/bin/amneziawg-go").split()[0] == old_daemon_hash
+            assert run("docker", "exec", name, "sha256sum", "/usr/bin/amneziawg-go").split()[0] != old_daemon_hash
+            run("docker", "exec", name, "test", "-e", "/sys/class/net/awg0/tun_flags")
+            # A fresh AWG 2 handshake must also work, not only the old session.
+            run("docker", "exec", client, "awg-quick", "down", "/tmp/updateclient.conf")
+            run("docker", "exec", client, "awg-quick", "up", "/tmp/updateclient.conf")
+            ping(client)
+            assert run("docker", "exec", client, "cat", "/tmp/updateclient.conf") == client_config.read_text()
+            print(f"awg2/{legacy_profile}: live and freshly restarted old client both passed traffic")
         copied = root / "after"
         run("docker", "cp", name + ":/opt/amnezia/.", str(copied))
         for path in state.rglob("*"):
@@ -137,5 +195,7 @@ def main(kind):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--kind", choices=("wireguard", "awg"), required=True)
-    main(parser.parse_args().kind)
+    parser.add_argument("--kind", choices=("wireguard", "awg", "awg2"), required=True)
+    parser.add_argument("--legacy-profile", choices=("basic", "ranges"), default="basic")
+    args = parser.parse_args()
+    main(args.kind, args.legacy_profile)

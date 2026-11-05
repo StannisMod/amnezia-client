@@ -112,7 +112,17 @@ private slots:
         QCOMPARE(prepared.value(configKey::hostName).toString(), "192.0.2.10");
     }
 
+    void testSoftwareUpdateWithSingleGlobalWorker_data() {
+        QTest::addColumn<int>("containerIndex");
+        QTest::addColumn<bool>("headerProtection");
+        QTest::newRow("wireguard") << static_cast<int>(DockerContainer::WireGuard) << false;
+        QTest::newRow("awg2-compatible") << static_cast<int>(DockerContainer::Awg2) << false;
+        QTest::newRow("awg3-protected") << static_cast<int>(DockerContainer::Awg2) << true;
+    }
+
     void testSoftwareUpdateWithSingleGlobalWorker() {
+        QFETCH(int, containerIndex);
+        QFETCH(bool, headerProtection);
         QTcpServer endpoint;
         QVERIFY(endpoint.listen(QHostAddress::LocalHost));
         bool reachedSsh = false;
@@ -128,13 +138,22 @@ private slots:
             {configKey::hostName, "127.0.0.1"}, {configKey::userName, "test"},
             {configKey::password, "test-only"}, {configKey::port, endpoint.serverPort()}
         });
-        config.defaultContainer = DockerContainer::WireGuard;
+        config.defaultContainer = static_cast<DockerContainer>(containerIndex);
         ContainerConfig container;
         container.container = config.defaultContainer;
-        container.protocolConfig = WireGuardProtocolConfig{};
+        if (config.defaultContainer == DockerContainer::Awg2) {
+            AwgProtocolConfig awg;
+            awg.serverConfig.cookieReplyPacketJunkSize = "0";
+            awg.serverConfig.transportPacketJunkSize = "0";
+            if (headerProtection) awg.serverConfig.headerProtectionKey = "test-protection";
+            container.protocolConfig = awg;
+        } else {
+            container.protocolConfig = WireGuardProtocolConfig{};
+        }
         config.containers[config.defaultContainer] = container;
         const QString id = m_coreController->m_serversRepository->addServer(
                 "software-update-pool-test", config.toJson(), serverConfigUtils::ConfigType::SelfHostedAdmin);
+        const auto before = m_coreController->m_serversRepository->selfHostedAdminConfig(id)->toJson();
         auto *controller = m_coreController->m_installUiController;
         qRegisterMetaType<ErrorCode>();
         QSignalSpy error(controller, &InstallUiController::installationErrorOccurred);
@@ -160,6 +179,7 @@ private slots:
         QCOMPARE(busy.count(), 2);
         QCOMPARE(busy.at(0).at(0).toBool(), true);
         QCOMPARE(busy.at(1).at(0).toBool(), false);
+        QCOMPARE(m_coreController->m_serversRepository->selfHostedAdminConfig(id)->toJson(), before);
     }
 
     void testServerEditTriggersHandlers() {

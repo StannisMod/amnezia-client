@@ -32,6 +32,7 @@ touched=0
 committed=0
 result=rejected
 restart=always
+legacy_awg=0
 
 finish() {
     trap - EXIT HUP INT TERM
@@ -86,6 +87,7 @@ canonical() {
     awk '/^\[Peer\]/ {peer=""; next}
          /^PublicKey = / {peer=$0; next}
          /^Endpoint = / {next}
+         /^(RandomTrailers|DisableCookies) = off$/ {next}
          NF {print peer "|" $0}' "$1" | LC_ALL=C sort
 }
 
@@ -104,9 +106,19 @@ docker inspect "$name" >"$work/original-container.json"
 docker inspect -f '{{range $key, $value := .NetworkSettings.Networks}}{{println $key}}{{end}}' "$name" >"$work/networks"
 docker exec "$name" cat "$config" >"$work/server.conf"
 if [ "$kind" = awg ]; then
-    # AWG 1/2 -> 3 changes the wire format. That requires a separate migration,
-    # including delivery of new client parameters; never infer it from latest.
-    grep -Eq '^HeaderProtectionKey[[:space:]]*=[[:space:]]*[^[:space:]]' "$work/server.conf"
+    # AWG 3 can keep serving AWG 2 profiles when their wire parameters are
+    # retained. Never generate/enable header protection as part of this update.
+    # Require AWG 2/3 settings; legacy amnezia-awg (1.x) is a separate container.
+    if grep -Eq '^[[:space:]]*HeaderProtectionKey[[:space:]]*=[[:space:]]*[^[:space:]]' "$work/server.conf"; then
+        printf '%s\n' awg3 >"$work/protocol-mode"
+    else
+        grep -Eq '^[[:space:]]*(S[34][[:space:]]*=|H[1-4][[:space:]]*=[[:space:]]*[0-9]+-[0-9]+)' "$work/server.conf"
+        # Binary migration has been qualified for the userspace daemon. A
+        # host kernel module is outside this container-software transaction.
+        docker exec "$name" test -e "/sys/class/net/$iface/tun_flags"
+        legacy_awg=1
+        printf '%s\n' awg2-compatible >"$work/protocol-mode"
+    fi
 fi
 port=$(awk '$1 == "ListenPort" && $2 == "=" {print $3}' "$work/server.conf")
 case "$port" in ''|*[!0-9]*) exit 1 ;; esac
@@ -131,6 +143,12 @@ printf '%s\n' "$image_id" >"$work/target-image"
 docker run --rm --network none --entrypoint "$tool" "$image_id" --version >"$work/new-tools-version"
 if [ "$kind" = awg ]; then
     docker run --rm --network none --entrypoint amneziawg-go "$image_id" --version >"$work/new-daemon-version"
+    if [ "$legacy_awg" = 1 ]; then
+        # Upstream's --version may still contain an old date. Qualify the
+        # standard AWG 3 main module, rather than trusting the mutable tag.
+        docker run --rm --network none --entrypoint sh "$image_id" -c \
+            'strings /usr/bin/amneziawg-go | grep -q "^path[[:space:]]github[.]com/amnezia-vpn/amneziawg-go/v3$"'
+    fi
 fi
 docker exec "$name" "$tool" showconf "$iface" >"$work/expected.conf"
 
@@ -153,6 +171,7 @@ while IFS= read -r network; do
 done <"$work/networks"
 docker start "$name"
 healthy "$name"
+[ "$legacy_awg" = 0 ] || docker exec "$name" test -e "/sys/class/net/$iface/tun_flags"
 # Verify the effective runtime accepts every saved peer/key/parameter, not just
 # that the container's startup script managed to reach its tail command.
 docker exec "$name" "$tool" showconf "$iface" >"$work/actual.conf"
@@ -162,6 +181,7 @@ cmp "$work/expected.normalized" "$work/actual.normalized"
 # Check a restart too: startup must work from the preserved on-disk state.
 docker restart "$name"
 healthy "$name"
+[ "$legacy_awg" = 0 ] || docker exec "$name" test -e "/sys/class/net/$iface/tun_flags"
 docker exec "$name" "$tool" showconf "$iface" >"$work/restarted.conf"
 canonical "$work/restarted.conf" >"$work/restarted.normalized"
 cmp "$work/expected.normalized" "$work/restarted.normalized"

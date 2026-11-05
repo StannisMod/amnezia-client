@@ -20,6 +20,8 @@ PageType {
     property bool isUnsupportedContainer: ContainerProps.isUnsupportedContainer(ServersUiController.processedContainerIndex)
     property bool isClearCacheVisible: !isUnsupportedContainer && ServersUiController.isProcessedServerHasWriteAccess() && !ContainersModel.isServiceContainer(ServersUiController.processedContainerIndex)
     property bool isOutdatedAwgContainer: ServersUiController.isProcessedContainerOutdatedAwg()
+    readonly property bool isCompatibleAwgUpdate: isOutdatedAwgContainer
+        && ContainerProps.containerTypeToString(ServersUiController.processedContainerIndex) === "awg"
 
     Connections {
         target: InstallController
@@ -55,7 +57,9 @@ PageType {
                 visible: root.isOutdatedAwgContainer
 
                 variant: NotificationType.Warning
-                text: qsTr("AmneziaWG 2.0 is outdated and does not include the latest security improvements, but it will continue to work. Moving to AmneziaWG 3.1 by deploying a new container on the server is recommended for stronger protocol security")
+                text: root.isCompatibleAwgUpdate
+                    ? qsTr("Server software updates preserve the current AWG parameters and client profiles. Enabling new AWG 3 protections requires a separate update of client configurations.")
+                    : qsTr("AmneziaWG 2.0 is outdated and does not include the latest security improvements, but it will continue to work. Moving to AmneziaWG 3.1 by deploying a new container on the server is recommended for stronger protocol security")
             }
         }
 
@@ -119,15 +123,33 @@ PageType {
                 Layout.fillWidth: true
                 Layout.leftMargin: 16
                 Layout.rightMargin: 16
-                visible: !root.isUnsupportedContainer && !root.isOutdatedAwgContainer
+                visible: ConnectionUpdatesController.enabledServers.indexOf(ServersUiController.processedServerId) >= 0
+                    && ["awg", "wireguard"].indexOf(ContainerProps.containerTypeToString(ServersUiController.processedContainerIndex)) >= 0
+                text: qsTr("Publish connection settings")
+                onClicked: showQuestionDrawer(qsTr("Publish connection settings?"),
+                    qsTr("Recipients of updatable profiles will receive the current server address and protocol parameters. Their device keys and local routing rules will be kept."),
+                    qsTr("Publish"), qsTr("Cancel"), function() {
+                        PageController.showBusyIndicator(true)
+                        ConnectionUpdatesController.publish(ServersUiController.processedServerId, ServersUiController.processedContainerIndex)
+                    }, function() {})
+            }
+
+            ListItemType {
+                Layout.fillWidth: true
+                Layout.leftMargin: 16
+                Layout.rightMargin: 16
+                visible: !root.isUnsupportedContainer
                          && ServersUiController.isProcessedServerHasWriteAccess()
                          && ["awg", "wireguard"].indexOf(ContainerProps.containerTypeToString(ServersUiController.processedContainerIndex)) >= 0
                 text: qsTr("Update protocol")
                 onClicked: {
                     var serverId = ServersUiController.processedServerId
                     var containerIndex = ServersUiController.processedContainerIndex
-                    showQuestionDrawer(qsTr("Update server protocol?"),
-                        qsTr("The VPN will briefly stop for all users. Keys, users and connection settings will be preserved. If validation fails, the previous container will be restored. Disconnect your VPN before continuing."),
+                    var description = qsTr("The VPN will briefly stop for all users. Keys, users and connection settings will be preserved. If validation fails, the previous container will be restored. Disconnect your VPN before continuing.")
+                    if (root.isCompatibleAwgUpdate) {
+                        description += "\n\n" + qsTr("Existing AWG 2 clients will keep using their current profiles. New AWG 3 protections will not be enabled by this software update.")
+                    }
+                    showQuestionDrawer(qsTr("Update server protocol?"), description,
                         qsTr("Update"), qsTr("Cancel"),
                         function() { InstallController.updateProtocolSoftware(serverId, containerIndex) },
                         function() {})

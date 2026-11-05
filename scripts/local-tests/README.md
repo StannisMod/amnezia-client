@@ -9,7 +9,10 @@ bash scripts/local-tests/build-full.sh
 
 The first command runs the production-shell fault-injection tests, Qt endpoint
 and routing contract tests, and real WireGuard/AWG update/rollback acceptance.
-Use `qt`, `vpn`, `wireguard` or `awg` instead of `all` to select a suite.
+Use `qt`, `vpn`, `wireguard`, `awg` or `awg2` instead of `all` to select a suite.
+`awg2` runs both real AWG 2-to-3 compatible-update profiles; `all`/`vpn` also
+include standard WireGuard and protected AWG 3 updates. The old daemon/tools are
+built from pinned source commits in `client/tests/protocol-update/Dockerfile.awg2`.
 
 The second command builds the Linux application, service and Qt regression tests
 with Go 1.27.1 and Qt 6.10.1, then runs the regression suite. It downloads SDKs
@@ -39,3 +42,14 @@ Full-build source copies, dependencies and artifacts live in the dedicated
 `amnezia-local-full-build` Docker volume. SDK/test images remain cached locally.
 The full-build source copy is writable so Qt translation tools cannot alter the
 original checkout. Linux tests here do not replace Windows or Apple SDK builds.
+
+Self-hosted signed connection updates have a separate disposable deployment check:
+
+```sh
+bash scripts/local-tests/connection-updates-deploy.sh
+```
+
+It tests the production installer, pinned HTTPS, publication durability and token
+revocation. Go race tests run from `client/server_scripts/connection_updates`;
+client/controller security tests are included in the full build's CTest suite.
+See [connection updates](../../docs/selfhosted-connection-updates.md).

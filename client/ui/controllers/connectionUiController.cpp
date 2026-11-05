@@ -1,4 +1,6 @@
 #include "connectionUiController.h"
+#include <QPointer>
+#include "core/controllers/selfhosted/connectionUpdatesController.h"
 
 #if defined(Q_OS_ANDROID) || defined(Q_OS_IOS) || defined(MACOS_NE)
     #include <QGuiApplication>
@@ -27,22 +29,43 @@ ConnectionUiController::ConnectionUiController(ConnectionController* connectionC
 
 void ConnectionUiController::openConnection()
 {
+    if (m_refreshPending) return;
     const QString serverId = m_serversController->getDefaultServerId();
     if (serverId.isEmpty()) {
         m_connectionController->setConnectionState(Vpn::ConnectionState::Disconnected);
         return;
     }
 
-    ErrorCode errorCode = m_connectionController->openConnection(serverId);
-
-    if (errorCode != ErrorCode::NoError) {
-        notifyConnectionBlocked(errorCode);
-        return;
-    }
+    const auto generation = ++m_refreshGeneration;
+    const QPointer<ConnectionUiController> guard(this);
+    const auto connectProfile = [this, guard, serverId, generation] {
+        if (!guard) return;
+        if (generation != m_refreshGeneration) return;
+        m_refreshPending = false;
+        if (serverId != m_serversController->getDefaultServerId()) {
+            onConnectionStateChanged(Vpn::ConnectionState::Disconnected); return;
+        }
+        if (m_connectionController->isConnected()) return;
+        const auto errorCode = m_connectionController->openConnection(serverId);
+        if (errorCode != ErrorCode::NoError) {
+            onConnectionStateChanged(Vpn::ConnectionState::Disconnected);
+            notifyConnectionBlocked(errorCode);
+        }
+    };
+    if (m_updates && m_updates->available(serverId)) {
+        m_refreshPending = true;
+        m_isConnectionInProgress = true;
+        m_connectionStateText = tr("Checking connection updates...");
+        emit connectionStateChanged();
+        m_updates->refreshBeforeConnect(serverId, connectProfile);
+    } else connectProfile();
 }
 
 void ConnectionUiController::closeConnection()
 {
+    ++m_refreshGeneration;
+    m_refreshPending = false;
+    if (m_connectionController->isDisconnected()) onConnectionStateChanged(Vpn::ConnectionState::Disconnected);
     m_connectionController->closeConnection();
 }
 
@@ -123,6 +146,7 @@ QString ConnectionUiController::connectionStateText() const
 
 void ConnectionUiController::toggleConnection()
 {
+    if (m_refreshPending) { closeConnection(); return; }
     if (m_state == Vpn::ConnectionState::Preparing) {
         emit preparingConfig();
         return;

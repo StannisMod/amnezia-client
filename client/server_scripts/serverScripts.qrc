@@ -1,6 +1,11 @@
 <RCC>
     <qresource prefix="/server_scripts">
         <file>update_wireguard.sh</file>
+        <file>connection_updates/Dockerfile</file>
+        <file>connection_updates/service.go</file>
+        <file>connection_updates/go.mod</file>
+        <file>connection_updates/install.sh</file>
+
         <file>awg/configure_container.sh</file>
         <file>awg/Dockerfile</file>
         <file>awg/run_container.sh</file>

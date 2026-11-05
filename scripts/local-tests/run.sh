@@ -4,7 +4,7 @@
 set -euo pipefail
 repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 suite=${1:-all}
-case "$suite" in all|qt|vpn|wireguard|awg) ;; *) echo 'Usage: run.sh [all|qt|vpn|wireguard|awg]' >&2; exit 2 ;; esac
+case "$suite" in all|qt|vpn|wireguard|awg|awg2) ;; *) echo 'Usage: run.sh [all|qt|vpn|wireguard|awg|awg2]' >&2; exit 2 ;; esac
 docker info >/dev/null
 runner=''
 cleanup() {
@@ -20,8 +20,9 @@ if [[ "$suite" == all || "$suite" == qt ]]; then
 fi
 if [[ "$suite" != qt ]]; then
     docker build --network host -t amnezia-local-vpn-tests -f "$repo/scripts/local-tests/Dockerfile.vpn" "$repo/scripts/local-tests"
-    protocols=(wireguard awg)
+    protocols=(wireguard awg awg2-basic awg2-ranges)
     [[ "$suite" == wireguard || "$suite" == awg ]] && protocols=("$suite")
+    [[ "$suite" == awg2 ]] && protocols=(awg2-basic awg2-ranges)
     for protocol in "${protocols[@]}"; do
         runner="amnezia-local-$protocol-$(date +%s)-$RANDOM"
         docker run -d --privileged --name "$runner" \
@@ -38,7 +39,11 @@ if [[ "$suite" != qt ]]; then
             sleep 1
         done
         if [[ "$ready" != true ]]; then docker logs "$runner"; exit 1; fi
-        docker exec "$runner" python3 /src/client/tests/protocol-update/acceptance.py --kind "$protocol"
+        protocol_args=(--kind "$protocol")
+        if [[ "$protocol" == awg2-* ]]; then
+            protocol_args=(--kind awg2 --legacy-profile "${protocol#awg2-}")
+        fi
+        docker exec "$runner" python3 /src/client/tests/protocol-update/acceptance.py "${protocol_args[@]}"
         cleanup
         runner=''
     done

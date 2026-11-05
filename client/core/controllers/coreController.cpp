@@ -1,4 +1,5 @@
 #include "coreController.h"
+#include "selfhosted/connectionUpdatesController.h"
 
 #include <QCoreApplication>
 #include <QDirIterator>
@@ -186,6 +187,9 @@ void CoreController::initControllers()
 {
     m_connectionUiController = new ConnectionUiController(m_connectionController, m_serversController, this);
     setQmlContextProperty("ConnectionController", m_connectionUiController);
+    auto *connectionUpdates = new ConnectionUpdatesController(m_serversRepository, m_connectionController, this);
+    setQmlContextProperty("ConnectionUpdatesController", connectionUpdates);
+    m_connectionUiController->setConnectionUpdatesController(connectionUpdates);
 
     if (m_engine) {
         m_focusController = new FocusController(m_engine, this);
@@ -221,6 +225,10 @@ void CoreController::initControllers()
 
     m_pageController = new PageController(m_serversController, m_settingsController, this);
     setQmlContextProperty("PageController", m_pageController);
+    connect(connectionUpdates, &ConnectionUpdatesController::finished, m_pageController, [this](bool, const QString &message) {
+        m_pageController->showBusyIndicator(false);
+        m_pageController->showNotificationMessage(message);
+    });
 
     m_serversUiController = new ServersUiController(m_serversController, m_settingsController, m_serversModel, m_containersModel, m_defaultServerContainersModel, this);
     setQmlContextProperty("ServersUiController", m_serversUiController);
