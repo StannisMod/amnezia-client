@@ -33,6 +33,24 @@ def source(action, **params):
     return relay('source-command', command=action, **params)
 
 
+def interrupt_after_first_stop(side, action):
+    # Test-only fault injection, no production failure switches. A real Docker
+    # container is stopped, then the invoking process disappears before completion.
+    script = """import sys
+sys.path.insert(0,'/src/client/server_scripts/migration')
+import agent
+real=agent.run
+def interrupted(*args,**kwargs):
+ result=real(*args,**kwargs)
+ if args[0]=='stop': raise SystemExit(73)
+ return result
+agent.run=interrupted
+agent.main({'operation':sys.argv[1],'action':sys.argv[2]})
+"""
+    r = cmd('docker', 'exec', '-i', fixture.HOSTS[side], 'python3', '-c', script, OP, action, check=False)
+    assert r.returncode == 73
+
+
 def main():
     global ADDRESS, SOURCE_CREDENTIALS, SOURCE_IDENTITY
     fixture.setup()
@@ -98,6 +116,15 @@ def main():
     # The raw archive lives only on the two VPSs; this driver/app never downloads it.
     host('target', 'python3', '-c', 'from pathlib import Path; p=Path("/var/lib/amnezia/migrations/'+OP+'"); assert not list(p.glob("ssh-*")); assert not (p/"pull-job/request.json").exists()')
     source('source-check')
+    interrupt_after_first_stop('source', 'source-stop')
+    assert source('status')['phase'] == 'stopping'
+    # Continuation must reject configuration edits made during an interrupted stop.
+    original = d('source', 'cp', 'amnezia-awg2:/opt/amnezia/awg/clientsTable', '-', binary=True)
+    fixture.copy('source', 'changed-during-stop', '/tmp/changed-table')
+    d('source', 'cp', '/tmp/changed-table', 'amnezia-awg2:/opt/amnezia/awg/clientsTable')
+    rejected = relay('source-command', command='source-stop', expect=False)
+    assert rejected['reason'] == 'source_changed'
+    d('source', 'cp', '-', 'amnezia-awg2:/opt/amnezia/awg/', data=original, binary=True)
     source('source-stop')
     local('activate')
     fixture.traffic(clients, ADDRESS['target'])
@@ -108,12 +135,14 @@ def main():
       'type=volume,source=amnezia-connection-updates-state,target=/data', image, 'publish',
       data=json.dumps({'container':'amnezia-awg2','settings':payload['settings']}))
     assert fixture.fetch(info, issued, ADDRESS['target'])['revision'] == '2'
+    interrupt_after_first_stop('target', 'rollback-export')
+    assert local('status')['phase'] == 'target-stopping'
     assert relay('rollback')['phase'] == 'rolled-back'
     fixture.traffic(clients, ADDRESS['source'])
     assert fixture.fetch(info, issued, ADDRESS['source'])['revision'] == '2'
     source('finalize')
     local('finalize')
-    print('PASS: blocked old SSH from app; new-host discovery without auth; wrong pin before password; password+key auth; detached direct pull; WG/AWG/DNS/old signed token; direct rollback retaining revision 2; temporary SSH secrets removed', flush=True)
+    print('PASS: blocked old SSH from app; new-host discovery without auth; wrong pin before password; password+key auth; detached direct pull; WG/AWG/DNS/old signed token; partial stop + rollback interruption recovery retaining revision 2; temporary SSH secrets removed', flush=True)
 
 
 if __name__ == '__main__':

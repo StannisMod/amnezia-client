@@ -320,6 +320,7 @@ def import_target(work, journal, req):
         save(work/'journal.json', journal)
     if m['volume']:
         run('volume', 'create', '--label', LABEL+'='+work.name, VOLUME)
+        require((inspect('volume', VOLUME).get('Labels') or {}).get(LABEL) == work.name, 'target_volume_ownership_changed')
         journal['volume'] = True
         save(work/'journal.json', journal)
         restore_volume(work, m)
@@ -407,6 +408,18 @@ def source_containers(journal):
     return result
 
 
+def persisted_checks(containers):
+    return state(containers, details=True, live=False)
+
+
+def expected_persisted_checks(journal):
+    expected = json.loads(json.dumps(journal['manifest']['checks']))
+    for value in expected.values():
+        if isinstance(value, dict):
+            value.pop('live', None)
+    return expected
+
+
 def source_action(work, journal, action):
     require(journal.get('role') == 'source', 'wrong_role')
     cs = source_containers(journal)
@@ -416,6 +429,13 @@ def source_action(work, journal, action):
         require(state(cs) == journal['manifest']['state'], 'source_changed')
     elif action == 'source-stop':
         require(journal['phase'] in ('exported', 'stopping', 'stopped'), 'wrong_phase')
+        if journal['phase'] in ('stopping', 'stopped'):
+            require(persisted_checks(cs) == expected_persisted_checks(journal), 'source_changed')
+        if journal['phase'] == 'stopping':
+            for c in cs:
+                if c['State']['Running'] and SPECS[c['Name'][1:]]:
+                    current = hashlib.sha256(json.dumps(live_config(c)).encode()).hexdigest()
+                    require(current == journal['manifest']['checks'][c['Name'][1:]]['live'], 'source_changed')
         if journal['phase'] == 'stopped':
             require(all(not c['State']['Running'] for c in cs), 'source_not_stopped')
             return journal
@@ -453,6 +473,8 @@ def source_action(work, journal, action):
 
 def target_stop(work, journal):
     require(journal.get('role') == 'target', 'wrong_role')
+    journal['phase'] = 'target-stopping'
+    save(work/'journal.json', journal)
     for c in owned(journal, work):
         run('update', '--restart=no', c['Id'])
         run('stop', c['Id'])
@@ -569,13 +591,20 @@ def state_from_tar(raw):
 
 
 def rollback_export(work, journal):
-    require(journal.get('role') == 'target' and journal['phase'] in ('active', 'stopped', 'rollback-exported'), 'wrong_phase')
+    require(journal.get('role') == 'target' and journal['phase'] in ('active', 'target-stopping', 'stopped', 'rollback-exported'), 'wrong_phase')
     if journal['manifest']['volume']:
         helper = next(journal['manifest']['images'][c['Name'][1:]] for c in journal['manifest']['containers'] if SPECS[c['Name'][1:]])
         compatible_store(state_from_tar((work/'volume.tar').read_bytes()), state_from_tar(volume_tar(helper, VOLUME)))
     if journal['phase'] == 'active':
         checks = state(owned(journal, work), details=True)
         expected = dict(journal['manifest']['checks'])
+        checks.pop('delivery', None)
+        expected.pop('delivery', None)
+        require(checks == expected, 'target_vpn_or_dns_changed_manual_recovery_required')
+        target_stop(work, journal)
+    elif journal['phase'] == 'target-stopping':
+        checks = persisted_checks(owned(journal, work))
+        expected = expected_persisted_checks(journal)
         checks.pop('delivery', None)
         expected.pop('delivery', None)
         require(checks == expected, 'target_vpn_or_dns_changed_manual_recovery_required')

@@ -8,6 +8,8 @@ from pathlib import Path
 import tarfile
 import tempfile
 import unittest
+from unittest.mock import patch
+from types import SimpleNamespace
 
 spec = importlib.util.spec_from_file_location('migration_agent', Path(__file__).parents[2]/'server_scripts/migration/agent.py')
 agent = importlib.util.module_from_spec(spec)
@@ -66,6 +68,26 @@ class Archives(unittest.TestCase):
             with self.assertRaisesRegex(agent.Rejected, 'bundle_digest_mismatch'):
                 agent.unpack(root, '0'*64)
             self.assertFalse((root/'manifest.json').exists())
+
+
+class TargetOwnership(unittest.TestCase):
+    def test_concurrent_foreign_volume_is_not_written(self):
+        # Docker volume create is idempotent: another service can win the name
+        # after preflight. Never restore into it just because create returned 0.
+        manifest = {'network': None, 'volume': True}
+        with tempfile.TemporaryDirectory() as root:
+            work = Path(root)/('a'*32)
+            work.mkdir()
+            (work/'images.tar').write_bytes(b'synthetic-images')
+            with patch.object(agent, 'unpack', return_value=manifest), \
+                 patch.object(agent, 'validate_target'), \
+                 patch.object(agent.subprocess, 'run', return_value=SimpleNamespace(returncode=0)), \
+                 patch.object(agent, 'run', return_value=b''), \
+                 patch.object(agent, 'inspect', return_value={'Labels': {'foreign-service':'1'}}), \
+                 patch.object(agent, 'restore_volume') as restore:
+                with self.assertRaisesRegex(agent.Rejected, 'target_volume_ownership_changed'):
+                    agent.import_target(work, {}, {'sha256':'synthetic'})
+                restore.assert_not_called()
 
 
 class ReplayFloor(unittest.TestCase):

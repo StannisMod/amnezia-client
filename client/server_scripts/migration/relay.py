@@ -289,7 +289,7 @@ def main(req):
                 return result
             if action == 'rollback':
                 a, b = source.call('status'), local(work, 'status')
-                if b['phase'] in ('active', 'rollback-exported') or (b['phase'] == 'stopped' and a['phase'] == 'stopped'):
+                if b['phase'] in ('active', 'target-stopping', 'rollback-exported') or (b['phase'] == 'stopped' and a['phase'] == 'stopped'):
                     latest = local(work, 'rollback-export')
                     if latest.get('file'):
                         source.push_rollback(latest)
