@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
+git_metadata=$(git -C "$repo" rev-parse --absolute-git-dir)
+git_common_metadata=$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir)
 rebuild=${1:-}
 if [[ -n "$rebuild" && "$rebuild" != --rebuild ]]; then
     echo 'Usage: build-full.sh [--rebuild]' >&2
@@ -21,10 +23,24 @@ docker run --rm --network host \
     -e GOCACHE=/work/go/build-cache -e CCACHE_DIR=/work/ccache \
     -e LANG=C.UTF-8 -e LC_ALL=C.UTF-8 \
     --mount "type=bind,source=$repo,target=/src,readonly" \
+    --mount "type=bind,source=$git_metadata,target=/input/worktree-git,readonly" \
+    --mount "type=bind,source=$git_common_metadata,target=/input/common-git,readonly" \
     --mount type=volume,source=amnezia-local-full-build,target=/work \
     amnezia-local-full-build bash -ec '
+        # Source must exactly match this worktree; dependencies/build caches live elsewhere.
+        rm -rf /work/src
         mkdir -p /work/src
-        cp -a /src/. /work/src/
+        tar -C /src --exclude=./.git -cf - . | tar -C /work/src -xf -
+        if [ -f /work/src/.git ]; then rm -f /work/src/.git; fi
+        mkdir -p /work/src/.git
+        cp -a /input/common-git/. /work/src/.git/
+        cp /input/worktree-git/HEAD /work/src/.git/HEAD
+        cp /input/worktree-git/index /work/src/.git/index
+        rm -f /work/src/.git/commondir /work/src/.git/gitdir
+        git config --file /work/src/.git/config core.worktree /work/src
+        if [ -f /work/src/.git/config.worktree ]; then
+            git config --file /work/src/.git/config.worktree core.worktree /work/src
+        fi
         git config --global --add safe.directory /work/src
         conan profile detect --force
         cmake -S /work/src -B /work/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DAMNEZIA_BUILD_TESTS=ON -DCMAKE_CXX_COMPILER_LAUNCHER=ccache

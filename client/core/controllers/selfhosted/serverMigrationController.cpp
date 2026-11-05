@@ -46,16 +46,36 @@ void install(PinnedSshSession &ssh, const QJsonObject &j) {
     if (present.isEmpty()) check(ssh.upload(script, dir+"/agent.py", script.size()));
     else if (!present.startsWith(QString::fromLatin1(hash)+" ")) throw std::runtime_error("migration_agent_changed");
 }
+QString privileged(const QString &command) {
+    return "if test \"$(id -u)\" = 0; then "+command+"; else sudo -n "+command+"; fi";
+}
 QJsonObject agent(PinnedSshSession &ssh, const QJsonObject &j, const QString &action, QJsonObject req = {}) {
     req["operation"] = j["operation"]; req["action"] = action;
     const auto encoded = QJsonDocument(req).toJson(QJsonDocument::Compact).toBase64();
-    const auto r = ssh.execute("sudo -n python3 "+quote(stagePath(j)+"/agent.py")+" "+quote(QString::fromLatin1(encoded)), 1800000, 65536);
+    const auto r = ssh.execute(privileged("python3 "+quote(stagePath(j)+"/agent.py")+" "+quote(QString::fromLatin1(encoded))), 1800000, 65536);
     check(r.error);
     QJsonParseError parse;
     const auto out = QJsonDocument::fromJson(r.output, &parse).object();
     if (parse.error != QJsonParseError::NoError || out["version"].toInt() != 1) throw std::runtime_error("unknown_result_check_status");
     if (!out["ok"].toBool() || r.exitCode != 0) throw std::runtime_error(out["reason"].toString("remote_failure_check_status").toStdString());
     return out;
+}
+QString explain(const QString &code) {
+    if (code == "domain_still_points_elsewhere" || code == "domain_not_resolved")
+        return ServerMigrationController::tr("DNS has not switched completely. Check all VPN and subscription A/AAAA records, wait for their caches to expire and retry.");
+    if (code == "host_key_changed")
+        return ServerMigrationController::tr("The SSH identity changed. Check the server console before trusting a new key.");
+    if (code == "authentication_failed" || code == "connection_failed")
+        return ServerMigrationController::tr("Cannot connect to SSH. Check the address, port and login credentials, then check the saved operation.");
+    if (code == "private_key_needs_decryption")
+        return ServerMigrationController::tr("This SSH key is encrypted. Unlock it before using server migration.");
+    if (code == "source_changed" || code == "source_stack_changed" || code == "source_changed_during_snapshot")
+        return ServerMigrationController::tr("The source changed while copying. Restore the source operation and start a fresh copy before switching DNS.");
+    if (code == "target_vpn_or_dns_changed_manual_recovery_required")
+        return ServerMigrationController::tr("Automatic rollback stopped because the target VPN or DNS configuration changed. Reconcile those changes before restarting the source.");
+    if (code.contains("collision"))
+        return ServerMigrationController::tr("The target already uses a required name, port or network. Choose an empty target; existing resources will be kept.");
+    return ServerMigrationController::tr("The migration stopped. Check the saved operation before retrying or restoring the source. Details: %1").arg(code);
 }
 struct TransferCleanup {
     PinnedSshSession &ssh;
@@ -86,6 +106,8 @@ void ServerMigrationController::work(const std::function<QJsonObject(QJsonObject
     connect(watcher, &QFutureWatcher<QJsonObject>::finished, this, [this, watcher] {
         m_journal = watcher->result(); watcher->deleteLater();
         m_details = m_journal.take("message").toString();
+        const auto failure = m_journal.take("failure").toString();
+        if (!failure.isEmpty()) m_details = explain(failure);
         if (phase() == "active" || phase() == "rolled-back") {
             auto admin = m_servers->selfHostedAdminConfig(serverId());
             if (admin) {
@@ -101,7 +123,7 @@ void ServerMigrationController::work(const std::function<QJsonObject(QJsonObject
     const auto copy = m_journal;
     watcher->setFuture(QtConcurrent::run(&m_pool, [copy, fn] {
         try { return fn(copy); }
-        catch (const std::exception &e) { auto out = copy; out["message"] = QString::fromUtf8(e.what()); return out; }
+        catch (const std::exception &e) { auto out = copy; out["failure"] = QString::fromUtf8(e.what()); return out; }
     }));
 }
 void ServerMigrationController::discover(const QString &id, const QString &host, int port, const QString &user, const QString &secret) {
@@ -136,7 +158,7 @@ void ServerMigrationController::stage() {
         const auto snapshot = agent(source, j, "export");
         const auto dir = stagePath(j);
         TransferCleanup sourceCleanup{source, dir+"/bundle.tar"}, targetCleanup{target, dir+"/incoming.tar"};
-        execute(source, "umask 077; sudo -n cat -- "+quote(snapshot["file"].toString())+" > "+quote(dir+"/bundle.tar"), 1800000);
+        execute(source, "umask 077; "+privileged("cat -- "+quote(snapshot["file"].toString()))+" > "+quote(dir+"/bundle.tar"), 1800000);
         QTemporaryFile local;
         if (!local.open()) throw std::runtime_error("private_temporary_file_failed");
         local.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner);
@@ -158,7 +180,7 @@ void ServerMigrationController::stage() {
         }
         agent(target, j, "verify");
         j["snapshot"] = snapshot; j["phase"] = "staged";
-        j["message"] = QObject::tr("Copy and external VPN path verified. The old server is still running. Change the domain A/AAAA records to the target, then switch servers.");
+        j["message"] = ServerMigrationController::tr("Copy and external VPN path verified. The old server is still running. Change the domain A/AAAA records to the target, then switch servers.");
         return j;
     });
 }
@@ -182,7 +204,7 @@ void ServerMigrationController::cutover() {
         const auto status = agent(source, j, "status");
         if (status["phase"] == "exported") agent(source, j, "source-check");
         agent(source, j, "source-stop"); agent(target, j, "activate");
-        j["phase"] = "active"; j["message"] = QObject::tr("The target is active. Source containers are retained and stopped.");
+        j["phase"] = "active"; j["message"] = ServerMigrationController::tr("The target is active. Source containers are retained and stopped.");
         return j;
     });
     // Credentials are updated in the completion/reconciliation path, never from a worker.
@@ -204,8 +226,8 @@ void ServerMigrationController::recover() {
         else if (ap == "absent" && bp == "absent") j["phase"] = "aborted";
         else if (ap == "exported" && bp == "ready") { j["phase"] = "staged"; j["snapshot"] = a; }
         if (ap == "exported" && (bp == "validated" || bp == "staged")) {
-            agent(target, j, "verify");
             agent(target, j, "probe-remove");
+            agent(target, j, "verify");
             const auto probes = agent(target, j, "probe-create", {{"address", j["targetIdentity"].toObject()["address"]}});
             try {
                 agent(source, j, "probe-run", {{"configs", probes["configs"]}, {"address", j["targetIdentity"].toObject()["address"]}});
@@ -232,7 +254,7 @@ void ServerMigrationController::rollback() {
             if (latest.contains("file")) {
                 const auto dir = stagePath(j);
                 TransferCleanup targetCleanup{target, dir+"/rollback.tar"}, sourceCleanup{source, dir+"/rollback.tar"};
-                execute(target, "umask 077; sudo -n cat -- "+quote(latest["file"].toString())+" > "+quote(dir+"/rollback.tar"));
+                execute(target, "umask 077; "+privileged("cat -- "+quote(latest["file"].toString()))+" > "+quote(dir+"/rollback.tar"));
                 QTemporaryFile local;
                 if (!local.open()) throw std::runtime_error("private_temporary_file_failed");
                 local.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner);
@@ -246,7 +268,7 @@ void ServerMigrationController::rollback() {
         }
         if (a["phase"] != "absent") agent(source, j, "abort");
         j["phase"] = "rolled-back";
-        j["message"] = QObject::tr("Source restarted. Restore its DNS records before reconnecting. Target containers are retained and stopped.");
+        j["message"] = ServerMigrationController::tr("Source restarted. Restore its DNS records before reconnecting. Target containers are retained and stopped.");
         return j;
     });
 }

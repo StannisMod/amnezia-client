@@ -213,6 +213,11 @@ def main():
     assert agent('source', 'source-check', expect=False)['reason'] == 'source_changed'
     d('source', 'exec', 'amnezia-awg2', 'sh', '-c', "printf '%s' '[{\"clientId\":\"migration-synthetic-existing\"}]' > /opt/amnezia/awg/clientsTable")
     agent('source', 'source-stop')
+    # A lost SSH reply at cutover is recovered from durable intent and immutable IDs.
+    assert agent('source', 'status')['phase'] == 'stopped'
+    assert not any(agent('source', 'status')['running'].values())
+    assert agent('target', 'status')['phase'] == 'ready'
+    agent('source', 'source-stop')  # Safe retry after an unknown response.
     agent('target', 'activate')
     traffic(clients, addresses['target'])
     assert json.loads(d('target', 'exec', 'amnezia-connection-updates', '/updates', 'info'))['publicKey'] == info['publicKey']
@@ -229,9 +234,20 @@ def main():
     host('source', 'mkdir', '-p', '/tmp/amnezia-migration-'+OP)
     host('source', 'sh', '-ec', 'umask 077; cat > "$1"', 'sh', '/tmp/amnezia-migration-'+OP+'/rollback.tar', data=store, binary=True)
     agent('source', 'rollback-import', sha256=latest['sha256'])
+    # A stale snapshot cannot overwrite a newer replay floor, even on a retry.
+    stale = host('source', 'cat', '/var/lib/amnezia/migrations/'+OP+'/volume.tar', binary=True)
+    import hashlib
+    host('source', 'sh', '-ec', 'umask 077; cat > "$1"', 'sh', '/tmp/amnezia-migration-'+OP+'/rollback.tar', data=stale, binary=True)
+    assert agent('source', 'rollback-import', expect=False, sha256=hashlib.sha256(stale).hexdigest())['reason'] == 'rollback_would_lower_revision'
     agent('source', 'abort')
     traffic(clients, addresses['source'])
     assert fetch(info, issued, addresses['source'])['revision'] == '2'
+    agent('source', 'finalize')
+    agent('target', 'finalize')
+    agent('source', 'finalize')  # Cleanup retries are idempotent after SSH loss.
+    for side in HOSTS:
+        assert agent(side, 'status')['phase'] == 'finalized'
+        assert host(side, 'sh', '-c', 'test ! -f /var/lib/amnezia/migrations/'+OP+'/bundle.tar; test ! -f /var/lib/amnezia/migrations/'+OP+'/volume.tar') == ''
     print('PASS: WG + AWG unchanged clients, external UDP probes, DNS, old signed token + TLS pin, drift rejection, switch and rollback retaining revision 2')
 
 

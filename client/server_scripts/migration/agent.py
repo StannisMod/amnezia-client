@@ -411,6 +411,7 @@ def source_action(work, journal, action):
     require(journal.get('role') == 'source', 'wrong_role')
     cs = source_containers(journal)
     if action == 'source-check':
+        require({c['Id'] for c in inventory()} == {c['Id'] for c in cs}, 'source_stack_changed')
         require(journal['phase'] == 'exported' and all(c['State']['Running'] for c in cs), 'source_not_running')
         require(state(cs) == journal['manifest']['state'], 'source_changed')
     elif action == 'source-stop':
@@ -419,6 +420,7 @@ def source_action(work, journal, action):
             require(all(not c['State']['Running'] for c in cs), 'source_not_stopped')
             return journal
         if journal['phase'] == 'exported':
+            require({c['Id'] for c in inventory()} == {c['Id'] for c in cs}, 'source_stack_changed')
             require(state(cs) == journal['manifest']['state'], 'source_changed')
         # Persist intent before stopping; retry/status can distinguish partial cutover.
         journal['phase'] = 'stopping'
@@ -510,8 +512,17 @@ def probe_remove(work, journal):
     return journal
 
 
+def cleanup_probe_clients(work):
+    ids = run('container', 'ls', '-aq', '--filter', 'label='+LABEL+'.probe='+work.name).decode().split()
+    for cid in ids:
+        c = inspect('container', cid)
+        require((c['Config'].get('Labels') or {}).get(LABEL+'.probe') == work.name, 'probe_ownership_changed')
+        run('rm', '-f', cid)
+
+
 def probe_run(work, journal, req):
     require(journal.get('role') == 'source' and journal['phase'] == 'exported', 'wrong_phase')
+    cleanup_probe_clients(work)
     for probe in req['configs']:
         require(probe['name'] in journal['manifest']['images'] and SPECS.get(probe['name']), 'invalid_probe')
         tool = SPECS[probe['name']][0]
@@ -524,9 +535,12 @@ def probe_run(work, journal, req):
                   'ping -c 2 -W 2 '+ping+' >/dev/null 2>&1')
         if probe['dns']:
             script += '; nslookup -type=soa . 172.29.172.254 >/dev/null 2>&1'
-        run('run', '--rm', '-i', '--privileged', '--label', LABEL+'='+work.name,
-            '--entrypoint', '/bin/sh', journal['manifest']['images'][probe['name']], '-ec', script,
-            data=probe['config'].encode(), timeout=60)
+        try:
+            run('run', '--rm', '-i', '--privileged', '--label', LABEL+'.probe='+work.name,
+                '--entrypoint', '/bin/sh', journal['manifest']['images'][probe['name']], '-ec', script,
+                data=probe['config'].encode(), timeout=60)
+        finally:
+            cleanup_probe_clients(work)
     info = journal['manifest'].get('deliveryInfo')
     if info:
         delivery_https_probe(info, req['address'])
@@ -604,6 +618,7 @@ def rollback_import(work, journal, req):
 
 def abort(work, journal):
     if journal.get('role') == 'source':
+        cleanup_probe_clients(work)
         if journal['phase'] in ('stopping', 'stopped'):
             source_action(work, journal, 'source-start')
         else:
@@ -733,7 +748,7 @@ def main(req):
         if action == 'status':
             if journal.get('role') == 'source' and journal.get('manifest'):
                 cs = source_containers(journal)
-            elif journal.get('role') == 'target':
+            elif journal.get('role') == 'target' and journal.get('manifest'):
                 cs = owned(journal, work)
             else:
                 cs = []

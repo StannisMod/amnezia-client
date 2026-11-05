@@ -1,0 +1,105 @@
+# Move a server while keeping its domain
+
+In **Server → Management → Move server**, enter the new server's SSH address,
+port, login and password or unencrypted private key. Compare both SSH SHA256
+fingerprints with the server consoles before accepting them. Subsequent SSH
+connections use the reviewed IP addresses and host keys, including after DNS
+changes. Credentials are not sent during fingerprint discovery.
+
+The first version supports running standard `amnezia-wireguard`,
+`amnezia-awg2`, optional `amnezia-dns` and optional
+`amnezia-connection-updates`. Both hosts need Linux, a rootful local Docker daemon,
+Python 3.9 or newer, and root or passwordless sudo access. Encrypted SSH private
+keys must be unlocked before using this flow. The target must use the same CPU
+architecture and have the required container names, ports, volume and DNS network
+available. The target SSH address must resolve to IPv4 in this version. Custom
+networks, mounts, active unsupported Amnezia protocols and nonstandard restart
+policies are rejected. Unrelated resources are never removed to make room.
+
+All existing client VPN endpoints must already use the domain you are keeping.
+A numeric subscription URL cannot follow a domain change: the source subscription
+service must already use a DNS name too. Set this up before issuing profiles.
+Migrating a server cannot change offline devices' immutable numeric URLs.
+
+1. Disconnect the administrator app's VPN. Keep both VPSs available. Do not edit
+   users, protocols, DNS configuration or subscriptions during the move. Before
+   starting, reduce DNS TTL and wait out the previous TTL if a short cutover is
+   needed. Open the existing VPN UDP ports and, when used, TCP 8443 on the target.
+2. Approve the two SSH identities. Copy stages private Docker snapshots and the
+   subscription volume through a private temporary file on this device. Each
+   transfer is size bounded and SHA256 checked. The snapshots are never pushed to
+   a registry. The source continues serving, with brief Docker commit pauses.
+3. The candidate starts on the target with automatic restart disabled. The app
+   verifies the original configuration, live peers and delivery identity. Temporary
+   test peers exercise each VPN through the target's published UDP port from the
+   old host, including DNS through the tunnel when installed. Existing device
+   private keys are never used for these probes. HTTPS is checked externally using
+   the original certificate and control hostname. Probe peers and clients are
+   removed on completion; interrupted probes can be cleaned during recovery.
+4. After those checks pass, update the VPN domain and the subscription domain's
+   A/AAAA records to the target. Remove stale AAAA records when the target has no
+   IPv6 endpoint. Choose **DNS updated — switch servers**. Every address returned
+   by the administrator device's resolver must select the target. Other devices'
+   cached records may still need their TTL to expire.
+5. The source is checked again for changes, then its original containers are
+   stopped with automatic restart disabled. The target's original restart policies
+   are restored, and this app's management credentials switch to the new IP.
+   Existing VPN profiles, domain names, keys, peers, PSKs, addresses, local DNS and
+   routing choices remain intact. Keep both VPSs until clients reconnect.
+
+A source configuration or peer change invalidates the snapshot and prevents
+cutover. Files and semantic live configuration are checked; roaming peer endpoints,
+DNS process IDs and DNSSEC trust-anchor refresh metadata are runtime state. DNS
+configuration itself is preserved. Temporary readiness receipts, DNS caches and
+live VPN sessions are recreated, rather than copied as persistent identities.
+
+## Recovery and rollback
+
+The app saves one migration operation in its settings and each host maintains a
+root-only journal. The app journal includes the credentials needed for recovery;
+it receives the same platform-dependent storage protection as ordinary server
+credentials and is excluded from application backup exports. Linux desktop's
+existing settings implementation does not encrypt server credentials or this
+journal. Do not share the settings directory. No passwords, peer secrets, archive
+contents or private keys are printed in operation messages.
+
+After an interrupted transfer or SSH reply, use **Check saved operation**. A
+journaled stop can be retried without replacing containers. A verified candidate's
+external probe can be repeated. A partial import can be aborted; cleanup is
+restricted to this operation's unpredictable resource labels. An unknown result
+is never reported as success. Power failure or loss of either host may require
+operator recovery; the flow does not install an independent supervisor.
+
+**Restore source server** stops the target and restarts the original source
+containers. Restore the old DNS records before reconnecting. After activation,
+rollback first transfers the target's current subscription state back to the
+stopped source: signing/TLS identity, token bindings, revocations and counters are
+validated, versions cannot decrease, and revoked tokens cannot be revived. This
+preserves a newer version already accepted by an offline client. If VPN identities
+or DNS configuration were edited on the target, automatic rollback refuses to
+restore a different configuration; reconcile it manually. Concurrent administrative
+edits during migration are unsupported.
+
+**Finish and forget rollback credentials** removes the local journal and transfer
+archives, retaining a small host audit marker. Unused source snapshot images are
+removed without force. Original source containers and stopped target rollback
+containers are retained; the VPS itself is never deleted. Target snapshot images
+in use are retained because they contain the running configuration. Finishing
+ends the app's automatic rollback/recovery for this operation.
+
+## Local verification
+
+```sh
+python3 client/tests/migration/test_agent.py
+bash scripts/local-tests/migration-ssh.sh
+bash scripts/local-tests/migration-scenario.sh
+bash scripts/local-tests/build-full.sh
+```
+
+The scenario creates two labelled disposable Docker-in-Docker hosts; it never
+mounts the host Docker socket inside them. Dedicated fixture volumes cache only
+synthetic test data. It proves unchanged WG and AWG client traffic before/after
+migration, DNS through each tunnel, temporary external probes, the old HTTPS
+certificate and bearer token, Ed25519 verification, refusal of source drift,
+retry after a lost cutover reply, and rollback after publication without lowering
+a replay floor. Reserved `example.test` names are used in fixtures.
