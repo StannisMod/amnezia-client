@@ -28,6 +28,7 @@ set(HEADERS ${HEADERS}
     ${CLIENT_ROOT_DIR}/core/controllers/selfhosted/usersController.h
     ${CLIENT_ROOT_DIR}/core/controllers/selfhosted/installController.h
     ${CLIENT_ROOT_DIR}/core/controllers/selfhosted/exportController.h
+    ${CLIENT_ROOT_DIR}/core/controllers/selfhosted/serverMigrationController.h
     ${CLIENT_ROOT_DIR}/core/controllers/selfhosted/connectionUpdatesController.h
     ${CLIENT_ROOT_DIR}/core/controllers/selfhosted/importController.h
     ${CLIENT_ROOT_DIR}/core/installers/installerBase.h
@@ -121,6 +122,7 @@ set(SOURCES ${SOURCES}
     ${CLIENT_ROOT_DIR}/core/controllers/selfhosted/usersController.cpp
     ${CLIENT_ROOT_DIR}/core/controllers/selfhosted/installController.cpp
     ${CLIENT_ROOT_DIR}/core/controllers/selfhosted/exportController.cpp
+    ${CLIENT_ROOT_DIR}/core/controllers/selfhosted/serverMigrationController.cpp
     ${CLIENT_ROOT_DIR}/core/controllers/selfhosted/connectionUpdatesController.cpp
     ${CLIENT_ROOT_DIR}/core/controllers/selfhosted/importController.cpp
     ${CLIENT_ROOT_DIR}/core/installers/installerBase.cpp
