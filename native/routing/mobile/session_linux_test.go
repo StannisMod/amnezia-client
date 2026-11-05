@@ -47,6 +47,59 @@ func TestMobileNetworkDNSIsPreparedBeforeCapture(t *testing.T) {
 	}
 }
 
+func TestNativeOpportunisticTLSRetainedBySerializedSession(t *testing.T) {
+	for _, opportunistic := range []bool{false, true} {
+		var session engine.SessionConfig
+		if err := json.Unmarshal(sampleConfig(t), &session); err != nil {
+			t.Fatal(err)
+		}
+		session.DNS = &dnspolicy.Config{Version: 1, Default: "local", PreserveNetworkDomains: true,
+			Policies: map[string]dnspolicy.Resolver{"local": {Source: "network", Transport: "udp", Path: rules.Direct}}}
+		session.NetworkDNS = &dnspolicy.NetworkSnapshot{RoutingDomainsAvailable: true, Links: []dnspolicy.NetworkLink{{
+			ID: "7", Interface: "corp0", Default: true, Domains: []string{"corp.example"},
+			Servers: []dnspolicy.NetworkServer{{Address: netip.MustParseAddr("192.0.2.53"), Port: 8853,
+				Transport: "tls", ServerName: "dns.corp.example", OpportunisticTLS: opportunistic}},
+		}}}
+		raw, err := json.Marshal(session)
+		if err != nil {
+			t.Fatal(err)
+		}
+		compiled, _, err := compileSession(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var output struct {
+			DNS struct {
+				Servers []struct {
+					Tag  string `json:"tag"`
+					Type string `json:"type"`
+					Port int    `json:"server_port"`
+					TLS  struct {
+						Insecure   bool   `json:"insecure"`
+						ServerName string `json:"server_name"`
+					} `json:"tls"`
+				} `json:"servers"`
+			} `json:"dns"`
+		}
+		if err := json.Unmarshal(compiled, &output); err != nil {
+			t.Fatal(err)
+		}
+		found := 0
+		for _, server := range output.DNS.Servers {
+			if server.Tag != dnspolicy.Tag("local") && server.Tag != dnspolicy.Tag("network-7") {
+				continue
+			}
+			found++
+			if server.Type != "tls" || server.Port != 8853 || server.TLS.ServerName != "dns.corp.example" || server.TLS.Insecure != opportunistic {
+				t.Fatalf("native TLS mode lost after JSON and compileSession: %+v", server)
+			}
+		}
+		if found != 2 {
+			t.Fatal("missing network policies", found)
+		}
+	}
+}
+
 func sampleConfig(t *testing.T, transport ...string) []byte {
 	t.Helper()
 	a, e := ecdh.X25519().GenerateKey(rand.Reader)

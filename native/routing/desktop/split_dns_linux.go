@@ -175,17 +175,6 @@ func linuxDNSSnapshot(links []networkDNSLink) dnspolicy.NetworkSnapshot {
 	return snapshot
 }
 
-func addNetworkDNS(config *dnspolicy.Config, links []networkDNSLink) error {
-	c := *config
-	c.PreserveNetworkDomains = true
-	prepared, err := linuxDNSSnapshot(links).Prepare(c)
-	if err != nil {
-		return err
-	}
-	*config = prepared
-	return nil
-}
-
 func prepareNetworkDNS(config *engine.SessionConfig) error {
 	if config.DNS == nil || !config.DNS.NeedsNetwork() {
 		return nil
@@ -201,27 +190,19 @@ func prepareNetworkDNS(config *engine.SessionConfig) error {
 	if err != nil {
 		return err
 	}
-	if err = bindNetworkDNS(config.DNS, links); err != nil {
-		return err
-	}
-	if config.DNS.PreserveNetworkDomains {
-		if err = addNetworkDNS(config.DNS, links); err != nil {
-			return err
-		}
-	}
-	config.DNSNetworkFingerprint = networkDNSFingerprint(links)
-	return nil
+	return prepareLinuxDNSSnapshot(config, links)
 }
 
-func bindNetworkDNS(config *dnspolicy.Config, links []networkDNSLink) error {
-	c := *config
-	c.PreserveNetworkDomains = false
-	prepared, err := linuxDNSSnapshot(links).Prepare(c)
-	if err != nil {
+func prepareLinuxDNSSnapshot(config *engine.SessionConfig, links []networkDNSLink) error {
+	snapshot := linuxDNSSnapshot(links)
+	// Validate before capture, but retain native data across the helper's JSON
+	// boundary. compileSession prepares policies after decoding, keeping private
+	// runtime flags (including opportunistic TLS) out of user configuration.
+	if _, err := snapshot.Prepare(*config.DNS); err != nil {
 		return err
 	}
-	prepared.PreserveNetworkDomains = config.PreserveNetworkDomains
-	*config = prepared
+	config.NetworkDNS = &snapshot
+	config.DNSNetworkFingerprint = networkDNSFingerprint(links)
 	return nil
 }
 

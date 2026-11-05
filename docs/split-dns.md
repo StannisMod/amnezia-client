@@ -84,6 +84,8 @@ ambiguous network selection fails instead of falling back to public DNS.
   unauthenticated TLS without plaintext fallback. Missing encryption metadata
   fails preparation. Only the managed TUN's internal DNS hop disables DoT;
   the original network links retain their settings.
+  The native snapshot crosses the serialized session boundary; runtime policies
+  are prepared inside the core so opportunistic TLS mode survives the transfer.
 - Windows reads native adapter DNS addresses, DNS suffix metadata and default
   route metrics. Effective NRPT rules, including exact names and suffix rules,
   can be imported separately; adapter search suffixes alone do not become DNS
@@ -187,6 +189,9 @@ and changed policy, network DNS invalidation and resolver restoration. The
 `split-dns-system-resolver` CI job runs it for AWG and WireGuard in privileged
 containers with **no external network**. Its report contains only synthetic test
 domains; generated private profiles/keys remain inside the discarded container.
+It also runs a real DoT observer with a generated, untrusted certificate:
+opportunistic network DNS succeeds after the helper's session serialization,
+strict TLS rejects that certificate, and neither mode falls back to plaintext.
 
 Qt tests cover settings round trips, invalid-rule rejection, retained disabled
 configuration and fresh-install routing defaults. The DNS page also has an

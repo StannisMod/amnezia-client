@@ -12,6 +12,7 @@ import pwd
 from pathlib import Path
 import select
 import socket
+import ssl
 import struct
 import subprocess
 import sys
@@ -43,23 +44,62 @@ def dns_observer(log):
     print("READY", flush=True)
     while True:
         packet, source = udp.recvfrom(4096)
-        offset, labels = 12, []
-        while packet[offset]:
-            length = packet[offset]
-            labels.append(packet[offset + 1:offset + 1 + length].decode("ascii"))
-            offset += length + 1
-        offset += 1
-        kind, _ = struct.unpack_from("!HH", packet, offset)
-        question = packet[12:offset + 4]
-        with log.open("a") as output:
-            output.write(".".join(labels).lower() + ".\n")
-        answer = b""
-        if kind == 1:
-            answer = b"\xc0\x0c" + struct.pack("!HHIH", 1, 1, 30, 4) + socket.inet_aton("10.88.0.53")
-        elif kind == 16:
-            answer = b"\xc0\x0c" + struct.pack("!HHIH", 16, 1, 30, 7) + b"\x06DIRECT"
-        response = struct.pack("!6H", struct.unpack_from("!H", packet)[0], 0x8180, 1, bool(answer), 0, 0) + question + answer
-        udp.sendto(response, source)
+        udp.sendto(dns_response(packet, log), source)
+
+
+def dns_response(packet, log):
+    offset, labels = 12, []
+    while packet[offset]:
+        length = packet[offset]
+        labels.append(packet[offset + 1:offset + 1 + length].decode("ascii"))
+        offset += length + 1
+    offset += 1
+    kind, _ = struct.unpack_from("!HH", packet, offset)
+    question = packet[12:offset + 4]
+    with log.open("a") as output:
+        output.write(".".join(labels).lower() + ".\n")
+    answer = b""
+    if kind == 1:
+        answer = b"\xc0\x0c" + struct.pack("!HHIH", 1, 1, 30, 4) + socket.inet_aton("10.88.0.53")
+    elif kind == 16:
+        answer = b"\xc0\x0c" + struct.pack("!HHIH", 16, 1, 30, 7) + b"\x06DIRECT"
+    response = struct.pack("!6H", struct.unpack_from("!H", packet)[0], 0x8180, 1, bool(answer), 0, 0) + question + answer
+    return response
+
+
+def tls_observer(log, cert, key):
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(cert, key)
+    listener = socket.socket()
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind(("10.88.0.53", 8853))
+    listener.listen()
+
+    def read_exact(client, length):
+        result = b""
+        while len(result) < length:
+            part = client.recv(length - len(result))
+            if not part:
+                raise EOFError()
+            result += part
+        return result
+
+    def serve(client):
+        try:
+            with context.wrap_socket(client, server_side=True) as stream:
+                stream.settimeout(10)
+                while True:
+                    length = struct.unpack("!H", read_exact(stream, 2))[0]
+                    response = dns_response(read_exact(stream, length), log)
+                    stream.sendall(struct.pack("!H", len(response)) + response)
+        except (OSError, EOFError):
+            client.close()
+
+    print("READY", flush=True)
+    while True:
+        client, _ = listener.accept()
+        threading.Thread(target=serve, args=(client,), daemon=True).start()
+
 
 
 def main():
@@ -249,10 +289,44 @@ def main():
                 assert name + "." not in direct_names(), "native DoT silently downgraded to plaintext"
                 assert name + "." not in vpn_names(), "native DoT crossed policy boundaries"
             stop()
+        # An untrusted certificate is valid only in native opportunistic mode.
+        # The real helper serializes the desktop snapshot before core startup.
+        cert, key = temporary / "dns-cert.pem", temporary / "dns-key.pem"
+        run("openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
+            "-subj", "/CN=dns.corp.example", "-addext", "subjectAltName=DNS:dns.corp.example",
+            "-keyout", key, "-out", cert, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        tls_log = temporary / "tls-dns.log"
+        tls_log.touch()
+        encrypted = subprocess.Popen(["ip", "netns", "exec", "split-corp", "python3", "-u", str(script),
+                                      "--tls-observer", str(tls_log), str(cert), str(key)], stdout=subprocess.PIPE, text=True)
+        processes.append(encrypted)
+        assert encrypted.stdout.readline().strip() == "READY"
+        for mode in ("opportunistic", "yes"):
+            run("resolvectl", "dnsovertls", "corp0", mode)
+            start(profile)
+            for suffix in ("corp.example", "direct.test"):
+                name = "selfsigned-" + mode + "." + suffix
+                address = resolve(name)
+                if mode == "opportunistic":
+                    connect(name, "DIRECT", address)
+                    assert name + "." in tls_log.read_text().splitlines(), "query did not reach TLS observer"
+                else:
+                    try:
+                        connect(name, "DIRECT", address)
+                    except OSError:
+                        pass
+                    else:
+                        raise AssertionError("strict TLS accepted an untrusted certificate")
+                    assert name + "." not in tls_log.read_text().splitlines(), "strict TLS sent DNS before authenticating"
+                assert name + "." not in direct_names(), "TLS policy downgraded to plaintext"
+                assert name + "." not in vpn_names(), "TLS policy crossed routing boundary"
+            stop()
         run("resolvectl", "dnsovertls", "corp0", "no")
         run("resolvectl", "dns", "corp0", "10.88.0.53")
         assert dns_state() == before
         report["native_dot_no_plaintext_downgrade"] = "PASS"
+        report["opportunistic_tls_through_serialized_session"] = "PASS"
+        report["strict_tls_rejects_untrusted_certificate"] = "PASS"
         report.update(split_dns="PASS", corporate_systemd_resolved="PASS", network_dns_change="PASS", dns_restoration="PASS")
     finally:
         if child is not None:
@@ -274,5 +348,7 @@ def main():
 if __name__ == "__main__":
     if len(sys.argv) == 3 and sys.argv[1] == "--observer":
         dns_observer(Path(sys.argv[2]))
+    elif len(sys.argv) == 5 and sys.argv[1] == "--tls-observer":
+        tls_observer(Path(sys.argv[2]), sys.argv[3], sys.argv[4])
     else:
         main()
