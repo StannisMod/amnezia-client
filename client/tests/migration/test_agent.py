@@ -7,6 +7,8 @@ import json
 from pathlib import Path
 import tarfile
 import tempfile
+import subprocess
+import sys
 import unittest
 from unittest.mock import patch
 from types import SimpleNamespace
@@ -88,6 +90,47 @@ class TargetOwnership(unittest.TestCase):
                 with self.assertRaisesRegex(agent.Rejected, 'target_volume_ownership_changed'):
                     agent.import_target(work, {}, {'sha256':'synthetic'})
                 restore.assert_not_called()
+
+
+class FinalizationSecrets(unittest.TestCase):
+    def test_interrupted_private_requests_and_keys_are_removed(self):
+        with tempfile.TemporaryDirectory() as root:
+            work = Path(root)/('b'*32)
+            job = work/'pull-job'
+            job.mkdir(parents=True, mode=0o700)
+            (job/'request.json').write_text('{"secret":"synthetic-source-key"}')
+            (job/'request.tmp').write_text('{"secret":"partial-synthetic-key"}')
+            stale = work/'ssh-interrupted'
+            stale.mkdir(mode=0o700)
+            (stale/'identity').write_text('synthetic-private-key')
+            stage = work/'user-stage'
+            stage.mkdir(mode=0o700)
+            (stage/'request-interrupted.json').write_text('synthetic-app-request-secret')
+            (stage/'__pycache__').mkdir(mode=0o700)
+            (stage/'__pycache__/agent.pyc').write_bytes(b'synthetic-cache')
+            with patch.object(agent, 'client_stage', return_value=stage):
+                agent.finalize(work, {'phase':'aborted'})
+            self.assertFalse((stage/'request-interrupted.json').exists())
+            self.assertFalse((stage/'__pycache__').exists())
+            self.assertFalse((job/'request.json').exists())
+            self.assertFalse((job/'request.tmp').exists())
+            self.assertFalse(stale.exists())
+
+    def test_live_worker_prevents_credential_deletion(self):
+        with tempfile.TemporaryDirectory() as root:
+            work = Path(root)/('b'*32)
+            job = work/'pull-job'
+            job.mkdir(parents=True, mode=0o700)
+            request = job/'request.json'
+            request.write_text('{"secret":"synthetic-source-key"}')
+            child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(20)', '--worker', str(request)])
+            try:
+                with self.assertRaisesRegex(agent.Rejected, 'pull_job_busy'):
+                    agent.finalize(work, {'phase':'aborted'})
+                self.assertTrue(request.exists())
+            finally:
+                child.terminate()
+                child.wait(timeout=5)
 
 
 class ReplayFloor(unittest.TestCase):

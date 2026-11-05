@@ -54,7 +54,7 @@ QString privileged(const QString &command) {
 QJsonObject agent(PinnedSshSession &ssh, const QJsonObject &j, const QString &action, QJsonObject req = {}) {
     req["operation"] = j["operation"]; req["action"] = action;
     const auto encoded = QJsonDocument(req).toJson(QJsonDocument::Compact).toBase64();
-    const auto r = ssh.execute(privileged("python3 "+quote(stagePath(j)+"/agent.py")+" "+quote(QString::fromLatin1(encoded))), 1800000, 65536);
+    const auto r = ssh.execute(privileged("python3 -B "+quote(stagePath(j)+"/agent.py")+" "+quote(QString::fromLatin1(encoded))), 1800000, 65536);
     check(r.error);
     QJsonParseError parse;
     const auto out = QJsonDocument::fromJson(r.output, &parse).object();
@@ -89,7 +89,7 @@ QJsonObject relay(PinnedSshSession &target, const QJsonObject &j, const QString 
     QBuffer input; input.setData(QJsonDocument(req).toJson(QJsonDocument::Compact)); input.open(QIODevice::ReadOnly);
     struct Cleanup { PinnedSshSession &ssh; QString path; ~Cleanup() { ssh.execute("rm -f -- "+quote(path), 5000); } } cleanup{target, path};
     check(target.upload(input, path, input.size()));
-    const auto r = target.execute(privileged("python3 "+quote(stagePath(j)+"/relay.py")+" "+quote(path)), 1800000, 65536);
+    const auto r = target.execute(privileged("python3 -B "+quote(stagePath(j)+"/relay.py")+" "+quote(path)), 1800000, 65536);
     check(r.error);
     QJsonParseError error;
     const auto result = QJsonDocument::fromJson(r.output, &error).object();
@@ -240,6 +240,14 @@ void ServerMigrationController::recover() {
                 return j;
             }
         }
+        if (j["phase"] == "rolling-back") {
+            const auto state = relay(target, j, "rollback-status");
+            if (state["phase"] == "rolled-back") {
+                j["phase"] = "rolled-back";
+                j["message"] = ServerMigrationController::tr("Source restarted. Restore its DNS records before reconnecting. Target containers are retained and stopped.");
+                return j;
+            }
+        }
         const auto a = sourceCommand(target, j, "status"), b = agent(target, j, "status");
         const auto ap = a["phase"].toString(), bp = b["phase"].toString();
         const auto running = b["running"].toObject();
@@ -249,7 +257,7 @@ void ServerMigrationController::recover() {
         for (const auto value : a["running"].toObject()) sourceStopped = sourceStopped && !value.toBool();
         if (ap == "stopped" && bp == "active" && targetRunning && sourceStopped) j["phase"] = "active";
         else if ((ap == "stopped" || ap == "stopping") && bp == "ready") { j["phase"] = "switching"; j["snapshot"] = a; }
-        else if (ap == "absent" && bp == "absent") j["phase"] = "aborted";
+        else if (ap == "absent" && (bp == "absent" || bp == "aborted")) j["phase"] = "aborted";
         else if (ap == "exported" && bp == "ready") { j["phase"] = "staged"; j["snapshot"] = a; }
         if (ap == "exported" && (bp == "validated" || bp == "staged")) {
             relay(target, j, "start-stage", {{"targetAddress", j["targetIdentity"].toObject()["address"]}});

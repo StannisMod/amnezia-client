@@ -6,12 +6,44 @@
 #include <QJsonObject>
 #include <libssh/libssh.h>
 #include "core/utils/selfhosted/pinnedSshSession.h"
+#include "core/utils/selfhosted/connectionUpdatesCommand.h"
+#include <QUuid>
 
 using namespace amnezia;
+int adminCommands(const QString &config)
+{
+    QFile input(config); if (!input.open(QIODevice::ReadOnly)) return 20;
+    const auto c = QJsonDocument::fromJson(input.readAll()).object();
+    ServerCredentials credentials{c["host"].toString(), "root", c["key"].toString(), c["port"].toInt()};
+    SshIdentity approved{c["host"].toString(), c["fingerprint"].toString(), "ssh-ed25519", {}};
+    PinnedSshSession ssh; if (!ssh.connect(credentials, approved).isEmpty()) return 21;
+    const QString path = "/tmp/amnezia-admin-test-"+QUuid::createUuid().toString(QUuid::Id128);
+    if (!ssh.execute("umask 077; mkdir '"+path+"'").succeeded()) return 22;
+    const auto settings = c["settings"].toObject();
+    const auto peer = QString::fromLatin1(QByteArray(32, 'N').toBase64());
+    QJsonObject info;
+    for (const auto &action : {"info", "issue", "publish", "revoke"}) {
+        QJsonObject request;
+        if (QString(action) != "info") request = {{"container", "amnezia-awg2"}, {"clientPublicKey", peer}, {"settings", settings}};
+        QBuffer body; body.setData(QJsonDocument(request).toJson(QJsonDocument::Compact)); body.open(QIODevice::ReadOnly);
+        if (!ssh.upload(body, path+"/request.json", body.size()).isEmpty()) return 23;
+        const auto result = ssh.execute(connectionUpdates::adminCommandScript(action, path));
+        ssh.execute("rm -f -- '"+path+"/request.json'");
+        if (!result.succeeded()) return 24;
+        const auto reply = QJsonDocument::fromJson(result.output).object();
+        if (reply["version"].toInt() != 1 || (QString(action) != "info" && !reply["ok"].toBool())) return 25;
+        if (QString(action) == "info") info = reply;
+    }
+    ssh.execute("rmdir -- '"+path+"'");
+    if (info["publicKey"] != c["publicKey"] || info["certificate"] != c["certificate"]) return 26;
+    return 0;
+}
 int main(int argc, char **argv)
 {
     QCoreApplication app(argc, argv); const auto args = app.arguments();
-    if (args.size() != 6 || ssh_init() != SSH_OK) return 2;
+    if (ssh_init() != SSH_OK) return 2;
+    if (args.size() == 3 && args[1] == "admin") return adminCommands(args[2]);
+    if (args.size() != 6) return 2;
     int result = 0;
     {
         QFile key(args[4]); if (!key.open(QIODevice::ReadOnly)) return 3;

@@ -24,6 +24,7 @@ import sys
 import tempfile
 import time
 
+sys.dont_write_bytecode = True
 import agent
 from agent import Rejected, require
 
@@ -147,7 +148,7 @@ class Source:
 
     def call(self, action, **params):
         request = json.dumps({'operation': self.work.name, 'action': action, **params}).encode()
-        raw = self.command(privileged('python3 '+shlex.quote(self.stage+'/agent.py')), data=request, timeout=1800, allow_failure=True)
+        raw = self.command(privileged('python3 -B '+shlex.quote(self.stage+'/agent.py')), data=request, timeout=1800, allow_failure=True)
         result = json.loads(raw)
         require(result.get('version') == 1 and result.get('ok'), result.get('reason', 'unknown_source_result'))
         return result
@@ -244,7 +245,7 @@ def start_job(req, work):
     request = directory/'request.json'
     agent.save(request, {**req, 'action': 'run-stage'})
     try:
-        process = subprocess.Popen([sys.executable, str(Path(__file__).resolve()), '--worker', str(request)],
+        process = subprocess.Popen([sys.executable, '-B', str(Path(__file__).resolve()), '--worker', str(request)],
                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                    start_new_session=True, close_fds=True)
     except BaseException:
@@ -253,6 +254,17 @@ def start_job(req, work):
     stat = Path('/proc')/str(process.pid)/'stat'
     agent.save(directory/'pid.json', {'pid': process.pid, 'start': stat.read_text().split()[21]})
     return {'version': 1, 'phase': 'running'}
+
+
+def rollback_completed(a, b):
+    if a.get('phase') not in ('aborted', 'exported', 'stopped', 'stopping') or b.get('phase') not in ('rollback-exported', 'stopped', 'aborted'):
+        return False
+    running = a.get('running', {})
+    if not running or not all(running.values()) or not a.get('restartPoliciesRestored') or any(b.get('running', {}).values()):
+        return False
+    if b.get('file') and a.get('deliveryRestored') != b.get('sha256'):
+        return False
+    return True
 
 
 def main(req):
@@ -280,6 +292,9 @@ def main(req):
             return stage(req, work)
         with Source(req, work) as source:
             source.bootstrap()
+            if action == 'rollback-status':
+                a, b = source.call('status'), local(work, 'status')
+                return {'version': 1, 'phase': 'rolled-back' if rollback_completed(a, b) else 'incomplete'}
             if action == 'source-command':
                 command = req['command']
                 require(command in ('status', 'source-check', 'source-stop', 'abort', 'finalize'), 'invalid_source_command')
@@ -289,6 +304,16 @@ def main(req):
                 return result
             if action == 'rollback':
                 a, b = source.call('status'), local(work, 'status')
+                if rollback_completed(a, b):
+                    return {'version': 1, 'phase': 'rolled-back'}
+                if (b['phase'] == 'rollback-exported' and not any(b.get('running', {}).values())
+                        and (not b.get('file') or a.get('deliveryRestored') == b.get('sha256'))
+                        and a['phase'] in ('stopping', 'stopped', 'exported')):
+                    # The store was already imported; a lost response or partial
+                    # source restart must not trigger another import into a live source.
+                    source.call('abort')
+                    require(rollback_completed(source.call('status'), b), 'source_restart_incomplete')
+                    return {'version': 1, 'phase': 'rolled-back'}
                 if b['phase'] in ('active', 'target-stopping', 'rollback-exported') or (b['phase'] == 'stopped' and a['phase'] == 'stopped'):
                     latest = local(work, 'rollback-export')
                     if latest.get('file'):

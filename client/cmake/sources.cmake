@@ -22,6 +22,7 @@ set(HEADERS ${HEADERS}
     ${CLIENT_ROOT_DIR}/core/controllers/coreController.h
     ${CLIENT_ROOT_DIR}/core/controllers/coreSignalHandlers.h
     ${CLIENT_ROOT_DIR}/core/controllers/gatewayController.h
+    ${CLIENT_ROOT_DIR}/core/utils/selfhosted/connectionUpdatesCommand.h
     ${CLIENT_ROOT_DIR}/core/utils/selfhosted/pinnedSshSession.h
     ${CLIENT_ROOT_DIR}/core/utils/selfhosted/sshSession.h
     ${CLIENT_ROOT_DIR}/core/controllers/serversController.h

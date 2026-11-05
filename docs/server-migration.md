@@ -128,3 +128,16 @@ wrong-key rejection before password authentication, real password and key auth,
 a detached pull after its start command exits, direct archive/rollback transfer,
 unchanged client traffic and removal of temporary source credentials. Cold test
 images include OpenSSL and OpenSSH explicitly rather than relying on a cached image.
+
+Recovery additionally distinguishes an interrupted target stop and an interrupted
+source restart. Repeating rollback after its final reply was lost reconciles the
+actual container/restart-policy state and the applied store digest; it does not
+import an older store into a source that has already restarted. Finalization
+checks that no detached worker is active before removing pending worker/app
+credential requests, temporary SSH material and private Python caches.
+
+Subscription administration uses the immutable image ID of the owned running
+service container with registry pulls disabled. It does not require a named
+image tag on a freshly migrated target. The acceptance test executes the same
+C++ command builder used by the app over pinned SSH for info, issue, publish and
+revoke, while asserting that the old image tag is absent.

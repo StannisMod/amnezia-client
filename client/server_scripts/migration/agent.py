@@ -465,7 +465,8 @@ def source_action(work, journal, action):
             policy = c['HostConfig']['RestartPolicy'] if journal['phase'] == 'exported' else next(
                 old['HostConfig']['RestartPolicy'] for old in journal['manifest']['containers'] if old['Id'] == c['Id'])
             run('update', '--restart='+policy['Name'], c['Id'])
-            run('start', c['Id'])
+            if not c['State']['Running']:
+                run('start', c['Id'])
         journal['phase'] = 'exported'
         save(work/'journal.json', journal)
     return journal
@@ -669,30 +670,67 @@ def abort(work, journal):
         for kind, name in [('network', NETWORK), ('volume', VOLUME)]:
             if exists(kind, name) and (inspect(kind, name).get('Labels') or {}).get(LABEL) == work.name:
                 run(kind, 'rm', name)
+    if journal.get('role') != 'source':
+        journal['containers'] = []
     journal['phase'] = 'aborted'
     save(work/'journal.json', journal)
     return journal
 
 
+def client_stage(operation):
+    return Path('/tmp/amnezia-migration-'+operation)
+
+
 def finalize(work, journal):
     require(not journal or journal.get('phase') in ('active', 'stopped', 'rollback-exported', 'aborted', 'exported', 'finalized'), 'unfinished_operation')
-    for name in ('bundle.tar', 'images.tar', 'incoming.tar', 'volume.tar', 'rollback.tar', 'manifest.json'):
-        (work/name).unlink(missing_ok=True)
-    if journal.get('role') == 'source':
-        for image in journal.get('manifest', {}).get('images', {}).values():
-            require(re.fullmatch('sha256:[a-f0-9]{64}', image), 'invalid_snapshot_image_id')
-            # No force: an image still in use is retained. Original containers use
-            # their original images and are never removed by finalization.
-            subprocess.run(['docker', 'image', 'rm', image], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
-    audit = {'role': journal.get('role'), 'phase': 'finalized'}
-    save(work/'journal.json', audit)
-    return audit
+    # A detached worker/its starter owns this lock. Never remove its SSH files or
+    # private request while it may still be using them.
+    with open(work/'relay.lock', 'a') as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise Rejected('pull_job_busy')
+        request = work/'pull-job/request.json'
+        # Covers the tiny spawn-to-lock/PID-record window as well as a worker
+        # surviving its starter. After reboot no matching process exists.
+        for entry in Path('/proc').iterdir():
+            if not entry.name.isdigit():
+                continue
+            try:
+                argv = (entry/'cmdline').read_bytes().split(b'\0')
+            except (OSError, PermissionError):
+                continue
+            require(not any(argv[i:i+2] == [b'--worker', os.fsencode(request)]
+                            for i in range(len(argv)-1)), 'pull_job_busy')
+        request.unlink(missing_ok=True)
+        (work/'pull-job/request.tmp').unlink(missing_ok=True)
+        stage = client_stage(work.name)
+        if stage.is_dir() and not stage.is_symlink():
+            cache = stage/'__pycache__'
+            if cache.is_dir() and not cache.is_symlink():
+                shutil.rmtree(cache)
+            for private in stage.glob('request-*.json'):
+                if private.is_file() or private.is_symlink():
+                    private.unlink()
+        for stale in work.glob('ssh-*'):
+            if stale.is_dir() and not stale.is_symlink():
+                shutil.rmtree(stale)
+        for name in ('bundle.tar', 'images.tar', 'incoming.tar', 'volume.tar', 'rollback.tar', 'manifest.json'):
+            (work/name).unlink(missing_ok=True)
+        if journal.get('role') == 'source':
+            for image in journal.get('manifest', {}).get('images', {}).values():
+                require(re.fullmatch('sha256:[a-f0-9]{64}', image), 'invalid_snapshot_image_id')
+                subprocess.run(['docker', 'image', 'rm', image], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
+        audit = {'role': journal.get('role'), 'phase': 'finalized'}
+        save(work/'journal.json', audit)
+        return audit
 
 
 def public(journal, work):
     m = journal.get('manifest', {})
     result = {'version': 1, 'phase': journal.get('phase'), 'role': journal.get('role'),
               'containers': [c['Name'][1:] for c in m.get('containers', [])],
+              'deliveryRestored': journal.get('deliveryRestored'),
               'state': m.get('state'), 'architecture': m.get('architecture'), 'deliveryHost': m.get('deliveryHost', '')}
     if journal.get('rollback'):
         result.update(journal['rollback'])
@@ -777,6 +815,8 @@ def main(req):
         if action == 'status':
             if journal.get('role') == 'source' and journal.get('manifest'):
                 cs = source_containers(journal)
+                expected = {c['Id']: c['HostConfig']['RestartPolicy'] for c in journal['manifest']['containers']}
+                result['restartPoliciesRestored'] = all(c['HostConfig']['RestartPolicy'] == expected[c['Id']] for c in cs)
             elif journal.get('role') == 'target' and journal.get('manifest'):
                 cs = owned(journal, work)
             else:
