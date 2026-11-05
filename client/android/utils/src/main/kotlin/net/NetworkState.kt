@@ -8,12 +8,19 @@ import android.net.NetworkCapabilities
 import android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET
 import android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED
 import android.net.NetworkRequest
+import android.net.LinkProperties
+import android.os.ParcelFileDescriptor
 import android.os.Build
 import android.os.Handler
 import androidx.core.content.getSystemService
 import kotlin.LazyThreadSafetyMode.NONE
 import kotlinx.coroutines.delay
 import org.amnezia.vpn.util.Log
+import org.json.JSONObject
+import org.json.JSONArray
+import java.util.concurrent.ConcurrentHashMap
+import java.net.Inet6Address
+import java.net.NetworkInterface
 
 private const val TAG = "NetworkState"
 
@@ -23,6 +30,72 @@ class NetworkState(
 ) {
     private val state = ValidatedNetworkState<Network>()
     private var isListenerBound = false
+    private val dnsNetworks = ConcurrentHashMap<String, Network>()
+    private val dnsFingerprints = ConcurrentHashMap<Network, String>()
+    @Volatile private var preferredDnsNetwork: Network? = null
+
+    private fun dnsFingerprint(properties: LinkProperties): String = listOf(
+        properties.interfaceName, properties.dnsServers.joinToString { it.hostAddress ?: "" },
+        properties.domains, properties.isPrivateDnsActive, properties.privateDnsServerName
+    ).joinToString("|")
+
+    fun dnsSnapshot(): JSONObject {
+        val available = connectivityManager.allNetworks.mapNotNull { network ->
+            val capabilities = connectivityManager.getNetworkCapabilities(network) ?: return@mapNotNull null
+            if (!capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN) ||
+                !capabilities.hasCapability(NET_CAPABILITY_INTERNET)) return@mapNotNull null
+            val properties = connectivityManager.getLinkProperties(network) ?: return@mapNotNull null
+            if (properties.dnsServers.isEmpty()) return@mapNotNull null
+            Triple(network, properties, capabilities.hasCapability(NET_CAPABILITY_VALIDATED))
+        }.sortedBy { it.first.networkHandle }
+        val active = connectivityManager.activeNetwork
+        val preferred = available.firstOrNull { it.first == active }
+            ?: available.firstOrNull { it.first == preferredDnsNetwork }
+            ?: available.filter { it.third }.singleOrNull()
+        preferredDnsNetwork = preferred?.first
+        val links = JSONArray()
+        for ((network, properties, _) in available) {
+            val token = "android-${network.networkHandle}"
+            val privateName = properties.privateDnsServerName
+            val addresses = if (properties.isPrivateDnsActive && privateName != null)
+                network.getAllByName(privateName).toList() else properties.dnsServers
+            val servers = JSONArray()
+            for (address in addresses) {
+                if (address.isLoopbackAddress || address.isAnyLocalAddress || address.isMulticastAddress) continue
+                servers.put(JSONObject().apply {
+                    val ip = address.hostAddress?.substringBefore('%')
+                    val scope = if (address is Inet6Address && address.isLinkLocalAddress)
+                        address.scopeId.takeIf { it > 0 } ?: properties.interfaceName?.let { NetworkInterface.getByName(it)?.index }
+                        else null
+                    put("address", if (scope != null) "$ip%$scope" else ip)
+                    if (properties.isPrivateDnsActive) {
+                        put("transport", "tls")
+                        put("port", 853)
+                        if (privateName != null) put("server_name", privateName)
+                        else put("opportunistic_tls", true)
+                    }
+                })
+            }
+            if (servers.length() == 0) continue
+            dnsNetworks[token] = network
+            dnsFingerprints[network] = dnsFingerprint(properties)
+            links.put(JSONObject().apply {
+                put("id", token); put("interface", token); put("name", properties.interfaceName ?: token)
+                put("default", network == preferred?.first); put("servers", servers)
+                // Search suffixes are not per-domain DNS routing rules.
+                put("search_domains", JSONArray(properties.domains?.split(Regex("[,\\s]+"))?.filter { it.isNotBlank() } ?: emptyList<String>()))
+            })
+        }
+        return JSONObject().put("links", links).put("routing_domains_available", false)
+    }
+
+    fun bindDnsSocket(fd: Int, token: String): Boolean {
+        return try {
+            val network = dnsNetworks[token] ?: return false
+            ParcelFileDescriptor.fromFd(fd).use { network.bindSocket(it.fileDescriptor) }
+            true
+        } catch (_: Exception) { false }
+    }
 
     private val handler: Handler by lazy(NONE) {
         Handler(context.mainLooper)
@@ -35,6 +108,7 @@ class NetworkState(
     private val networkRequest: NetworkRequest by lazy(NONE) {
         NetworkRequest.Builder()
             .addCapability(NET_CAPABILITY_INTERNET)
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
             .build()
     }
 
@@ -47,6 +121,7 @@ class NetworkState(
             override fun onCapabilitiesChanged(network: Network, networkCapabilities: NetworkCapabilities) {
                 Log.v(TAG, "onCapabilitiesChanged: $network, $networkCapabilities")
                 checkNetworkState(network, networkCapabilities)
+                if (networkCapabilities.hasCapability(NET_CAPABILITY_VALIDATED)) preferredDnsNetwork = network
             }
 
             private fun checkNetworkState(network: Network, networkCapabilities: NetworkCapabilities) {
@@ -59,9 +134,18 @@ class NetworkState(
                 Log.v(TAG, "onBlockedStatusChanged: $network, $blocked")
             }
 
+            override fun onLinkPropertiesChanged(network: Network, linkProperties: LinkProperties) {
+                val previous = dnsFingerprints[network] ?: return
+                val current = dnsFingerprint(linkProperties)
+                if (current != previous) { dnsFingerprints[network] = current; onNetworkChange() }
+            }
+
             override fun onLost(network: Network) {
                 Log.v(TAG, "onLost: $network")
                 state.lost(network)
+                dnsNetworks.entries.removeAll { it.value == network }
+                dnsFingerprints.remove(network)
+                if (preferredDnsNetwork == network) preferredDnsNetwork = null
             }
         }
     }
@@ -120,5 +204,7 @@ class NetworkState(
         connectivityManager.unregisterNetworkCallback(networkCallback)
         isListenerBound = false
         state.reset()
+        dnsNetworks.clear()
+        dnsFingerprints.clear()
     }
 }

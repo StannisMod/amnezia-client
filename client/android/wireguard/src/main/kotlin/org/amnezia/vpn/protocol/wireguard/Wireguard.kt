@@ -73,7 +73,11 @@ open class Wireguard : Protocol() {
         }
         // Use the existing profile parser, including every AWG 3.1 parameter,
         // but never materialize the legacy site's cached IP exclusions.
-        val parseInput = JSONObject(config.toString()).apply { put("splitTunnelType", 0) }
+        val splitDNS = if (config.has("sing_box_dns")) config.getJSONObject("sing_box_dns") else null
+        val parseInput = JSONObject(config.toString()).apply {
+            put("splitTunnelType", 0)
+            if (splitDNS != null) { remove("dns1"); remove("dns2") }
+        }
         val wg = parseConfig(parseInput)
         val transportType = config.getString("protocol")
         if (transportType != "awg" && transportType != "wireguard") throw VpnStartException("Unsupported routing adapter")
@@ -89,17 +93,23 @@ open class Wireguard : Protocol() {
             val key = line.substringBefore('=')
             if (line.contains('=') && key !in excluded) parameters.put(key, line.substringAfter('='))
         }
-        val resolverValue = config.optString("dns1").ifBlank { config.optString("dns2") }
-        if (resolverValue.isBlank()) throw VpnStartException("A numeric DNS resolver is required for domain routing")
-        val resolver = parseInetAddress(resolverValue)
-        val resolverIp = resolver.hostAddress?.substringBefore('%')
-            ?: throw VpnStartException("Invalid DNS resolver")
-        val resolverEndpoint = if (resolverIp.contains(':')) "[$resolverIp]:53" else "$resolverIp:53"
         val session = JSONObject().apply {
             put("cache_path", java.io.File(context.filesDir, "routing-fakeip-v1.db").absolutePath)
             put("rules", config.getJSONObject("sing_box_routing"))
-            put("resolver", resolverEndpoint)
-            put("resolver_action", if (resolver.isLoopbackAddress) "direct" else config.optString("sing_box_dns_path", "vpn"))
+            if (splitDNS != null) {
+                put("dns", splitDNS)
+                if (splitDNS.optBoolean("preserve_network_domains") || splitDNS.getJSONObject("policies").keys().asSequence().any {
+                    splitDNS.getJSONObject("policies").getJSONObject(it).optString("source") == "network"
+                }) put("network_dns", networkDnsSnapshot?.invoke() ?: throw VpnStartException("Underlying-network DNS is unavailable"))
+            } else {
+                val resolverValue = config.optString("dns1").ifBlank { config.optString("dns2") }
+                if (resolverValue.isBlank()) throw VpnStartException("A numeric DNS resolver is required for domain routing")
+                val resolver = parseInetAddress(resolverValue)
+                val resolverIp = resolver.hostAddress?.substringBefore('%')
+                    ?: throw VpnStartException("Invalid DNS resolver")
+                put("resolver", if (resolverIp.contains(':')) "[$resolverIp]:53" else "$resolverIp:53")
+                put("resolver_action", if (resolver.isLoopbackAddress) "direct" else config.optString("sing_box_dns_path", "vpn"))
+            }
             put("vpn", JSONObject().apply {
                 put("type", transportType)
                 put(transportType, JSONObject().apply {
@@ -145,7 +155,7 @@ open class Wireguard : Protocol() {
         buildVpnInterface(capture, vpnBuilder)
         vpnBuilder.establish().use { descriptor ->
             if (descriptor == null) throw VpnStartException("Cannot establish the routed VPN interface")
-            routedHandle = RoutingBackend.start(descriptor.detachFd(), session, RoutingHost(protect))
+            routedHandle = RoutingBackend.start(descriptor.detachFd(), session, RoutingHost(protect, networkDnsProtect))
         }
         if (routedHandle <= 0) {
             routedHandle = -1L

@@ -31,6 +31,9 @@ public:
 
     QString getSecondaryDns() const;
     void setSecondaryDns(const QString &dns);
+    QJsonObject splitDnsConfig() const;
+    bool isSplitDnsEnabled() const;
+    QString saveSplitDnsConfig(const QJsonObject &config);
 
     bool isLoggingEnabled() const;
     void toggleLogging(bool enable);

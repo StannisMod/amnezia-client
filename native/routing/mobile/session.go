@@ -80,6 +80,16 @@ func compileSession(raw []byte) ([]byte, string, error) {
 	if err := decoder.Decode(new(any)); err != io.EOF {
 		return nil, "", errors.New("invalid trailing routing configuration")
 	}
+	if config.DNS != nil && config.DNS.NeedsNetwork() {
+		if config.NetworkDNS == nil {
+			return nil, "", errors.New("native network DNS snapshot is required")
+		}
+		prepared, err := config.NetworkDNS.Prepare(*config.DNS)
+		if err != nil {
+			return nil, "", err
+		}
+		config.DNS = &prepared
+	}
 	compiled, err := config.Compile()
 	return compiled, config.CachePath, err
 }

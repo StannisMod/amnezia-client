@@ -4,6 +4,7 @@ package desktop
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net"
 	"net/netip"
@@ -22,11 +23,12 @@ import (
 const InterfaceName = "AmneziaDomainRouting"
 
 type Session struct {
-	core     *mobile.Session
-	underlay windowsUnderlay
-	guard    *windowsGuard
-	luid     uint64
-	once     sync.Once
+	core           *mobile.Session
+	underlay       windowsUnderlay
+	guard          *windowsGuard
+	luid           uint64
+	once           sync.Once
+	dnsFingerprint string
 }
 
 // Amnezia's native service restarts the entire child on network changes. Only
@@ -71,6 +73,11 @@ func Start(ctx context.Context, raw []byte, manageDNS bool) (*Session, error) {
 		return nil, err
 	}
 	s := new(Session)
+	var effective engine.SessionConfig
+	if err = json.Unmarshal(raw, &effective); err != nil {
+		return nil, errors.New("invalid DNS session")
+	}
+	s.dnsFingerprint = effective.DNSNetworkFingerprint
 	s.guard, err = newWindowsGuard()
 	if err != nil {
 		return nil, err
@@ -130,8 +137,25 @@ func Start(ctx context.Context, raw []byte, manageDNS bool) (*Session, error) {
 	return s, nil
 }
 
-func (s *Session) Stats() (tunnel.Stats, error) { return s.core.Stats() }
-func (s *Session) CaptureID() string            { return strconv.FormatUint(s.luid, 10) }
+func (s *Session) Stats() (tunnel.Stats, error) {
+	if s.dnsFingerprint != "" {
+		snapshot, err := windowsNetworkDNS()
+		if err != nil {
+			return tunnel.Stats{}, err
+		}
+		fingerprint := windowsDNSFingerprint(snapshot)
+		version, err := windowsDNSPolicyVersion()
+		if err != nil {
+			return tunnel.Stats{}, err
+		}
+		fingerprint += "/" + version
+		if fingerprint != s.dnsFingerprint {
+			return tunnel.Stats{}, errors.New("network DNS changed; reconnect required")
+		}
+	}
+	return s.core.Stats()
+}
+func (s *Session) CaptureID() string { return strconv.FormatUint(s.luid, 10) }
 func (s *Session) Close() error {
 	return s.close(false)
 }

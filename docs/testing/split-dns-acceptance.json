@@ -1,0 +1,124 @@
+{
+  "date": "2026-11-03",
+  "environment": "Ubuntu 24.04 offline Docker containers, Linux amd64",
+  "linux_product_build": "PASS",
+  "qt_regression_executables": {
+    "passed": 27,
+    "failed": 0
+  },
+  "go_race_suite": "PASS",
+  "go_cross_compile": [
+    "android/arm64",
+    "android/arm (GOARM=7)",
+    "android/386",
+    "android/amd64",
+    "ios/arm64",
+    "windows/amd64",
+    "darwin/arm64"
+  ],
+  "system_resolver_acceptance": {
+    "awg": {
+      "split_dns": "PASS",
+      "transport": "awg",
+      "simultaneous_dns_observers": {
+        "direct": [
+          "before.corp.example.",
+          "before.corp.example.",
+          "cached.corp.example.",
+          "cached.corp.example.",
+          "flow.direct.test.",
+          "flow.direct.test."
+        ],
+        "vpn": [
+          "public.corp.example.",
+          "public.corp.example.",
+          "ordinary.test.",
+          "ordinary.test."
+        ]
+      },
+      "cached_fakeip_reconnect_new_policy": "PASS",
+      "corporate_systemd_resolved": "PASS",
+      "network_dns_change": "PASS",
+      "dns_restoration": "PASS"
+    },
+    "wireguard": {
+      "split_dns": "PASS",
+      "transport": "wireguard",
+      "simultaneous_dns_observers": {
+        "direct": [
+          "before.corp.example.",
+          "before.corp.example.",
+          "cached.corp.example.",
+          "cached.corp.example.",
+          "flow.direct.test.",
+          "flow.direct.test."
+        ],
+        "vpn": [
+          "public.corp.example.",
+          "public.corp.example.",
+          "ordinary.test.",
+          "ordinary.test."
+        ]
+      },
+      "cached_fakeip_reconnect_new_policy": "PASS",
+      "corporate_systemd_resolved": "PASS",
+      "network_dns_change": "PASS",
+      "dns_restoration": "PASS"
+    }
+  },
+  "native_routing_regression": {
+    "awg": {
+      "native_capture": "PASS",
+      "virtual_uplink_failover": "PASS",
+      "uplink_loss_fail_closed_and_recovery": "PASS",
+      "foreign_nft_state_preserved": "PASS",
+      "off_link_peer_with_strict_physical_rpf": "PASS",
+      "scenarios": [
+        "FakeIP identity/shared real IP",
+        "DIRECT and VPN TCP/UDP",
+        "IPv6",
+        "CNAME",
+        "native policy route",
+        "loopback IPv4/IPv6",
+        "inverse mode",
+        "persistent FakeIP",
+        "application include/exclude with independent executables and domain precedence",
+        "VPN loss fails closed",
+        "helper crash fails closed and explicit recovery"
+      ],
+      "reconnect_cycles": 10,
+      "os_state_restored": true,
+      "full_report_sha256": "a4ed4f7587ce770593ef377746a174df2ef7f49026169cfd6430200e99d739ba"
+    },
+    "wireguard": {
+      "native_capture": "PASS",
+      "virtual_uplink_failover": "PASS",
+      "uplink_loss_fail_closed_and_recovery": "PASS",
+      "foreign_nft_state_preserved": "PASS",
+      "off_link_peer_with_strict_physical_rpf": "PASS",
+      "scenarios": [
+        "FakeIP identity/shared real IP",
+        "DIRECT and VPN TCP/UDP",
+        "IPv6",
+        "CNAME",
+        "native policy route",
+        "loopback IPv4/IPv6",
+        "inverse mode",
+        "persistent FakeIP",
+        "application include/exclude with independent executables and domain precedence",
+        "VPN loss fails closed",
+        "helper crash fails closed and explicit recovery"
+      ],
+      "reconnect_cycles": 10,
+      "os_state_restored": true,
+      "full_report_sha256": "ec2974bf25333252d48f1512f1eee5f70b06d0844e10bf3d411c2b94235aa2ec"
+    }
+  },
+  "not_claimed": [
+    "Windows native service/OS DNS acceptance",
+    "Android device acceptance",
+    "Apple SDK/device acceptance",
+    "physical Wi-Fi/Ethernet handover",
+    "control of application-owned DoH/DoT"
+  ]
+}

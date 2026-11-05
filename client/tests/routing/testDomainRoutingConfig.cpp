@@ -1,9 +1,31 @@
 #include <QtTest>
 #include "../../core/utils/domainRoutingConfig.h"
+#include "../../core/utils/splitDnsConfig.h"
 
 class DomainRoutingConfigTest : public QObject {
     Q_OBJECT
 private slots:
+    void splitDnsValidation()
+    {
+        QJsonObject config{{"version", 1}, {"default", "vpn"}, {"follow_routing", true},
+            {"direct", "direct"}, {"vpn", "vpn"},
+            {"policies", QJsonObject{{"direct", QJsonObject{{"server", "192.168.1.53"}, {"transport", "udp"}, {"path", "direct"}}},
+                                     {"vpn", QJsonObject{{"server", "1.1.1.1"}, {"transport", "udp"}, {"path", "vpn"}}}}},
+            {"rules", QJsonArray{QJsonObject{{"kind", "suffix"}, {"value", "corp.example"}, {"policy", "direct"}}}}};
+        QVERIFY(amnezia::dns::validate(config).isEmpty());
+        const auto valid = config;
+        config["direct"] = "vpn";
+        QVERIFY(!amnezia::dns::validate(config).isEmpty());
+        config = valid;
+        config["rules"] = QJsonArray{QJsonObject{{"kind", "suffix"}, {"value", "corp.example"}, {"policy", "direct"}},
+                                     QJsonObject{{"kind", "suffix"}, {"value", "CORP.example."}, {"policy", "vpn"}}};
+        QVERIFY(!amnezia::dns::validate(config).isEmpty());
+        config = valid;
+        auto policies = config["policies"].toObject();
+        auto direct = policies["direct"].toObject(); direct["server"] = "172.19.0.2";
+        policies["direct"] = direct; config["policies"] = policies;
+        QVERIFY(!amnezia::dns::validate(config).isEmpty());
+    }
     void normalizeEditableRules()
     {
         using amnezia::routing::destinationRule;

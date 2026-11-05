@@ -1,5 +1,6 @@
 import Foundation
 import NetworkExtension
+import Darwin
 
 extension PacketTunnelProvider {
     func startWireguard(activationAttemptId: String?,
@@ -16,7 +17,12 @@ extension PacketTunnelProvider {
         do {
             let wgConfig = try JSONDecoder().decode(WGConfig.self, from: wgConfigData)
             if wgConfig.routingConfig != nil {
-                let routed = RoutingPacketTunnel(provider: self)
+                let routed = RoutingPacketTunnel(provider: self, underlyingInterface: { [weak self] in
+                    guard let self, self.activeIfaceIdx > 0 else { return nil }
+                    var name = [CChar](repeating: 0, count: Int(IF_NAMESIZE))
+                    guard if_indextoname(self.activeIfaceIdx, &name) != nil else { return nil }
+                    return String(cString: name)
+                })
                 routedAdapter = routed
                 routed.start(config: wgConfig) { error in
                     if error != nil { errorNotifier.notify(PacketTunnelProviderError.couldNotStartBackend) }

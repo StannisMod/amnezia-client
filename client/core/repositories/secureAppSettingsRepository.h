@@ -36,6 +36,9 @@ public:
     void setPrimaryDns(const QString &dns);
     QString secondaryDns() const;
     void setSecondaryDns(const QString &dns);
+    QJsonObject splitDnsConfig() const;
+    bool isSplitDnsEnabled() const;
+    void setSplitDnsConfig(const QJsonObject &config);
 
     RouteMode routeMode() const;
     void setRouteMode(RouteMode mode);

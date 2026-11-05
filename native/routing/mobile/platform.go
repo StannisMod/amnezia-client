@@ -22,9 +22,10 @@ var unsupported = errors.New("operation is not provided by the Amnezia packet-tu
 type Hooks struct {
 	// Protect must exempt the socket before connect or first send. It must not
 	// change the destination's native route to an arbitrary physical gateway.
-	Protect    func(int) error
-	Interfaces func() ([]adapter.NetworkInterface, error)
-	Release    func()
+	Protect          func(int) error
+	ProtectInterface func(int, string) error
+	Interfaces       func() ([]adapter.NetworkInterface, error)
+	Release          func()
 	// Open is supplied by packet-flow hosts/tests. Android uses the existing FD.
 	Open             func(*tun.Options) (tun.Tun, error)
 	NetworkExtension bool
@@ -87,16 +88,41 @@ func (p *Platform) Underlay() engine.Underlay {
 	if p.hooks.Underlay != nil {
 		return *p.hooks.Underlay
 	}
+	return p.interfaceUnderlay("")
+}
+
+func (p *Platform) interfaceUnderlay(iface string) engine.Underlay {
 	control := func(_, _ string, raw syscall.RawConn) error {
 		var inner error
-		if err := raw.Control(func(fd uintptr) { inner = p.AutoDetectInterfaceControl(int(fd)) }); err != nil {
+		if err := raw.Control(func(fd uintptr) {
+			if iface == "" {
+				inner = p.AutoDetectInterfaceControl(int(fd))
+				return
+			}
+			p.mu.RLock()
+			defer p.mu.RUnlock()
+			if p.closed {
+				inner = net.ErrClosed
+				return
+			}
+			if p.hooks.ProtectInterface == nil {
+				inner = unsupported
+				return
+			}
+			inner = p.hooks.ProtectInterface(int(fd), iface)
+		}); err != nil {
 			return err
 		}
 		return inner
 	}
 	dial := &net.Dialer{Control: control}
 	listen := &net.ListenConfig{Control: control}
-	return engine.Underlay{DialContext: dial.DialContext, ListenPacket: listen.ListenPacket}
+	return engine.Underlay{DialContext: dial.DialContext, ListenPacket: listen.ListenPacket, OnInterface: func(name string) (engine.Underlay, error) {
+		if p.hooks.ProtectInterface == nil {
+			return engine.Underlay{}, unsupported
+		}
+		return p.interfaceUnderlay(name), nil
+	}}
 }
 func (p *Platform) NetworkInterfaces() ([]adapter.NetworkInterface, error) {
 	p.mu.RLock()
