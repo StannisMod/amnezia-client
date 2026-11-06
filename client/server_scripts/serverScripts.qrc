@@ -1,6 +1,8 @@
 <RCC>
     <qresource prefix="/server_scripts">
         <file>update_wireguard.sh</file>
+        <file>migration/agent.py</file>
+        <file>migration/relay.py</file>
         <file>connection_updates/Dockerfile</file>
         <file>connection_updates/service.go</file>
         <file>connection_updates/rollout.go</file>

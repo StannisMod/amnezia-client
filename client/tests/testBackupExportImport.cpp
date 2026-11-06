@@ -44,6 +44,16 @@ private slots:
         m_settings->clearSettings();
     }
 
+    void testMigrationCredentialsExcludedFromBackup() {
+        const QByteArray journal("{\"secret\":\"synthetic-target-password\"}");
+        m_settings->setValue("Conf/serverMigration", journal);
+        QCOMPARE(m_settings->value("Conf/serverMigration").toByteArray(), journal);
+        const auto backup = m_settings->backupAppConfig();
+        QVERIFY(!backup.contains("serverMigration"));
+        QVERIFY(!backup.contains("synthetic-target-password"));
+        QVERIFY(!QJsonDocument::fromJson(backup).object().contains("Conf/serverMigration"));
+    }
+
     void testBackupExportImport() {
         QString backup = getEnvValue("BACKUP_PATH");
 

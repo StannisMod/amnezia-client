@@ -25,6 +25,7 @@ struct WGConfig: Decodable {
   let routingTransport: String?
   let routingConfig: String?
   let routingDNSPath: String?
+  let routingDNSConfig: String?
 
   enum CodingKeys: String, CodingKey {
     case initPacketMagicHeader = "H1", responsePacketMagicHeader = "H2"
@@ -54,6 +55,7 @@ struct WGConfig: Decodable {
     case routingTransport
     case routingConfig
     case routingDNSPath
+    case routingDNSConfig
   }
 
   var settings: String {

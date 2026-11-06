@@ -1,5 +1,6 @@
 #include "coreController.h"
 #include "selfhosted/connectionUpdatesController.h"
+#include "selfhosted/serverMigrationController.h"
 
 #include <QCoreApplication>
 #include <QDirIterator>
@@ -190,6 +191,7 @@ void CoreController::initControllers()
     auto *connectionUpdates = new ConnectionUpdatesController(m_serversRepository, m_connectionController, this);
     setQmlContextProperty("ConnectionUpdatesController", connectionUpdates);
     m_connectionUiController->setConnectionUpdatesController(connectionUpdates);
+    setQmlContextProperty("ServerMigrationController", new ServerMigrationController(m_serversRepository, m_settings, m_connectionController, this));
 
     if (m_engine) {
         m_focusController = new FocusController(m_engine, this);

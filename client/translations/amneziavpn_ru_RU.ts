@@ -736,6 +736,10 @@ Already installed containers were found on the server. All installed containers 
         <source>Export completed</source>
         <translation>Экспорт завершен</translation>
     </message>
+    <message>
+        <source>Disable split DNS and remove wildcard destinations before disabling domain routing.</source>
+        <translation>Перед отключением доменной маршрутизации выключите split DNS и удалите правила с подстановочными знаками.</translation>
+    </message>
 </context>
 <context>
     <name>ListItemType</name>
@@ -4715,6 +4719,182 @@ Create one from the current settings.</source>
         <source>Settings saved</source>
         <translation>Настройки сохранены</translation>
     </message>
+    <message>
+        <source>Direct DNS</source>
+        <translation>DNS напрямую</translation>
+    </message>
+    <message>
+        <source>VPN DNS</source>
+        <translation>DNS через VPN</translation>
+    </message>
+    <message>
+        <source>Reconnect to apply DNS changes. Split DNS requires AWG / WireGuard domain routing.</source>
+        <translation>Изменения DNS применяются при следующем подключении. Split DNS требует доменной маршрутизации AWG / WireGuard.</translation>
+    </message>
+    <message>
+        <source>Different DNS for domains</source>
+        <translation>Разные DNS для доменов</translation>
+    </message>
+    <message>
+        <source>Enable experimental domain routing in Split tunneling to use split DNS.</source>
+        <translation>Для split DNS включите экспериментальную доменную маршрутизацию в разделе «Раздельное туннелирование».</translation>
+    </message>
+    <message>
+        <source>DNS by site route</source>
+        <translation>DNS по маршруту сайта</translation>
+    </message>
+    <message>
+        <source>Direct site → direct DNS. VPN site → VPN DNS. Explicit DNS exceptions take priority. Application and IP rules do not select DNS.</source>
+        <translation>Сайт напрямую → DNS напрямую. Сайт через VPN → DNS через VPN. Явные исключения DNS имеют приоритет. Правила приложений и IP-подсетей не определяют DNS.</translation>
+    </message>
+    <message>
+        <source>DNS exceptions take priority over the default DNS policy. Site routes do not change DNS.</source>
+        <translation>Исключения DNS имеют приоритет над политикой по умолчанию. Маршруты сайтов не меняют выбор DNS.</translation>
+    </message>
+    <message>
+        <source>Default DNS policy</source>
+        <translation>DNS-политика по умолчанию</translation>
+    </message>
+    <message>
+        <source>DNS policy for direct sites</source>
+        <translation>DNS для прямых сайтов</translation>
+    </message>
+    <message>
+        <source>DNS policy for VPN sites</source>
+        <translation>DNS для сайтов через VPN</translation>
+    </message>
+    <message>
+        <source>DNS policies</source>
+        <translation>DNS-политики</translation>
+    </message>
+    <message>
+        <source>Use DNS from the current network (Linux)</source>
+        <translation>Использовать DNS текущей сети (Linux)</translation>
+    </message>
+    <message>
+        <source>Policy name</source>
+        <translation>Название политики</translation>
+    </message>
+    <message>
+        <source>DNS server IP or hostname</source>
+        <translation>IP-адрес или имя DNS-сервера</translation>
+    </message>
+    <message>
+        <source>DNS server</source>
+        <translation>DNS-сервер</translation>
+    </message>
+    <message>
+        <source>Network interface (leave empty for automatic selection)</source>
+        <translation>Сетевой интерфейс (пусто — выбрать автоматически)</translation>
+    </message>
+    <message>
+        <source>DNS network interface</source>
+        <translation>Сетевой интерфейс DNS</translation>
+    </message>
+    <message>
+        <source>DNS transport</source>
+        <translation>Транспорт DNS</translation>
+    </message>
+    <message>
+        <source>Default port</source>
+        <translation>Порт по умолчанию</translation>
+    </message>
+    <message>
+        <source>DNS port</source>
+        <translation>Порт DNS</translation>
+    </message>
+    <message>
+        <source>Direct</source>
+        <translation>Напрямую</translation>
+    </message>
+    <message>
+        <source>VPN</source>
+        <translation>VPN</translation>
+    </message>
+    <message>
+        <source>DNS route</source>
+        <translation>Маршрут DNS</translation>
+    </message>
+    <message>
+        <source>Bootstrap for hostname: IP:port or [IPv6]:port</source>
+        <translation>DNS для определения адреса сервера: IP:порт или [IPv6]:порт</translation>
+    </message>
+    <message>
+        <source>DNS bootstrap server</source>
+        <translation>DNS для определения адреса сервера</translation>
+    </message>
+    <message>
+        <source>TLS hostname (optional for a named server)</source>
+        <translation>Имя для TLS (необязательно для сервера, заданного именем)</translation>
+    </message>
+    <message>
+        <source>DNS TLS hostname</source>
+        <translation>Имя TLS DNS-сервера</translation>
+    </message>
+    <message>
+        <source>DNS HTTPS path</source>
+        <translation>Путь HTTPS DNS-сервера</translation>
+    </message>
+    <message>
+        <source>Remove policy</source>
+        <translation>Удалить политику</translation>
+    </message>
+    <message>
+        <source>Add DNS policy</source>
+        <translation>Добавить DNS-политику</translation>
+    </message>
+    <message>
+        <source>DNS exceptions</source>
+        <translation>Исключения DNS</translation>
+    </message>
+    <message>
+        <source>Domain or *.suffix</source>
+        <translation>Домен или *.суффикс</translation>
+    </message>
+    <message>
+        <source>DNS exception domain</source>
+        <translation>Домен исключения DNS</translation>
+    </message>
+    <message>
+        <source>Enabled</source>
+        <translation>Включено</translation>
+    </message>
+    <message>
+        <source>DNS exception policy</source>
+        <translation>DNS-политика исключения</translation>
+    </message>
+    <message>
+        <source>Remove</source>
+        <translation>Удалить</translation>
+    </message>
+    <message>
+        <source>Add DNS exception</source>
+        <translation>Добавить исключение DNS</translation>
+    </message>
+    <message>
+        <source>Preserve corporate DNS domains from the network (Linux)</source>
+        <translation>Учитывать корпоративные DNS-домены текущей сети (Linux)</translation>
+    </message>
+    <message>
+        <source>A suffix includes its root domain. Exact names win over suffixes; longer suffixes win. No automatic fallback to another policy. Automatic corporate DNS domains are available on Linux; other platforms need explicit DNS exceptions. Apps using their own DoH/DoT may bypass these rules.</source>
+        <translation>Суффикс включает сам домен и его поддомены. Точное имя важнее суффикса, длинный суффикс — короткого. Автоматического перехода на другую политику нет. Корпоративные DNS-домены определяются автоматически только на Linux; на других платформах задайте исключения вручную. Собственный DoH/DoT приложений может обходить эти правила.</translation>
+    </message>
+    <message>
+        <source>Disconnect before changing DNS settings</source>
+        <translation>Отключите VPN перед изменением DNS-настроек</translation>
+    </message>
+    <message>
+        <source>Use DNS from the current network</source>
+        <translation>Использовать DNS текущей сети</translation>
+    </message>
+    <message>
+        <source>Preserve corporate DNS rules from the network (Linux / Windows)</source>
+        <translation>Учитывать корпоративные DNS-правила сети (Linux / Windows)</translation>
+    </message>
+    <message>
+        <source>A suffix includes its root domain. Exact names win over suffixes; longer suffixes win. No automatic fallback to another policy. Corporate DNS rules are discovered on Linux and Windows; search suffixes alone do not create DNS rules. Apps using their own DoH/DoT may bypass these rules.</source>
+        <translation>Суффикс включает сам домен и его поддомены. Точное имя важнее суффикса, длинный суффикс — короткого. Автоматического перехода на другую политику нет. Корпоративные правила определяются на Linux и Windows; поисковые суффиксы сами по себе не создают DNS-правил. Собственный DoH/DoT приложений может обходить эти правила.</translation>
+    </message>
 </context>
 <context>
     <name>PageSettingsKillSwitch</name>
@@ -5164,6 +5344,14 @@ Create one from the current settings.</source>
     <message>
         <source>Keep the device key and local routing settings</source>
         <translation>Сохранить ключ устройства и локальные правила маршрутизации</translation>
+    </message>
+    <message>
+        <source>Move server</source>
+        <translation>Перенести сервер</translation>
+    </message>
+    <message>
+        <source>Keep WireGuard/AWG users, DNS, subscriptions and the existing domain</source>
+        <translation>Сохранить пользователей WireGuard/AWG, DNS, подписки и существующий домен</translation>
     </message>
 </context>
 <context>
@@ -7414,6 +7602,66 @@ FileZilla или другие SFTP-клиенты, а также смонтир�
         <translation>Не удалось подтвердить результат обновления. Перед повторной попыткой проверьте сервер через SSH. Журналы обновления и данные для восстановления находятся в /var/lib/amnezia/updates.</translation>
     </message>
     <message>
+        <source>Unsupported split DNS settings version.</source>
+        <translation>Неподдерживаемая версия настроек split DNS.</translation>
+    </message>
+    <message>
+        <source>Automatic network DNS discovery is currently available on Linux only. Use explicit DNS servers on this platform.</source>
+        <translation>Автоматический выбор DNS текущей сети пока доступен только на Linux. На этой платформе задайте DNS-серверы явно.</translation>
+    </message>
+    <message>
+        <source>Add between 1 and 64 DNS policies.</source>
+        <translation>Добавьте от 1 до 64 DNS-политик.</translation>
+    </message>
+    <message>
+        <source>Check the DNS policy identifier, transport, port and route.</source>
+        <translation>Проверьте идентификатор, транспорт, порт и маршрут DNS-политики.</translation>
+    </message>
+    <message>
+        <source>DNS from the current network requires direct UDP or TCP.</source>
+        <translation>DNS текущей сети требует прямого подключения по UDP или TCP.</translation>
+    </message>
+    <message>
+        <source>Enter a DNS server IP address or hostname.</source>
+        <translation>Введите IP-адрес или имя DNS-сервера.</translation>
+    </message>
+    <message>
+        <source>A DNS hostname needs a numeric bootstrap server with a port, using the same route.</source>
+        <translation>Для DNS-сервера, заданного именем, укажите отдельный DNS для определения его адреса: числовой IP и порт. Он использует тот же маршрут.</translation>
+    </message>
+    <message>
+        <source>Use an upstream DNS server, not the VPN DNS address, FakeIP range or system stub.</source>
+        <translation>Укажите настоящий DNS-сервер. Адрес перехватчика VPN, диапазон FakeIP и системный DNS-прокси не подходят.</translation>
+    </message>
+    <message>
+        <source>Select a default DNS policy.</source>
+        <translation>Выберите DNS-политику по умолчанию.</translation>
+    </message>
+    <message>
+        <source>DNS by site route needs a direct policy and a VPN policy.</source>
+        <translation>Для DNS по маршруту сайта нужны прямая DNS-политика и DNS-политика через VPN.</translation>
+    </message>
+    <message>
+        <source>Too many DNS rules.</source>
+        <translation>Слишком много DNS-правил.</translation>
+    </message>
+    <message>
+        <source>DNS rules need a domain or *.suffix and an existing policy.</source>
+        <translation>Для DNS-правила нужны домен или *.суффикс и существующая DNS-политика.</translation>
+    </message>
+    <message>
+        <source>Conflicting DNS rules for the same domain.</source>
+        <translation>Конфликтующие DNS-правила для одного домена.</translation>
+    </message>
+    <message>
+        <source>Automatic corporate DNS rules require Linux or Windows. Configure explicit exceptions on this platform.</source>
+        <translation>Автоматические корпоративные DNS-правила доступны на Linux и Windows. На этой платформе задайте исключения вручную.</translation>
+    </message>
+    <message>
+        <source>Network DNS discovery is unavailable on this platform.</source>
+        <translation>Получение DNS текущей сети недоступно на этой платформе.</translation>
+    </message>
+    <message>
         <source>VPN access revoked. The update token could not be revoked yet. Retry setup or publish settings when the update service is available.</source>
         <translation>Доступ к VPN отозван. Токен обновлений пока не удалось отозвать. Повторите настройку или публикацию, когда сервис обновлений будет доступен.</translation>
     </message>
@@ -7881,6 +8129,13 @@ Remove the server from the app to continue.</source>
     </message>
 </context>
 <context>
+    <name>SettingsController</name>
+    <message>
+        <source>Enable domain routing before configuring split DNS.</source>
+        <translation>Перед настройкой split DNS включите доменную маршрутизацию.</translation>
+    </message>
+</context>
+<context>
     <name>ConnectionUpdatesController</name>
     <message>
         <source>Disconnect the VPN before managing connection updates.</source>
@@ -7981,6 +8236,182 @@ Remove the server from the app to continue.</source>
     <message>
         <source>The VPN configuration changed while preparing protection. Retry after other server edits finish.</source>
         <translation>Конфигурация VPN изменилась во время подготовки защиты. Повторите действие после завершения других изменений на сервере.</translation>
+    </message>
+</context>
+<context>
+    <name>ServerMigrationDialog</name>
+    <message>
+        <source>Move server</source>
+        <translation>Перенести сервер</translation>
+    </message>
+    <message>
+        <source>Move standard WireGuard/AWG, DNS and signed subscriptions to another Linux server with Docker, Python 3.9+ and the OpenSSH client. The VPN and subscription DNS names stay the same. Keep both servers until all clients reconnect. A brief interruption is possible during switching.</source>
+        <translation>Перенос стандартных WireGuard/AWG, DNS и подписок с подписью на другой Linux-сервер с Docker, Python 3.9+ и клиентом OpenSSH. Домены VPN и подписок сохраняются. Сохраните оба сервера, пока все клиенты не переподключатся. При переключении возможен краткий перерыв.</translation>
+    </message>
+    <message>
+        <source>The target must be empty, use the same CPU architecture and allow passwordless sudo. Open its VPN UDP ports and subscription TCP port 8443. Do not edit users or server settings during migration.</source>
+        <translation>Нужен пустой сервер с той же архитектурой процессора и sudo без пароля. Откройте UDP-порты VPN и TCP-порт подписок 8443. Не изменяйте пользователей и настройки серверов во время переноса.</translation>
+    </message>
+    <message>
+        <source>Domain: %1
+Target: %2</source>
+        <translation>Домен: %1
+Новый сервер: %2</translation>
+    </message>
+    <message>
+        <source>Target SSH IP address</source>
+        <translation>IP-адрес нового сервера для SSH</translation>
+    </message>
+    <message>
+        <source>SSH port</source>
+        <translation>Порт SSH</translation>
+    </message>
+    <message>
+        <source>SSH login</source>
+        <translation>Логин SSH</translation>
+    </message>
+    <message>
+        <source>SSH password or unencrypted private key</source>
+        <translation>Пароль SSH или незашифрованный приватный ключ</translation>
+    </message>
+    <message>
+        <source>Check SSH identities</source>
+        <translation>Проверить серверы SSH</translation>
+    </message>
+    <message>
+        <source>This saved operation belongs to another server. Its domain and target are shown above.</source>
+        <translation>Сохранённая операция относится к другому серверу. Его домен и адрес назначения указаны выше.</translation>
+    </message>
+    <message>
+        <source>Compare both SSH fingerprints with your server console. Credentials are sent only after you approve these identities.</source>
+        <translation>Сверьте оба отпечатка SSH с консолями серверов. Данные входа будут отправлены только после подтверждения.</translation>
+    </message>
+    <message>
+        <source>Trust these identities and copy</source>
+        <translation>Подтвердить серверы и скопировать</translation>
+    </message>
+    <message>
+        <source>Update every VPN and subscription A/AAAA record to the target address. Remove stale AAAA records if the target has no IPv6. Switching checks DNS again, verifies unchanged source state and stops the old containers. DNS caches on other devices may need time to expire.</source>
+        <translation>Измените все записи A/AAAA доменов VPN и подписок на адрес нового сервера. Удалите старые AAAA, если новый сервер не поддерживает IPv6. При переключении приложение повторно проверит DNS и исходные настройки, затем остановит старые контейнеры. Другие устройства могут временно использовать старые записи из DNS-кэша.</translation>
+    </message>
+    <message>
+        <source>DNS updated — switch servers</source>
+        <translation>DNS обновлён — переключить серверы</translation>
+    </message>
+    <message>
+        <source>Check saved operation</source>
+        <translation>Проверить сохранённую операцию</translation>
+    </message>
+    <message>
+        <source>Restore source server</source>
+        <translation>Вернуться на старый сервер</translation>
+    </message>
+    <message>
+        <source>Finish and forget rollback credentials</source>
+        <translation>Завершить и удалить данные для отката</translation>
+    </message>
+    <message>
+        <source>Clear saved operation</source>
+        <translation>Удалить сохранённую операцию</translation>
+    </message>
+    <message>
+        <source>Close</source>
+        <translation>Закрыть</translation>
+    </message>
+    <message>
+        <source>The new server pulls the archive directly from the old server over SSH. This device only controls the move; direct SSH access from here to the old server is not required. Copying continues on the new server if this device disconnects.</source>
+        <translation>Новый сервер сам забирает архив со старого по SSH. Это устройство только управляет переносом; прямой доступ к SSH старого сервера с него не требуется. Копирование продолжится на новом сервере, если это устройство отключится.</translation>
+    </message>
+    <message>
+        <source>The new server will temporarily receive the old server's SSH login credentials to copy data and manage cutover or rollback. They are removed from the new server after each operation. Confirm the old server fingerprint before allowing this.</source>
+        <translation>Новый сервер временно получит данные входа по SSH на старый сервер для копирования, переключения и отката. После каждой операции они удаляются с нового сервера. Подтвердите отпечаток старого сервера перед передачей данных входа.</translation>
+    </message>
+    <message>
+        <source>Trust target and discover source from there</source>
+        <translation>Подтвердить новый сервер и проверить с него старый</translation>
+    </message>
+    <message>
+        <source>Compare the target SSH fingerprint with its console. After approval, it will discover the old server key without sending old-server credentials.</source>
+        <translation>Сверьте отпечаток нового сервера с его консолью. После подтверждения он узнает ключ старого сервера без передачи данных входа на старый сервер.</translation>
+    </message>
+</context>
+<context>
+    <name>ServerMigrationController</name>
+    <message>
+        <source>An unfinished migration is saved. Check its status before continuing.</source>
+        <translation>Сохранён незавершённый перенос. Проверьте его состояние перед продолжением.</translation>
+    </message>
+    <message>
+        <source>Disconnect VPN and select a server you administer.</source>
+        <translation>Отключите VPN и выберите сервер с правами администратора.</translation>
+    </message>
+    <message>
+        <source>Set a DNS name as the VPN endpoint before migrating.</source>
+        <translation>Перед переносом укажите доменное имя для подключения VPN.</translation>
+    </message>
+    <message>
+        <source>Enter the target SSH address, login and credentials.</source>
+        <translation>Укажите SSH-адрес нового сервера, логин и данные входа.</translation>
+    </message>
+    <message>
+        <source>Copy and external VPN path verified. The old server is still running. Change the domain A/AAAA records to the target, then switch servers.</source>
+        <translation>Копия и внешний доступ через VPN проверены. Старый сервер продолжает работать. Измените записи A/AAAA доменов на новый адрес, затем переключите серверы.</translation>
+    </message>
+    <message>
+        <source>The local server profile changed during migration. Restore it or restart the migration.</source>
+        <translation>Локальный профиль сервера изменён во время переноса. Восстановите его или начните перенос заново.</translation>
+    </message>
+    <message>
+        <source>Disconnect VPN before switching servers.</source>
+        <translation>Отключите VPN перед переключением серверов.</translation>
+    </message>
+    <message>
+        <source>The target is active. Source containers are retained and stopped.</source>
+        <translation>Новый сервер работает. Исходные контейнеры сохранены и остановлены.</translation>
+    </message>
+    <message>
+        <source>Source restarted. Restore its DNS records before reconnecting. Target containers are retained and stopped.</source>
+        <translation>Старый сервер снова работает. Восстановите его записи DNS перед подключением. Контейнеры нового сервера сохранены и остановлены.</translation>
+    </message>
+    <message>
+        <source>DNS has not switched completely. Check all VPN and subscription A/AAAA records, wait for their caches to expire and retry.</source>
+        <translation>DNS ещё не полностью переключён. Проверьте все записи A/AAAA доменов VPN и подписок, дождитесь обновления кэшей и повторите попытку.</translation>
+    </message>
+    <message>
+        <source>The SSH identity changed. Check the server console before trusting a new key.</source>
+        <translation>Отпечаток SSH изменился. Сверьте новый ключ с консолью сервера перед подтверждением.</translation>
+    </message>
+    <message>
+        <source>Cannot connect to SSH. Check the address, port and login credentials, then check the saved operation.</source>
+        <translation>Не удалось подключиться по SSH. Проверьте адрес, порт и данные входа, затем проверьте сохранённую операцию.</translation>
+    </message>
+    <message>
+        <source>This SSH key is encrypted. Unlock it before using server migration.</source>
+        <translation>Ключ SSH зашифрован. Разблокируйте его перед переносом сервера.</translation>
+    </message>
+    <message>
+        <source>The source changed while copying. Restore the source operation and start a fresh copy before switching DNS.</source>
+        <translation>Исходный сервер изменился во время копирования. Вернитесь на него и создайте свежую копию перед переключением DNS.</translation>
+    </message>
+    <message>
+        <source>Automatic rollback stopped because the target VPN or DNS configuration changed. Reconcile those changes before restarting the source.</source>
+        <translation>Автоматический откат остановлен: настройки VPN или DNS на новом сервере изменились. Согласуйте эти изменения перед запуском старого сервера.</translation>
+    </message>
+    <message>
+        <source>The target already uses a required name, port or network. Choose an empty target; existing resources will be kept.</source>
+        <translation>На новом сервере уже заняты необходимые имена, порты или сеть. Выберите пустой сервер. Существующие ресурсы сохранены.</translation>
+    </message>
+    <message>
+        <source>The migration stopped. Check the saved operation before retrying or restoring the source. Details: %1</source>
+        <translation>Перенос остановлен. Проверьте сохранённую операцию перед повторной попыткой или возвратом на старый сервер. Подробности: %1</translation>
+    </message>
+    <message>
+        <source>The server-to-server copy has completed. You can now update DNS and switch servers.</source>
+        <translation>Копирование между серверами завершено. Теперь можно обновить DNS и переключить серверы.</translation>
+    </message>
+    <message>
+        <source>Saved SSH identities are incomplete. Clear this operation and check the server identities again.</source>
+        <translation>Сохранённые данные SSH-ключей неполные. Удалите эту операцию и повторно проверьте ключи серверов.</translation>
     </message>
 </context>
 </TS>

@@ -608,6 +608,8 @@ bool IosController::setupWireGuard()
         wgConfig.insert("routingTransport", "wireguard");
         wgConfig.insert("routingConfig", QString::fromUtf8(QJsonDocument(m_rawConfig.value("sing_box_routing").toObject()).toJson(QJsonDocument::Compact)));
         wgConfig.insert("routingDNSPath", m_rawConfig.value("sing_box_dns_path"));
+        if (m_rawConfig.contains("sing_box_dns"))
+            wgConfig.insert("routingDNSConfig", QString::fromUtf8(QJsonDocument(m_rawConfig.value("sing_box_dns").toObject()).toJson(QJsonDocument::Compact)));
     }
     QJsonDocument wgConfigDoc(wgConfig);
     QString wgConfigDocStr(wgConfigDoc.toJson(QJsonDocument::Compact));
@@ -703,6 +705,8 @@ bool IosController::setupAwg()
         wgConfig.insert("routingTransport", "awg");
         wgConfig.insert("routingConfig", QString::fromUtf8(QJsonDocument(m_rawConfig.value("sing_box_routing").toObject()).toJson(QJsonDocument::Compact)));
         wgConfig.insert("routingDNSPath", m_rawConfig.value("sing_box_dns_path"));
+        if (m_rawConfig.contains("sing_box_dns"))
+            wgConfig.insert("routingDNSConfig", QString::fromUtf8(QJsonDocument(m_rawConfig.value("sing_box_dns").toObject()).toJson(QJsonDocument::Compact)));
     }
 
     QJsonDocument wgConfigDoc(wgConfig);

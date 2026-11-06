@@ -554,6 +554,7 @@ open class AmneziaVpnService : VpnService() {
                     Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && this@AmneziaVpnService.isLockdownEnabled
                 }
                 protocol.configureEndpointResolver(networkState::resolveEndpoint)
+                protocol.configureNetworkDns(networkState::dnsSnapshot, networkState::bindDnsSocket)
                 protocol.configureEndpointRecovery { current -> mainScope.launch { if (current()) reconnect(true) } }
                 protocol.startVpn(config, Builder(), ::protect)
             }

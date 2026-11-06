@@ -1,5 +1,6 @@
 <RCC>
     <qresource prefix="/ui/qml">
+        <file>Components/ServerMigrationDialog.qml</file>
         <file>Components/CopyableValueRow.qml</file>
         <file>Components/ConfigContentSheet.qml</file>
         <file>Components/QrCodeCard.qml</file>

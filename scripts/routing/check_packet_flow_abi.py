@@ -8,6 +8,7 @@ import json
 import os
 import queue
 import struct
+import sys
 import tempfile
 from pathlib import Path
 
@@ -30,6 +31,25 @@ def main():
     parser.add_argument("library", type=Path)
     args = parser.parse_args()
     library = c.CDLL(str(args.library.resolve()))
+    if sys.platform == "darwin":
+        # Exercise the real public resolver API, not just a cross-compiled
+        # declaration. Do not log the host's DNS addresses.
+        library.AmneziaRoutingSystemDNS.argtypes = []
+        library.AmneziaRoutingSystemDNS.restype = c.c_void_p
+        pointer = library.AmneziaRoutingSystemDNS()
+        assert pointer, "public Apple DNS snapshot failed"
+        release = c.CDLL(None).free
+        release.argtypes = [c.c_void_p]
+        release.restype = None
+        try:
+            servers = json.loads(c.string_at(pointer))
+        finally:
+            release(pointer)
+        assert 1 <= len(servers) <= 16, "public Apple DNS snapshot is empty or oversized"
+        for server in servers:
+            ipaddress.ip_address(server["address"].split("%", 1)[0])
+            assert 1 <= server["port"] <= 65535
+        print("PASS: public Apple DNS snapshot returns numeric servers and ports")
     writer_type = c.CFUNCTYPE(c.c_int32, c.c_void_p, c.c_void_p, c.c_int32)
     release_type = c.CFUNCTYPE(None, c.c_void_p)
     library.AmneziaRoutingStart.argtypes = [c.c_char_p, c.c_int32, c.c_void_p, writer_type, release_type]

@@ -6,6 +6,7 @@ package desktop
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -171,7 +172,12 @@ func Start(ctx context.Context, raw []byte, manageDNS bool) (*Session, error) {
 		}
 	}
 	s := &Session{manageDNS: manageDNS}
+	underlay, err := linuxUnderlay("")
+	if err != nil {
+		return nil, err
+	}
 	hooks := mobile.Hooks{
+		Underlay:             &underlay,
 		InitializeInterfaces: true,
 		Protect:              func(fd int) error { return unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_MARK, int(socketMark)) },
 		Interfaces: func() ([]adapter.NetworkInterface, error) {
@@ -288,7 +294,11 @@ func Start(ctx context.Context, raw []byte, manageDNS bool) (*Session, error) {
 		s.rules = append(s.rules, r)
 	}
 	if manageDNS {
-		s.dns, err = startResolvedLink(ctx, link.Attrs().Index)
+		var effective engine.SessionConfig
+		if err = json.Unmarshal(raw, &effective); err != nil {
+			return nil, errors.New("invalid prepared DNS session")
+		}
+		s.dns, err = startResolvedLink(ctx, link.Attrs().Index, effective.DNSNetworkFingerprint)
 		if err != nil {
 			return nil, err
 		}

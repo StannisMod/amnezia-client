@@ -52,9 +52,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # The generic Apple checks do not need a native ARM host. Keep the
-        # ARM64 race-CAS/performance proof in routing-performance.yml.
-        os: [ubuntu-22.04, windows-2022, macos-15-intel]
+        os: [ubuntu-22.04, windows-2022, macos-15, macos-15-intel]
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -488,8 +486,8 @@ jobs:
 
   client-ios:
     needs: cancel-superseded
-    # Xcode still builds the app/tunnel and Go archive for arm64 iPhoneOS.
-    # Avoid the exhausted hosted ARM64 pool for the build host itself.
+    # iOS remains arm64; use an Intel build host while hosted macOS arm64
+    # capacity is constrained. Both native macOS CPU lanes remain above.
     runs-on: macos-15-intel
     timeout-minutes: 120
     steps:

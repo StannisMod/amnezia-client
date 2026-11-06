@@ -1,4 +1,5 @@
 #include "connectionUpdatesController.h"
+#include "core/utils/selfhosted/connectionUpdatesCommand.h"
 
 #include <QDateTime>
 #include <QElapsedTimer>
@@ -134,7 +135,7 @@ ErrorCode ConnectionUpdatesController::command(const ServerCredentials &credenti
         ssh.runScript(credentials, "rm -rf -- '" + path + "'"); return error;
     }
     QString output;
-    const auto script = QString("chmod 600 '%3/request.json' && %1 && update_image=$(sudo docker inspect -f '{{.Image}}' amnezia-connection-updates) && sudo docker run --rm -i --network none --read-only --cap-drop ALL --security-opt no-new-privileges --mount type=volume,source=amnezia-connection-updates-state,target=/data \"$update_image\" %2 < '%3/request.json'").arg(labelCheck, action, path);
+    const auto script = connectionUpdates::adminCommandScript(action, path);
     error = ssh.runScript(credentials, script, [&](const QString &data, libssh::Client &) { output += data; return ErrorCode::NoError; });
     ssh.runScript(credentials, "rm -rf -- '" + path + "'");
     if (error != ErrorCode::NoError) return error;

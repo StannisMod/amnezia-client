@@ -64,7 +64,25 @@ It checks device-key readiness, unchanged identities, protected fresh traffic an
 rollback after signed publication. The full SDK wrapper also supports linked Git
 worktrees using a private copy of their Git metadata; host metadata stays read-only.
 
-Generic Apple CI and the unsigned iPhoneOS ARM64 build use the standard
+The unsigned iPhoneOS ARM64 build uses the standard
 `macos-15-intel` host when the hosted ARM64 pool cannot acquire runners.
-Native ARM64 race-CAS/performance diagnostics stay in `routing-performance.yml`;
-they are not replaced by Intel measurements.
+Both native macOS CPU lanes and the ARM64 race-CAS/performance diagnostics
+remain enabled.
+
+### Server migration
+
+`bash scripts/local-tests/migration-scenario.sh` creates two disposable Docker
+hosts and checks unchanged WireGuard/AWG clients, DNS through the tunnels,
+original signed HTTPS subscription tokens/certificate, cutover and rollback
+without lowering replay counters. It uses dedicated synthetic-data cache volumes
+`amnezia-migration-acceptance-source` and `amnezia-migration-acceptance-target`.
+No host Docker socket is mounted inside the fixtures. See
+[server migration](../../docs/server-migration.md) for the app flow and limits.
+`python3 client/tests/migration/test_agent.py` checks archive boundaries and replay
+floors; `bash scripts/local-tests/migration-ssh.sh` checks actual SSH/SFTP.
+
+`bash scripts/local-tests/migration-relay.sh` checks the app's actual new-host pull
+path: old SSH is blocked to an administrator actor and reachable only from the
+new host, with no archive downloaded by the app. It also checks a detached copy,
+reviewed host keys before password auth, both authentication methods and direct
+rollback preserving the signed revision floor.

@@ -191,8 +191,6 @@ func testFakeIPSharedAddressEgress(t *testing.T, defaultPolicy rules.Action, rea
 		defer server.Shutdown()
 		addr := netip.MustParseAddrPort(pc.LocalAddr().String())
 		policy := rules.Config{Version: 1, Default: defaultPolicy, Rules: []rules.Rule{
-			{Kind: rules.CIDR, Value: "192.168.0.1", Action: rules.Direct},
-			{Kind: rules.CIDR, Value: "192.168.0.104", Action: rules.Direct},
 			{Kind: rules.Suffix, Value: "*.corp.example.test", Action: rules.Direct},
 			{Kind: rules.Suffix, Value: "*.ru", Action: rules.Direct},
 		}}

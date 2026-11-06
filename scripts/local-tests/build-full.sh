@@ -27,6 +27,8 @@ docker run --rm --network host \
     --mount "type=bind,source=$git_common_metadata,target=/input/common-git,readonly" \
     --mount type=volume,source=amnezia-local-full-build,target=/work \
     amnezia-local-full-build bash -ec '
+        # Source must exactly match this worktree; dependencies/build caches live elsewhere.
+        rm -rf /work/src
         mkdir -p /work/src
         tar -C /src --exclude=./.git -cf - . | tar -C /work/src -xf -
         if [ -f /work/src/.git ]; then rm -f /work/src/.git; fi

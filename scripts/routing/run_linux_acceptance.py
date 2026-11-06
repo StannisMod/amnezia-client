@@ -241,8 +241,6 @@ def main():
                     report["fixture_udp_headers"].append({"interface": address[0], "source": socket.inet_ntoa(packet[12:16]), "destination": socket.inet_ntoa(packet[16:20]), "source_port": source, "destination_port": destination, "udp_length": size})
         threading.Thread(target=record_headers, daemon=True).start()
         profile["sing_box_routing"] = {"version": 1, "default": "vpn", "rules": [
-            {"kind": "cidr", "value": "192.168.0.1", "action": "direct"},
-            {"kind": "cidr", "value": "192.168.0.104", "action": "direct"},
             {"kind": "suffix", "value": "*.corp.example.test", "action": "direct"},
             {"kind": "suffix", "value": "*.ru", "action": "direct"},
             {"kind": "domain", "value": "vpn.test", "action": "vpn"},

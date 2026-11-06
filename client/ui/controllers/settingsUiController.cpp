@@ -72,6 +72,23 @@ void SettingsUiController::setSecondaryDns(const QString &dns)
     emit secondaryDnsChanged();
 }
 
+QJsonObject SettingsUiController::splitDnsConfig() const
+{
+    return m_settingsController->splitDnsConfig();
+}
+
+bool SettingsUiController::isSplitDnsEnabled() const
+{
+    return m_settingsController->isSplitDnsEnabled();
+}
+
+QString SettingsUiController::saveSplitDnsConfig(const QJsonObject &config)
+{
+    const QString error = m_settingsController->saveSplitDnsConfig(config);
+    if (error.isEmpty()) emit splitDnsConfigChanged();
+    return error;
+}
+
 bool SettingsUiController::isLoggingEnabled()
 {
     return m_settingsController->isLoggingEnabled();
@@ -133,6 +150,7 @@ void SettingsUiController::restoreAppConfigFromData(const QByteArray &data)
         emit amneziaDnsToggled(amneziaDnsEnabled);
 
         emit restoreBackupFinished();
+        emit splitDnsConfigChanged();
         emit autoStartChanged();
         emit startMinimizedChanged();
 
@@ -152,6 +170,7 @@ QString SettingsUiController::getAppVersion()
 void SettingsUiController::clearSettings()
 {
     m_settingsController->clearSettings();
+    emit splitDnsConfigChanged();
     emit autoStartChanged();
     emit startMinimizedChanged();
     emit resetLanguageToSystem();

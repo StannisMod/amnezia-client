@@ -4,6 +4,7 @@
 package main
 
 /*
+#cgo darwin ios LDFLAGS: -lresolv
 #include "amnezia_routing.h"
 */
 import "C"
@@ -32,6 +33,17 @@ type appleRoutingSession struct {
 
 var appleRoutingHandles sync.Map
 var appleNextRoutingHandle atomic.Int64
+
+//export AmneziaRoutingSystemDNS
+func AmneziaRoutingSystemDNS() *C.char { return C.amnezia_system_dns() }
+
+//export AmneziaRoutingValidate
+func AmneziaRoutingValidate(raw *C.char, size C.int32_t) C.int32_t {
+	if raw == nil || size <= 0 || size > 4<<20 || mobile.Validate(C.GoBytes(unsafe.Pointer(raw), C.int(size))) != nil {
+		return 0
+	}
+	return 1
+}
 
 //export AmneziaRoutingStart
 func AmneziaRoutingStart(raw *C.char, size C.int32_t, host unsafe.Pointer, writer C.AmneziaPacketWriter, release C.AmneziaHostRelease) C.int64_t {
@@ -63,6 +75,14 @@ func AmneziaRoutingStart(raw *C.char, size C.int32_t, host unsafe.Pointer, write
 		// NEPacketTunnelProvider-created sockets use the underlying network with
 		// includeAllNetworks=false. The containing app never opens these sockets.
 		Protect: func(int) error { return nil },
+		ProtectInterface: func(fd int, name string) error {
+			text := C.CString(name)
+			defer C.free(unsafe.Pointer(text))
+			if C.amnezia_bind_dns_interface(C.int(fd), text) != 0 {
+				return errors.New("Apple DNS network interface binding failed")
+			}
+			return nil
+		},
 		Interfaces: func() ([]adapter.NetworkInterface, error) {
 			interfaces, err := net.Interfaces()
 			if err != nil {

@@ -39,6 +39,7 @@ import (
 
 var bulkEnabled bool
 var transportKind string
+var recordDNS bool
 
 var sharedIP = "10.0.2.2" // Android emulator host alias; Windows uses its native local IP.
 const tcpPort = 18081
@@ -53,6 +54,8 @@ type fixture struct {
 	server, client                       *ecdh.PrivateKey
 	directTCP, directUDP, vpnTCP, vpnUDP atomic.Int64
 	dnsQueries                           atomic.Int64
+	dnsNamesMu                           sync.Mutex
+	dnsNames                             []string
 	outerRX, outerTX                     atomic.Int64
 	quicCertificate                      tls.Certificate
 }
@@ -251,6 +254,13 @@ func (f *fixture) start() error {
 		a.SetReply(q)
 		for _, question := range q.Question {
 			name := strings.ToLower(question.Name)
+			if recordDNS {
+				f.dnsNamesMu.Lock()
+				if len(f.dnsNames) < 4096 {
+					f.dnsNames = append(f.dnsNames, name)
+				}
+				f.dnsNamesMu.Unlock()
+			}
 			if name == "cname.test." {
 				a.Answer = append(a.Answer, &dns.CNAME{Hdr: dns.RR_Header{Name: name, Rrtype: dns.TypeCNAME, Class: dns.ClassINET, Ttl: 30}, Target: "vpn.test."})
 				name = "vpn.test."
@@ -275,6 +285,7 @@ func (f *fixture) start() error {
 func main() {
 	flag.StringVar(&transportKind, "transport", "awg", "disposable peer protocol: awg or wireguard")
 	flag.BoolVar(&bulkEnabled, "bulk", false, "enable bounded performance-test stream observers")
+	flag.BoolVar(&recordDNS, "record-dns", false, "record bounded synthetic DNS observations for split DNS acceptance")
 	flag.StringVar(&sharedIP, "shared-ip", sharedIP, "native host address used by both controlled observers")
 	path := flag.String("config", "", "private output fixture JSON (never upload)")
 	quicCA := flag.String("quic-ca", "", "public disposable QUIC certificate output")
@@ -362,6 +373,11 @@ func main() {
 	go observeTCP(l, "DIRECT", &f.directTCP)
 	go observeUDP(u, "DIRECT", &f.directUDP)
 	control := http.NewServeMux()
+	control.HandleFunc("/dns-observations", func(w http.ResponseWriter, _ *http.Request) {
+		f.dnsNamesMu.Lock()
+		defer f.dnsNamesMu.Unlock()
+		json.NewEncoder(w).Encode(f.dnsNames)
+	})
 	control.HandleFunc("/stats", func(w http.ResponseWriter, _ *http.Request) {
 		// Datagram counts identify delivery/peer response failures without
 		// persisting handshake payloads, keys or private UAPI configuration.

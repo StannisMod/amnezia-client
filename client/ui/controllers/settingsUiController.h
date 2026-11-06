@@ -19,6 +19,8 @@ public:
 
     Q_PROPERTY(QString primaryDns READ getPrimaryDns WRITE setPrimaryDns NOTIFY primaryDnsChanged)
     Q_PROPERTY(QString secondaryDns READ getSecondaryDns WRITE setSecondaryDns NOTIFY secondaryDnsChanged)
+    Q_PROPERTY(QJsonObject splitDnsConfig READ splitDnsConfig NOTIFY splitDnsConfigChanged)
+    Q_PROPERTY(bool splitDnsEnabled READ isSplitDnsEnabled NOTIFY splitDnsConfigChanged)
     Q_PROPERTY(bool isLoggingEnabled READ isLoggingEnabled WRITE toggleLogging NOTIFY loggingStateChanged)
     Q_PROPERTY(bool isNotificationPermissionGranted READ isNotificationPermissionGranted NOTIFY onNotificationStateChanged)
     Q_PROPERTY(bool isKillSwitchEnabled READ isKillSwitchEnabled WRITE toggleKillSwitch NOTIFY killSwitchEnabledChanged)
@@ -41,6 +43,9 @@ public slots:
 
     QString getSecondaryDns();
     void setSecondaryDns(const QString &dns);
+    QJsonObject splitDnsConfig() const;
+    bool isSplitDnsEnabled() const;
+    QString saveSplitDnsConfig(const QJsonObject &config);
 
     bool isLoggingEnabled();
     void toggleLogging(bool enable);
@@ -104,6 +109,7 @@ public slots:
 signals:
     void primaryDnsChanged();
     void secondaryDnsChanged();
+    void splitDnsConfigChanged();
     void loggingStateChanged();
     void killSwitchEnabledChanged();
     void strictKillSwitchEnabledChanged(bool enabled);
