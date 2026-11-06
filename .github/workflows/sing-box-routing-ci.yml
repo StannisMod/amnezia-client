@@ -77,6 +77,11 @@ jobs:
             if [ "$attempt" -eq 3 ]; then exit 1; fi
             sleep 5
           done
+      - name: Verify the normal TCP dependency and rejection checks
+        shell: bash
+        run: |
+          python internal/builddeps/verify.py --module . --output tcp-dependency.json
+          python internal/builddeps/test_verify.py
       - name: Unit and local network integration tests
         shell: bash
         run: |
@@ -88,7 +93,7 @@ jobs:
             package_args=(-p 1)
           fi
           race_mod=$(python prepare_race.py --output "$RUNNER_TEMP")
-          go test -mod=readonly -modfile="$race_mod" -tags with_gvisor -race -count=3 "${package_args[@]}" -json ./... | tee test-results.jsonl
+          go test -mod=readonly -modfile="$race_mod" -tags with_gvisor,amnezia_race_dependency -race -count=3 "${package_args[@]}" -json ./... | tee test-results.jsonl
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -214,6 +219,20 @@ jobs:
           chmod +x "${packages[0]}"
           sudo modprobe tun
           python3 -u scripts/routing/run_linux_service_container.py --package "${packages[0]}" --peer "$RUNNER_TEMP/installed-routing-peer" --qt-probe "$GITHUB_WORKSPACE/routing-service-probe-build/routing-service-probe" --report "$GITHUB_WORKSPACE/linux-installed-service.json"
+      - name: Preserve real WSS/TCP sockets through isolated underlay outages
+        id: tcp-stability
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y iproute2 nftables tcpdump
+          sudo modprobe tun
+          bash scripts/routing/run_linux_tcp_ci.sh
+      - name: Record native TCP acceptance with the packaged sources
+        if: always()
+        env:
+          BUILD_OUTCOME: ${{ steps.build.outcome }}
+          TCP_ACCEPTANCE_OUTCOME: ${{ steps.tcp-stability.outcome }}
+        run: python scripts/routing/build_manifest.py linux
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -225,6 +244,7 @@ jobs:
             deploy/build/client/tests/Testing/Temporary/LastTest.log
             deploy/build/AmneziaVPN_*_linux_x64.run
             linux-installed-service.json
+            tcp-stability-artifacts/**
             linux-installed-service.rescue.json
             linux-installed-service.journal.log
             linux-installed-service.boot.log
@@ -510,9 +530,10 @@ jobs:
           test "$(git -C "$RUNNER_TEMP/routing-apple" rev-parse HEAD)" = 811f5c8213e6b257e9520fff713ec4d22086e9ac
           module="$RUNNER_TEMP/routing-apple/Sources/WireGuardKitGo"
           python3 native/routing/prepare_apple.py --module "$module"
+          (cd "$module" && go test -mod=readonly -tags with_gvisor,amnezia_gvisor_2026 -race -count=3 -run '^TestTCPTimeoutRecoveryDrainsThroughACKs$' github.com/StannisMod/amnezia-client/native/routing/awg)
           make -C "$module" ARCHS=arm64 PLATFORM_NAME=iphoneos
           nm -g "$module/out/libwg-go.a" > "$RUNNER_TEMP/routing-apple-symbols.txt"
-          for symbol in _AmneziaRoutingStart _AmneziaRoutingFeed _AmneziaRoutingStop _AmneziaRoutingStats _wgTurnOn; do
+          for symbol in _AmneziaRoutingStart _AmneziaRoutingFeed _AmneziaRoutingStop _AmneziaRoutingStats _AmneziaRoutingBuildInfo _wgTurnOn; do
             grep -E " T $symbol$" "$RUNNER_TEMP/routing-apple-symbols.txt"
           done
           xcrun --sdk iphoneos swiftc -typecheck -target arm64-apple-ios15.0 -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" -import-objc-header "$module/amnezia_routing.h" client/platforms/ios/WGConfig.swift client/platforms/ios/EndpointRefreshPolicy.swift client/platforms/ios/RoutingPacketTunnel.swift

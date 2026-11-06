@@ -69,3 +69,6 @@ require (
 	golang.org/x/tools v0.47.0 // indirect
 	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2 // indirect
 )
+
+// Immutable Amnezia RACK recovery backport; internal/builddeps/lock.json.
+replace gvisor.dev/gvisor => github.com/StannisMod/gvisor v0.0.0-20261106123450-8155b9498bd4

@@ -20,6 +20,7 @@ import (
 	"sync/atomic"
 	"unsafe"
 
+	"github.com/StannisMod/amnezia-client/native/routing/engine"
 	"github.com/StannisMod/amnezia-client/native/routing/mobile"
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing/common/control"
@@ -142,4 +143,10 @@ func RoutingDiagnostics(handle int64) *C.char {
 		return nil
 	}
 	return C.CString(string(raw)) // caller owns the returned allocation
+}
+
+//export RoutingBuildInfoJSON
+func RoutingBuildInfoJSON() *C.char {
+	raw, _ := json.Marshal(engine.BuildInfo())
+	return C.CString(string(raw))
 }

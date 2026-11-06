@@ -18,6 +18,7 @@ import (
 	"sync/atomic"
 	"unsafe"
 
+	"github.com/StannisMod/amnezia-client/native/routing/engine"
 	"github.com/StannisMod/amnezia-client/native/routing/mobile"
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-tun"
@@ -187,4 +188,10 @@ func AmneziaRoutingDiagnostics(handle C.int64_t) *C.char {
 		return nil
 	}
 	return C.CString(string(raw)) // caller releases with free()
+}
+
+//export AmneziaRoutingBuildInfo
+func AmneziaRoutingBuildInfo() *C.char {
+	raw, _ := json.Marshal(engine.BuildInfo())
+	return C.CString(string(raw))
 }

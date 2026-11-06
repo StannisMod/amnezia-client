@@ -31,6 +31,23 @@ def main():
     parser.add_argument("library", type=Path)
     args = parser.parse_args()
     library = c.CDLL(str(args.library.resolve()))
+    # Read the actual shared Go payload, not a separately compiled probe.
+    import importlib.util
+    verifier_path=Path(__file__).resolve().parents[2]/'native/routing/internal/builddeps/verify.py'
+    spec=importlib.util.spec_from_file_location('routing_builddeps',verifier_path)
+    verifier=importlib.util.module_from_spec(spec);spec.loader.exec_module(verifier)
+    library.AmneziaRoutingBuildInfo.argtypes=[]
+    library.AmneziaRoutingBuildInfo.restype=c.c_void_p
+    pointer=library.AmneziaRoutingBuildInfo()
+    assert pointer, 'missing Apple backend build identity'
+    release_build_info=c.CDLL(None).free
+    release_build_info.argtypes=[c.c_void_p]
+    release_build_info.restype=None
+    try:
+        verifier.verify_info(json.loads(c.string_at(pointer)), 'apple')
+    finally:
+        release_build_info(pointer)
+    print('PASS: actual Apple bridge uses the locked TCP recovery fork')
     if sys.platform == "darwin":
         # Exercise the real public resolver API, not just a cross-compiled
         # declaration. Do not log the host's DNS addresses.

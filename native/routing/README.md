@@ -240,3 +240,28 @@ modules), the existing app dependencies and any embedded runtime/toolchain
 components, and supply corresponding source where required. Experimental CI
 artifacts are produced; completing the distributable license bundle remains a
 separate delivery requirement.
+
+## Pinned TCP recovery dependency
+
+Normal builds resolve `gvisor.dev/gvisor` to immutable commits in
+`StannisMod/gvisor`. The root/Android and Apple baselines remain separate; their
+versions, sums and modified-source hashes are recorded in
+`internal/builddeps/lock.json`. `internal/builddeps/verify.py` rejects a different
+resolved graph before packaging and verifies the actual Go executable/shared
+library or static archive afterward. The fork-only `pkg/amnezia` import also
+prevents an unpatched module from compiling into a normal routing engine.
+
+```sh
+python3 internal/builddeps/verify.py --module . --output tcp-dependency.json
+go test -mod=readonly -tags with_gvisor -run TestTCPTimeoutRecoveryDrainsThroughACKs ./awg
+```
+
+The TCP regression is mandatory. For ARM64 race, use `prepare_race.py` and the
+explicit non-release `amnezia_race_dependency` tag documented in
+[TESTING.md](../../docs/sing-box-routing/TESTING.md). Reproduction builds against
+pristine upstream use `amnezia_dependency_repro`; both diagnostic tags are
+rejected by package verification. Neither is used by ordinary app builds.
+
+See [TCP recovery](../../docs/sing-box-routing/TCP-RECOVERY.md) for the investigation
+and [dependency integration](../../docs/sing-box-routing/TCP-DEPENDENCY.md) for
+production build/package checks.

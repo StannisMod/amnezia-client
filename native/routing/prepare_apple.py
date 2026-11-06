@@ -19,7 +19,7 @@ def prepare_module(core, destination):
     original = "go build -ldflags=-w"
     if text.count(original) != 1:
         raise RuntimeError("Unexpected AWG Apple build entry point")
-    text = text.replace(original, "go build -mod=readonly -tags with_gvisor,amnezia_apple_bridge -ldflags=-w")
+    text = text.replace(original, "python3 amnezia-routing/internal/builddeps/verify.py --module . --scope apple --output routing-tcp-provenance.json && go build -mod=readonly -tags with_gvisor,amnezia_apple_bridge -ldflags=-w")
     makefile.write_text(text)
 
 

@@ -249,7 +249,15 @@ def main():
             installed = Path(os.environ["ProgramFiles"]) / "AmneziaVPN" if win else Path("/opt/AmneziaVPN")
             inventories = list(installed.rglob("routing-licenses/inventory.json"))
             assert len(inventories) == 1, "installed routing notices missing or duplicated"
-            report["packaged_routing_notices"] = directory(inventories[0].parent)
+            report["packaged_routing_notices"] = directory(inventories[0].parent, profile='desktop_android')
+            import importlib.util
+            verify_path=Path(__file__).resolve().parents[2]/'native/routing/internal/builddeps/verify.py'
+            spec=importlib.util.spec_from_file_location('routing_builddeps',verify_path)
+            deps=importlib.util.module_from_spec(spec);spec.loader.exec_module(deps)
+            helpers=list(installed.rglob('amnezia-routing.exe' if win else 'amnezia-routing'))
+            assert len(helpers)==1, 'installed backend is missing or duplicated'
+            info=json.loads(subprocess.check_output([str(helpers[0]),'--build-info'],text=True,timeout=15))
+            report['packaged_tcp_recovery']=deps.verify_info(info,'desktop_android')
         native_connect()
         if win:
             assert ps("(Get-Service -Name 'AmneziaVPN-service').Status") == "Running"

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync"
 
+	"github.com/StannisMod/amnezia-client/native/routing/internal/builddeps"
 	"github.com/StannisMod/amnezia-client/native/routing/tunnel"
 	box "github.com/sagernet/sing-box"
 )
@@ -20,6 +21,9 @@ type Runtime struct {
 }
 
 func StartRuntime(ctx context.Context, compiled []byte, cachePath string) (*Runtime, error) {
+	if err := builddeps.Validate(); err != nil {
+		return nil, err
+	}
 	ctx, cancel := context.WithCancel(ctx)
 	instance, err := NewWithCache(ctx, compiled, cachePath)
 	if err != nil {
@@ -51,3 +55,6 @@ func (s *Runtime) Close() error {
 	s.once.Do(func() { s.cancel(); s.closeErr = s.box.Close() })
 	return s.closeErr
 }
+
+// BuildInfo exposes dependency identity without starting a routing session.
+func BuildInfo() builddeps.Info { return builddeps.Source() }

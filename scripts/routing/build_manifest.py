@@ -41,11 +41,21 @@ def main():
         for app in root.glob('client/Release-iphoneos/*.app'):
             for extension in app.rglob('*.appex'):
                 for inventory in extension.rglob('routing-licenses/inventory.json'):
-                    notice_results.append(directory(inventory.parent))
+                    notice_results.append(directory(inventory.parent, profile="apple"))
         assert notice_results, 'routing notices missing from final iOS extension'
+    if status == 'PASS' and target in ('linux','windows','android'):
+        from verify_notices import directory, apk
+        if target=='android':
+            for path in sorted(root.rglob('*.apk')): notice_results.append(apk(path))
+        else:
+            for inventory in sorted(root.rglob('routing-licenses/inventory.json')):
+                notice_results.append(directory(inventory.parent, profile='desktop_android'))
+        assert notice_results, 'verified TCP dependency notices missing from final build'
     report = {
         "schema_version": 1,
         "routing_notices": notice_results,
+        "tcp_recovery": [row['tcp_recovery'] for row in notice_results],
+        "tcp_connection_stability": {'success':'PASS','failure':'FAIL'}.get(os.environ.get('TCP_ACCEPTANCE_OUTCOME'),'NOT RUN'),
         "source_sha": command("git", "rev-parse", "HEAD"),
         "platform": target,
         "abi": os.environ.get("ROUTING_ABI", platform.machine()),
