@@ -11,7 +11,10 @@ Do not infer physical-device or Internet-egress acceptance from compilation.
 
 DNS follows site routes automatically in routed sessions: original-network DNS
 for DIRECT and the existing effective Amnezia DNS through VPN. There is no
-separate DNS policy editor or switch. Behavior and native-source limits are described in
+separate DNS policy editor or switch. DNS has no future connection port/network,
+so only unconditional name rules select its resolver; conditional rules are
+applied to connections. Block names/defaults use VPN DNS, then the connection
+router rejects the flow before opening an outbound socket. Behavior and native-source limits are described in
 [`../../docs/split-dns.md`](../../docs/split-dns.md). Its isolated local acceptance
 results are in [`../../docs/testing/split-dns-acceptance.json`](../../docs/testing/split-dns-acceptance.json).
 
@@ -91,7 +94,7 @@ Versions are locked in `go.mod`/`go.sum`. Primary source commits:
 
 ## Packages
 
-- `rules`: version 1 schema, canonicalization, validation, deterministic rule
+- `rules`: version 2 portable schema (reads version 1), canonicalization, validation, deterministic rule
   order, legacy site-list conversion and sing-box route-rule compilation.
 - `dnspolicy`: version 1 per-domain resolver policies, explicit DIRECT/VPN
   paths, optional site-route linkage, transport/bootstrap validation and DNS
@@ -113,19 +116,65 @@ without that native integration is not a working split-tunnel client.
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "default": "vpn",
   "rules": [
     {"kind": "suffix", "value": "*.ru", "action": "direct"},
-    {"kind": "domain", "value": "example.com", "action": "vpn"},
+    {"kind": "domain", "value": "example.com", "action": "vpn", "network": "tcp", "ports": "80,443,8000-8100"},
+    {"kind": "domain", "value": "blocked.example", "action": "block", "disabled": false},
     {"kind": "cidr", "value": "192.168.0.0/16", "action": "direct"}
   ]
 }
 ```
 
 Exact domains win over suffixes; longer suffixes win over shorter suffixes;
-then longest CIDR prefix; then default. Conflicting duplicate canonical rules
-are rejected. `*.example.org` includes its apex and descendants at DNS label
+then longest CIDR prefix; then default. Within equal specificity, saved list order
+is authoritative. Duplicate enabled canonical conditions (destination, ports and
+network) are rejected; overlapping but different conditions retain list order.
+Port lists and inclusive ranges form a union, then AND with the destination and
+network. Empty/absent `ports` means all destination ports; empty/absent `network`
+means both TCP and UDP. Values outside 1..65535 and unknown network types fail
+validation, including in disabled rules. `block` is a reject/drop action before
+any outbound opens; as the default it appends an unconditional reject, rather
+than selecting a nonexistent block outbound. DNS interception and application
+scope still run before destination policy. Existing diagnostic outbound counters
+do not count rejected flows; the static policy checker does report Block.
+
+Version 1 policies remain readable (including native sessions' null/absent empty
+rules list), but cannot carry Block or port/network conditions. The editor and
+exports write version 2. Unknown versions and fields are rejected instead of
+being silently dropped on import or native session parsing.
+
+### Portability is required
+
+The split-tunneling page always offers routing JSON import/export, even when the
+experimental engine is disabled or a connection prevents editing. Export remains
+available during a connection; import, like editing, is disabled then. Import
+validates the complete document before replacing any saved policy; a malformed,
+oversized (>1 MiB), unsupported or duplicate policy leaves existing settings
+unchanged. Policies are limited to 4096 rules and 1024 characters of port input
+per rule; the editor also refuses policies whose canonical export exceeds 1 MiB.
+Imported settings do not toggle routing/split-tunneling switches or change VPN
+profiles, DNS servers, application lists or credentials. Those belong to the
+existing application backup; this portable file contains the common destination
+policy only, so it has no platform-specific paths or tunnel secrets.
+
+Export preserves the default, all conditions, disabled rules and tie-breaking
+list order. Canonical hostname/CIDR/port spelling can change, without changing
+policy. Any future routing-policy feature must be represented in this versioned
+contract and its import/export round-trip coverage before it is added to the UI.
+The old legacy site-list import/export remains a separate format.
+
+The policy checker evaluates saved rules against the exact hostname and/or known
+IP, destination port and TCP/UDP selection supplied by the user. It reports the
+original editor rule number or default; port 53 reports managed DNS interception
+before destination rules. It does not perform DNS queries or claim
+to observe active browser metadata. Application exclusions, disabled routing,
+unsaved edits or hidden hostnames can produce a different live outcome. Qt and
+the pinned sing-box matcher consume `rules/testdata/portable-cases.json` to check
+their contract, including import migration, rejection and egress decisions.
+
+`*.example.org` includes its apex and descendants at DNS label
 boundaries. Case, a trailing ASCII dot, and Unicode IDNs are canonicalized.
 Disabled rules are persisted and validated but do not match. Inverse mode uses
 `"default": "direct"` with explicit `"action": "vpn"` rules.

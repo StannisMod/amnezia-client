@@ -325,7 +325,10 @@ func (c Config) Compile(route rules.Config, capture string) (map[string]any, err
 	if n.FollowRouting {
 		routing, _ := route.Normalize()
 		for _, r := range routing.Rules {
-			if r.Disabled || r.Kind == rules.CIDR {
+			// DNS lookups have no destination flow port or network. Only
+			// unconditional name rules can select a resolver; Block uses
+			// VPN DNS and is enforced later by the connection router.
+			if r.Disabled || r.Kind == rules.CIDR || r.Network != "" || r.Ports != "" {
 				continue
 			}
 			id := n.VPN

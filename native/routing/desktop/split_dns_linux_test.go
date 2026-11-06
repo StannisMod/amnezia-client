@@ -152,7 +152,7 @@ func TestNetworkDNSSourceRequiresUnambiguousNativeInterface(t *testing.T) {
 // Reproduce the desktop helper's serialized session boundary before preparing
 // runtime policies. A direct Compile of the original object misses lost flags.
 func prepareLinuxDNSForTest(c *dnspolicy.Config, links []networkDNSLink) error {
-	session := engine.SessionConfig{DNS: c}
+	session := engine.SessionConfig{DNS: c, Rules: rules.Config{Version: 2, Default: rules.VPN, Rules: []rules.Rule{}}}
 	if err := prepareLinuxDNSSnapshot(&session, links); err != nil {
 		return err
 	}

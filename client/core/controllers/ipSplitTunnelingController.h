@@ -36,7 +36,11 @@ public:
     bool isSingBoxRoutingEnabled() const;
     bool setSingBoxRoutingEnabled(bool enabled);
     QJsonObject domainRoutingConfig() const;
-    bool saveDomainRule(int index, const QString &destination, const QString &action, bool enabled);
+    bool saveDomainRule(int index, const QString &destination, const QString &action, bool enabled,
+                        const QString &ports = {}, const QString &network = {});
+    bool importDomainRouting(const QByteArray &data, QString &error);
+    QByteArray exportDomainRouting(QString &error) const;
+    QVariantMap inspectDomainRule(const QString &destination, const QString &ip, const QString &port, const QString &network) const;
     void removeDomainRule(int index);
     void setDomainDefault(const QString &action);
     QVector<QPair<QString, QStringList>> getCurrentSites() const;

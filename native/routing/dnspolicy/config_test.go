@@ -114,3 +114,33 @@ func TestUnsupportedDNSFieldsAreNotSilentlyIgnored(t *testing.T) {
 		}
 	}
 }
+
+// A DNS request cannot identify the port/network of a future connection.
+func TestSiteDNSWithPortableFlowConditionsAndBlock(t *testing.T) {
+	for _, fallback := range []rules.Action{rules.Direct, rules.VPN, rules.Block} {
+		c, r := fixture()
+		c.Rules = nil
+		r.Version, r.Default = 2, fallback
+		r.Rules = []rules.Rule{
+			{Kind: rules.Domain, Value: "conditional.example", Action: rules.Direct, Ports: "443"},
+			{Kind: rules.Domain, Value: "conditional.example", Action: rules.VPN, Network: "udp"},
+			{Kind: rules.Domain, Value: "blocked.example", Action: rules.Block},
+			{Kind: rules.Suffix, Value: "example", Action: rules.Direct},
+		}
+		got, err := c.Compile(r, "tun")
+		if err != nil {
+			t.Fatal(err)
+		}
+		entries := got["rules"].([]any)
+		if len(entries) != 3 || entries[1].(map[string]any)["server"] != Tag("tunnel") || entries[2].(map[string]any)["server"] != Tag("lan") {
+			t.Fatalf("flow conditions changed DNS or Block selected a direct resolver: %#v", got)
+		}
+		want := Tag("tunnel")
+		if fallback == rules.Direct {
+			want = Tag("lan")
+		}
+		if got["final"] != want {
+			t.Fatalf("default %s: %#v", fallback, got)
+		}
+	}
+}

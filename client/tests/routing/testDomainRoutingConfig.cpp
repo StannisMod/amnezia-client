@@ -1,10 +1,59 @@
 #include <QtTest>
+#include <QDir>
+#include <QFileInfo>
 #include "../../core/utils/domainRoutingConfig.h"
 #include "../../core/utils/splitDnsConfig.h"
 
 class DomainRoutingConfigTest : public QObject {
     Q_OBJECT
 private slots:
+    void portablePoliciesMatchEngineCorpus()
+    {
+        const auto path = QDir(QFileInfo(QString::fromUtf8(__FILE__)).absolutePath())
+            .filePath("../../../native/routing/rules/testdata/portable-cases.json");
+        QFile file(path);
+        QVERIFY2(file.open(QIODevice::ReadOnly), qPrintable(path));
+        const auto cases = QJsonDocument::fromJson(file.readAll()).array();
+        QVERIFY(!cases.isEmpty());
+        for (auto value : cases) {
+            const auto row = value.toObject();
+            const auto config = row.value("config").toObject();
+            QJsonObject normalized;
+            QString error;
+            const bool valid = amnezia::routing::normalizeConfig(config, normalized, error);
+            QCOMPARE(valid, !row.value("invalid").toBool());
+            if (!valid) { QVERIFY(!error.isEmpty()); continue; }
+            QCOMPARE(normalized.value("version").toInt(), 2);
+            QJsonObject restored;
+            const auto exported = QJsonDocument(normalized).toJson();
+            QVERIFY(amnezia::routing::normalizeConfig(QJsonDocument::fromJson(exported).object(), restored, error));
+            QCOMPARE(restored, normalized);
+            // Includes disabled rules, overlapping conditions and source order.
+            QCOMPARE(restored.value("rules").toArray().size(), config.value("rules").toArray().size());
+            for (auto probe : row.value("probes").toArray()) {
+                const auto q = probe.toObject();
+                const auto result = amnezia::routing::inspectRule(restored, q.value("domain").toString(),
+                    q.value("ip").toString(), QString::number(q.value("port").toInt()), q.value("network").toString());
+                QVERIFY2(!result.contains("error"), qPrintable(result.value("error").toString()));
+                QCOMPARE(result.value("action").toString(), q.value("action").toString());
+                QCOMPARE(result.value("rule").toInt(), q.value("rule").toInt());
+            }
+        }
+    }
+    void portValidationAndInspectionErrors()
+    {
+        QString ports;
+        QVERIFY(amnezia::routing::normalizePorts("443, 80-81, 81-82,0080", ports));
+        QCOMPARE(ports, QString("80-82,443"));
+        for (const auto &bad : {"0", "65536", "1-0", "1-2-3", "1,", ",1", "+1", "1.5", "-1", "80:90"})
+            QVERIFY2(!amnezia::routing::normalizePorts(bad, ports), bad);
+        const QJsonObject config{{"version", 2}, {"default", "block"}, {"rules", QJsonArray{}}};
+        for (const auto &destination : {"*.ru", "https://example.org", "1.2.3.4/24", ""})
+            QVERIFY(amnezia::routing::inspectRule(config, destination, "", "443", "tcp").contains("error"));
+        QVERIFY(amnezia::routing::inspectRule(config, "example.org", "", "65536", "tcp").contains("error"));
+        QVERIFY(amnezia::routing::inspectRule(config, "example.org", "bad", "443", "tcp").contains("error"));
+        QCOMPARE(amnezia::routing::inspectRule(config, "example.org", "", "53", "udp").value("reason").toString(), QString("managed_dns"));
+    }
     void dnsAlwaysFollowsSiteRoutes()
     {
         const QJsonObject directRule{{"kind", "suffix"}, {"value", "corp.example"}, {"action", "direct"}};
@@ -39,6 +88,18 @@ private slots:
             QVERIFY(!config.value("follow_routing").toBool());
             QCOMPARE(config.value("policies").toObject().size(), 1);
             QCOMPARE(config.value("policies").toObject().value("vpn").toObject().value("path").toString(), QString("vpn"));
+        }
+    }
+    void conditionalDirectRulesDoNotSelectNetworkDns()
+    {
+        for (const auto &conditions : {QJsonObject{{"ports", "443"}}, QJsonObject{{"network", "udp"}}}) {
+            auto rule = conditions;
+            rule.insert("kind", "domain"); rule.insert("value", "conditional.example"); rule.insert("action", "direct");
+            const QJsonObject routing{{"version", 2}, {"default", "block"}, {"rules", QJsonArray{rule}}};
+            const auto dns = amnezia::dns::forSiteRoutes(routing, "10.77.0.2");
+            QVERIFY(!dns.value("follow_routing").toBool());
+            QCOMPARE(dns.value("policies").toObject().size(), 1);
+            QCOMPARE(dns.value("default").toString(), QString("vpn"));
         }
     }
     void normalizeEditableRules()

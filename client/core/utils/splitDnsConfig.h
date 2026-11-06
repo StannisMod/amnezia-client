@@ -15,6 +15,7 @@ inline QJsonObject forSiteRoutes(const QJsonObject &routing, const QString &vpnD
         const auto rule = item.toObject();
         const auto kind = rule.value("kind").toString();
         if (!rule.value("disabled").toBool() && rule.value("action") == "direct"
+                && rule.value("ports").toString().isEmpty() && rule.value("network").toString().isEmpty()
                 && (kind == "domain" || kind == "suffix")) directNames = true;
     }
     QJsonObject policies{{"vpn", QJsonObject{{"transport", "udp"}, {"server", vpnDns}, {"path", "vpn"}}}};

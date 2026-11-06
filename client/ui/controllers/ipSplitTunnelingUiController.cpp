@@ -60,14 +60,44 @@ QString IpSplitTunnelingUiController::domainDefault() const
     return m_ipSplitTunnelingController->domainRoutingConfig().value("default").toString();
 }
 
-bool IpSplitTunnelingUiController::saveDomainRule(int index, const QString &destination, const QString &action, bool enabled)
+bool IpSplitTunnelingUiController::saveDomainRule(int index, const QString &destination, const QString &action, bool enabled,
+                                                const QString &ports, const QString &network)
 {
-    if (!m_ipSplitTunnelingController->saveDomainRule(index, destination, action, enabled)) {
-        emit errorOccurred(tr("Invalid or duplicate rule. Use a domain, *.suffix, IP address or CIDR."));
+    if (!m_ipSplitTunnelingController->saveDomainRule(index, destination, action, enabled, ports, network)) {
+        emit errorOccurred(tr("Invalid or duplicate rule. Use a domain, *.suffix, IP or CIDR; ports must be 1–65535 or ranges such as 8000-8100."));
         return false;
     }
     emit domainRoutingChanged();
     return true;
+}
+
+void IpSplitTunnelingUiController::importDomainRouting(const QString &fileName)
+{
+    QByteArray data;
+    if (!SystemController::readFile(fileName, data)) { emit errorOccurred(tr("Can't open file: %1").arg(fileName)); return; }
+    QString error;
+    if (!m_ipSplitTunnelingController->importDomainRouting(data, error)) { emit errorOccurred(error); return; }
+    emit domainRoutingChanged();
+    emit finished(tr("Routing configuration imported. Reconnect to apply."));
+}
+
+void IpSplitTunnelingUiController::exportDomainRouting(const QString &fileName)
+{
+    QString error;
+    const auto data = m_ipSplitTunnelingController->exportDomainRouting(error);
+    if (data.isEmpty()) { emit errorOccurred(error); return; }
+    bool cancelled = false;
+    if (!SystemController::saveFile(fileName, data, QStringLiteral("application/json"), &cancelled)) {
+        if (!cancelled) emit errorOccurred(tr("Routing export failed"));
+        return;
+    }
+    emit finished(tr("Routing configuration exported"));
+}
+
+QVariantMap IpSplitTunnelingUiController::inspectDomainRule(const QString &destination, const QString &ip,
+                                                          const QString &port, const QString &network) const
+{
+    return m_ipSplitTunnelingController->inspectDomainRule(destination, ip, port, network);
 }
 
 void IpSplitTunnelingUiController::removeDomainRule(int index)
