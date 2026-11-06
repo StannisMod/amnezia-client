@@ -133,6 +133,8 @@ def fixture(header_protection=False):
         d('source', 'network', 'connect', 'amnezia-dns-net', name)
         d('source', 'start', name)
         ready(name, tool, iface)
+        if awg and header_protection:
+            assert 'HeaderProtectionKey' in d('source', 'exec', name, tool, 'showconf', iface)
         clients.append({'name': name, 'tool': tool, 'port': port, 'peer': cp, 'serverPublic': sp, 'settings': dict(line.split(' = ', 1) for line in settings.strip().splitlines()) if settings else {},
                         'config': f'[Interface]\nPrivateKey = {ck}\nAddress = {subnet}.2/32\n{settings}\n[Peer]\nPublicKey = {sp}\nPresharedKey = {psk}\nAllowedIPs = {subnet}.1/32,172.29.172.254/32\nEndpoint = ENDPOINT:{port}\nPersistentKeepalive = 1\n', 'ping': subnet+'.1'})
     # Standard DNS image/config, not a mocked resolver.
