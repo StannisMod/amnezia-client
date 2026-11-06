@@ -80,15 +80,30 @@ func (p *stabilityPacket) ReadFrom(b []byte) (int, net.Addr, error) {
 
 type stabilityListener struct {
 	net.Listener
-	accepts atomic.Int32
+	accepts     atomic.Int32
+	mu          sync.Mutex
+	connections []net.Conn
 }
 
 func (l *stabilityListener) Accept() (net.Conn, error) {
 	c, e := l.Listener.Accept()
 	if e == nil {
 		l.accepts.Add(1)
+		l.mu.Lock()
+		l.connections = append(l.connections, c)
+		l.mu.Unlock()
 	}
 	return c, e
+}
+
+func (l *stabilityListener) closeConnections() {
+	l.Close()
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, c := range l.connections {
+		c.Close()
+	}
+	l.connections = nil
 }
 
 func TestConnectionStabilityReproduction(t *testing.T) {
@@ -231,7 +246,9 @@ func reproduceStability(t *testing.T, protocol, family string, pauses []time.Dur
 	server.Listener.Close()
 	server.Listener = counted
 	server.StartTLS()
-	defer func() { server.CloseClientConnections(); server.Close() }()
+	// net/http does not own hijacked WebSocket connections. Close their raw
+	// sockets too, otherwise a completed test can pin the peer namespace.
+	defer func() { counted.closeConnections(); server.CloseClientConnections(); server.Close() }()
 	roots := x509.NewCertPool()
 	roots.AddCert(server.Certificate())
 	tlsConfig := &tls.Config{RootCAs: roots, ServerName: "example.com", MinVersion: tls.VersionTLS12}

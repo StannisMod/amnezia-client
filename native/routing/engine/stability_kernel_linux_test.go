@@ -30,7 +30,7 @@ import (
 // The independent kernel TCP peer lives in its own network namespace.
 func stabilityKernelPeer(t *testing.T, config awg.Config) (netip.AddrPort, net.Listener) {
 	t.Helper()
-	if mode:=os.Getenv("AMNEZIA_STABILITY_LAB"); mode != "isolated-container" && mode != "isolated-namespace" {
+	if mode := os.Getenv("AMNEZIA_STABILITY_LAB"); mode != "isolated-container" && mode != "isolated-namespace" {
 		t.Fatal("kernel peer requires the isolated lab wrapper")
 	}
 	command := func(args ...string) {
@@ -42,6 +42,9 @@ func stabilityKernelPeer(t *testing.T, config awg.Config) (netip.AddrPort, net.L
 	command("netns", "add", "stability-peer")
 	t.Cleanup(func() { exec.Command("ip", "netns", "del", "stability-peer").Run() })
 	command("link", "add", "stb-underlay", "type", "veth", "peer", "name", "eth0", "netns", "stability-peer")
+	// Deleting the named namespace alone is insufficient while kernel socket
+	// references are still draining. Remove only this fixture's owned pair.
+	t.Cleanup(func() { exec.Command("ip", "link", "del", "stb-underlay").Run() })
 	command("addr", "add", "203.0.113.1/24", "dev", "stb-underlay")
 	command("link", "set", "stb-underlay", "up")
 	command("-n", "stability-peer", "link", "set", "lo", "up")
