@@ -84,10 +84,11 @@ class AwgApple(ConanFile):
                 raise RuntimeError("Apple archive is missing verified routing provenance")
             self.run(f'python3 "{os.path.join(core, "internal", "builddeps", "verify.py")}" --module "{module}" --scope apple --archive "{archive}" --output "{os.path.join(module, "routing-tcp-provenance.json")}"')
 
-        notice_spec = importlib.util.spec_from_file_location("amnezia_routing_notices", os.path.join(core, "licenses", "generate.py"))
-        notices = importlib.util.module_from_spec(notice_spec)
-        notice_spec.loader.exec_module(notices)
-        notices.generate(module, os.path.join(self.build_folder, "routing-licenses"), host_root=os.path.join(self.source_folder, "upstream"))
+        # tool_requires are available to self.run(), not to subprocesses
+        # launched directly from this recipe's Python interpreter.
+        self.run(f'python3 "{os.path.join(core, "licenses", "generate.py")}" '
+                 f'--module "{module}" --output "{os.path.join(self.build_folder, "routing-licenses")}" '
+                 f'--host-root "{os.path.join(self.source_folder, "upstream")}"')
 
     def package(self):
         module = os.path.join(self.build_folder, "module")
