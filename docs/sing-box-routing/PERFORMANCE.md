@@ -96,7 +96,7 @@ For race instrumentation, first prepare the pinned upstream fix:
 
 ```sh
 race_mod=$(python3 prepare_race.py --output "${TMPDIR:-/tmp}")
-go test -mod=readonly -modfile="$race_mod" -tags with_gvisor -race -count=3 ./...
+go test -mod=readonly -modfile="$race_mod" -tags with_gvisor,amnezia_race_dependency -race -count=3 ./...
 ```
 
 Use the same `-modfile` for race benchmarks. The workflow

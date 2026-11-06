@@ -45,7 +45,7 @@ jobs:
           fi
           cat race-cas-before.txt
           grep -F 'CAS failed to swap expected value' race-cas-before.txt
-          go test -mod=readonly -modfile="$ROUTING_RACE_MODFILE" -tags with_gvisor -race -run '^TestGVisorRaceCAS$' -v ./awg | tee race-cas-after.txt
+          go test -mod=readonly -modfile="$ROUTING_RACE_MODFILE" -tags with_gvisor,amnezia_race_dependency -race -run '^TestGVisorRaceCAS$' -v ./awg | tee race-cas-after.txt
       - name: Compare ordinary and race-instrumented flow and DNS paths
         run: |
           set -euo pipefail
@@ -55,7 +55,7 @@ jobs:
           for mode in ordinary race; do
             # macOS ships Bash 3.2: an empty array trips nounset there.
             args=(-mod=readonly -tags with_gvisor)
-            if [ "$mode" = race ]; then args+=(-race "-modfile=$ROUTING_RACE_MODFILE"); fi
+            if [ "$mode" = race ]; then args+=(-race "-modfile=$ROUTING_RACE_MODFILE" -tags with_gvisor,amnezia_race_dependency); fi
             go test "${args[@]}" -run '^$' -bench '^BenchmarkTunnelBulk' -benchtime=3x -count=1 -timeout=8m ./cmd/android-fixture | tee "flow-$mode.txt"
             go test "${args[@]}" -run '^$' -bench '^BenchmarkTunnelDNS' -benchtime=100x -count=1 -timeout=3m ./cmd/android-fixture | tee "dns-$mode.txt"
           done
@@ -63,7 +63,7 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           set -euo pipefail
-          go test -mod=readonly -modfile="$ROUTING_RACE_MODFILE" -tags with_gvisor -race -run '^$' -bench '^BenchmarkTunnel(Bulk|DNS)/(awg|awg_udp)$' -benchtime=3x -count=1 -timeout=3m -o race-profile.test -cpuprofile=race-cpu.pprof -blockprofile=race-block.pprof ./cmd/android-fixture | tee race-profile-run.txt
+          go test -mod=readonly -modfile="$ROUTING_RACE_MODFILE" -tags with_gvisor,amnezia_race_dependency -race -run '^$' -bench '^BenchmarkTunnel(Bulk|DNS)/(awg|awg_udp)$' -benchtime=3x -count=1 -timeout=3m -o race-profile.test -cpuprofile=race-cpu.pprof -blockprofile=race-block.pprof ./cmd/android-fixture | tee race-profile-run.txt
           go tool pprof -top -nodecount=40 race-profile.test race-cpu.pprof | tee race-cpu-summary.txt
           go tool pprof -top -nodecount=40 race-profile.test race-block.pprof | tee race-block-summary.txt
       - uses: actions/upload-artifact@v4

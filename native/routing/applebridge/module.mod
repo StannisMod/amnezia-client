@@ -86,3 +86,6 @@ require (
 replace github.com/xtls/xray-core => github.com/amnezia-vpn/amnezia-xray-core v1.260728.0
 
 replace github.com/StannisMod/amnezia-client/native/routing => ./amnezia-routing
+
+// Immutable Amnezia RACK recovery backport; internal/builddeps/lock.json.
+replace gvisor.dev/gvisor => github.com/StannisMod/gvisor v0.0.0-20261106123454-9cf7fba2d57c

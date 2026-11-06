@@ -7,3 +7,6 @@ client/android/gradlew.bat eol=crlf
 client/server_scripts/update_wireguard.sh text eol=lf
 
 client/server_scripts/connection_updates/* text eol=lf
+
+# Unified diff context prefixes must retain their leading spaces and tabs.
+native/routing/patches/*.patch text eol=lf -whitespace

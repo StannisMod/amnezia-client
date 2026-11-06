@@ -14,7 +14,7 @@ from pathlib import Path
 
 class AwgAndroid(ConanFile):
     name = "awg-android"
-    version = "3.1.20260814-routing.2"
+    version = "3.1.20260814-routing.3"
     _upstream_version = "3.1.20260814"
     _upstream_sha = "5c16489e2cd9ed3a0a7a27c7445bba5238132f86"
     settings = "os", "arch", "build_type", "compiler"
@@ -145,6 +145,7 @@ class AwgAndroid(ConanFile):
         env.define("GOTOOLCHAIN", "local")
         env.define("GOTELEMETRY", "off")
         with env.vars(self).apply():
+            self.run(f'python "{os.path.join(core, "internal", "builddeps", "verify.py")}" --module "{module}" --scope desktop_android --go "{os.path.join(patched_go, "bin", "go.exe" if os.name == "nt" else "go")}" --output "{os.path.join(self.build_folder, "routing-tcp-provenance.json")}"')
             cmake.configure(build_script_folder=os.path.join(self._native_source, "tunnel", "tools"))
             cmake.build(target=["libwg-go.so", "libwg.so", "libwg-quick.so"])
 

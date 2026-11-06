@@ -7,6 +7,7 @@ Upstream: google/gvisor@1b2946c4fa59c1a64643bce962140b5686062601.
 """
 import argparse
 import json
+import importlib.util
 from pathlib import Path
 import shutil
 import subprocess
@@ -27,11 +28,21 @@ def go(root, *args):
 
 def prepare(parent):
     root = Path(__file__).resolve().parent
+    spec = importlib.util.spec_from_file_location('routing_builddeps', root / 'internal/builddeps/verify.py')
+    verifier = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(verifier)
+    verifier.check(root)
     modules = []
     for name, version in PINNED.items():
-        info = json.loads(go(root, "mod", "download", "-json", name))
-        if info.get("Version") != version or not info.get("Dir"):
+        resolved = json.loads(go(root, "list", "-mod=readonly", "-m", "-json", name))
+        if resolved.get("Version") != version:
             raise RuntimeError(f"Review the race fix for changed dependency {name}")
+        actual = resolved.get("Replace", resolved)
+        if not actual.get("Version"):
+            raise RuntimeError(f"Unverified local race input: {name}")
+        info = json.loads(go(root, "mod", "download", "-json", actual['Path']+'@'+actual['Version']))
+        if not info.get("Dir"):
+            raise RuntimeError(f"Missing race input: {name}")
         source = Path(info["Dir"])
         text = (source / "pkg/sync/race_arm64.s").read_text()
         if text.count(BROKEN) != 1 or "MOVD old+8(FP), R1" not in text:

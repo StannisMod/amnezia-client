@@ -1,0 +1,73 @@
+--- a/pkg/tcpip/transport/tcp/snd.go
++++ b/pkg/tcpip/transport/tcp/snd.go
+@@ -11,6 +11,9 @@
+ // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ // See the License for the specific language governing permissions and
+ // limitations under the License.
++
++// Amnezia stability experiment: modified TCP recovery code; see the
++// Amnezia native/routing/patches attribution and comparison report.
+ 
+ package tcp
+ 
+@@ -421,6 +424,9 @@
+ 		s.FastRecovery.HighRxt = seg.sequenceNumber.Add(seqnum.Size(seg.payloadSize())) - 1
+ 		s.FastRecovery.RescueRxt = seg.sequenceNumber.Add(seqnum.Size(seg.payloadSize())) - 1
+ 		s.sendSegment(seg)
++		if s.writeNext == seg {
++			s.updateWriteNext(seg.Next())
++		}
+ 		s.ep.stack.Stats().TCP.FastRetransmit.Increment()
+ 		s.ep.stats.SendErrors.FastRetransmit.Increment()
+ 
+@@ -1092,7 +1098,7 @@
+ 			// NOTE: here we mark the whole segment as lost. We do not try
+ 			// and test every byte in our write buffer as we maintain our
+ 			// pipe in terms of outstanding packets and not bytes.
+-			if !s.ep.scoreboard.IsRangeLost(sb) {
++			if !s1.lost && !s.ep.scoreboard.IsRangeLost(sb) {
+ 				pipe++
+ 			}
+ 			// SetPipe():
+--- a/pkg/tcpip/transport/tcp/rack.go
++++ b/pkg/tcpip/transport/tcp/rack.go
+@@ -11,6 +11,9 @@
+ // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ // See the License for the specific language governing permissions and
+ // limitations under the License.
++
++// Amnezia stability experiment: modified TCP recovery code; see the
++// Amnezia native/routing/patches attribution and comparison report.
+ 
+ package tcp
+ 
+@@ -414,6 +417,8 @@
+ // +checklocks:rc.snd.ep.mu
+ func (rc *rackControl) DoRecovery(_ *segment, fastRetransmit bool) {
+ 	snd := rc.snd
++	// Loss detection has updated RACK marks since the ACK's first SetPipe.
++	snd.SetPipe()
+ 	if fastRetransmit {
+ 		snd.resendSegment()
+ 	}
+--- a/pkg/tcpip/transport/tcp/segment.go
++++ b/pkg/tcpip/transport/tcp/segment.go
+@@ -11,6 +11,9 @@
+ // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ // See the License for the specific language governing permissions and
+ // limitations under the License.
++
++// Amnezia stability experiment: modified TCP recovery code; see the
++// Amnezia native/routing/patches attribution and comparison report.
+ 
+ package tcp
+ 
+@@ -144,6 +147,8 @@
+ 	t.rcvdTime = s.rcvdTime
+ 	t.xmitTime = s.xmitTime
+ 	t.xmitCount = s.xmitCount
++	t.acked = s.acked
++	t.lost = s.lost
+ 	t.ep = s.ep
+ 	t.qFlags = s.qFlags
+ 	t.dataMemSize = s.dataMemSize
