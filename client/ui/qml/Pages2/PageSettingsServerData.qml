@@ -87,6 +87,7 @@ PageType {
     }
 
     property list<QtObject> serverActions: [
+        migrateServer,
         connectionUpdatesSetup,
         connectionUpdatesRefresh,
         check,
@@ -95,6 +96,21 @@ PageType {
         clear,
         reset,
     ]
+
+    ServerMigrationDialog {
+        id: migrationDialog
+        parent: Overlay.overlay
+        selectedServerId: ServersUiController.processedServerId
+    }
+
+    QtObject {
+        id: migrateServer
+        property bool isVisible: root.isServerWithWriteAccess
+        readonly property string title: qsTr("Move server")
+        readonly property string description: qsTr("Keep WireGuard/AWG users, DNS, subscriptions and the existing domain")
+        readonly property bool isDestructive: false
+        readonly property var clickedHandler: function() { migrationDialog.open() }
+    }
 
     QtObject {
         id: connectionUpdatesSetup

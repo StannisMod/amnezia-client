@@ -61,6 +61,10 @@ target_include_directories(test_common PUBLIC
 )
 
 if(NOT ANDROID)
+    add_executable(test_server_migration_ui testServerMigrationUi.cpp migration/ui.qrc)
+    target_link_libraries(test_server_migration_ui PRIVATE Qt6::Test test_common)
+    add_test(NAME ServerMigrationUiTest COMMAND test_server_migration_ui)
+
     add_executable(test_connection_updates_controller testConnectionUpdatesController.cpp)
     target_link_libraries(test_connection_updates_controller PRIVATE Qt6::Test test_common)
     add_test(NAME ConnectionUpdatesControllerTest COMMAND test_connection_updates_controller)

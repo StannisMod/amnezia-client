@@ -53,3 +53,21 @@ It tests the production installer, pinned HTTPS, publication durability and toke
 revocation. Go race tests run from `client/server_scripts/connection_updates`;
 client/controller security tests are included in the full build's CTest suite.
 See [connection updates](../../docs/selfhosted-connection-updates.md).
+
+### Server migration
+
+`bash scripts/local-tests/migration-scenario.sh` creates two disposable Docker
+hosts and checks unchanged WireGuard/AWG clients, DNS through the tunnels,
+original signed HTTPS subscription tokens/certificate, cutover and rollback
+without lowering replay counters. It uses dedicated synthetic-data cache volumes
+`amnezia-migration-acceptance-source` and `amnezia-migration-acceptance-target`.
+No host Docker socket is mounted inside the fixtures. See
+[server migration](../../docs/server-migration.md) for the app flow and limits.
+`python3 client/tests/migration/test_agent.py` checks archive boundaries and replay
+floors; `bash scripts/local-tests/migration-ssh.sh` checks actual SSH/SFTP.
+
+`bash scripts/local-tests/migration-relay.sh` checks the app's actual new-host pull
+path: old SSH is blocked to an administrator actor and reachable only from the
+new host, with no archive downloaded by the app. It also checks a detached copy,
+reviewed host keys before password auth, both authentication methods and direct
+rollback preserving the signed revision floor.

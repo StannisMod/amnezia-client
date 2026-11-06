@@ -5345,6 +5345,14 @@ Create one from the current settings.</source>
         <source>Keep the device key and local routing settings</source>
         <translation>Сохранить ключ устройства и локальные правила маршрутизации</translation>
     </message>
+    <message>
+        <source>Move server</source>
+        <translation>Перенести сервер</translation>
+    </message>
+    <message>
+        <source>Keep WireGuard/AWG users, DNS, subscriptions and the existing domain</source>
+        <translation>Сохранить пользователей WireGuard/AWG, DNS, подписки и существующий домен</translation>
+    </message>
 </context>
 <context>
     <name>PageSettingsServerInfo</name>
@@ -8124,6 +8132,182 @@ Remove the server from the app to continue.</source>
     <message>
         <source>Could not verify the connection update. The existing profile was kept.</source>
         <translation>Не удалось проверить обновление подключения. Текущий профиль сохранён.</translation>
+    </message>
+</context>
+<context>
+    <name>ServerMigrationDialog</name>
+    <message>
+        <source>Move server</source>
+        <translation>Перенести сервер</translation>
+    </message>
+    <message>
+        <source>Move standard WireGuard/AWG, DNS and signed subscriptions to another Linux server with Docker, Python 3.9+ and the OpenSSH client. The VPN and subscription DNS names stay the same. Keep both servers until all clients reconnect. A brief interruption is possible during switching.</source>
+        <translation>Перенос стандартных WireGuard/AWG, DNS и подписок с подписью на другой Linux-сервер с Docker, Python 3.9+ и клиентом OpenSSH. Домены VPN и подписок сохраняются. Сохраните оба сервера, пока все клиенты не переподключатся. При переключении возможен краткий перерыв.</translation>
+    </message>
+    <message>
+        <source>The target must be empty, use the same CPU architecture and allow passwordless sudo. Open its VPN UDP ports and subscription TCP port 8443. Do not edit users or server settings during migration.</source>
+        <translation>Нужен пустой сервер с той же архитектурой процессора и sudo без пароля. Откройте UDP-порты VPN и TCP-порт подписок 8443. Не изменяйте пользователей и настройки серверов во время переноса.</translation>
+    </message>
+    <message>
+        <source>Domain: %1
+Target: %2</source>
+        <translation>Домен: %1
+Новый сервер: %2</translation>
+    </message>
+    <message>
+        <source>Target SSH IP address</source>
+        <translation>IP-адрес нового сервера для SSH</translation>
+    </message>
+    <message>
+        <source>SSH port</source>
+        <translation>Порт SSH</translation>
+    </message>
+    <message>
+        <source>SSH login</source>
+        <translation>Логин SSH</translation>
+    </message>
+    <message>
+        <source>SSH password or unencrypted private key</source>
+        <translation>Пароль SSH или незашифрованный приватный ключ</translation>
+    </message>
+    <message>
+        <source>Check SSH identities</source>
+        <translation>Проверить серверы SSH</translation>
+    </message>
+    <message>
+        <source>This saved operation belongs to another server. Its domain and target are shown above.</source>
+        <translation>Сохранённая операция относится к другому серверу. Его домен и адрес назначения указаны выше.</translation>
+    </message>
+    <message>
+        <source>Compare both SSH fingerprints with your server console. Credentials are sent only after you approve these identities.</source>
+        <translation>Сверьте оба отпечатка SSH с консолями серверов. Данные входа будут отправлены только после подтверждения.</translation>
+    </message>
+    <message>
+        <source>Trust these identities and copy</source>
+        <translation>Подтвердить серверы и скопировать</translation>
+    </message>
+    <message>
+        <source>Update every VPN and subscription A/AAAA record to the target address. Remove stale AAAA records if the target has no IPv6. Switching checks DNS again, verifies unchanged source state and stops the old containers. DNS caches on other devices may need time to expire.</source>
+        <translation>Измените все записи A/AAAA доменов VPN и подписок на адрес нового сервера. Удалите старые AAAA, если новый сервер не поддерживает IPv6. При переключении приложение повторно проверит DNS и исходные настройки, затем остановит старые контейнеры. Другие устройства могут временно использовать старые записи из DNS-кэша.</translation>
+    </message>
+    <message>
+        <source>DNS updated — switch servers</source>
+        <translation>DNS обновлён — переключить серверы</translation>
+    </message>
+    <message>
+        <source>Check saved operation</source>
+        <translation>Проверить сохранённую операцию</translation>
+    </message>
+    <message>
+        <source>Restore source server</source>
+        <translation>Вернуться на старый сервер</translation>
+    </message>
+    <message>
+        <source>Finish and forget rollback credentials</source>
+        <translation>Завершить и удалить данные для отката</translation>
+    </message>
+    <message>
+        <source>Clear saved operation</source>
+        <translation>Удалить сохранённую операцию</translation>
+    </message>
+    <message>
+        <source>Close</source>
+        <translation>Закрыть</translation>
+    </message>
+    <message>
+        <source>The new server pulls the archive directly from the old server over SSH. This device only controls the move; direct SSH access from here to the old server is not required. Copying continues on the new server if this device disconnects.</source>
+        <translation>Новый сервер сам забирает архив со старого по SSH. Это устройство только управляет переносом; прямой доступ к SSH старого сервера с него не требуется. Копирование продолжится на новом сервере, если это устройство отключится.</translation>
+    </message>
+    <message>
+        <source>The new server will temporarily receive the old server's SSH login credentials to copy data and manage cutover or rollback. They are removed from the new server after each operation. Confirm the old server fingerprint before allowing this.</source>
+        <translation>Новый сервер временно получит данные входа по SSH на старый сервер для копирования, переключения и отката. После каждой операции они удаляются с нового сервера. Подтвердите отпечаток старого сервера перед передачей данных входа.</translation>
+    </message>
+    <message>
+        <source>Trust target and discover source from there</source>
+        <translation>Подтвердить новый сервер и проверить с него старый</translation>
+    </message>
+    <message>
+        <source>Compare the target SSH fingerprint with its console. After approval, it will discover the old server key without sending old-server credentials.</source>
+        <translation>Сверьте отпечаток нового сервера с его консолью. После подтверждения он узнает ключ старого сервера без передачи данных входа на старый сервер.</translation>
+    </message>
+</context>
+<context>
+    <name>ServerMigrationController</name>
+    <message>
+        <source>An unfinished migration is saved. Check its status before continuing.</source>
+        <translation>Сохранён незавершённый перенос. Проверьте его состояние перед продолжением.</translation>
+    </message>
+    <message>
+        <source>Disconnect VPN and select a server you administer.</source>
+        <translation>Отключите VPN и выберите сервер с правами администратора.</translation>
+    </message>
+    <message>
+        <source>Set a DNS name as the VPN endpoint before migrating.</source>
+        <translation>Перед переносом укажите доменное имя для подключения VPN.</translation>
+    </message>
+    <message>
+        <source>Enter the target SSH address, login and credentials.</source>
+        <translation>Укажите SSH-адрес нового сервера, логин и данные входа.</translation>
+    </message>
+    <message>
+        <source>Copy and external VPN path verified. The old server is still running. Change the domain A/AAAA records to the target, then switch servers.</source>
+        <translation>Копия и внешний доступ через VPN проверены. Старый сервер продолжает работать. Измените записи A/AAAA доменов на новый адрес, затем переключите серверы.</translation>
+    </message>
+    <message>
+        <source>The local server profile changed during migration. Restore it or restart the migration.</source>
+        <translation>Локальный профиль сервера изменён во время переноса. Восстановите его или начните перенос заново.</translation>
+    </message>
+    <message>
+        <source>Disconnect VPN before switching servers.</source>
+        <translation>Отключите VPN перед переключением серверов.</translation>
+    </message>
+    <message>
+        <source>The target is active. Source containers are retained and stopped.</source>
+        <translation>Новый сервер работает. Исходные контейнеры сохранены и остановлены.</translation>
+    </message>
+    <message>
+        <source>Source restarted. Restore its DNS records before reconnecting. Target containers are retained and stopped.</source>
+        <translation>Старый сервер снова работает. Восстановите его записи DNS перед подключением. Контейнеры нового сервера сохранены и остановлены.</translation>
+    </message>
+    <message>
+        <source>DNS has not switched completely. Check all VPN and subscription A/AAAA records, wait for their caches to expire and retry.</source>
+        <translation>DNS ещё не полностью переключён. Проверьте все записи A/AAAA доменов VPN и подписок, дождитесь обновления кэшей и повторите попытку.</translation>
+    </message>
+    <message>
+        <source>The SSH identity changed. Check the server console before trusting a new key.</source>
+        <translation>Отпечаток SSH изменился. Сверьте новый ключ с консолью сервера перед подтверждением.</translation>
+    </message>
+    <message>
+        <source>Cannot connect to SSH. Check the address, port and login credentials, then check the saved operation.</source>
+        <translation>Не удалось подключиться по SSH. Проверьте адрес, порт и данные входа, затем проверьте сохранённую операцию.</translation>
+    </message>
+    <message>
+        <source>This SSH key is encrypted. Unlock it before using server migration.</source>
+        <translation>Ключ SSH зашифрован. Разблокируйте его перед переносом сервера.</translation>
+    </message>
+    <message>
+        <source>The source changed while copying. Restore the source operation and start a fresh copy before switching DNS.</source>
+        <translation>Исходный сервер изменился во время копирования. Вернитесь на него и создайте свежую копию перед переключением DNS.</translation>
+    </message>
+    <message>
+        <source>Automatic rollback stopped because the target VPN or DNS configuration changed. Reconcile those changes before restarting the source.</source>
+        <translation>Автоматический откат остановлен: настройки VPN или DNS на новом сервере изменились. Согласуйте эти изменения перед запуском старого сервера.</translation>
+    </message>
+    <message>
+        <source>The target already uses a required name, port or network. Choose an empty target; existing resources will be kept.</source>
+        <translation>На новом сервере уже заняты необходимые имена, порты или сеть. Выберите пустой сервер. Существующие ресурсы сохранены.</translation>
+    </message>
+    <message>
+        <source>The migration stopped. Check the saved operation before retrying or restoring the source. Details: %1</source>
+        <translation>Перенос остановлен. Проверьте сохранённую операцию перед повторной попыткой или возвратом на старый сервер. Подробности: %1</translation>
+    </message>
+    <message>
+        <source>The server-to-server copy has completed. You can now update DNS and switch servers.</source>
+        <translation>Копирование между серверами завершено. Теперь можно обновить DNS и переключить серверы.</translation>
+    </message>
+    <message>
+        <source>Saved SSH identities are incomplete. Clear this operation and check the server identities again.</source>
+        <translation>Сохранённые данные SSH-ключей неполные. Удалите эту операцию и повторно проверьте ключи серверов.</translation>
     </message>
 </context>
 </TS>
