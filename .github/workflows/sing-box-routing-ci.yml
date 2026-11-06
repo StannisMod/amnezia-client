@@ -52,7 +52,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-22.04, windows-2022, macos-15, macos-15-intel]
+        # Keep native ARM64 mandatory on the supported macOS 26 pool.
+        # macOS 15 remains covered by the Intel lane; its ARM64 pool has
+        # repeatedly cancelled jobs without assigning a hosted runner.
+        os: [ubuntu-22.04, windows-2022, macos-26, macos-15-intel]
     runs-on: ${{ matrix.os }}
     defaults:
       run:

@@ -78,6 +78,11 @@ the actual APK payload; Apple checks the actual archive and bridge. These checks
 prove which dependency was packaged; they do not replace device/physical-network
 acceptance or make application deadlines disappear.
 
+Native macOS core tests remain mandatory on both CPU architectures: macOS 26
+on ARM64 and macOS 15 on Intel. The ARM64 host moved to the supported macOS 26
+pool after repeated macOS 15 capacity cancellations; test selection, race
+instrumentation, repetition count and failure requirements are unchanged.
+
 ## Race-only dependency copies
 
 The existing upstream ARM64 CAS correction is still applied only to private
