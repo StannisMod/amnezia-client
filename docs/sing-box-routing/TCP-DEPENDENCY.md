@@ -42,7 +42,8 @@ fork identity, not just a marker or a claimed source graph.
   existing single-runtime, symbols and 16 KiB alignment checks.
 - Apple validates its main module before building. The recipe checks the real
   static archive's exported provenance entry point and the Go module metadata
-  inside its single Go object. Flat GNU/BSD archives are supported; unsupported
+  inside its Go object. Flat GNU/BSD and Apple universal (`lipo`) archives
+  are supported; every architecture must pass. Invalid slice ranges, unsupported
   containers or missing metadata fail the build. The host C ABI test also calls
   the actual bridge's provenance API.
 - Notice generation resolves and verifies the same graph, includes the fork's

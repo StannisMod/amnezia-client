@@ -6,6 +6,7 @@ import importlib.util
 import json
 from pathlib import Path
 import tempfile
+import struct
 import unittest
 
 spec=importlib.util.spec_from_file_location('routing_builddeps',Path(__file__).with_name('verify.py'))
@@ -82,6 +83,36 @@ class ArchiveGuardTests(unittest.TestCase):
         obj=self.metadata()
         archive=b'!<arch>\n'+self.member('#1/8',b'go.o\x00\x00\x00\x00'+obj)
         self.assertEqual(deps.archive_go_object(archive),obj)
+    def universal(self, contents, endian='>', wide=False):
+        width=32 if wide else 20
+        offset=8+len(contents)*width
+        table=bytearray(struct.pack(endian+'II',0xcafebabf if wide else 0xcafebabe,len(contents)))
+        for index,content in enumerate(contents):
+            fields=(0x100000c,index,offset,len(content),0)+( (0,) if wide else () )
+            table.extend(struct.pack(endian+('IIQQII' if wide else 'IIIII'),*fields))
+            offset+=len(content)
+        return bytes(table)+b''.join(contents)
+    def test_universal_archives_verify_every_slice(self):
+        good=b'!<arch>\n'+self.member('go.o/',self.metadata())
+        bad=good.replace(b'github.com/StannisMod/gvisor',b'github.com/UntrustedX/gvisor')
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'libwg-go.a'
+            for endian in ['>','<']:
+                for wide in [False,True]:
+                    path.write_bytes(self.universal([good,good],endian,wide))
+                    record=deps.verify_archive_file(path,'apple')
+                    self.assertEqual(record['archive_sha256'],hashlib.sha256(path.read_bytes()).hexdigest())
+                    path.write_bytes(self.universal([good,bad],endian,wide))
+                    with self.assertRaises(ValueError):deps.verify_archive_file(path,'apple')
+    def test_invalid_universal_archives_rejected(self):
+        good=b'!<arch>\n'+self.member('go.o/',self.metadata())
+        valid=self.universal([good,good])
+        overlap=bytearray(valid);struct.pack_into('>I',overlap,36,48)
+        duplicate=bytearray(valid);struct.pack_into('>I',duplicate,32,0)
+        unaligned=bytearray(valid);struct.pack_into('>I',unaligned,24,5)
+        for data in [valid[:20],valid[:-1],self.universal([]),self.universal([b'unknown']),
+                     bytes(overlap),bytes(duplicate),bytes(unaligned)]:
+            with self.assertRaises(ValueError):deps.archive_slices(data)
     def test_missing_duplicate_and_truncated_objects_rejected(self):
         member=self.member('go.o/',self.metadata())
         for archive in [b'!<arch>\n',b'!<arch>\n'+member+member,b'!<arch>\n'+member[:-5]]:

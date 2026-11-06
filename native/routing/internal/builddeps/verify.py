@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import struct
 
 LOCK = Path(__file__).with_name('lock.json')
 SCOPES = {
@@ -112,12 +113,38 @@ def verify_binary_file(binary, scope, go='go'):
     return record
 
 
-def archive_go_object(data):
-    """Read the single Go object from the flat ar archives emitted by our SDKs.
+def archive_slices(data):
+    """Unwrap lipo containers, validating every architecture's flat archive."""
+    if data.startswith(b'!<arch>\n'):
+        return [data]
+    formats = {b'\xca\xfe\xba\xbe': ('>', False), b'\xbe\xba\xfe\xca': ('<', False),
+               b'\xca\xfe\xba\xbf': ('>', True), b'\xbf\xba\xfe\xca': ('<', True)}
+    if data[:4] not in formats or len(data) < 8:
+        raise ValueError('unsupported Go archive container')
+    endian, wide = formats[data[:4]]
+    count = struct.unpack_from(endian+'I', data, 4)[0]
+    width = 32 if wide else 20
+    table_end = 8+count*width
+    if not 1 <= count <= 64 or table_end > len(data):
+        raise ValueError('invalid universal archive table')
+    ranges, architectures, slices = [], set(), []
+    for index in range(count):
+        fields = struct.unpack_from(endian+('IIQQII' if wide else 'IIIII'), data, 8+index*width)
+        cpu, subtype, offset, size, alignment = fields[:5]
+        if (alignment > 63 or offset % (1 << alignment) or offset < table_end
+                or not size or offset+size > len(data)
+                or (wide and fields[5] != 0) or (cpu, subtype) in architectures
+                or any(offset < end and offset+size > start for start, end in ranges)):
+            raise ValueError('invalid universal archive slice')
+        content = data[offset:offset+size]
+        if not content.startswith(b'!<arch>\n'):
+            raise ValueError('universal archive slice is not a flat archive')
+        architectures.add((cpu, subtype)); ranges.append((offset, offset+size)); slices.append(content)
+    return slices
 
-    GNU and BSD member names are accepted; unknown/fat containers fail closed.
-    Current Conan packages build one architecture per archive.
-    """
+
+def archive_go_object(data):
+    """Read the unique Go object from a flat GNU or BSD ar archive."""
     if not data.startswith(b'!<arch>\n'):
         raise ValueError('unsupported Go archive container')
     offset, names, objects = 8, b'', []
@@ -204,9 +231,10 @@ def inline_build_metadata(data):
 
 def verify_archive_file(archive, scope):
     data = Path(archive).read_bytes()
-    records = inline_build_metadata(archive_go_object(data))
-    for info in records:
-        record = verify_metadata(info, scope)
+    for content in archive_slices(data):
+        records = inline_build_metadata(archive_go_object(content))
+        for info in records:
+            record = verify_metadata(info, scope)
     record['archive_sha256'] = hashlib.sha256(data).hexdigest()
     return record
 
