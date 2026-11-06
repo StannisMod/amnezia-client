@@ -9,7 +9,6 @@
 #include "ui/utils/qAutoStart.h"
 #include "logger.h"
 #include "core/controllers/logsController.h"
-#include "core/utils/splitDnsConfig.h"
 #if defined(Q_OS_IOS) || defined(MACOS_NE)
     #include "core/utils/swiftBridge.h"
 #endif
@@ -70,28 +69,6 @@ QString SettingsController::getSecondaryDns() const
 void SettingsController::setSecondaryDns(const QString &dns)
 {
     m_appSettingsRepository->setSecondaryDns(dns);
-}
-
-QJsonObject SettingsController::splitDnsConfig() const
-{
-    return m_appSettingsRepository->splitDnsConfig();
-}
-
-bool SettingsController::isSplitDnsEnabled() const
-{
-    return m_appSettingsRepository->isSplitDnsEnabled();
-}
-
-QString SettingsController::saveSplitDnsConfig(const QJsonObject &config)
-{
-    if (!config.isEmpty()) {
-        if (!m_appSettingsRepository->isSingBoxRoutingEnabled())
-            return tr("Enable domain routing before configuring split DNS.");
-        const QString error = amnezia::dns::validate(config);
-        if (!error.isEmpty()) return error;
-    }
-    m_appSettingsRepository->setSplitDnsConfig(config);
-    return {};
 }
 
 bool SettingsController::isLoggingEnabled() const

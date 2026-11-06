@@ -107,6 +107,7 @@ def main():
     parser.add_argument("--helper", type=Path, required=True)
     parser.add_argument("--peer", type=Path, required=True)
     parser.add_argument("--report", type=Path, required=True)
+    parser.add_argument("--dns-policy-fixture", type=Path, help="production Qt-generated site/DNS policies")
     parser.add_argument("--transport", choices=("awg", "wireguard"), default="awg")
     parser.add_argument("--confirm-disposable-container", action="store_true", required=True)
     args = parser.parse_args()
@@ -117,6 +118,7 @@ def main():
     processes, namespaces = [], []
     child = None
     report = {"split_dns": "FAIL", "transport": args.transport}
+    automatic = json.loads(args.dns_policy_fixture.read_text()) if args.dns_policy_fixture else None
     script = Path(__file__).resolve()
 
     def network(name, iface, client, server):
@@ -207,7 +209,7 @@ def main():
         run("resolvectl", "dns", "corp0", "10.88.0.53")
         run("resolvectl", "dnsovertls", "corp0", "no")
         run("resolvectl", "domain", "corp0", "corp.example")
-        run("resolvectl", "default-route", "corp0", "no")
+        run("resolvectl", "default-route", "corp0", "yes" if automatic else "no")
         log = temporary / "direct-dns.log"
         log.touch()
         observer = subprocess.Popen(["ip", "netns", "exec", "split-corp", "python3", "-u", str(script), "--observer", str(log)], stdout=subprocess.PIPE, text=True)
@@ -231,6 +233,11 @@ def main():
             "policies": {"direct": {"source": "network", "interface": "corp0", "transport": "udp", "server": "", "path": "direct"},
                          "vpn": {"transport": "udp", "server": "10.77.0.2", "path": "vpn"}},
             "rules": [{"kind": "domain", "value": "public.corp.example", "policy": "vpn"}]}
+        if automatic:
+            profile["sing_box_routing"] = automatic["initial"]["routing"]
+            profile["sing_box_dns"] = automatic["initial"]["dns"]
+            assert profile["sing_box_dns"]["rules"] == []
+            assert not profile["sing_box_dns"].get("preserve_network_domains", False)
         start(profile)
         cached = connect("cached.corp.example", "DIRECT")
         connect("flow.direct.test", "DIRECT")
@@ -248,12 +255,18 @@ def main():
         assert socket.gethostbyname("after.corp.example") == "10.88.0.53"
         # An application-cached FakeIP must retain its name across reconnect,
         # but must use the new DNS policy and a fresh real-address cache.
-        profile["sing_box_dns"]["rules"].append({"kind": "domain", "value": "cached.corp.example", "policy": "vpn"})
-        profile["sing_box_routing"]["rules"].insert(0, {"kind": "domain", "value": "cached.corp.example", "action": "vpn"})
+        if automatic:
+            profile["sing_box_routing"] = automatic["reconnected"]["routing"]
+            profile["sing_box_dns"] = automatic["reconnected"]["dns"]
+        else:
+            profile["sing_box_dns"]["rules"].append({"kind": "domain", "value": "cached.corp.example", "policy": "vpn"})
+            profile["sing_box_routing"]["rules"].insert(0, {"kind": "domain", "value": "cached.corp.example", "action": "vpn"})
         start(profile)
         connect("cached.corp.example", "VPN", cached)
         assert "cached.corp.example." in vpn_names()
         report["cached_fakeip_reconnect_new_policy"] = "PASS"
+        if automatic:
+            report["qt_default_policy_and_native_domains_do_not_override_site_routes"] = "PASS"
         # DNS-only network changes must invalidate the prepared snapshot and
         # stop the core without querying a DNS policy on another interface.
         run("resolvectl", "dns", "corp0", "10.88.0.54")

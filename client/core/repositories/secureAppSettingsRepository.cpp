@@ -94,22 +94,6 @@ void SecureAppSettingsRepository::setSecondaryDns(const QString &dns)
     setValue("Conf/secondaryDns", dns);
 }
 
-QJsonObject SecureAppSettingsRepository::splitDnsConfig() const
-{
-    return QJsonObject::fromVariantMap(value("Conf/splitDnsV1").toMap());
-}
-
-void SecureAppSettingsRepository::setSplitDnsConfig(const QJsonObject &config)
-{
-    if (!config.isEmpty()) setValue("Conf/splitDnsV1", config.toVariantMap());
-    setValue("Conf/splitDnsEnabled", !config.isEmpty());
-}
-
-bool SecureAppSettingsRepository::isSplitDnsEnabled() const
-{
-    return value("Conf/splitDnsEnabled", false).toBool();
-}
-
 namespace {
     QString routeModeString(RouteMode mode) {
         switch (mode) {
