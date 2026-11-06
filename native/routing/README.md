@@ -9,8 +9,9 @@ stress failures and device/signing gaps are tracked in
 [`../../docs/sing-box-routing/STATUS.md`](../../docs/sing-box-routing/STATUS.md).
 Do not infer physical-device or Internet-egress acceptance from compilation.
 
-Optional per-domain split DNS, including **DNS by site route**, explicit DNS
-exceptions, native network DNS sources and Linux/Windows corporate DNS discovery, is described in
+DNS follows site routes automatically in routed sessions: original-network DNS
+for DIRECT and the existing effective Amnezia DNS through VPN. There is no
+separate DNS policy editor or switch. Behavior and native-source limits are described in
 [`../../docs/split-dns.md`](../../docs/split-dns.md). Its isolated local acceptance
 results are in [`../../docs/testing/split-dns-acceptance.json`](../../docs/testing/split-dns-acceptance.json).
 

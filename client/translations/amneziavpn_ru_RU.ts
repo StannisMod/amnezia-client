@@ -737,8 +737,8 @@ Already installed containers were found on the server. All installed containers 
         <translation>Экспорт завершен</translation>
     </message>
     <message>
-        <source>Disable split DNS and remove wildcard destinations before disabling domain routing.</source>
-        <translation>Перед отключением доменной маршрутизации выключите split DNS и удалите правила с подстановочными знаками.</translation>
+        <source>Remove wildcard destinations before disabling domain routing.</source>
+        <translation>Перед отключением доменной маршрутизации удалите правила с подстановочными знаками.</translation>
     </message>
 </context>
 <context>
@@ -4665,11 +4665,6 @@ Create one from the current settings.</source>
         <translation>DNS-серверы</translation>
     </message>
     <message>
-        <location filename="../ui/qml/Pages2/PageSettingsDns.qml" line="45"/>
-        <source>If AmneziaDNS is not used or installed</source>
-        <translation>Если AmneziaDNS не используется или не установлен</translation>
-    </message>
-    <message>
         <location filename="../ui/qml/Pages2/PageSettingsDns.qml" line="64"/>
         <source>Primary DNS</source>
         <translation>Первичный DNS</translation>
@@ -4720,180 +4715,16 @@ Create one from the current settings.</source>
         <translation>Настройки сохранены</translation>
     </message>
     <message>
-        <source>Direct DNS</source>
-        <translation>DNS напрямую</translation>
-    </message>
-    <message>
-        <source>VPN DNS</source>
-        <translation>DNS через VPN</translation>
-    </message>
-    <message>
-        <source>Reconnect to apply DNS changes. Split DNS requires AWG / WireGuard domain routing.</source>
-        <translation>Изменения DNS применяются при следующем подключении. Split DNS требует доменной маршрутизации AWG / WireGuard.</translation>
-    </message>
-    <message>
-        <source>Different DNS for domains</source>
-        <translation>Разные DNS для доменов</translation>
-    </message>
-    <message>
-        <source>Enable experimental domain routing in Split tunneling to use split DNS.</source>
-        <translation>Для split DNS включите экспериментальную доменную маршрутизацию в разделе «Раздельное туннелирование».</translation>
-    </message>
-    <message>
-        <source>DNS by site route</source>
-        <translation>DNS по маршруту сайта</translation>
-    </message>
-    <message>
-        <source>Direct site → direct DNS. VPN site → VPN DNS. Explicit DNS exceptions take priority. Application and IP rules do not select DNS.</source>
-        <translation>Сайт напрямую → DNS напрямую. Сайт через VPN → DNS через VPN. Явные исключения DNS имеют приоритет. Правила приложений и IP-подсетей не определяют DNS.</translation>
-    </message>
-    <message>
-        <source>DNS exceptions take priority over the default DNS policy. Site routes do not change DNS.</source>
-        <translation>Исключения DNS имеют приоритет над политикой по умолчанию. Маршруты сайтов не меняют выбор DNS.</translation>
-    </message>
-    <message>
-        <source>Default DNS policy</source>
-        <translation>DNS-политика по умолчанию</translation>
-    </message>
-    <message>
-        <source>DNS policy for direct sites</source>
-        <translation>DNS для прямых сайтов</translation>
-    </message>
-    <message>
-        <source>DNS policy for VPN sites</source>
-        <translation>DNS для сайтов через VPN</translation>
-    </message>
-    <message>
-        <source>DNS policies</source>
-        <translation>DNS-политики</translation>
-    </message>
-    <message>
-        <source>Use DNS from the current network (Linux)</source>
-        <translation>Использовать DNS текущей сети (Linux)</translation>
-    </message>
-    <message>
-        <source>Policy name</source>
-        <translation>Название политики</translation>
-    </message>
-    <message>
-        <source>DNS server IP or hostname</source>
-        <translation>IP-адрес или имя DNS-сервера</translation>
-    </message>
-    <message>
-        <source>DNS server</source>
-        <translation>DNS-сервер</translation>
-    </message>
-    <message>
-        <source>Network interface (leave empty for automatic selection)</source>
-        <translation>Сетевой интерфейс (пусто — выбрать автоматически)</translation>
-    </message>
-    <message>
-        <source>DNS network interface</source>
-        <translation>Сетевой интерфейс DNS</translation>
-    </message>
-    <message>
-        <source>DNS transport</source>
-        <translation>Транспорт DNS</translation>
-    </message>
-    <message>
-        <source>Default port</source>
-        <translation>Порт по умолчанию</translation>
-    </message>
-    <message>
-        <source>DNS port</source>
-        <translation>Порт DNS</translation>
-    </message>
-    <message>
-        <source>Direct</source>
-        <translation>Напрямую</translation>
-    </message>
-    <message>
-        <source>VPN</source>
-        <translation>VPN</translation>
-    </message>
-    <message>
-        <source>DNS route</source>
-        <translation>Маршрут DNS</translation>
-    </message>
-    <message>
-        <source>Bootstrap for hostname: IP:port or [IPv6]:port</source>
-        <translation>DNS для определения адреса сервера: IP:порт или [IPv6]:порт</translation>
-    </message>
-    <message>
-        <source>DNS bootstrap server</source>
-        <translation>DNS для определения адреса сервера</translation>
-    </message>
-    <message>
-        <source>TLS hostname (optional for a named server)</source>
-        <translation>Имя для TLS (необязательно для сервера, заданного именем)</translation>
-    </message>
-    <message>
-        <source>DNS TLS hostname</source>
-        <translation>Имя TLS DNS-сервера</translation>
-    </message>
-    <message>
-        <source>DNS HTTPS path</source>
-        <translation>Путь HTTPS DNS-сервера</translation>
-    </message>
-    <message>
-        <source>Remove policy</source>
-        <translation>Удалить политику</translation>
-    </message>
-    <message>
-        <source>Add DNS policy</source>
-        <translation>Добавить DNS-политику</translation>
-    </message>
-    <message>
-        <source>DNS exceptions</source>
-        <translation>Исключения DNS</translation>
-    </message>
-    <message>
-        <source>Domain or *.suffix</source>
-        <translation>Домен или *.суффикс</translation>
-    </message>
-    <message>
-        <source>DNS exception domain</source>
-        <translation>Домен исключения DNS</translation>
-    </message>
-    <message>
-        <source>Enabled</source>
-        <translation>Включено</translation>
-    </message>
-    <message>
-        <source>DNS exception policy</source>
-        <translation>DNS-политика исключения</translation>
-    </message>
-    <message>
-        <source>Remove</source>
-        <translation>Удалить</translation>
-    </message>
-    <message>
-        <source>Add DNS exception</source>
-        <translation>Добавить исключение DNS</translation>
-    </message>
-    <message>
-        <source>Preserve corporate DNS domains from the network (Linux)</source>
-        <translation>Учитывать корпоративные DNS-домены текущей сети (Linux)</translation>
-    </message>
-    <message>
-        <source>A suffix includes its root domain. Exact names win over suffixes; longer suffixes win. No automatic fallback to another policy. Automatic corporate DNS domains are available on Linux; other platforms need explicit DNS exceptions. Apps using their own DoH/DoT may bypass these rules.</source>
-        <translation>Суффикс включает сам домен и его поддомены. Точное имя важнее суффикса, длинный суффикс — короткого. Автоматического перехода на другую политику нет. Корпоративные DNS-домены определяются автоматически только на Linux; на других платформах задайте исключения вручную. Собственный DoH/DoT приложений может обходить эти правила.</translation>
-    </message>
-    <message>
         <source>Disconnect before changing DNS settings</source>
         <translation>Отключите VPN перед изменением DNS-настроек</translation>
     </message>
     <message>
-        <source>Use DNS from the current network</source>
-        <translation>Использовать DNS текущей сети</translation>
+        <source>Reconnect to apply DNS changes.</source>
+        <translation>Переподключитесь, чтобы применить изменения DNS.</translation>
     </message>
     <message>
-        <source>Preserve corporate DNS rules from the network (Linux / Windows)</source>
-        <translation>Учитывать корпоративные DNS-правила сети (Linux / Windows)</translation>
-    </message>
-    <message>
-        <source>A suffix includes its root domain. Exact names win over suffixes; longer suffixes win. No automatic fallback to another policy. Corporate DNS rules are discovered on Linux and Windows; search suffixes alone do not create DNS rules. Apps using their own DoH/DoT may bypass these rules.</source>
-        <translation>Суффикс включает сам домен и его поддомены. Точное имя важнее суффикса, длинный суффикс — короткого. Автоматического перехода на другую политику нет. Корпоративные правила определяются на Linux и Windows; поисковые суффиксы сами по себе не создают DNS-правил. Собственный DoH/DoT приложений может обходить эти правила.</translation>
+        <source>DNS follows site routing automatically. Direct sites use your network DNS; VPN sites use the DNS selected by Amnezia settings.</source>
+        <translation>DNS автоматически следует маршрутизации сайтов. Напрямую используется DNS текущей сети, через VPN — DNS, выбранный в настройках Amnezia.</translation>
     </message>
 </context>
 <context>
@@ -7546,64 +7377,8 @@ FileZilla или другие SFTP-клиенты, а также смонтир�
         <translation>Не удалось подтвердить результат обновления. Перед повторной попыткой проверьте сервер через SSH. Журналы обновления и данные для восстановления находятся в /var/lib/amnezia/updates.</translation>
     </message>
     <message>
-        <source>Unsupported split DNS settings version.</source>
-        <translation>Неподдерживаемая версия настроек split DNS.</translation>
-    </message>
-    <message>
         <source>Automatic network DNS discovery is currently available on Linux only. Use explicit DNS servers on this platform.</source>
         <translation>Автоматический выбор DNS текущей сети пока доступен только на Linux. На этой платформе задайте DNS-серверы явно.</translation>
-    </message>
-    <message>
-        <source>Add between 1 and 64 DNS policies.</source>
-        <translation>Добавьте от 1 до 64 DNS-политик.</translation>
-    </message>
-    <message>
-        <source>Check the DNS policy identifier, transport, port and route.</source>
-        <translation>Проверьте идентификатор, транспорт, порт и маршрут DNS-политики.</translation>
-    </message>
-    <message>
-        <source>DNS from the current network requires direct UDP or TCP.</source>
-        <translation>DNS текущей сети требует прямого подключения по UDP или TCP.</translation>
-    </message>
-    <message>
-        <source>Enter a DNS server IP address or hostname.</source>
-        <translation>Введите IP-адрес или имя DNS-сервера.</translation>
-    </message>
-    <message>
-        <source>A DNS hostname needs a numeric bootstrap server with a port, using the same route.</source>
-        <translation>Для DNS-сервера, заданного именем, укажите отдельный DNS для определения его адреса: числовой IP и порт. Он использует тот же маршрут.</translation>
-    </message>
-    <message>
-        <source>Use an upstream DNS server, not the VPN DNS address, FakeIP range or system stub.</source>
-        <translation>Укажите настоящий DNS-сервер. Адрес перехватчика VPN, диапазон FakeIP и системный DNS-прокси не подходят.</translation>
-    </message>
-    <message>
-        <source>Select a default DNS policy.</source>
-        <translation>Выберите DNS-политику по умолчанию.</translation>
-    </message>
-    <message>
-        <source>DNS by site route needs a direct policy and a VPN policy.</source>
-        <translation>Для DNS по маршруту сайта нужны прямая DNS-политика и DNS-политика через VPN.</translation>
-    </message>
-    <message>
-        <source>Too many DNS rules.</source>
-        <translation>Слишком много DNS-правил.</translation>
-    </message>
-    <message>
-        <source>DNS rules need a domain or *.suffix and an existing policy.</source>
-        <translation>Для DNS-правила нужны домен или *.суффикс и существующая DNS-политика.</translation>
-    </message>
-    <message>
-        <source>Conflicting DNS rules for the same domain.</source>
-        <translation>Конфликтующие DNS-правила для одного домена.</translation>
-    </message>
-    <message>
-        <source>Automatic corporate DNS rules require Linux or Windows. Configure explicit exceptions on this platform.</source>
-        <translation>Автоматические корпоративные DNS-правила доступны на Linux и Windows. На этой платформе задайте исключения вручную.</translation>
-    </message>
-    <message>
-        <source>Network DNS discovery is unavailable on this platform.</source>
-        <translation>Получение DNS текущей сети недоступно на этой платформе.</translation>
     </message>
     <message>
         <source>VPN access revoked. The update token could not be revoked yet. Retry setup or publish settings when the update service is available.</source>
@@ -8070,10 +7845,6 @@ Remove the server from the app to continue.</source>
 </context>
 <context>
     <name>SettingsController</name>
-    <message>
-        <source>Enable domain routing before configuring split DNS.</source>
-        <translation>Перед настройкой split DNS включите доменную маршрутизацию.</translation>
-    </message>
 </context>
 <context>
     <name>ConnectionUpdatesController</name>

@@ -9,3 +9,7 @@ add_executable(test_domain_routing_contract
     ../../core/utils/routeModes.h)
 target_link_libraries(test_domain_routing_contract PRIVATE Qt6::Core Qt6::Network Qt6::Test)
 add_test(NAME DomainRoutingContractTest COMMAND test_domain_routing_contract)
+
+# Export the production Qt-generated DNS policy for the real TUN acceptance.
+add_executable(dns_policy_fixture dnsPolicyFixture.cpp)
+target_link_libraries(dns_policy_fixture PRIVATE Qt6::Core)

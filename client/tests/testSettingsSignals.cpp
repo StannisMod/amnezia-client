@@ -31,13 +31,17 @@ private:
     SecureQSettings* m_settings;
 
 private slots:
-    void testSplitDnsPageEditorRoundTrip() {
+    void testDnsPageUsesExistingSettingsWithoutPolicyEditor() {
         const auto pagePath = QFINDTESTDATA("../ui/qml/Pages2/PageSettingsDns.qml");
         QVERIFY(!pagePath.isEmpty());
         QQmlApplicationEngine engine;
         engine.addImportPath(QFileInfo(pagePath).dir().absoluteFilePath("../Modules"));
         PageLoader::declareQmlPageEnum();
         SecureQSettings settings("AmneziaVPN-Qml-DNS-" + QUuid::createUuid().toString(), "test", nullptr, false);
+        // Restored advanced settings must neither appear in the editor nor
+        // prevent using the ordinary DNS controls or selecting other servers.
+        settings.setValue("Conf/splitDnsEnabled", true);
+        settings.setValue("Conf/splitDnsV1", QVariantMap{{"version", 999}});
         auto connection = QSharedPointer<VpnConnection>::create(nullptr, nullptr);
         TestCoreController core(connection, &settings, &engine);
         core.m_appSettingsRepository->setSingBoxRoutingEnabled(true);
@@ -51,70 +55,17 @@ private slots:
             if (expression.hasError()) qWarning() << expression.error();
             return value;
         };
-        evaluate("splitDnsEnabled.checked = true; followRouting.checked = true");
-        QCoreApplication::processEvents();
-        auto value = evaluate("collectDnsDraft()");
-        const auto config = QJsonObject::fromVariantMap(value.value<QJSValue>().toVariant().toMap());
-        QCOMPARE(config.value("direct").toString(), QString("direct"));
-        QCOMPARE(config.value("vpn").toString(), QString("vpn"));
-        QVERIFY(config.value("follow_routing").toBool());
-        QCOMPARE(config.value("policies").toObject().size(), 2);
-        evaluate("saveButton.clicked()");
-        QVERIFY(core.m_appSettingsRepository->isSplitDnsEnabled());
-        QCOMPARE(core.m_appSettingsRepository->splitDnsConfig(), config);
-        evaluate("var draft = collectDnsDraft(); draft.policies.direct.source = 'network'; draft.policies.direct.server = ''; dnsDraft = draft");
-        QCoreApplication::processEvents();
-        evaluate("saveButton.clicked()");
-        QCOMPARE(core.m_appSettingsRepository->splitDnsConfig().value("policies").toObject().value("direct").toObject().value("source").toString(), QString("network"));
-        QVERIFY(core.m_settingsUiController->saveSplitDnsConfig(config).isEmpty());
-        evaluate("loadDnsDraft()");
-        evaluate("var changed = collectDnsDraft(); delete changed.policies.direct; dnsDraft = changed");
-        QCoreApplication::processEvents();
-        value = evaluate("collectDnsDraft()");
-        const auto missing = QJsonObject::fromVariantMap(value.value<QJSValue>().toVariant().toMap());
-        QVERIFY(missing.value("direct").toString().isEmpty());
-        evaluate("saveButton.clicked()");
-        QCOMPARE(core.m_appSettingsRepository->splitDnsConfig(), config);
-        evaluate("loadDnsDraft()");
-        // Selecting an API server must still allow turning off the global flag.
+        QVERIFY(evaluate("primaryDns.visible && secondaryDns.visible && saveButton.enabled").toBool());
+        evaluate("primaryDns.textField.text = '9.9.9.9'; secondaryDns.textField.text = '149.112.112.112'; saveButton.clicked()");
+        QCOMPARE(core.m_appSettingsRepository->primaryDns(), QString("9.9.9.9"));
+        QCOMPARE(core.m_appSettingsRepository->secondaryDns(), QString("149.112.112.112"));
+        QVERIFY(page->metaObject()->indexOfProperty("dnsDraft") < 0);
+        QVERIFY(core.m_settingsUiController->metaObject()->indexOfProperty("splitDnsEnabled") < 0);
         page->setProperty("isServerFromApi", true);
-        QVERIFY(evaluate("splitDnsEnabled.enabled").toBool());
-        QVERIFY(!evaluate("primaryDns.enabled").toBool());
-        QVERIFY(evaluate("restoreDefaultButton.enabled").toBool());
-        QVERIFY(!evaluate("saveButton.enabled").toBool());
-        const auto primaryBeforeApi = core.m_appSettingsRepository->primaryDns();
-        evaluate("splitDnsEnabled.checked = false; primaryDns.textField.text = ''");
-        QVERIFY(evaluate("saveButton.enabled").toBool());
-        evaluate("splitDnsEnabled.checked = false; saveButton.clicked()");
-        QVERIFY(!core.m_appSettingsRepository->isSplitDnsEnabled());
-        QCOMPARE(core.m_appSettingsRepository->splitDnsConfig(), config);
-        QCOMPARE(core.m_appSettingsRepository->primaryDns(), primaryBeforeApi);
-        QVERIFY(!evaluate("splitDnsEnabled.enabled").toBool());
-        QVERIFY(!evaluate("saveButton.enabled").toBool());
+        QVERIFY(!evaluate("primaryDns.enabled || secondaryDns.enabled || saveButton.enabled").toBool());
+        // Obsolete settings no longer lock domain routing on.
+        QVERIFY(core.m_ipSplitTunnelingController->setSingBoxRoutingEnabled(false));
         settings.clearSettings();
-    }
-    void testSplitDnsSettingsPersistWithoutChangingLegacyDns() {
-        auto *repo = m_coreController->m_appSettingsRepository;
-        auto *ui = m_coreController->m_settingsUiController;
-        QVERIFY(!repo->isSplitDnsEnabled());
-        repo->setSingBoxRoutingEnabled(true);
-        const auto primary = repo->primaryDns();
-        const QJsonObject config{{"version", 1}, {"default", "vpn"}, {"follow_routing", false},
-            {"policies", QJsonObject{{"vpn", QJsonObject{{"server", "9.9.9.9"}, {"transport", "udp"}, {"path", "vpn"}}}}},
-            {"rules", QJsonArray{}}};
-        QSignalSpy changed(ui, &SettingsUiController::splitDnsConfigChanged);
-        QVERIFY(ui->saveSplitDnsConfig(config).isEmpty());
-        QCOMPARE(changed.count(), 1);
-        QVERIFY(repo->isSplitDnsEnabled());
-        QCOMPARE(repo->splitDnsConfig(), config);
-        QCOMPARE(repo->primaryDns(), primary);
-        auto invalid = config; invalid["version"] = 2;
-        QVERIFY(!ui->saveSplitDnsConfig(invalid).isEmpty());
-        QCOMPARE(changed.count(), 1);
-        QCOMPARE(repo->splitDnsConfig(), config);
-        QVERIFY(ui->saveSplitDnsConfig({}).isEmpty());
-        QVERIFY(!repo->isSplitDnsEnabled());
-        QCOMPARE(repo->splitDnsConfig(), config); // switching off retains the editor draft
     }
     void initTestCase() {
         QString testOrg = "AmneziaVPN-Test-" + QUuid::createUuid().toString();

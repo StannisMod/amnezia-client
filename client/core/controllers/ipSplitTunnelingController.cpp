@@ -199,7 +199,6 @@ bool IpSplitTunnelingController::setSingBoxRoutingEnabled(bool enabled)
     if (enabled) return false;
 #endif
     if (!enabled) {
-        if (m_appSettingsRepository->isSplitDnsEnabled()) return false;
         for (auto mode : {RouteMode::VpnOnlyForwardSites, RouteMode::VpnAllExceptSites}) {
             const auto sites = m_appSettingsRepository->vpnSites(mode);
             for (auto it = sites.cbegin(); it != sites.cend(); ++it) {
