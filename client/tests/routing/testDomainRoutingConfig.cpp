@@ -2,6 +2,7 @@
 #include <QDir>
 #include <QFileInfo>
 #include "../../core/utils/domainRoutingConfig.h"
+#include "../../core/utils/splitDnsConfig.h"
 
 class DomainRoutingConfigTest : public QObject {
     Q_OBJECT
@@ -52,6 +53,54 @@ private slots:
         QVERIFY(amnezia::routing::inspectRule(config, "example.org", "", "65536", "tcp").contains("error"));
         QVERIFY(amnezia::routing::inspectRule(config, "example.org", "bad", "443", "tcp").contains("error"));
         QCOMPARE(amnezia::routing::inspectRule(config, "example.org", "", "53", "udp").value("reason").toString(), QString("managed_dns"));
+    }
+    void dnsAlwaysFollowsSiteRoutes()
+    {
+        const QJsonObject directRule{{"kind", "suffix"}, {"value", "corp.example"}, {"action", "direct"}};
+        const QJsonObject routing{{"version", 1}, {"default", "vpn"}, {"rules", QJsonArray{directRule}}};
+        const auto config = amnezia::dns::forSiteRoutes(routing, "10.77.0.2");
+        QVERIFY(config.value("follow_routing").toBool());
+        QVERIFY(config.value("rules").toArray().isEmpty());
+        QVERIFY(!config.contains("preserve_network_domains"));
+        const auto policies = config.value("policies").toObject();
+        QCOMPARE(policies.size(), 2);
+        const auto direct = policies.value("direct").toObject();
+        QCOMPARE(direct.value("source").toString(), QString("network"));
+        QCOMPARE(direct.value("path").toString(), QString("direct"));
+        QVERIFY(direct.value("server").toString().isEmpty());
+        const auto vpn = policies.value("vpn").toObject();
+        QCOMPARE(vpn.value("server").toString(), QString("10.77.0.2"));
+        QCOMPARE(vpn.value("path").toString(), QString("vpn"));
+        // Reconnect reads the newly selected effective DNS, never a saved copy.
+        const auto changed = amnezia::dns::forSiteRoutes(routing, "9.9.9.9");
+        QCOMPARE(changed.value("policies").toObject().value("vpn").toObject().value("server").toString(), QString("9.9.9.9"));
+        auto inverse = routing; inverse["default"] = "direct"; inverse["rules"] = QJsonArray{};
+        QVERIFY(amnezia::dns::forSiteRoutes(inverse, "10.77.0.2").value("follow_routing").toBool());
+    }
+    void allVpnDnsDoesNotDependOnPhysicalDnsDiscovery()
+    {
+        for (const auto &rule : QJsonArray{QJsonObject{},
+                 QJsonObject{{"kind", "cidr"}, {"value", "192.0.2.0/24"}, {"action", "direct"}},
+                 QJsonObject{{"kind", "domain"}, {"value", "disabled.example"}, {"action", "direct"}, {"disabled", true}}}) {
+            const QJsonObject routing{{"version", 1}, {"default", "vpn"}, {"rules", QJsonArray{rule}}};
+            const auto config = amnezia::dns::forSiteRoutes(routing, "10.77.0.2");
+            QCOMPARE(config.value("default").toString(), QString("vpn"));
+            QVERIFY(!config.value("follow_routing").toBool());
+            QCOMPARE(config.value("policies").toObject().size(), 1);
+            QCOMPARE(config.value("policies").toObject().value("vpn").toObject().value("path").toString(), QString("vpn"));
+        }
+    }
+    void conditionalDirectRulesDoNotSelectNetworkDns()
+    {
+        for (const auto &conditions : {QJsonObject{{"ports", "443"}}, QJsonObject{{"network", "udp"}}}) {
+            auto rule = conditions;
+            rule.insert("kind", "domain"); rule.insert("value", "conditional.example"); rule.insert("action", "direct");
+            const QJsonObject routing{{"version", 2}, {"default", "block"}, {"rules", QJsonArray{rule}}};
+            const auto dns = amnezia::dns::forSiteRoutes(routing, "10.77.0.2");
+            QVERIFY(!dns.value("follow_routing").toBool());
+            QCOMPARE(dns.value("policies").toObject().size(), 1);
+            QCOMPARE(dns.value("default").toString(), QString("vpn"));
+        }
     }
     void normalizeEditableRules()
     {

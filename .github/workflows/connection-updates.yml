@@ -1,0 +1,30 @@
+name: Self-hosted connection updates
+on:
+  push:
+    branches: [dev, main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  signed-updates:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: client/server_scripts/connection_updates/go.mod
+          cache: false
+      - name: Server TLS, signatures, publication and revocation
+        working-directory: client/server_scripts/connection_updates
+        run: go test -race -count=3 ./...
+      - name: Install Qt and OpenSSL
+        run: sudo apt-get update && sudo apt-get install -y qt6-base-dev libssl-dev cmake ninja-build
+      - name: Client authentication, replay protection and preserved settings
+        run: |
+          cmake -S client/tests/connection-updates -B build-connection-updates -G Ninja
+          cmake --build build-connection-updates
+          ctest --test-dir build-connection-updates --output-on-failure
+      - name: Isolated service deployment, restart and revocation
+        run: bash scripts/local-tests/connection-updates-deploy.sh

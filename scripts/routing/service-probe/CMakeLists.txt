@@ -8,3 +8,14 @@ qt_add_executable(routing-service-probe main.cpp)
 qt_add_repc_replicas(routing-service-probe "${REPO_ROOT}/ipc/ipc_interface.rep")
 target_include_directories(routing-service-probe PRIVATE "${CMAKE_CURRENT_BINARY_DIR}" "${REPO_ROOT}/ipc" "${REPO_ROOT}/client/mozilla/shared")
 target_link_libraries(routing-service-probe PRIVATE Qt6::Core Qt6::Network Qt6::RemoteObjects)
+
+qt_add_executable(routing-endpoint-probe endpoint.cpp
+    "${REPO_ROOT}/client/mozilla/localsocketcontroller.cpp"
+    "${REPO_ROOT}/client/mozilla/localsocketcontroller.h"
+    "${REPO_ROOT}/client/mozilla/controllerimpl.h")
+target_include_directories(routing-endpoint-probe PRIVATE
+    "${REPO_ROOT}/tests/linux-dns-cache/stubs" "${REPO_ROOT}/client"
+    "${REPO_ROOT}/client/mozilla/shared" "${REPO_ROOT}")
+target_compile_definitions(routing-endpoint-probe PRIVATE
+    $<$<PLATFORM_ID:Linux>:MZ_LINUX> $<$<PLATFORM_ID:Windows>:MZ_WINDOWS>)
+target_link_libraries(routing-endpoint-probe PRIVATE Qt6::Core Qt6::Network)

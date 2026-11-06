@@ -12,6 +12,7 @@ struct routing_host {
     JavaVM *vm;
     jobject callback;
     jmethodID protect;
+    jmethodID protect_interface;
     jmethodID interfaces;
 };
 
@@ -56,6 +57,16 @@ char *amnezia_routing_interfaces(uintptr_t token) {
     return result;
 }
 
+int amnezia_routing_protect_interface(uintptr_t token,int fd,const char *name) {
+    struct routing_host *host=(struct routing_host *)token;
+    int attached;JNIEnv *env=host_env(host,&attached);if(!env)return 0;
+    jstring iface=(*env)->NewStringUTF(env,name);jboolean ok=JNI_FALSE;
+    if(iface){ok=(*env)->CallBooleanMethod(env,host->callback,host->protect_interface,fd,iface);(*env)->DeleteLocalRef(env,iface);}
+    if((*env)->ExceptionCheck(env)){(*env)->ExceptionClear(env);ok=JNI_FALSE;}
+    if(attached)(*host->vm)->DetachCurrentThread(host->vm);
+    return ok==JNI_TRUE;
+}
+
 void amnezia_routing_release(uintptr_t token) {
     struct routing_host *host = (struct routing_host *)token;
     if (!host) return;
@@ -95,10 +106,12 @@ JNIEXPORT jlong JNICALL Java_org_amnezia_awg_RoutingBackend_start(JNIEnv *env, j
     }
     host->protect = (*env)->GetMethodID(env, cls, "protectSocket", "(I)Z");
     if (!(*env)->ExceptionCheck(env))
+        host->protect_interface=(*env)->GetMethodID(env,cls,"protectSocketOnInterface","(ILjava/lang/String;)Z");
+    if (!(*env)->ExceptionCheck(env))
         host->interfaces = (*env)->GetMethodID(env, cls, "interfacesJson", "()[B");
     (*env)->DeleteLocalRef(env, cls);
     if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
-    if (!host->callback || !host->protect || !host->interfaces) {
+    if (!host->callback || !host->protect || !host->protect_interface || !host->interfaces) {
         amnezia_routing_release((uintptr_t)host); close(fd); return -1;
     }
     jsize len = (*env)->GetArrayLength(env, config);

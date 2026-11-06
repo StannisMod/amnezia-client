@@ -151,11 +151,15 @@ func protectRoute(raw syscall.RawConn, destination netip.Addr, excluded string) 
 	if index == 0 {
 		return nil
 	} // native loopback must remain local
+	return protectIndex(raw, index, destination.Is4())
+}
+
+func protectIndex(raw syscall.RawConn, index uint32, ipv4 bool) error {
 	var inner error
-	err = raw.Control(func(fd uintptr) {
+	err := raw.Control(func(fd uintptr) {
 		level := windows.IPPROTO_IPV6
 		value := index
-		if destination.Is4() {
+		if ipv4 {
 			level = windows.IPPROTO_IP
 			var bytes [4]byte
 			binary.BigEndian.PutUint32(bytes[:], index)
@@ -172,7 +176,19 @@ func protectRoute(raw syscall.RawConn, destination netip.Addr, excluded string) 
 type windowsUnderlay struct{ closed atomic.Bool }
 
 func (u *windowsUnderlay) factories() engine.Underlay {
+	return u.boundFactories("")
+}
+
+func (u *windowsUnderlay) boundFactories(iface string) engine.Underlay {
 	return engine.Underlay{
+		OnInterface: func(name string) (engine.Underlay, error) {
+			if _, err := windowsDNSInterface(name, true); err != nil {
+				if _, err = windowsDNSInterface(name, false); err != nil {
+					return engine.Underlay{}, err
+				}
+			}
+			return u.boundFactories(name), nil
+		},
 		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
 			if u.closed.Load() {
 				return nil, net.ErrClosed
@@ -184,6 +200,13 @@ func (u *windowsUnderlay) factories() engine.Underlay {
 			dial := net.Dialer{Control: func(_, _ string, raw syscall.RawConn) error {
 				if u.closed.Load() {
 					return net.ErrClosed
+				}
+				if iface != "" {
+					index, err := windowsDNSInterface(iface, destination.Addr().Is4())
+					if err != nil {
+						return err
+					}
+					return protectIndex(raw, index, destination.Addr().Is4())
 				}
 				return protectRoute(raw, destination.Addr(), InterfaceName)
 			}}
@@ -203,7 +226,7 @@ func (u *windowsUnderlay) factories() engine.Underlay {
 				pc.Close()
 				return nil, errors.New("native UDP host requires a socket handle")
 			}
-			return &windowsPacketConn{PacketConn: udp, udp: udp, owner: u}, nil
+			return &windowsPacketConn{PacketConn: udp, udp: udp, owner: u, iface: iface}, nil
 		},
 	}
 }
@@ -215,6 +238,7 @@ type windowsPacketConn struct {
 	udp   *net.UDPConn
 	owner *windowsUnderlay
 	mu    sync.Mutex
+	iface string
 }
 
 func (c *windowsPacketConn) WriteTo(data []byte, address net.Addr) (int, error) {
@@ -231,7 +255,16 @@ func (c *windowsPacketConn) WriteTo(data []byte, address net.Addr) (int, error) 
 	if err != nil {
 		return 0, err
 	}
-	if err = protectRoute(raw, destination.Addr().Unmap(), InterfaceName); err != nil {
+	if c.iface != "" {
+		index, e := windowsDNSInterface(c.iface, destination.Addr().Is4())
+		if e != nil {
+			return 0, e
+		}
+		err = protectIndex(raw, index, destination.Addr().Is4())
+	} else {
+		err = protectRoute(raw, destination.Addr().Unmap(), InterfaceName)
+	}
+	if err != nil {
 		return 0, err
 	}
 	return c.udp.WriteTo(data, address)

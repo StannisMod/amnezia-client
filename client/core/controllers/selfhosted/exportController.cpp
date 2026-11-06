@@ -1,4 +1,7 @@
 #include "exportController.h"
+#include "connectionUpdatesController.h"
+#include "core/utils/connectionUpdates.h"
+#include <QUrl>
 
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -49,7 +52,7 @@ ExportController::ExportResult ExportController::generateFullAccessConfig(const 
     return result;
 }
 
-ExportController::ExportResult ExportController::generateConnectionConfig(const QString &serverId, int containerIndex, const QString &clientName)
+ExportController::ExportResult ExportController::generateConnectionConfig(const QString &serverId, int containerIndex, const QString &clientName, bool updatable)
 {
     ExportResult result;
 
@@ -59,10 +62,26 @@ ExportController::ExportResult ExportController::generateConnectionConfig(const 
         result.errorCode = ErrorCode::InternalError;
         return result;
     }
+    const auto updateMetadata = adminConfig->connectionUpdates;
+    if (updatable && (updateMetadata.value("version").toInt() != 1 || (container != DockerContainer::WireGuard && container != DockerContainer::Awg2))) {
+        result.errorCode = ErrorCode::InternalError;
+        return result;
+    }
+    adminConfig->connectionUpdates = {};
     const ServerCredentials credentials = adminConfig->credentials();
     if (!credentials.isValid()) {
         result.errorCode = ErrorCode::InternalError;
         return result;
+    }
+    if (updatable) {
+        QJsonObject info;
+        result.errorCode = ConnectionUpdatesController::command(credentials, "info", {}, info);
+        if (result.errorCode != ErrorCode::NoError) return result;
+        if (info.value("publicKey") != updateMetadata.value("publicKey")
+            || info.value("certificate") != updateMetadata.value("certificate")) {
+            result.errorCode = ErrorCode::InternalError;
+            return result;
+        }
     }
     ContainerConfig containerConfig = adminConfig->containerConfig(container);
 
@@ -93,6 +112,12 @@ ExportController::ExportResult ExportController::generateConnectionConfig(const 
                                                                m_appSettingsRepository->primaryDns(),
                                                                m_appSettingsRepository->secondaryDns());
 
+    const Proto exportedProto = ContainerUtils::defaultProtocol(container);
+    if (!adminConfig->vpnHostName.isEmpty() && (exportedProto == Proto::Awg || exportedProto == Proto::WireGuard)) {
+        containerConfig.protocolConfig.setVpnHostName(adminConfig->vpnHostName);
+        adminConfig->hostName = adminConfig->vpnHostName;
+    }
+
     adminConfig->containers.clear();
     adminConfig->containers[container] = containerConfig;
     adminConfig->defaultContainer = container;
@@ -104,6 +129,27 @@ ExportController::ExportResult ExportController::generateConnectionConfig(const 
     adminConfig->dns2 = dns.second;
 
     QJsonObject serverJson = adminConfig->toJson();
+    if (updatable) {
+        const auto client = containerConfig.protocolConfig.getClientConfigJson();
+        QJsonObject response;
+        const QJsonObject request { { "container", ContainerUtils::containerToString(container) },
+            { "clientPublicKey", client.value(configKey::clientPubKey) },
+            { "settings", connectionUpdates::publicSettings(client, container == DockerContainer::Awg2) } };
+        result.errorCode = ConnectionUpdatesController::command(credentials, "issue", request, response);
+        if (result.errorCode != ErrorCode::NoError) return result;
+        // Detect server identity changes; a reinstallation must be explicitly trusted.
+        if (response.value("publicKey") != updateMetadata.value("publicKey") || response.value("certificate") != updateMetadata.value("certificate")) {
+            result.errorCode = ErrorCode::InternalError; return result;
+        }
+        auto metadata = connectionUpdates::invitationMetadata(updateMetadata);
+        metadata["id"] = response.value("id"); metadata["token"] = response.value("token");
+        metadata["container"] = request.value("container"); metadata["clientPublicKey"] = request.value("clientPublicKey");
+        metadata["revision"] = "0";
+        QUrl url(metadata.value("url").toString()); url.setPath("/v1/connections/" + response.value("id").toString()); metadata["url"] = url.toString();
+        serverJson[connectionUpdates::metadataKey] = metadata;
+        if (!connectionUpdates::validateProfile(serverJson)) { result.errorCode = ErrorCode::InternalError; return result; }
+    }
+
     QByteArray compressedConfig = QJsonDocument(serverJson).toJson();
     compressedConfig = qCompress(compressedConfig, 8);
     result.config = generateVpnUrl(compressedConfig);
@@ -152,6 +198,10 @@ ExportController::NativeConfigResult ExportController::generateNativeConfig(cons
     ProtocolConfig newProtocolConfig = configurator->createConfig(credentials, container, modifiedContainerConfig, dnsSettings, result.errorCode);
     if (result.errorCode != ErrorCode::NoError) {
         return result;
+    }
+
+    if (!adminConfig->vpnHostName.isEmpty()) {
+        newProtocolConfig.setVpnHostName(adminConfig->vpnHostName);
     }
 
     ExportSettings exportSettings = { { dns.first, dns.second } };

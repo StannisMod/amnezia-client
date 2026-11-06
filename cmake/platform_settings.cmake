@@ -1,6 +1,6 @@
 if(APPLE)
     get_property(generator_is_multi_config GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
-    if (generator_is_multi_config)
+    if (generator_is_multi_config AND NOT DEFINED CONAN_INSTALL_BUILD_CONFIGURATIONS)
         set(CONAN_INSTALL_BUILD_CONFIGURATIONS Release Debug MinSizeRel RelWithDebInfo)
     endif()
     if(CMAKE_SYSTEM_NAME STREQUAL "iOS")

@@ -18,9 +18,11 @@ object RoutingBackend {
 }
 
 @Keep
-class RoutingHost(private val protect: (Int) -> Boolean) {
+class RoutingHost(private val protect: (Int) -> Boolean, private val bindDns: ((Int, String) -> Boolean)? = null) {
     @Keep
     fun protectSocket(fd: Int): Boolean = protect(fd)
+    @Keep
+    fun protectSocketOnInterface(fd: Int, name: String): Boolean = protect(fd) && (bindDns?.invoke(fd, name) ?: false)
 
     @Keep
     fun interfacesJson(): ByteArray {

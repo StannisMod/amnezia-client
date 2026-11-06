@@ -3,6 +3,10 @@
 #include <QUuid>
 #include <QSignalSpy>
 #include <QTest>
+#include <QTcpServer>
+#include <QTcpSocket>
+#include <QThreadPool>
+#include <libssh/libssh.h>
 
 #include "utils/testCoreController.h"
 #include "core/models/serverDescription.h"
@@ -10,6 +14,7 @@
 #include "utils/testUtils.h"
 #include "vpnConnection.h"
 #include "secureQSettings.h"
+#include "core/controllers/connectionController.h"
 
 using namespace amnezia;
 using namespace amnezia::test;
@@ -19,11 +24,14 @@ class TestServerEdit : public QObject
     Q_OBJECT
 
 private:
-    TestCoreController* m_coreController;
-    SecureQSettings* m_settings;
+    TestCoreController* m_coreController = nullptr;
+    SecureQSettings* m_settings = nullptr;
 
 private slots:
     void initTestCase() {
+        // QTEST_MAIN bypasses the application's main(), including libssh's
+        // explicit initialization required by the Windows SSH backend.
+        QCOMPARE(ssh_init(), SSH_OK);
         QString testOrg = "AmneziaVPN-Test-" + QUuid::createUuid().toString();
         m_settings = new SecureQSettings(testOrg, "amnezia-client", nullptr, false);
         
@@ -32,9 +40,12 @@ private slots:
     }
 
     void cleanupTestCase() {
-        m_settings->clearSettings();
+        if (m_settings) {
+            m_settings->clearSettings();
+        }
         delete m_coreController;
         delete m_settings;
+        ssh_finalize();
     }
 
     void init() {
@@ -43,6 +54,132 @@ private slots:
         if (m_coreController->m_serversModel) {
             m_coreController->m_serversModel->updateModel(QVector<ServerDescription>(), QString{});
         }
+    }
+
+    void testVpnDomainPreservesSshAndRoundTrips() {
+        SelfHostedAdminServerConfig config = SelfHostedAdminServerConfig::fromJson({
+            {configKey::hostName, "192.0.2.10"}, {configKey::userName, "root"},
+            {configKey::password, "test-secret"}, {configKey::port, 22}
+        });
+        config.defaultContainer = DockerContainer::Awg2;
+        AwgProtocolConfig awg;
+        AwgClientConfig client{};
+        client.hostName = config.hostName;
+        client.port = 51820;
+        client.clientPrivateKey = "PRIVATE";
+        client.serverPublicKey = "PUBLIC";
+        client.presharedKey = "PSK";
+        client.nativeConfig = "[Interface]\nPrivateKey = PRIVATE\n[Peer]\nPublicKey = PUBLIC\nEndpoint = 192.0.2.10:51820\n";
+        awg.setClientConfig(client);
+        ContainerConfig container;
+        container.container = config.defaultContainer;
+        container.protocolConfig = awg;
+        config.containers[config.defaultContainer] = container;
+        auto *repository = m_coreController->m_serversRepository;
+        const QString id = repository->addServer("domain-test", config.toJson(), serverConfigUtils::ConfigType::SelfHostedAdmin);
+        auto *servers = m_coreController->m_serversController;
+        QVERIFY(servers->setVpnHostName(id, " VPN.Example.org "));
+        const auto saved = repository->selfHostedAdminConfig(id);
+        QVERIFY(saved.has_value());
+        QCOMPARE(saved->credentials().hostName, "192.0.2.10");
+        QCOMPARE(saved->vpnHostName, "vpn.example.org");
+        // Endpoint edits must not replace keys or mutate cached client profiles.
+        QCOMPARE(saved->containerConfig(config.defaultContainer).protocolConfig.getClientConfigJson().value(configKey::hostName).toString(), "192.0.2.10");
+
+        VpnConnection vpn(repository, m_coreController->m_appSettingsRepository);
+        ConnectionController connections(repository, m_coreController->m_appSettingsRepository, &vpn);
+        QJsonObject prepared;
+        DockerContainer selected = DockerContainer::None;
+        QCOMPARE(connections.prepareConnection(id, prepared, selected), ErrorCode::NoError);
+        QCOMPARE(prepared.value(configKey::hostName).toString(), "vpn.example.org");
+        const auto data = prepared.value(ProtocolUtils::key_proto_config_data(Proto::Awg)).toObject();
+        QCOMPARE(data.value(configKey::hostName).toString(), "vpn.example.org");
+        QCOMPARE(data.value(configKey::clientPrivKey).toString(), "PRIVATE");
+        QVERIFY(data.value(configKey::config).toString().contains("Endpoint = vpn.example.org:51820"));
+
+        const auto exported = m_coreController->m_exportController->generateFullAccessConfig(id);
+        QCOMPARE(exported.errorCode, ErrorCode::NoError);
+        const auto imported = m_coreController->m_importCoreController->extractConfigFromData(exported.config);
+        QCOMPARE(imported.errorCode, ErrorCode::NoError);
+        const auto restored = SelfHostedAdminServerConfig::fromJson(imported.config);
+        QCOMPARE(restored.hostName, "192.0.2.10");
+        QCOMPARE(restored.vpnHostName, "vpn.example.org");
+
+        QVERIFY(!servers->setVpnHostName(id, "https://wrong.example.org/path"));
+        QCOMPARE(servers->vpnHostName(id), "vpn.example.org");
+        QVERIFY(servers->setVpnHostName(id, ""));
+        QCOMPARE(connections.prepareConnection(id, prepared, selected), ErrorCode::NoError);
+        QCOMPARE(prepared.value(configKey::hostName).toString(), "192.0.2.10");
+    }
+
+    void testSoftwareUpdateWithSingleGlobalWorker_data() {
+        QTest::addColumn<int>("containerIndex");
+        QTest::addColumn<bool>("headerProtection");
+        QTest::newRow("wireguard") << static_cast<int>(DockerContainer::WireGuard) << false;
+        QTest::newRow("awg2-compatible") << static_cast<int>(DockerContainer::Awg2) << false;
+        QTest::newRow("awg3-protected") << static_cast<int>(DockerContainer::Awg2) << true;
+    }
+
+    void testSoftwareUpdateWithSingleGlobalWorker() {
+        QFETCH(int, containerIndex);
+        QFETCH(bool, headerProtection);
+        QTcpServer endpoint;
+        QVERIFY(endpoint.listen(QHostAddress::LocalHost));
+        bool reachedSsh = false;
+        connect(&endpoint, &QTcpServer::newConnection, &endpoint, [&]() {
+            reachedSsh = true;
+            while (endpoint.hasPendingConnections()) {
+                auto *socket = endpoint.nextPendingConnection();
+                socket->abort(); // Fail SSH before authentication or commands.
+                socket->deleteLater();
+            }
+        });
+        SelfHostedAdminServerConfig config = SelfHostedAdminServerConfig::fromJson({
+            {configKey::hostName, "127.0.0.1"}, {configKey::userName, "test"},
+            {configKey::password, "test-only"}, {configKey::port, endpoint.serverPort()}
+        });
+        config.defaultContainer = static_cast<DockerContainer>(containerIndex);
+        ContainerConfig container;
+        container.container = config.defaultContainer;
+        if (config.defaultContainer == DockerContainer::Awg2) {
+            AwgProtocolConfig awg;
+            awg.serverConfig.cookieReplyPacketJunkSize = "0";
+            awg.serverConfig.transportPacketJunkSize = "0";
+            if (headerProtection) awg.serverConfig.headerProtectionKey = "test-protection";
+            container.protocolConfig = awg;
+        } else {
+            container.protocolConfig = WireGuardProtocolConfig{};
+        }
+        config.containers[config.defaultContainer] = container;
+        const QString id = m_coreController->m_serversRepository->addServer(
+                "software-update-pool-test", config.toJson(), serverConfigUtils::ConfigType::SelfHostedAdmin);
+        const auto before = m_coreController->m_serversRepository->selfHostedAdminConfig(id)->toJson();
+        auto *controller = m_coreController->m_installUiController;
+        qRegisterMetaType<ErrorCode>();
+        QSignalSpy error(controller, &InstallUiController::installationErrorOccurred);
+        QSignalSpy busy(controller, &InstallUiController::serverIsBusy);
+        QVERIFY(error.isValid());
+        QVERIFY(busy.isValid());
+        auto *globalPool = QThreadPool::globalInstance();
+        const int originalLimit = globalPool->maxThreadCount();
+        globalPool->setMaxThreadCount(1);
+        controller->updateProtocolSoftware(id, static_cast<int>(config.defaultContainer));
+        const bool completed = !error.isEmpty() || error.wait(3000);
+        // Drain a regressed implementation before asserting, so a blocked
+        // global worker cannot hang cleanup or the remaining test cases.
+        globalPool->setMaxThreadCount(qMax(2, originalLimit));
+        if (!completed) {
+            error.wait(3000);
+        }
+        globalPool->setMaxThreadCount(originalLimit);
+        QVERIFY2(completed, "Software update deadlocked Qt's single-worker global pool");
+        QVERIFY(reachedSsh);
+        QCOMPARE(error.count(), 1);
+        QVERIFY(error.at(0).at(0).toInt() != static_cast<int>(ErrorCode::NoError));
+        QCOMPARE(busy.count(), 2);
+        QCOMPARE(busy.at(0).at(0).toBool(), true);
+        QCOMPARE(busy.at(1).at(0).toBool(), false);
+        QCOMPARE(m_coreController->m_serversRepository->selfHostedAdminConfig(id)->toJson(), before);
     }
 
     void testServerEditTriggersHandlers() {

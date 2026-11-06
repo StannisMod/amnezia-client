@@ -28,6 +28,20 @@ abstract class Protocol {
     protected lateinit var onError: (String) -> Unit
     protected var isInitialized: Boolean = false
     protected var lockdownEnabled: () -> Boolean = { false }
+    protected var endpointResolver: ((String) -> List<java.net.InetAddress>)? = null
+    protected var networkDnsSnapshot: (() -> JSONObject)? = null
+    protected var networkDnsProtect: ((Int, String) -> Boolean)? = null
+    fun configureNetworkDns(snapshot: () -> JSONObject, protect: (Int, String) -> Boolean) {
+        networkDnsSnapshot = snapshot
+        networkDnsProtect = protect
+    }
+
+    protected var endpointRecovery: ((() -> Boolean) -> Unit)? = null
+    fun configureEndpointRecovery(request: (() -> Boolean) -> Unit) { endpointRecovery = request }
+
+    fun configureEndpointResolver(resolver: (String) -> List<java.net.InetAddress>) {
+        endpointResolver = resolver
+    }
 
     fun initialize(context: Context, state: MutableStateFlow<ProtocolState>, onError: (String) -> Unit, lockdownEnabled: () -> Boolean = { false }) {
         this.context = context

@@ -9,6 +9,15 @@ stress failures and device/signing gaps are tracked in
 [`../../docs/sing-box-routing/STATUS.md`](../../docs/sing-box-routing/STATUS.md).
 Do not infer physical-device or Internet-egress acceptance from compilation.
 
+DNS follows site routes automatically in routed sessions: original-network DNS
+for DIRECT and the existing effective Amnezia DNS through VPN. There is no
+separate DNS policy editor or switch. DNS has no future connection port/network,
+so only unconditional name rules select its resolver; conditional rules are
+applied to connections. Block names/defaults use VPN DNS, then the connection
+router rejects the flow before opening an outbound socket. Behavior and native-source limits are described in
+[`../../docs/split-dns.md`](../../docs/split-dns.md). Its isolated local acceptance
+results are in [`../../docs/testing/split-dns-acceptance.json`](../../docs/testing/split-dns-acceptance.json).
+
 ## Build and test
 
 IP-literal flows (including clients using their own DoH resolver) are sniffed
@@ -87,6 +96,9 @@ Versions are locked in `go.mod`/`go.sum`. Primary source commits:
 
 - `rules`: version 2 portable schema (reads version 1), canonicalization, validation, deterministic rule
   order, legacy site-list conversion and sing-box route-rule compilation.
+- `dnspolicy`: version 1 per-domain resolver policies, explicit DIRECT/VPN
+  paths, optional site-route linkage, transport/bootstrap validation and DNS
+  rule compilation. Legacy sessions retain their single resolver.
 - `awg`: a dedicated `amneziawg` outbound using the unmodified AWG v3 device
   and its in-memory TCP/UDP stack. It requires a native underlay socket factory.
   The `keepalive` session field preserves AWG's string syntax (`"25"`, `"25-35"`,

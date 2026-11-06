@@ -92,7 +92,14 @@ func testRealIPSniff(t *testing.T, ctx context.Context, instance *box.Box, peer 
 						t.Fatal(err)
 					}
 				}
-				app, capture := net.Pipe()
+				var app, capture net.Conn
+				if protocol == "tls" {
+					// Buffered TCP avoids TLS post-handshake writes stalling
+					// against application writes on a zero-buffer net.Pipe.
+					app, capture = sniffTCPPair(t)
+				} else {
+					app, capture = net.Pipe()
+				}
 				app.SetDeadline(time.Now().Add(sniffOperationTimeout))
 				go instance.Router().RouteConnectionEx(ctx, capture, adapter.InboundContext{Inbound: TUNTag, Network: "tcp", Destination: M.Socksaddr{Addr: destination, Port: port}}, nil)
 				var client net.Conn = app
@@ -230,7 +237,7 @@ func testRealIPSniff(t *testing.T, ctx context.Context, instance *box.Box, peer 
 // Each phase gets an independent bound: a race-instrumented TLS handshake
 // must not consume the time reserved for reading the request and response.
 // The parent fixture still bounds the entire DNS/HTTP/TLS/QUIC sequence.
-const sniffOperationTimeout = 10 * time.Second
+const sniffOperationTimeout = 15 * time.Second
 
 func serveSniffObserver(conn net.Conn, protocol string, cert tls.Certificate, label string) error {
 	conn.SetDeadline(time.Now().Add(sniffOperationTimeout))
@@ -272,6 +279,29 @@ func serveSniffObserver(conn net.Conn, protocol string, cert tls.Certificate, la
 		return fmt.Errorf("invalid response acknowledgement")
 	}
 	return nil
+}
+
+func sniffTCPPair(t *testing.T) (net.Conn, net.Conn) {
+	t.Helper()
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	app, err := net.DialTimeout("tcp4", listener.Addr().String(), 3*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capture, err := listener.Accept()
+	if err != nil {
+		app.Close()
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		app.Close()
+		capture.Close()
+	})
+	return app, capture
 }
 
 type sniffTestPackets struct {

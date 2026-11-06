@@ -42,6 +42,11 @@ bool ConnectionController::isConnected() const
     return m_vpnConnection && m_vpnConnection->connectionState() == Vpn::ConnectionState::Connected;
 }
 
+bool ConnectionController::isDisconnected() const
+{
+    return m_vpnConnection && m_vpnConnection->connectionState() == Vpn::ConnectionState::Disconnected;
+}
+
 void ConnectionController::setConnectionState(Vpn::ConnectionState state)
 {
     emit connectionStateChanged(state);
@@ -155,6 +160,11 @@ ErrorCode ConnectionController::prepareConnection(const QString &serverId,
         containerConfigModel = cfg->containerConfig(container);
         dns = cfg->getDnsPair(m_appSettingsRepository->useAmneziaDns(), primaryDns, secondaryDns);
         hostName = cfg->hostName;
+        const Proto proto = ContainerUtils::defaultProtocol(container);
+        if (!cfg->vpnHostName.isEmpty() && (proto == Proto::Awg || proto == Proto::WireGuard)) {
+            hostName = cfg->vpnHostName;
+            containerConfigModel.protocolConfig.setVpnHostName(hostName);
+        }
         description = cfg->description;
         break;
     }

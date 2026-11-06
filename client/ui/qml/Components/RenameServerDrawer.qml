@@ -15,6 +15,13 @@ SheetType {
     id: root
     objectName: "serverNameEditDrawer"
 
+    Connections {
+        target: root
+        function onAboutToShow() {
+            vpnHost.textField.text = ServersUiController.vpnHostName(ServersUiController.processedServerId)
+        }
+    }
+
     expandedHeight: content.implicitHeight + 16 + 8 + PageController.safeAreaBottomMargin + PageController.imeHeight
 
     ColumnLayout {
@@ -39,6 +46,16 @@ SheetType {
             checkEmptyText: true
         }
 
+        TextFieldType {
+            id: vpnHost
+            Layout.fillWidth: true
+            visible: ServersUiController.isProcessedServerHasWriteAccess()
+            headerText: qsTr("VPN address (AWG / WireGuard)")
+            textField.maximumLength: 253
+            textField.placeholderText: "vpn.example.org"
+            helperText: qsTr("Leave empty to use the server address. SSH access is unchanged.")
+        }
+
         ButtonType {
             id: saveButton
 
@@ -51,6 +68,15 @@ SheetType {
                     return
                 }
 
+                if (vpnHost.visible && vpnHost.textField.text !== ServersUiController.vpnHostName(ServersUiController.processedServerId)) {
+                    if (ServersUiController.isDefaultServerCurrentlyProcessed() && (ConnectionController.isConnected || ConnectionController.isConnectionInProgress)) {
+                        PageController.showNotificationMessage(qsTr("Disconnect before changing the VPN address"))
+                        return
+                    }
+                    if (!ServersUiController.setVpnHostName(ServersUiController.processedServerId, vpnHost.textField.text)) {
+                        return
+                    }
+                }
                 if (serverName.textField.text !== root.serverNameText) {
                     ServersUiController.editServerName(ServersUiController.processedServerId, serverName.textField.text);
                 }

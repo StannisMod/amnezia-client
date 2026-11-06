@@ -365,6 +365,9 @@ def main():
         counts = observers()
         disconnect()
         native_connect()
+        if not win:
+            from endpoint_migration_acceptance import run as endpoint_migration
+            report["endpoint_migration"] = endpoint_migration(args.qt_probe.resolve(), args.peer.resolve(), temporary.name)
         after = snapshot()
         assert after == before, "installed-service route/DNS restoration differed"
         report.update(installed_service="PASS", strict_kill_switch="PASS", system_resolver="PASS", application_scope="PASS", ipc_reconnect="PASS", helper_crash_recovery="PASS", observers=counts, os_state_restored=True)

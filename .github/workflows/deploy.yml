@@ -9,6 +9,10 @@ on:
       - '!feature/sing-box-routing' # Four-platform baseline: sing-box-routing-ci.yml
       - '!fix/dns-flush-systemd-race'
 
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   QT_MIRROR: https://mirrors.ocf.berkeley.edu/qt/ # https://download.qt.io/static/mirrorlist/
 
@@ -26,9 +30,7 @@ jobs:
             recipes:
               - 'recipes/**'
               - 'conanfile.py'
-              - '.github/workflows/deploy.yml'
               - 'cmake/conan_provider.cmake'
-              - 'cmake/platform_settings.cmake'
               - 'cmake/recipes_bootstrap.cmake'
 
   Bake-Prebuilts-Linux:
@@ -70,7 +72,7 @@ jobs:
     runs-on: ubuntu-22.04
 
     needs: Bake-Prebuilts-Linux
-    if: ${{ always() }}
+    if: ${{ !cancelled() }}
 
     env:
       QT_VERSION: 6.10.1
@@ -117,6 +119,9 @@ jobs:
       with:
         submodules: 'true'
         fetch-depth: 10
+
+    - name: 'Install the required Go toolchain'
+      uses: ./.github/actions/setup-routing-go
 
     - name: 'Build project'
       shell: bash
@@ -185,11 +190,13 @@ jobs:
     runs-on: windows-latest
 
     needs: Bake-Prebuilts-Windows
-    if: ${{ always() }}
+    if: ${{ !cancelled() }}
 
     env:
       QT_VERSION: 6.10.1
       QIF_VERSION: 4.7
+      CMAKE_CONFIGURATION_TYPES: Release
+      CONAN_INSTALL_BUILD_CONFIGURATIONS: Release
       PROD_AGW_PUBLIC_KEY: ${{ secrets.PROD_AGW_PUBLIC_KEY }}
       PROD_S3_ENDPOINT: ${{ secrets.PROD_S3_ENDPOINT }}
       FALLBACK_S3_ENDPOINT: ${{ secrets.FALLBACK_S3_ENDPOINT }}
@@ -205,6 +212,9 @@ jobs:
       with:
         submodules: 'true'
         fetch-depth: 10
+
+    - name: 'Install the required Go toolchain'
+      uses: ./.github/actions/setup-routing-go
 
     - name: 'Install Qt'
       uses: jurplel/install-qt-action@v3
@@ -328,14 +338,19 @@ jobs:
 # ------------------------------------------------------
 
   Build-iOS:
-    runs-on: macos-latest
+    # Match the validated product build: Xcode 26.0's storyboard compiler
+    # cannot find its iOS platform on the current macos-latest image.
+    runs-on: macos-15
 
     needs: Bake-Prebuilts-iOS
-    if: ${{ always() }}
+    if: ${{ !cancelled() }}
 
     env:
       QT_VERSION: 6.10.1
       KEYCHAIN_PASSWORD: ""
+      IOS_UNSIGNED_BUILD: ${{ secrets.IOS_SIGNING_CERT_BASE64 == '' && '1' || '0' }}
+      CMAKE_CONFIGURATION_TYPES: Release
+      CONAN_INSTALL_BUILD_CONFIGURATIONS: Release
 
       PROD_AGW_PUBLIC_KEY: ${{ secrets.PROD_AGW_PUBLIC_KEY }}
       PROD_S3_ENDPOINT: ${{ secrets.PROD_S3_ENDPOINT }}
@@ -353,12 +368,17 @@ jobs:
         submodules: 'true'
         fetch-depth: 10
 
+    - name: 'Install the required Go toolchain'
+      uses: ./.github/actions/setup-routing-go
+
     - uses: ./.github/actions/apple-setup-keychain
+      if: env.IOS_UNSIGNED_BUILD != '1'
       id: setup-keychain
       with:
         keychain-password: ${{ env.KEYCHAIN_PASSWORD }}
 
     - name: 'Install signing certificate'
+      if: env.IOS_UNSIGNED_BUILD != '1'
       uses: ./.github/actions/apple-install-cert
       with:
         keychain-path: ${{ steps.setup-keychain.outputs.keychain-path }}
@@ -367,14 +387,20 @@ jobs:
         cert-password: ${{ secrets.IOS_SIGNING_CERT_PASSWORD }}
 
     - name: 'Install app provisioning profile'
+      if: env.IOS_UNSIGNED_BUILD != '1'
       uses: ./.github/actions/apple-setup-provisioning-profile
       with:
         provisioning_profile_base64: ${{ secrets.IOS_APP_PROVISIONING_PROFILE }}
 
     - name: 'Install NE provisioning profile'
+      if: env.IOS_UNSIGNED_BUILD != '1'
       uses: ./.github/actions/apple-setup-provisioning-profile
       with:
         provisioning_profile_base64: ${{ secrets.IOS_NE_PROVISIONING_PROFILE }}
+
+    - name: 'Explain unsigned validation'
+      if: env.IOS_UNSIGNED_BUILD == '1'
+      run: echo '::notice::No iOS distribution certificate is configured. Compiling the app and extension without signing; this does not produce a signed IPA.'
 
     - name: 'Setup xcode'
       uses: maxim-lobanov/setup-xcode@v1
@@ -414,17 +440,16 @@ jobs:
       run: pip install "conan==2.28.0" jsonschema jinja2
 
     - name: 'Build project'
+      shell: bash
       env:
         QT_INSTALL_DIR: ${{ runner.temp }}
         APPSTORE_CONNECT_KEY_ID: ${{ secrets.APPSTORE_CONNECT_KEY_ID }}
         APPSTORE_CONNECT_ISSUER_ID: ${{ secrets.APPSTORE_CONNECT_ISSUER_ID }}
         APPSTORE_CONNECT_PRIVATE_KEY: ${{ secrets.APPSTORE_CONNECT_PRIVATE_KEY }}
       run: |
-        sh deploy/build.sh -t ios | \
-          sed -e '/-Xcc -DPROD_AGW_PUBLIC_KEY/,/-Xcc/ { /-Xcc/!d; }' -e '/-Xcc -DPROD_AGW_PUBLIC_KEY/d' | \
-          sed -e '/-Xcc -DDEV_AGW_PUBLIC_KEY/,/-Xcc/ { /-Xcc/!d; }' -e '/-Xcc -DDEV_AGW_PUBLIC_KEY/d' | \
-          sed -e '/-DPROD_AGW_PUBLIC_KEY/,/-D/ { /-D/!d; }' -e '/-DPROD_AGW_PUBLIC_KEY/d' | \
-          sed -e '/-DDEV_AGW_PUBLIC_KEY/,/-D/ { /-D/!d; }' -e '/-DDEV_AGW_PUBLIC_KEY/d'
+        set -o pipefail
+        deploy/build.sh -t ios 2>&1 | \
+          sed -e '/-DPROD_AGW_PUBLIC_KEY/d' -e '/-DDEV_AGW_PUBLIC_KEY/d'
 
 # ------------------------------------------------------
 
@@ -479,11 +504,12 @@ jobs:
     runs-on: macos-15
 
     needs: Bake-Prebuilts-MacOS
-    if: ${{ always() }}
+    if: ${{ !cancelled() }}
 
     env:
       QT_VERSION: 6.10.1
       KEYCHAIN_PASSWORD: ""
+      MACOS_UNSIGNED_BUILD: ${{ (secrets.MAC_APP_CERT_CERT == '' || secrets.MAC_INSTALLER_SIGNER_CERT == '') && '1' || '0' }}
 
       PROD_AGW_PUBLIC_KEY: ${{ secrets.PROD_AGW_PUBLIC_KEY }}
       PROD_S3_ENDPOINT: ${{ secrets.PROD_S3_ENDPOINT }}
@@ -501,12 +527,17 @@ jobs:
         submodules: 'true'
         fetch-depth: 10
 
+    - name: 'Install the required Go toolchain'
+      uses: ./.github/actions/setup-routing-go
+
     - uses: ./.github/actions/apple-setup-keychain
+      if: env.MACOS_UNSIGNED_BUILD != '1'
       id: setup-keychain
       with:
         keychain-password: ${{ env.KEYCHAIN_PASSWORD }}
 
     - uses: ./.github/actions/apple-install-cert
+      if: env.MACOS_UNSIGNED_BUILD != '1'
       with:
         keychain-path: ${{ steps.setup-keychain.outputs.keychain-path }}
         keychain-password: ${{ env.KEYCHAIN_PASSWORD }}
@@ -514,11 +545,16 @@ jobs:
         cert-password: ${{ secrets.MAC_APP_CERT_PW }}
 
     - uses: ./.github/actions/apple-install-cert
+      if: env.MACOS_UNSIGNED_BUILD != '1'
       with:
         keychain-path: ${{ steps.setup-keychain.outputs.keychain-path }}
         keychain-password: ${{ env.KEYCHAIN_PASSWORD }}
         cert-base64: ${{ secrets.MAC_INSTALLER_SIGNER_CERT }}
         cert-password: ${{ secrets.MAC_INSTALL_CERT_PW }}
+
+    - name: 'Explain unsigned validation'
+      if: env.MACOS_UNSIGNED_BUILD == '1'
+      run: echo '::notice::Distribution certificates are not configured. Building an unsigned macOS package for validation.'
 
     - name: 'Setup xcode'
       uses: maxim-lobanov/setup-xcode@v1
@@ -551,13 +587,13 @@ jobs:
     - name: 'Build project'
       env:
         QT_INSTALL_DIR: ${{ runner.temp }}
-        CODESIGN_SIGNATURE: ${{ secrets.MAC_SIGNER_ID }}
-        CODESIGN_INSTALLER_SIGNATURE: ${{ secrets.MAC_INSTALLER_SIGNER_ID }}
+        CODESIGN_SIGNATURE: ${{ env.MACOS_UNSIGNED_BUILD != '1' && secrets.MAC_SIGNER_ID || '' }}
+        CODESIGN_INSTALLER_SIGNATURE: ${{ env.MACOS_UNSIGNED_BUILD != '1' && secrets.MAC_INSTALLER_SIGNER_ID || '' }}
         CODESIGN_KEYCHAIN: ${{ steps.setup-keychain.outputs.keychain-path }}
         CODESIGN_INSTALLER_KEYCHAIN: ${{ steps.setup-keychain.outputs.keychain-path }}
-        NOTARYTOOL_TEAM_ID: ${{ secrets.MAC_TEAM_ID }}
-        NOTARYTOOL_EMAIL: ${{ secrets.APPLE_DEV_EMAIL }}
-        NOTARYTOOL_PASSWORD: ${{ secrets.APPLE_DEV_PASSWORD }}
+        NOTARYTOOL_TEAM_ID: ${{ env.MACOS_UNSIGNED_BUILD != '1' && secrets.MAC_TEAM_ID || '' }}
+        NOTARYTOOL_EMAIL: ${{ env.MACOS_UNSIGNED_BUILD != '1' && secrets.APPLE_DEV_EMAIL || '' }}
+        NOTARYTOOL_PASSWORD: ${{ env.MACOS_UNSIGNED_BUILD != '1' && secrets.APPLE_DEV_PASSWORD || '' }}
         AMNEZIA_BUILD_TESTS: ON
       shell: bash
       run: deploy/build.sh --generator Ninja --installer all
@@ -629,10 +665,14 @@ jobs:
     runs-on: macos-26
 
     needs: Bake-Prebuilts-MacOS-NE
-    if: ${{ always() }}
+    if: ${{ !cancelled() }}
 
     env:
       QT_VERSION: 6.10.1
+      KEYCHAIN_PASSWORD: ""
+      MACOS_NE_UNSIGNED_BUILD: ${{ (secrets.MAC_APP_CERT_CERT == '' || secrets.MAC_APP_PROVISIONING_PROFILE == '' || secrets.MAC_NE_PROVISIONING_PROFILE == '') && '1' || '0' }}
+      CMAKE_CONFIGURATION_TYPES: Release
+      CONAN_INSTALL_BUILD_CONFIGURATIONS: Release
 
       MAC_TEAM_ID: ${{ secrets.MAC_TEAM_ID }}
 
@@ -656,13 +696,36 @@ jobs:
         submodules: 'true'
         fetch-depth: 10
 
+    - name: 'Install the required Go toolchain'
+      uses: ./.github/actions/setup-routing-go
+
+    - uses: ./.github/actions/apple-setup-keychain
+      if: env.MACOS_NE_UNSIGNED_BUILD != '1'
+      id: setup-keychain
+      with:
+        keychain-password: ${{ env.KEYCHAIN_PASSWORD }}
+
+    - uses: ./.github/actions/apple-install-cert
+      if: env.MACOS_NE_UNSIGNED_BUILD != '1'
+      with:
+        keychain-path: ${{ steps.setup-keychain.outputs.keychain-path }}
+        keychain-password: ${{ env.KEYCHAIN_PASSWORD }}
+        cert-base64: ${{ secrets.MAC_APP_CERT_CERT }}
+        cert-password: ${{ secrets.MAC_APP_CERT_PW }}
+
     - uses: ./.github/actions/apple-setup-provisioning-profile
+      if: env.MACOS_NE_UNSIGNED_BUILD != '1'
       with:
         provisioning_profile_base64: ${{ secrets.MAC_APP_PROVISIONING_PROFILE }}
 
     - uses: ./.github/actions/apple-setup-provisioning-profile
+      if: env.MACOS_NE_UNSIGNED_BUILD != '1'
       with:
         provisioning_profile_base64: ${{ secrets.MAC_NE_PROVISIONING_PROFILE }}
+
+    - name: 'Explain unsigned validation'
+      if: env.MACOS_NE_UNSIGNED_BUILD == '1'
+      run: echo '::notice::macOS Network Extension signing is not configured. Compiling the app and extension for validation only.'
 
     - name: 'Setup xcode'
       uses: maxim-lobanov/setup-xcode@v1
@@ -681,18 +744,6 @@ jobs:
         set-env: 'true'
         extra: '--base ${{ env.QT_MIRROR }}'
 
-    - name: 'Install go'
-      uses: actions/setup-go@v5
-      with:
-        go-version: '1.24'
-        cache: false
-
-    - name: 'Setup gomobile'
-      run: |
-          export PATH=$PATH:~/go/bin
-          go install golang.org/x/mobile/cmd/gomobile@latest
-          gomobile init
-
     - name: 'Setup python'
       uses: actions/setup-python@v6
       with:
@@ -702,15 +753,16 @@ jobs:
       run: pip install "conan==2.28.0"
 
     - name: 'Build project'
-      run: |
-        export QT_BIN_DIR="${{ runner.temp }}/Qt/${{ env.QT_VERSION }}/macos/bin"
-        bash deploy/build_macos_ne.sh
+      shell: bash
+      env:
+        QT_INSTALL_DIR: ${{ runner.temp }}
+      run: deploy/build.sh -t macos-ne
 
     - name: 'Upload unpacked artifact'
       uses: actions/upload-artifact@v4
       with:
         name: AmneziaVPN_MacOS_unpacked
-        path: deploy/build/client/AmneziaVPN.app
+        path: deploy/build/client/Release/*.app
         retention-days: 7
 
 # ------------------------------------------------------
@@ -773,7 +825,7 @@ jobs:
     runs-on: android-runner
 
     needs: Bake-Prebuilts-Android
-    if: ${{ always() }}
+    if: ${{ !cancelled() }}
 
     strategy:
       fail-fast: false
@@ -820,6 +872,9 @@ jobs:
       uses: actions/checkout@v4
       with:
         submodules: 'true'
+
+    - name: 'Install the required Go toolchain'
+      uses: ./.github/actions/setup-routing-go
 
     - name: 'Install desktop Qt'
       uses: jurplel/install-qt-action@v4.3.1

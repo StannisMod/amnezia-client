@@ -47,10 +47,16 @@ git submodule update --init --recursive
 cd native/routing
 go mod download
 go mod verify
-go test -mod=readonly -tags with_gvisor -race -count=3 ./...
+race_mod=$(python3 prepare_race.py --output "${TMPDIR:-/tmp}")
+go test -mod=readonly -modfile="$race_mod" -tags with_gvisor -race -count=3 ./...
 go vet -tags with_gvisor ./...
 cd ../..
 ```
+
+The temporary modfile applies the upstream ARM64 race-only CAS fix to private
+copies of the two pinned gVisor modules; production dependencies and module
+caches are unchanged. See [PERFORMANCE.md](PERFORMANCE.md) for the regression
+proof, measured ordinary/race costs and removal criteria.
 
 Full-client entry points are `deploy/build.sh --generator Ninja --installer all`
 on Linux, `deploy/build.bat --installer all` on Windows,
@@ -111,3 +117,32 @@ Installed Linux CI can opt into `--ci-rescue` on disposable root runners. Its in
 Installed Linux workflows now use `run_linux_service_container.py` with a privileged disposable Ubuntu 22.04 systemd container, its own bridge/PID/cgroup namespaces, system D-Bus and real systemd-resolved. The checkout and Qt toolchain are mounted read-only; the host network, system D-Bus and Docker socket are not exposed. JSON and service/resolver journal diagnostics are copied out even on failure, then the container is removed from outside its network namespace. This retains the production service and resolver integration checks while keeping the CI control connection outside the VPN.
 
 For source-only Apple dependency builds, set `AMNEZIA_CONAN_PREBUILTS=OFF` when calling `deploy/build.sh`. This skips registration of the optional Amnezia binary mirror on a fresh Conan home and uses the exported local recipes plus the normal Conan sources. Existing Conan homes may already have that remote configured; use a clean Conan home for the same CI behavior.
+
+### Domain endpoint recovery
+
+`client/tests/endpoints` covers parsing, multi-answer attempts, real local IPC
+acknowledgements and cancellation, plus a controlled UDP DNS server. The latter
+checks that only matching questions/transaction IDs supply addresses, malformed
+compression cannot hang the parser, and cancellation/timeouts revoke the socket
+exception before completion. Android and portable Swift tests cover answer
+reordering, newly published IPs and a finite recovery budget.
+
+The Linux installed-service acceptance also runs
+`scripts/routing/endpoint_migration_acceptance.py` with
+`routing-endpoint-probe` (built alongside `routing-service-probe`). A disposable
+network namespace hosts DNS and two UDP front doors to one real AWG peer. It
+changes the A record and drops the old path without changing keys, waits for the
+production session watchdog to reconnect through actual service IPC, and proves
+VPN traffic works again with strict KillSwitch both off and on. It checks that
+unrelated native traffic stays blocked during strict DNS bootstrap and that an
+ordinary DNS socket remains blocked after the temporary exception is removed.
+This does not replace Android/iOS device handover or macOS PF/WFP acceptance.
+
+Desktop endpoint bootstrap queries only the peer hostname through the privileged
+service's private UDP socket, using public resolvers 1.1.1.1 and 8.8.8.8 on
+alternating attempts. Linux/PF exceptions are restricted to its owned source port,
+root UID, resolver IPv4 and UDP/53; WFP already permits the service image. The
+saved hostname and keys are retained. This bypasses system DNS caches and tunnel
+DNS, but private/split-horizon names and networks blocking both public UDP DNS
+resolvers are not supported by this bootstrap path. Truncated DNS replies fail
+closed; there is no TCP fallback. Destination-routing DNS is separate.

@@ -25,6 +25,7 @@ struct WGConfig: Decodable {
   let routingTransport: String?
   let routingConfig: String?
   let routingDNSPath: String?
+  let routingDNSConfig: String?
 
   enum CodingKeys: String, CodingKey {
     case initPacketMagicHeader = "H1", responsePacketMagicHeader = "H2"
@@ -54,6 +55,7 @@ struct WGConfig: Decodable {
     case routingTransport
     case routingConfig
     case routingDNSPath
+    case routingDNSConfig
   }
 
   var settings: String {
@@ -158,7 +160,7 @@ struct WGConfig: Decodable {
     PublicKey = \(serverPublicKey)
     \(presharedKey == nil ? "" : "PresharedKey = \(presharedKey!)")
     AllowedIPs = \(allowedIPs.joined(separator: ", "))
-    Endpoint = \(hostName):\(port)
+    Endpoint = \(hostName.contains(":") && !hostName.hasPrefix("[") ? "[\(hostName)]" : hostName):\(port)
     \(persistentKeepAlive == nil ? "" : "PersistentKeepalive = \(persistentKeepAlive!)")
     """
   }

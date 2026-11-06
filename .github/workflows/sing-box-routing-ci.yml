@@ -52,13 +52,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-22.04, windows-2022, macos-15]
+        os: [ubuntu-22.04, windows-2022, macos-15, macos-15-intel]
     runs-on: ${{ matrix.os }}
     defaults:
       run:
         working-directory: native/routing
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v6
+        with: {python-version: '3.12'}
       - uses: actions/setup-go@v5
         with:
           go-version-file: native/routing/go.mod
@@ -79,7 +81,14 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          go test -mod=readonly -tags with_gvisor -race -count=3 -json ./... | tee test-results.jsonl
+          package_args=()
+          if [ "$RUNNER_OS" = macOS ]; then
+            # Avoid multiplying the race-instrumented VPN fixtures across
+            # several test processes on the shared Apple runner.
+            package_args=(-p 1)
+          fi
+          race_mod=$(python prepare_race.py --output "$RUNNER_TEMP")
+          go test -mod=readonly -modfile="$race_mod" -tags with_gvisor -race -count=3 "${package_args[@]}" -json ./... | tee test-results.jsonl
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -268,6 +277,8 @@ jobs:
         id: build
         shell: cmd
         env:
+          CMAKE_CONFIGURATION_TYPES: Release
+          CONAN_INSTALL_BUILD_CONFIGURATIONS: Release
           QT_INSTALL_DIR: ${{ runner.temp }}
           AMNEZIA_BUILD_TESTS: 'ON'
         run: |
@@ -279,7 +290,12 @@ jobs:
       - name: Windows settings and application-scope regression tests
         env:
           QT_QPA_PLATFORM: offscreen
-        run: ctest --test-dir deploy/build/client/tests -C Release -V --timeout 120 --output-junit qt-regression.xml
+        run: |
+          ctest --test-dir deploy/build/client/tests -C Release -V --timeout 120 --output-junit qt-regression.xml
+          $testResult = $LASTEXITCODE
+          $report = 'deploy/build/client/tests/server-edit-test.txt'
+          if (Test-Path $report) { Get-Content $report }
+          exit $testResult
       - name: Record baseline result
         if: always()
         env:
@@ -339,6 +355,7 @@ jobs:
           path: |
             client-build.log
             routing-build-manifest.json
+            deploy/build/client/tests/server-edit-test.txt
             deploy/build/client/tests/qt-regression.xml
             deploy/build/client/tests/Testing/Temporary/LastTest.log
             deploy/build/AmneziaVPN_*_windows_x64.exe
@@ -469,7 +486,9 @@ jobs:
 
   client-ios:
     needs: cancel-superseded
-    runs-on: macos-15
+    # iOS remains arm64; use an Intel build host while hosted macOS arm64
+    # capacity is constrained. Both native macOS CPU lanes remain above.
+    runs-on: macos-15-intel
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
@@ -496,7 +515,7 @@ jobs:
           for symbol in _AmneziaRoutingStart _AmneziaRoutingFeed _AmneziaRoutingStop _AmneziaRoutingStats _wgTurnOn; do
             grep -E " T $symbol$" "$RUNNER_TEMP/routing-apple-symbols.txt"
           done
-          xcrun --sdk iphoneos swiftc -typecheck -target arm64-apple-ios15.0 -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" -import-objc-header "$module/amnezia_routing.h" client/platforms/ios/WGConfig.swift client/platforms/ios/RoutingPacketTunnel.swift
+          xcrun --sdk iphoneos swiftc -typecheck -target arm64-apple-ios15.0 -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" -import-objc-header "$module/amnezia_routing.h" client/platforms/ios/WGConfig.swift client/platforms/ios/EndpointRefreshPolicy.swift client/platforms/ios/RoutingPacketTunnel.swift
           (cd "$module" && go build -mod=readonly -tags with_gvisor,amnezia_apple_bridge -buildmode=c-shared -o "$RUNNER_TEMP/routing-apple-host.dylib" .)
           python3 scripts/routing/check_packet_flow_abi.py "$RUNNER_TEMP/routing-apple-host.dylib"
       - uses: actions/setup-python@v6
@@ -525,6 +544,8 @@ jobs:
         env:
           QT_INSTALL_DIR: ${{ runner.temp }}
           IOS_UNSIGNED_BUILD: '1'
+          CMAKE_CONFIGURATION_TYPES: Release
+          CONAN_INSTALL_BUILD_CONFIGURATIONS: Release
           # Exercise local recipes without depending on the optional binary mirror.
           AMNEZIA_CONAN_PREBUILTS: 'OFF'
         run: |

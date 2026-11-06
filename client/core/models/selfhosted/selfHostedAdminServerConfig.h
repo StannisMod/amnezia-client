@@ -19,9 +19,12 @@ namespace amnezia
 using namespace ContainerEnumNS;
 
 struct SelfHostedAdminServerConfig {
+    QJsonObject connectionUpdates;
     QString description;
     QString displayName;
     QString hostName;
+    // Optional AWG/WireGuard endpoint; hostName remains the SSH management address.
+    QString vpnHostName;
     QMap<DockerContainer, ContainerConfig> containers;
     DockerContainer defaultContainer;
     QString dns1;

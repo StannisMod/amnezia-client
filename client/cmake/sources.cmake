@@ -1,6 +1,7 @@
 set(CLIENT_ROOT_DIR ${CMAKE_CURRENT_LIST_DIR}/..)
 
 set(HEADERS ${HEADERS}
+    ${CLIENT_ROOT_DIR}/core/utils/connectionUpdates.h
     ${CLIENT_ROOT_DIR}/core/utils/migrations.h
     ${CLIENT_ROOT_DIR}/../ipc/ipc.h
     ${CLIENT_ROOT_DIR}/amneziaApplication.h
@@ -21,11 +22,15 @@ set(HEADERS ${HEADERS}
     ${CLIENT_ROOT_DIR}/core/controllers/coreController.h
     ${CLIENT_ROOT_DIR}/core/controllers/coreSignalHandlers.h
     ${CLIENT_ROOT_DIR}/core/controllers/gatewayController.h
+    ${CLIENT_ROOT_DIR}/core/utils/selfhosted/connectionUpdatesCommand.h
+    ${CLIENT_ROOT_DIR}/core/utils/selfhosted/pinnedSshSession.h
     ${CLIENT_ROOT_DIR}/core/utils/selfhosted/sshSession.h
     ${CLIENT_ROOT_DIR}/core/controllers/serversController.h
     ${CLIENT_ROOT_DIR}/core/controllers/selfhosted/usersController.h
     ${CLIENT_ROOT_DIR}/core/controllers/selfhosted/installController.h
     ${CLIENT_ROOT_DIR}/core/controllers/selfhosted/exportController.h
+    ${CLIENT_ROOT_DIR}/core/controllers/selfhosted/serverMigrationController.h
+    ${CLIENT_ROOT_DIR}/core/controllers/selfhosted/connectionUpdatesController.h
     ${CLIENT_ROOT_DIR}/core/controllers/selfhosted/importController.h
     ${CLIENT_ROOT_DIR}/core/installers/installerBase.h
     ${CLIENT_ROOT_DIR}/core/installers/awgInstaller.h
@@ -101,6 +106,7 @@ if(NOT ANDROID)
 endif()
 
 set(SOURCES ${SOURCES}
+    ${CLIENT_ROOT_DIR}/core/utils/connectionUpdates.cpp
     ${CLIENT_ROOT_DIR}/core/utils/migrations.cpp
     ${CLIENT_ROOT_DIR}/amneziaApplication.cpp
     ${CLIENT_ROOT_DIR}/core/utils/errorStrings.cpp
@@ -111,11 +117,14 @@ set(SOURCES ${SOURCES}
     ${CLIENT_ROOT_DIR}/core/controllers/coreController.cpp
     ${CLIENT_ROOT_DIR}/core/controllers/coreSignalHandlers.cpp
     ${CLIENT_ROOT_DIR}/core/controllers/gatewayController.cpp
+    ${CLIENT_ROOT_DIR}/core/utils/selfhosted/pinnedSshSession.cpp
     ${CLIENT_ROOT_DIR}/core/utils/selfhosted/sshSession.cpp
     ${CLIENT_ROOT_DIR}/core/controllers/serversController.cpp
     ${CLIENT_ROOT_DIR}/core/controllers/selfhosted/usersController.cpp
     ${CLIENT_ROOT_DIR}/core/controllers/selfhosted/installController.cpp
     ${CLIENT_ROOT_DIR}/core/controllers/selfhosted/exportController.cpp
+    ${CLIENT_ROOT_DIR}/core/controllers/selfhosted/serverMigrationController.cpp
+    ${CLIENT_ROOT_DIR}/core/controllers/selfhosted/connectionUpdatesController.cpp
     ${CLIENT_ROOT_DIR}/core/controllers/selfhosted/importController.cpp
     ${CLIENT_ROOT_DIR}/core/installers/installerBase.cpp
     ${CLIENT_ROOT_DIR}/core/installers/awgInstaller.cpp

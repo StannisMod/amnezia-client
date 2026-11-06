@@ -26,6 +26,7 @@ set(CMAKE_AUTOUIC ON)
 
 qt6_add_resources(TEST_QRC
     ../server_scripts/serverScripts.qrc
+    ../resources/countries.qrc
 )
 
 set(_main_cpp "${CMAKE_CURRENT_SOURCE_DIR}/../main.cpp")
@@ -61,6 +62,14 @@ target_include_directories(test_common PUBLIC
 )
 
 if(NOT ANDROID)
+    add_executable(test_server_migration_ui testServerMigrationUi.cpp migration/ui.qrc)
+    target_link_libraries(test_server_migration_ui PRIVATE Qt6::Test test_common)
+    add_test(NAME ServerMigrationUiTest COMMAND test_server_migration_ui)
+
+    add_executable(test_connection_updates_controller testConnectionUpdatesController.cpp)
+    target_link_libraries(test_connection_updates_controller PRIVATE Qt6::Test test_common)
+    add_test(NAME ConnectionUpdatesControllerTest COMMAND test_connection_updates_controller)
+
     add_executable(test_multiple_imports
         testMultipleImports.cpp
     )
@@ -96,6 +105,12 @@ if(NOT ANDROID)
         Qt6::Test
         test_common
     )
+
+    if(AMNEZIA_DESKTOP OR WIN32 OR (UNIX AND NOT APPLE))
+        add_executable(test_protocol_disconnect testProtocolDisconnect.cpp)
+        target_link_libraries(test_protocol_disconnect PRIVATE Qt6::Test test_common)
+        add_test(NAME ProtocolDisconnectTest COMMAND test_protocol_disconnect)
+    endif()
 
     add_executable(test_signal_order
         testSignalOrder.cpp
@@ -423,7 +438,10 @@ enable_testing()
 
 if(NOT ANDROID)
     add_test(NAME MultipleImportsTest              COMMAND test_multiple_imports)
-    add_test(NAME ServerEditTest                   COMMAND test_server_edit)
+    # Windows GUI executables may not expose QTest's default console output.
+    # Keep a file report as well so a failing SSH/UI assertion is diagnosable.
+    add_test(NAME ServerEditTest COMMAND test_server_edit
+        -o "${CMAKE_CURRENT_BINARY_DIR}/server-edit-test.txt,txt" -o "-,txt" -v2)
     add_test(NAME DefaultServerChangeTest          COMMAND test_default_server_change)
     add_test(NAME ServerEdgeCasesTest              COMMAND test_server_edge_cases)
     add_test(NAME SignalOrderTest                  COMMAND test_signal_order)
@@ -450,4 +468,5 @@ amnezia_copy_runtime_dlls()
 
 if(NOT ANDROID)
     add_subdirectory(routing)
+    add_subdirectory(connection-updates)
 endif()

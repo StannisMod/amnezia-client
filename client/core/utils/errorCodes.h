@@ -48,6 +48,10 @@ namespace amnezia
         ServerDataVolumeNotRemoved = 225,
         XrayKeyGenerationFailed = 226,
         XrayKeyMigrationNeedsConfirm = 227,
+        ProtocolUpdateRejected = 228,
+        ProtocolUpdateRolledBack = 229,
+        ProtocolUpdateRollbackFailed = 230,
+        ProtocolUpdateOutcomeUnknown = 231,
 
         // Ssh connection errors
         SshRequestDeniedError = 300,
@@ -76,6 +80,9 @@ namespace amnezia
         OpenVpnUnknownError = 701,
         OpenVpnTapAdapterError = 702,
         AddressPoolError = 703,
+        VpnEndpointResolutionFailed = 704,
+        VpnEndpointRecoveryFailed = 705,
+        VpnEndpointCleanupFailed = 706,
 
         // 3rd party utils errors
         OpenSslFailed = 800,
@@ -128,6 +135,8 @@ namespace amnezia
         UnspecifiedError = 1203,
         FatalError = 1204,
         AbortError = 1205,
+
+        ConnectionUpdateTokenRevocationPending = 1400,
 
         // Billing errors
         BillingCanceled = 1300,

@@ -8,6 +8,10 @@
 
 #include "utils/testCoreController.h"
 #include "core/models/serverDescription.h"
+#include "core/utils/api/countryCatalog.h"
+#include "core/utils/constants/apiKeys.h"
+#include "ui/models/api/apiCountryModel.h"
+#include "ui/models/api/apiCountryListModel.h"
 #include "secureQSettings.h"
 #include "vpnConnection.h"
 
@@ -24,6 +28,29 @@ private:
     // TODO: add env vars for api
 
 private slots:
+    void testBundledCountriesAreGroupedByTheirRealRegion()
+    {
+        const auto catalog = countryCatalog::Catalog::bundled();
+        QVERIFY2(!catalog.isEmpty(), "Required country resource is missing from the test executable");
+        QVERIFY(catalog.version() > 0);
+        const auto *germany = catalog.find("DE", "DE");
+        QVERIFY(germany);
+        QCOMPARE(germany->regionId, QString("europe"));
+
+        ApiCountryModel source;
+        source.updateModel(QJsonArray{QJsonObject{
+            {apiDefs::key::serverCountryName, "Germany"},
+            {apiDefs::key::serverCountryCode, "DE"},
+            {apiDefs::key::serverCountryCodeL10n, "DE"}}}, "DE", "DE");
+        for (const auto &listId : {QString("picker"), QString("nativeConfigs")}) {
+            ApiCountryListModel list(&source, listId);
+            QCOMPARE(list.catalogVersion(), catalog.version());
+            const int row = list.rowForCountryCode("DE");
+            QVERIFY(row >= 0);
+            QCOMPARE(list.sectionRegionId(list.sectionKeyAtRow(row)), QString("europe"));
+        }
+    }
+
     void initTestCase()
     {
         QString testOrg = "AmneziaVPN-Test-" + QUuid::createUuid().toString();

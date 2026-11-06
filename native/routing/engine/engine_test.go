@@ -191,9 +191,7 @@ func testFakeIPSharedAddressEgress(t *testing.T, defaultPolicy rules.Action, rea
 		defer server.Shutdown()
 		addr := netip.MustParseAddrPort(pc.LocalAddr().String())
 		policy := rules.Config{Version: 1, Default: defaultPolicy, Rules: []rules.Rule{
-			{Kind: rules.CIDR, Value: "192.168.0.1", Action: rules.Direct},
-			{Kind: rules.CIDR, Value: "192.168.0.104", Action: rules.Direct},
-			{Kind: rules.Suffix, Value: "*.selectel.org", Action: rules.Direct},
+			{Kind: rules.Suffix, Value: "*.corp.example.test", Action: rules.Direct},
 			{Kind: rules.Suffix, Value: "*.ru", Action: rules.Direct},
 		}}
 		if defaultPolicy == rules.Direct {
@@ -255,7 +253,12 @@ func testFakeIPSharedAddressEgress(t *testing.T, defaultPolicy rules.Action, rea
 		defaultObserver = "DIRECT"
 		expectedDirect++
 	}
-	for _, v := range []struct{ domain, want string }{{"a.direct.ru", "DIRECT"}, {"b.vpn.test", "TUNNEL"}, {"unlisted.test", defaultObserver}} {
+	flows := []struct{ domain, want string }{{"a.direct.ru", "DIRECT"}, {"b.vpn.test", "TUNNEL"}, {"unlisted.test", defaultObserver}}
+	if realDNS {
+		flows = append(flows, struct{ domain, want string }{"git.corp.example.test", "DIRECT"})
+		expectedDirect++
+	}
+	for _, v := range flows {
 		query := new(dns.Msg)
 		query.SetQuestion(dns.Fqdn(v.domain), dns.TypeA)
 		response, e := dnsRouter.Exchange(ctx, query, adapter.DNSQueryOptions{Transport: fake})

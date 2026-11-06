@@ -98,8 +98,12 @@ if exist "%VCVARS_PATH%" (
 :: build project and installers
 set "_tests_arg="
 if defined AMNEZIA_BUILD_TESTS set "_tests_arg=-DAMNEZIA_BUILD_TESTS=%AMNEZIA_BUILD_TESTS%"
+set "_config_types_arg="
+if defined CMAKE_CONFIGURATION_TYPES set _config_types_arg="-DCMAKE_CONFIGURATION_TYPES=%CMAKE_CONFIGURATION_TYPES%"
+set "_conan_configs_arg="
+if defined CONAN_INSTALL_BUILD_CONFIGURATIONS set _conan_configs_arg="-DCONAN_INSTALL_BUILD_CONFIGURATIONS=%CONAN_INSTALL_BUILD_CONFIGURATIONS%"
 @echo on
-cmake -S "%PROJECT_DIR%" -B "%BUILD_DIR%" -DCMAKE_BUILD_TYPE=Release "-DCMAKE_PREFIX_PATH=%QT_ROOT_PATH%\msvc2022_%_qt_postfix_arg%" "-DCMAKE_VS_GLOBALS=UseMultiToolTask=true;EnforceProcessCountAcrossBuilds=true" %_tests_arg% || goto :fail
+cmake -S "%PROJECT_DIR%" -B "%BUILD_DIR%" -DCMAKE_BUILD_TYPE=Release "-DCMAKE_PREFIX_PATH=%QT_ROOT_PATH%\msvc2022_%_qt_postfix_arg%" "-DCMAKE_VS_GLOBALS=UseMultiToolTask=true;EnforceProcessCountAcrossBuilds=true" %_tests_arg% %_config_types_arg% %_conan_configs_arg% || goto :fail
 cmake --build "%BUILD_DIR%" --config Release -- /m  || goto :fail
 @echo off
 for %%I in (%ARG_BUILD_INSTALLERS%) do (

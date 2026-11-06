@@ -10,6 +10,8 @@
 #include "core/protocols/vpnProtocol.h"
 #include "core/controllers/serversController.h"
 
+class ConnectionUpdatesController;
+
 class ConnectionUiController : public QObject
 {
     Q_OBJECT
@@ -24,6 +26,7 @@ public:
                                     QObject *parent = nullptr);
 
     ~ConnectionUiController() = default;
+    void setConnectionUpdatesController(ConnectionUpdatesController *controller) { m_updates = controller; }
 
     bool isConnected() const;
     bool isConnectionInProgress() const;
@@ -57,6 +60,9 @@ private:
     Vpn::ConnectionState getCurrentConnectionState();
     void notifyConnectionBlocked(ErrorCode errorCode);
 
+    ConnectionUpdatesController *m_updates = nullptr;
+    quint64 m_refreshGeneration = 0;
+    bool m_refreshPending = false;
     ConnectionController* m_connectionController;
     ServersController* m_serversController;
 

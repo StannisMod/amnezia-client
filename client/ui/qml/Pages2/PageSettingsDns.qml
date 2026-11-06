@@ -7,6 +7,7 @@ import Style 1.0
 
 import "./"
 import "../Controls2"
+import "../Controls2/TextTypes"
 import "../Config"
 import "../Components"
 
@@ -14,7 +15,6 @@ PageType {
     id: root
 
     property bool isServerFromApi: ServersUiController.isDefaultServerFromApi
-
     Component.onCompleted: {
         if (root.isServerFromApi) {
             PageController.showNotificationMessage(qsTr("Default server does not support custom DNS"))
@@ -42,7 +42,7 @@ PageType {
                 Layout.fillWidth: true
 
                 title: qsTr("DNS servers")
-                description: qsTr("If AmneziaDNS is not used or installed")
+                description: qsTr("Reconnect to apply DNS changes.")
             }
 
             ColumnLayout {
@@ -54,10 +54,17 @@ PageType {
 
                 spacing: 12
 
-                enabled: !root.isServerFromApi
+                enabled: !ConnectionController.isConnected
 
+                BodyTextType {
+                    Layout.fillWidth: true
+                    visible: !root.isServerFromApi && IpSplitTunnelingController.singBoxRoutingEnabled
+                    text: qsTr("DNS follows site routing automatically. Direct sites use your network DNS; VPN sites use the DNS selected by Amnezia settings.")
+                    wrapMode: Text.WordWrap
+                }
                 TextFieldType {
                     id: primaryDns
+                    enabled: !root.isServerFromApi
 
                     Layout.fillWidth: true
 
@@ -71,6 +78,7 @@ PageType {
 
                 TextFieldType {
                     id: secondaryDns
+                    enabled: !root.isServerFromApi
 
                     Layout.fillWidth: true
 
@@ -97,10 +105,11 @@ PageType {
 
         spacing: 12
 
-        enabled: !root.isServerFromApi
+        enabled: !ConnectionController.isConnected
 
         ButtonType {
             id: restoreDefaultButton
+            enabled: !root.isServerFromApi
 
             Layout.fillWidth: true
 
@@ -113,10 +122,12 @@ PageType {
                 var noButtonText = qsTr("Cancel")
 
                 var yesButtonFunction = function() {
-                    SettingsController.primaryDns = "1.1.1.1"
-                    primaryDns.textField.text = SettingsController.primaryDns
-                    SettingsController.secondaryDns = "1.0.0.1"
-                    secondaryDns.textField.text = SettingsController.secondaryDns
+                    if (!root.isServerFromApi) {
+                        SettingsController.primaryDns = "1.1.1.1"
+                        primaryDns.textField.text = SettingsController.primaryDns
+                        SettingsController.secondaryDns = "1.0.0.1"
+                        secondaryDns.textField.text = SettingsController.secondaryDns
+                    }
                     PageController.showNotificationMessage(qsTr("Settings have been reset"))
                 }
                 var noButtonFunction = function() {
@@ -128,23 +139,28 @@ PageType {
 
         ButtonType {
             id: saveButton
+            enabled: !root.isServerFromApi
 
             Layout.fillWidth: true
 
             text: qsTr("Save")
 
             onClicked: {
-                if (primaryDns.textField.text === "") {
+                if (ConnectionController.isConnected) {
+                    PageController.showNotificationMessage(qsTr("Disconnect before changing DNS settings"))
+                    return
+                }
+                if (!root.isServerFromApi && primaryDns.textField.text === "") {
                     primaryDns.errorText = qsTr("Primary DNS cannot be empty")
                     return
                 }
                 primaryDns.errorText = ""
                 secondaryDns.errorText = ""
 
-                if (primaryDns.textField.text !== SettingsController.primaryDns) {
+                if (!root.isServerFromApi && primaryDns.textField.text !== SettingsController.primaryDns) {
                     SettingsController.primaryDns = primaryDns.textField.text
                 }
-                if (secondaryDns.textField.text !== SettingsController.secondaryDns) {
+                if (!root.isServerFromApi && secondaryDns.textField.text !== SettingsController.secondaryDns) {
                     SettingsController.secondaryDns = secondaryDns.textField.text
                 }
                 PageController.showNotificationMessage(qsTr("Settings saved"))

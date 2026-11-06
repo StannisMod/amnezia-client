@@ -485,12 +485,11 @@ bool Daemon::deactivate(bool emitSignals) {
     }
   }
 
-  if (emitSignals) {
-    emit disconnected();
-  }
+  m_handshakeTimer.stop();
 
-  // Cleanup DNS
-  if (!dnsutils()->restoreResolvers()) {
+  // Cleanup DNS before acknowledging teardown to a domain endpoint recovery.
+  const bool dnsRestored = dnsutils()->restoreResolvers();
+  if (!dnsRestored) {
     logger.warning() << "Failed to restore DNS resolvers.";
   }
 
@@ -512,8 +511,10 @@ bool Daemon::deactivate(bool emitSignals) {
   m_excludedAddrSet.clear();
 
   m_connections.clear();
-  // Delete the interface
-  return wgutils()->deleteInterface();
+  // The acknowledgment must follow DNS, route and interface cleanup.
+  const bool deleted = wgutils()->deleteInterface() || !wgutils()->interfaceExists();
+  if (emitSignals) emit disconnected();
+  return deleted && dnsRestored;
 }
 
 QString Daemon::logs() {
@@ -605,6 +606,7 @@ QJsonObject Daemon::getStatus() {
     json.insert("deviceIpv4Address",
                 QJsonValue(connection.m_config.m_deviceIpv4Address));
     json.insert("date", connection.m_date.toString());
+    json.insert("lastHandshakeMs", QJsonValue(static_cast<double>(status.m_handshake)));
     json.insert("txBytes", QJsonValue(status.m_txBytes));
     json.insert("rxBytes", QJsonValue(status.m_rxBytes));
     return json;

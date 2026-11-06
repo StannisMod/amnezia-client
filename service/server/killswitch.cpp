@@ -1,4 +1,5 @@
 #include "killswitch.h"
+#include "secureQSettings.h"
 
 
 #include <QApplication>
@@ -489,4 +490,20 @@ bool KillSwitch::enableKillSwitch(const QJsonObject &configStr, int vpnAdapterIn
     MacOSFirewall::setAnchorEnabled(QStringLiteral("400.allowPIA"), true);
 #endif
     return true;
+}
+
+bool KillSwitch::endpointDnsAllowed(quint16 port, const QHostAddress &resolver, bool enabled)
+{
+    if (port == 0 || (resolver != QHostAddress("1.1.1.1") && resolver != QHostAddress("8.8.8.8"))) return false;
+#ifdef Q_OS_LINUX
+    return LinuxFirewall::setEndpointDnsAllowed(port, resolver.toString(), enabled);
+#elif defined(Q_OS_MACOS)
+    return MacOSFirewall::setEndpointDnsAllowed(port, resolver.toString(), enabled);
+#elif defined(Q_OS_WIN)
+    // Strict WFP policy already permits the current privileged service image.
+    // Use its own socket, never the system DNS client process.
+    return true;
+#else
+    return false;
+#endif
 }

@@ -4,6 +4,13 @@
 #include <QSignalSpy>
 #include <QLocale>
 #include <QTest>
+#include <QQmlApplicationEngine>
+#include <QQmlComponent>
+#include <QQmlContext>
+#include <QQmlExpression>
+#include <QJSValue>
+#include <QDir>
+#include <QFileInfo>
 
 #include "utils/testCoreController.h"
 #include "ui/controllers/settingsUiController.h"
@@ -24,6 +31,42 @@ private:
     SecureQSettings* m_settings;
 
 private slots:
+    void testDnsPageUsesExistingSettingsWithoutPolicyEditor() {
+        const auto pagePath = QFINDTESTDATA("../ui/qml/Pages2/PageSettingsDns.qml");
+        QVERIFY(!pagePath.isEmpty());
+        QQmlApplicationEngine engine;
+        engine.addImportPath(QFileInfo(pagePath).dir().absoluteFilePath("../Modules"));
+        PageLoader::declareQmlPageEnum();
+        SecureQSettings settings("AmneziaVPN-Qml-DNS-" + QUuid::createUuid().toString(), "test", nullptr, false);
+        // Restored advanced settings must neither appear in the editor nor
+        // prevent using the ordinary DNS controls or selecting other servers.
+        settings.setValue("Conf/splitDnsEnabled", true);
+        settings.setValue("Conf/splitDnsV1", QVariantMap{{"version", 999}});
+        auto connection = QSharedPointer<VpnConnection>::create(nullptr, nullptr);
+        TestCoreController core(connection, &settings, &engine);
+        core.m_appSettingsRepository->setSingBoxRoutingEnabled(true);
+        QQmlComponent component(&engine, QUrl::fromLocalFile(pagePath));
+        QScopedPointer<QObject> page(component.create());
+        QVERIFY2(page, qPrintable(component.errorString()));
+        page->setProperty("enableTimer", false);
+        const auto evaluate = [&](const QString &code) {
+            QQmlExpression expression(qmlContext(page.data()), page.data(), code);
+            auto value = expression.evaluate();
+            if (expression.hasError()) qWarning() << expression.error();
+            return value;
+        };
+        QVERIFY(evaluate("primaryDns.visible && secondaryDns.visible && saveButton.enabled").toBool());
+        evaluate("primaryDns.textField.text = '9.9.9.9'; secondaryDns.textField.text = '149.112.112.112'; saveButton.clicked()");
+        QCOMPARE(core.m_appSettingsRepository->primaryDns(), QString("9.9.9.9"));
+        QCOMPARE(core.m_appSettingsRepository->secondaryDns(), QString("149.112.112.112"));
+        QVERIFY(page->metaObject()->indexOfProperty("dnsDraft") < 0);
+        QVERIFY(core.m_settingsUiController->metaObject()->indexOfProperty("splitDnsEnabled") < 0);
+        page->setProperty("isServerFromApi", true);
+        QVERIFY(!evaluate("primaryDns.enabled || secondaryDns.enabled || saveButton.enabled").toBool());
+        // Obsolete settings no longer lock domain routing on.
+        QVERIFY(core.m_ipSplitTunnelingController->setSingBoxRoutingEnabled(false));
+        settings.clearSettings();
+    }
     void initTestCase() {
         QString testOrg = "AmneziaVPN-Test-" + QUuid::createUuid().toString();
         m_settings = new SecureQSettings(testOrg, "amnezia-client", nullptr, false);

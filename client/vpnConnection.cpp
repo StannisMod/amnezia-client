@@ -34,6 +34,7 @@
 #include "core/utils/domainRoutingConfig.h"
 #include "core/utils/serverConfigUtils.h"
 #include "vpnConnection.h"
+#include "core/utils/splitDnsConfig.h"
 
 using namespace ProtocolUtils;
 
@@ -353,7 +354,12 @@ void VpnConnection::connectToVpn(const QString &serverId, DockerContainer contai
     }
 #endif
 
-    m_remoteAddress = NetworkUtilities::getIPAddress(vpnConfiguration.value(configKey::hostName).toString());
+    const Proto transport = ProtocolUtils::protoFromString(vpnConfiguration.value(configKey::vpnProto).toString());
+    // AWG/WireGuard owns asynchronous endpoint resolution before activation.
+    // remoteAddress is used below only by the non-WireGuard legacy route path.
+    m_remoteAddress = (transport == Proto::Awg || transport == Proto::WireGuard)
+        ? vpnConfiguration.value(configKey::hostName).toString()
+        : NetworkUtilities::getIPAddress(vpnConfiguration.value(configKey::hostName).toString());
     setConnectionState(Vpn::ConnectionState::Connecting);
 
     m_vpnConfiguration = vpnConfiguration;
@@ -522,9 +528,12 @@ void VpnConnection::appendSplitTunnelingConfig()
         m_vpnConfiguration.insert("sing_box_routing", m_appSettingsRepository->isSitesSplitTunnelingEnabled()
             ? m_appSettingsRepository->domainRoutingConfig()
             : QJsonObject{{"version", 1}, {"default", "vpn"}, {"rules", QJsonArray()}});
-        const QHostAddress dns(m_vpnConfiguration.value(configKey::dns1).toString());
-        const bool localResolver = dns.isLoopback() || (!m_appSettingsRepository->useAmneziaDns() && dns.isPrivateUse());
-        m_vpnConfiguration.insert("sing_box_dns_path", localResolver ? "direct" : "vpn");
+        m_vpnConfiguration.insert("sing_box_dns_path", "vpn");
+        // Derive every routed session from the effective Amnezia DNS choice.
+        // Saved per-domain DNS overrides must never bypass the site's route.
+        m_vpnConfiguration.insert("sing_box_dns", amnezia::dns::forSiteRoutes(
+            m_vpnConfiguration.value("sing_box_routing").toObject(),
+            m_vpnConfiguration.value(configKey::dns1).toString()));
         // Only the flow engine applies destinations. The OS captures all flows
         // selected by the existing per-application VPN scope.
         m_vpnConfiguration.insert(configKey::splitTunnelType, amnezia::RouteMode::VpnAllSites);
@@ -532,6 +541,7 @@ void VpnConnection::appendSplitTunnelingConfig()
     } else {
         m_vpnConfiguration.remove("sing_box_routing");
         m_vpnConfiguration.remove("sing_box_dns_path");
+        m_vpnConfiguration.remove("sing_box_dns");
     }
 #endif
 
@@ -606,6 +616,12 @@ void VpnConnection::reconnectToVpn() {
 
     setConnectionState(Vpn::ConnectionState::Reconnecting);
 
+#ifdef AMNEZIA_DESKTOP
+    if (auto *wireguard = qobject_cast<WireguardProtocol *>(m_vpnProtocol.data())) {
+        wireguard->reconnect();
+        return;
+    }
+#endif
     m_vpnProtocol->stop();
     if (ErrorCode err = m_vpnProtocol->start(); err != ErrorCode::NoError) {
         setConnectionState(Vpn::ConnectionState::Error);
@@ -640,7 +656,33 @@ void VpnConnection::disconnectFromVpn()
                           });
 #endif
 
+#ifdef AMNEZIA_DESKTOP
+    // Domain endpoints stop asynchronously: the service must acknowledge real
+    // teardown before the protocol/socket owner can be released. Use queued
+    // completion so neither a synchronous stop nor an error destroys a signal
+    // sender while its own stop/notification stack is still running.
+    auto *waiter = new QObject(this);
+    const auto expected = m_vpnProtocol.toWeakRef();
+    const auto finished = [this, waiter, expected] {
+        const auto stopped = expected.toStrongRef();
+        if (stopped && m_vpnProtocol == stopped) m_vpnProtocol.clear();
+        waiter->deleteLater();
+    };
+    connect(m_vpnProtocol.data(), &VpnProtocol::connectionStateChanged, waiter,
+            [finished](Vpn::ConnectionState state) {
+                if (state == Vpn::Disconnected || state == Vpn::Error) finished();
+            }, Qt::QueuedConnection);
+    connect(m_vpnProtocol.data(), &VpnProtocol::protocolError, waiter,
+            [finished](ErrorCode) { finished(); }, Qt::QueuedConnection);
     m_vpnProtocol->stop();
+    // Some protocols are already stopped and emit no state transition.
+    if (m_vpnProtocol && (m_vpnProtocol->connectionState() == Vpn::Disconnected
+                          || m_vpnProtocol->connectionState() == Vpn::Error))
+        QTimer::singleShot(0, waiter, finished);
+    return;
+#else
+    m_vpnProtocol->stop();
+#endif
 
 #if !defined(Q_OS_ANDROID) && !defined(AMNEZIA_DESKTOP)
     m_vpnProtocol->deleteLater();

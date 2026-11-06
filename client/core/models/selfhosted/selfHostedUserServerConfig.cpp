@@ -67,6 +67,7 @@ QPair<QString, QString> SelfHostedUserServerConfig::getDnsPair(const QString &pr
 QJsonObject SelfHostedUserServerConfig::toJson() const
 {
     QJsonObject obj;
+    if (!connectionUpdates.isEmpty()) obj["connectionUpdates"] = connectionUpdates;
     obj[configKey::formatVersion] = serverConfigUtils::currentConfigFormatVersion;
 
     if (!description.isEmpty()) {
@@ -103,6 +104,7 @@ SelfHostedUserServerConfig SelfHostedUserServerConfig::fromJson(const QJsonObjec
 {
     SelfHostedUserServerConfig config;
 
+    config.connectionUpdates = json.value("connectionUpdates").toObject();
     config.description = json.value(configKey::description).toString();
     config.hostName = json.value(configKey::hostName).toString();
 

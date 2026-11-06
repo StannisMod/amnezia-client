@@ -62,6 +62,26 @@ func TestInvalidAndConflictingRules(t *testing.T) {
 	}
 }
 
+func TestWildcardDirectException(t *testing.T) {
+	c, err := (Config{Version: 1, Default: VPN, Rules: []Rule{
+		{Kind: Suffix, Value: "*.corp.example.test", Action: Direct},
+	}}).Normalize()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]Action{
+		"git.corp.example.test":           Direct,
+		"deep.git.corp.example.test":      Direct,
+		"corp.example.test":               Direct,
+		"notcorp.example.test":            VPN,
+		"corp.example.test.attacker.test": VPN,
+	} {
+		if got := c.Match(name, netip.MustParseAddr("203.0.113.7")); got != want {
+			t.Errorf("%s: got %s, want %s", name, got, want)
+		}
+	}
+}
+
 func TestInverseDisabledAndLongestPrefix(t *testing.T) {
 	c, e := (Config{Version: 1, Default: Direct, Rules: []Rule{
 		{Kind: CIDR, Value: "10.0.0.0/8", Action: Direct, Disabled: false}, {Kind: CIDR, Value: "10.1.0.0/16", Action: VPN, Disabled: false},

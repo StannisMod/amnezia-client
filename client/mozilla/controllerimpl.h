@@ -6,6 +6,7 @@
 #define CONTROLLERIMPL_H
 
 #include <QObject>
+#include <QHostAddress>
 #include <functional>
 #include <QDateTime>
 
@@ -44,6 +45,11 @@ class ControllerImpl : public QObject {
   // "disconnecting" state until the "disconnected" signal is received.
   virtual void deactivate() = 0;
 
+  // Separate acknowledgement: disconnected may also mean a lost IPC socket.
+  virtual void deactivateWithAck() { deactivate(); }
+  virtual void resolveEndpoint(const QString &, std::function<void(QList<QHostAddress>)> complete) { complete({}); }
+  virtual void cancelEndpointLookup() {}
+
   // This method is used to retrieve the VPN tunnel status (mainly the number
   // of bytes sent and received). It's called always when the VPN tunnel is
   // active.
@@ -75,6 +81,8 @@ class ControllerImpl : public QObject {
   void connected(const QString& pubkey,
                  const QDateTime& connectionTimestamp = QDateTime());
   void disconnected();
+  void deactivated();
+  void handshakeUpdated(qint64 handshakeMs, quint64 txBytes, quint64 rxBytes);
 
   // This method should be emitted after a checkStatus() call.
   // "serverIpv4Gateway" is the current VPN tunnel gateway.

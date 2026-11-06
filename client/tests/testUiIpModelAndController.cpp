@@ -72,6 +72,25 @@ private slots:
         QCOMPARE(changed.count(), 1);
         QCOMPARE(repo->domainRoutingConfig(), saved);
     }
+    void freshDomainRoutingHasNoSeededLocalAddresses()
+    {
+        auto repo = m_coreController->m_appSettingsRepository;
+        auto controller = m_coreController->m_ipSplitTunnelingController;
+        repo->setRouteMode(RouteMode::VpnOnlyForwardSites);
+        QVERIFY(repo->domainRoutingConfig().value("rules").toArray().isEmpty());
+        QCOMPARE(repo->domainRoutingConfig().value("default").toString(), QString("vpn"));
+        QVERIFY(controller->setSingBoxRoutingEnabled(true));
+        QVERIFY(repo->domainRoutingConfig().value("rules").toArray().isEmpty());
+        // Explicitly saved user rules, including those same local addresses,
+        // must survive subsequent reads and toggles.
+        QVERIFY(controller->saveDomainRule(-1, "192.168.0.1", "direct", true));
+        QVERIFY(controller->saveDomainRule(-1, "192.168.0.104", "direct", true));
+        const auto saved = repo->domainRoutingConfig();
+        QCOMPARE(saved.value("rules").toArray().size(), 2);
+        QVERIFY(controller->setSingBoxRoutingEnabled(false));
+        QVERIFY(controller->setSingBoxRoutingEnabled(true));
+        QCOMPARE(repo->domainRoutingConfig(), saved);
+    }
     void enableRoutingWithDesktopScopeAndKillSwitch()
     {
 #if defined(Q_OS_WIN) || (defined(Q_OS_LINUX) && !defined(Q_OS_ANDROID))

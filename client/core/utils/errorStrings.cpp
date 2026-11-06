@@ -78,6 +78,24 @@ QString errorString(ErrorCode code) {
     case(ErrorCode::ServerContainerRuntimeNotSupported): errorMessage = QObject::tr("Server error: The default container runtime available for installation on this server is not supported.\n Install Docker Engine on the server manually and try again."); break;
     case(ErrorCode::ContainerRuntimeServiceNotRunning): errorMessage = QObject::tr("Container runtime error: The container runtime service is not running.\n Check the container runtime service on the server, or wait about a minute and try again."); break;
 
+    case ErrorCode::ProtocolUpdateRejected:
+        errorMessage = QObject::tr("The protocol update could not be prepared. The VPN was not replaced. "
+                                   "Only standard WireGuard and AmneziaWG 3 containers are supported. "
+                                   "Check the server update log or wait for another update to finish.");
+        break;
+    case ErrorCode::ProtocolUpdateRolledBack:
+        errorMessage = QObject::tr("The updated protocol did not pass validation. "
+                                   "The previous container was restored and the VPN is running again.");
+        break;
+    case ErrorCode::ProtocolUpdateRollbackFailed:
+        errorMessage = QObject::tr("The protocol update and automatic rollback failed. "
+                                   "Check the server over SSH. Recovery data is saved in /var/lib/amnezia/updates.");
+        break;
+    case ErrorCode::ProtocolUpdateOutcomeUnknown:
+        errorMessage = QObject::tr("The update result could not be confirmed. Check the server over SSH before retrying. "
+                                   "Update logs and recovery data are stored in /var/lib/amnezia/updates.");
+        break;
+
     // Libssh errors
     case(ErrorCode::SshRequestDeniedError): errorMessage = QObject::tr("SSH request was denied"); break;
     case(ErrorCode::SshInterruptedError): errorMessage = QObject::tr("SSH request was interrupted"); break;
@@ -101,6 +119,9 @@ QString errorString(ErrorCode code) {
     // VPN errors
     case (ErrorCode::OpenVpnAdaptersInUseError): errorMessage = QObject::tr("Can't connect: another VPN connection is active"); break;
     case (ErrorCode::OpenVpnTapAdapterError): errorMessage = QObject::tr("Can't setup OpenVPN TAP network adapter"); break;
+    case (ErrorCode::VpnEndpointRecoveryFailed): errorMessage = QObject::tr("Could not restore the VPN connection after several attempts. Check the server and reconnect."); break;
+    case (ErrorCode::VpnEndpointCleanupFailed): errorMessage = QObject::tr("The VPN service did not confirm tunnel cleanup. Recovery was stopped to avoid using stale routes."); break;
+    case (ErrorCode::VpnEndpointResolutionFailed): errorMessage = QObject::tr("Could not resolve a usable VPN server address. Check its DNS records and your network connection."); break;
     case (ErrorCode::AddressPoolError): errorMessage = QObject::tr("VPN pool error: no available addresses"); break;
 
     case (ErrorCode::ImportInvalidConfigError): errorMessage = QObject::tr("The config does not contain any containers and credentials for connecting to the server"); break;
@@ -164,6 +185,8 @@ QString errorString(ErrorCode code) {
     case(ErrorCode::UnspecifiedError): errorMessage =  QObject::tr("QFile error: An unspecified error occurred"); break;
     case(ErrorCode::FatalError): errorMessage =  QObject::tr("QFile error: A fatal error occurred"); break;
     case(ErrorCode::AbortError): errorMessage =  QObject::tr("QFile error: The operation was aborted"); break;
+
+    case(ErrorCode::ConnectionUpdateTokenRevocationPending): errorMessage = QObject::tr("VPN access revoked. The update token could not be revoked yet. Retry setup or publish settings when the update service is available."); break;
 
     // Billing errors
     case(ErrorCode::BillingCanceled): errorMessage = QObject::tr("Transaction was canceled by the user"); break;

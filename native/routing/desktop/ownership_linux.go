@@ -38,6 +38,9 @@ func PreparePrivateCache(path string) (io.Closer, error) {
 }
 
 func PrepareResolver(config *engine.SessionConfig) error {
+	if config.DNS != nil {
+		return prepareNetworkDNS(config)
+	} // split DNS upstreams are validated by the shared compiler
 	if !config.Resolver.Addr().IsLoopback() {
 		return nil
 	}

@@ -40,7 +40,7 @@ namespace {
 Logger logger("LocalSocketController");
 }
 
-LocalSocketController::LocalSocketController() {
+LocalSocketController::LocalSocketController(const QString &socketPath) : m_socketPath(socketPath) {
   MZ_COUNT_CTOR(LocalSocketController);
 
   m_socket = new QLocalSocket(this);
@@ -85,6 +85,8 @@ void LocalSocketController::disconnectInternal() {
   m_daemonState = eReady;
   m_initializingRetry = 0;
   m_initializingTimer.stop();
+  m_endpointCompletion = nullptr;
+  ++m_endpointLookupId;
   emit disconnected();
 }
 
@@ -112,6 +114,7 @@ void LocalSocketController::initializeInternal() {
   }
 #endif
 
+  if (!m_socketPath.isEmpty()) path = m_socketPath;
   logger.debug() << "Connecting to:" << path;
   m_socket->connectToServer(path);
 }
@@ -286,6 +289,30 @@ void LocalSocketController::deactivate() {
   emit disconnected();
 }
 
+void LocalSocketController::deactivateWithAck() {
+  // No synthetic completion. A disconnected socket does not prove that the
+  // privileged service has restored DNS and removed its capture routes.
+  m_pendingConfirmedDeactivation = true;
+  if (m_daemonState != eReady || m_socket->state() != QLocalSocket::ConnectedState) return;
+  m_pendingConfirmedDeactivation = false;
+  write(QJsonObject{{"type", "deactivate"}, {"request_ack", true}});
+}
+
+void LocalSocketController::cancelEndpointLookup() {
+  m_endpointCompletion = nullptr;
+  ++m_endpointLookupId;
+  if (m_socket->state() == QLocalSocket::ConnectedState)
+    write(QJsonObject{{"type", "cancel_endpoint_lookup"}});
+}
+
+void LocalSocketController::resolveEndpoint(const QString &host, std::function<void(QList<QHostAddress>)> complete) {
+  cancelEndpointLookup();
+  if (m_daemonState != eReady || m_socket->state() != QLocalSocket::ConnectedState) { complete({}); return; }
+  m_endpointCompletion = std::move(complete);
+  write(QJsonObject{{"type", "resolve_endpoint"}, {"host", host}, {"lookup_id", double(m_endpointLookupId)},
+                    {"alternate", (m_endpointResolverAttempt++ % 2) != 0}});
+}
+
 void LocalSocketController::checkStatus() {
   logger.debug() << "Check status";
 
@@ -384,6 +411,13 @@ void LocalSocketController::parseCommand(const QByteArray& command) {
 
   if (m_daemonState == eInitializing && type == "status") {
     m_daemonState = eReady;
+    // A leftover tunnel may never have completed a handshake and therefore
+    // have no valid connection date. Teardown must not depend on that date.
+    if (m_pendingConfirmedDeactivation) {
+      deactivateWithAck();
+      emit initialized(true, false, QDateTime());
+      return;
+    }
 
     QJsonValue connected = obj.value("connected");
     if (!connected.isBool()) {
@@ -407,11 +441,29 @@ void LocalSocketController::parseCommand(const QByteArray& command) {
     }
 
     emit initialized(true, connected.toBool(), datetime);
+    if (m_pendingConfirmedDeactivation) deactivateWithAck();
     return;
   }
 
   if (m_daemonState != eReady) {
     logger.error() << "Unexpected command";
+    return;
+  }
+
+  if (type == "endpoint_resolved") {
+    if (obj.value("lookup_id").toDouble() != double(m_endpointLookupId) || !m_endpointCompletion) return;
+    QList<QHostAddress> addresses;
+    for (const auto &value : obj.value("addresses").toArray()) {
+      const QHostAddress address(value.toString());
+      if (!address.isNull()) addresses.append(address);
+    }
+    const auto complete = std::move(m_endpointCompletion);
+    complete(addresses);
+    return;
+  }
+
+  if (type == "deactivated") {
+    emit deactivated();
     return;
   }
 
@@ -441,6 +493,10 @@ void LocalSocketController::parseCommand(const QByteArray& command) {
       return;
     }
 
+    if (obj.value("lastHandshakeMs").isDouble()) {
+      emit handshakeUpdated(static_cast<qint64>(obj.value("lastHandshakeMs").toDouble()),
+                            static_cast<quint64>(txBytes.toDouble()), static_cast<quint64>(rxBytes.toDouble()));
+    }
     emit statusUpdated(serverIpv4Gateway.toString(),
                        deviceIpv4Address.toString(), txBytes.toDouble(),
                        rxBytes.toDouble());

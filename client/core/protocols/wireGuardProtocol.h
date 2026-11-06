@@ -8,6 +8,8 @@
 #include <QTimer>
 
 #include "vpnProtocol.h"
+#include "core/utils/vpnEndpointSession.h"
+#include <QElapsedTimer>
 
 #include "mozilla/controllerimpl.h"
 
@@ -21,6 +23,7 @@ public:
 
     ErrorCode start() override;
     void stop() override;
+    void reconnect();
 
     ErrorCode startMzImpl();
     ErrorCode stopMzImpl();
@@ -28,6 +31,11 @@ public:
 private:
 
     QScopedPointer<ControllerImpl> m_impl;
+    amnezia::VpnEndpointSession m_endpointSession;
+    QTimer m_peerPoll;
+    QElapsedTimer m_peerClock;
+    bool m_domainEndpoint = false;
+    void setupEndpointSession();
 };
 
 #endif // WIREGUARDPROTOCOL_H

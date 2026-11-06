@@ -103,7 +103,7 @@ func main() {
 				connected = true
 				write(map[string]any{"type": "connected", "pubkey": config.PeerPublicKey()})
 			}
-			write(map[string]any{"type": "status", "routing": session.Diagnostics(), "connected": connected, "rxBytes": stats.RXBytes, "txBytes": stats.TXBytes, "deviceIpv4Address": "172.19.0.1", "serverIpv4Gateway": "172.19.0.2"})
+			write(map[string]any{"type": "status", "routing": session.Diagnostics(), "connected": connected, "rxBytes": stats.RXBytes, "txBytes": stats.TXBytes, "lastHandshakeMs": stats.LastHandshake * 1000, "deviceIpv4Address": "172.19.0.1", "serverIpv4Gateway": "172.19.0.2"})
 		}
 	}
 }

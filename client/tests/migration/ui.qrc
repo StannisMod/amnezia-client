@@ -1,0 +1,5 @@
+<RCC>
+    <qresource prefix="/migration-test">
+        <file alias="ServerMigrationDialog.qml">../../ui/qml/Components/ServerMigrationDialog.qml</file>
+    </qresource>
+</RCC>
