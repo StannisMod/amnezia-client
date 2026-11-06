@@ -106,6 +106,37 @@ def exercise_application_admin_commands(info, settings):
             '/tmp/migration-tests/migration_ssh_harness admin /fixture/admin.json')
 
 
+def exercise_migrated_host_as_rollback_source():
+    # A migrated host may be the source of the next move. Exercise the real
+    # source export/stop/store-import/restart on its actual migrated volume.
+    script = r"""import hashlib,json,os,sys,uuid
+from pathlib import Path
+os.umask(0o077)
+sys.path.insert(0,'/tmp/amnezia-migration-'+sys.argv[1])
+import agent
+operation=uuid.uuid4().hex
+call=lambda action,**extra: agent.main({'operation':operation,'action':action,**extra})
+volume=agent.inspect('volume',agent.VOLUME)
+assert volume['Labels']['org.amnezia.connection-updates']=='1'
+assert agent.LABEL in volume['Labels']
+call('export')
+work=agent.ROOT/operation
+manifest=json.loads((work/'journal.json').read_bytes())['manifest']
+call('source-stop')
+helper=next(manifest['images'][c['Name'][1:]] for c in manifest['containers'] if agent.SPECS[c['Name'][1:]])
+raw=agent.volume_tar(helper,agent.VOLUME)
+stage=agent.client_stage(operation); stage.mkdir(mode=0o700)
+(stage/'rollback.tar').write_bytes(raw)
+call('rollback-import',sha256=hashlib.sha256(raw).hexdigest())
+call('abort')
+assert all(call('status')['running'].values())
+call('finalize')
+(stage/'rollback.tar').unlink(); stage.rmdir()
+print('PASS: migrated host accepts a later rollback into its delivery volume')
+"""
+    print(host('target', 'python3', '-B', '-c', script, OP).strip(), flush=True)
+
+
 def main():
     global ADDRESS, SOURCE_CREDENTIALS, SOURCE_IDENTITY
     fixture.setup()
@@ -187,6 +218,7 @@ def main():
     assert payload['revision'] == '1'
     exercise_application_admin_commands(info, payload['settings'])
     assert fixture.fetch(info, issued, ADDRESS['target'])['revision'] == '2'
+    exercise_migrated_host_as_rollback_source()
     interrupt_after_first_stop('target', 'rollback-export')
     assert local('status')['phase'] == 'target-stopping'
     interrupt_rollback_after_source_start()

@@ -8305,5 +8305,9 @@ Target: %2</source>
         <source>The server-to-server copy has completed. You can now update DNS and switch servers.</source>
         <translation>Копирование между серверами завершено. Теперь можно обновить DNS и переключить серверы.</translation>
     </message>
+    <message>
+        <source>Saved SSH identities are incomplete. Clear this operation and check the server identities again.</source>
+        <translation>Сохранённые данные SSH-ключей неполные. Удалите эту операцию и повторно проверьте ключи серверов.</translation>
+    </message>
 </context>
 </TS>

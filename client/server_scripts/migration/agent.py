@@ -174,6 +174,9 @@ def inventory():
                      mount['Name'] == VOLUME and mount['Destination'] == '/data'), 'custom_mounts')
         if name == 'amnezia-connection-updates':
             require(c['Config'].get('Labels', {}).get('org.amnezia.connection-updates') == '1', 'unowned_delivery')
+            volume = inspect('volume', VOLUME)
+            require(volume['Driver'] == 'local' and not volume.get('Options') and
+                    (volume.get('Labels') or {}).get('org.amnezia.connection-updates') == '1', 'custom_delivery_volume')
             info = json.loads(run('exec', c['Id'], '/updates', 'info'))
             require(info.get('host') and not is_ip(info['host']), 'delivery_requires_domain')
     return chosen
@@ -319,7 +322,7 @@ def import_target(work, journal, req):
         journal['network'] = True
         save(work/'journal.json', journal)
     if m['volume']:
-        run('volume', 'create', '--label', LABEL+'='+work.name, VOLUME)
+        run('volume', 'create', '--label', LABEL+'='+work.name, '--label', 'org.amnezia.connection-updates=1', VOLUME)
         require((inspect('volume', VOLUME).get('Labels') or {}).get(LABEL) == work.name, 'target_volume_ownership_changed')
         journal['volume'] = True
         save(work/'journal.json', journal)

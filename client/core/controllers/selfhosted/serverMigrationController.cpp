@@ -23,6 +23,15 @@ QJsonObject identity(const SshIdentity &i) { return {{"address", i.address}, {"f
 SshIdentity identity(const QJsonObject &j) { return {j["address"].toString(), j["fingerprint"].toString(), j["algorithm"].toString(), {}}; }
 ServerCredentials credentials(const QJsonObject &j) { return {j["host"].toString(), j["user"].toString(), j["secret"].toString(), j["port"].toInt()}; }
 QJsonObject credentials(const ServerCredentials &c) { return {{"host", c.hostName}, {"port", c.port}, {"user", c.userName}, {"secret", c.secretData}}; }
+QString approvalDetails(const QJsonObject &j) {
+    const auto target = identity(j["targetIdentity"].toObject());
+    if (!target.valid()) return {};
+    if (j["phase"] == "target-fingerprint") return QString("Target: %1\n%2").arg(target.address, target.fingerprint);
+    const auto source = identity(j["sourceIdentity"].toObject());
+    if (j["phase"] == "fingerprints" && source.valid() && !j["sourceIdentity"].toObject()["key"].toString().isEmpty())
+        return QString("Source: %1\n%2\n\nTarget: %3\n%4").arg(source.address, source.fingerprint, target.address, target.fingerprint);
+    return {};
+}
 QString execute(PinnedSshSession &ssh, const QString &cmd, int timeout = 120000) {
     const auto r = ssh.execute(cmd, timeout, 1024 * 1024);
     check(r.error);
@@ -123,7 +132,10 @@ ServerMigrationController::ServerMigrationController(SecureServersRepository *se
     : QObject(parent), m_servers(servers), m_settings(settings), m_connection(connection) {
     m_pool.setMaxThreadCount(1);
     m_journal = QJsonDocument::fromJson(settings->value(storage).toByteArray()).object();
-    if (!m_journal.isEmpty()) m_details = tr("An unfinished migration is saved. Check its status before continuing.");
+    if (phase() == "target-fingerprint" || phase() == "fingerprints") {
+        m_details = approvalDetails(m_journal);
+        if (m_details.isEmpty()) m_details = tr("Saved SSH identities are incomplete. Clear this operation and check the server identities again.");
+    } else if (!m_journal.isEmpty()) m_details = tr("An unfinished migration is saved. Check its status before continuing.");
 }
 ServerMigrationController::~ServerMigrationController() { m_stopping->store(true); m_pool.waitForDone(); }
 void ServerMigrationController::persist() { if (m_journal.isEmpty()) m_settings->remove(storage); else m_settings->setValue(storage, QJsonDocument(m_journal).toJson(QJsonDocument::Compact)); emit changed(); }
@@ -172,11 +184,15 @@ void ServerMigrationController::discover(const QString &id, const QString &host,
         check(b.error);
         if (QHostAddress(b.address).protocol() != QAbstractSocket::IPv4Protocol) throw std::runtime_error("first_version_requires_ipv4_target");
         j["targetIdentity"] = identity(b); j["phase"] = "target-fingerprint";
-        j["message"] = QString("Target: %1\n%2").arg(b.address, b.fingerprint);
+        j["message"] = approvalDetails(j);
         return j;
     });
 }
 void ServerMigrationController::stage() {
+    if ((phase() == "target-fingerprint" || phase() == "fingerprints") && approvalDetails(m_journal).isEmpty()) {
+        m_details = tr("Saved SSH identities are incomplete. Clear this operation and check the server identities again.");
+        emit changed(); return;
+    }
     if (phase() == "target-fingerprint") {
         work([stopping = m_stopping](QJsonObject j) {
             PinnedSshSession target; openSession(target, j, "target"); install(target, j);
@@ -184,8 +200,7 @@ void ServerMigrationController::stage() {
             const auto a = relay(target, j, "discover-source", {{"host", old.hostName}, {"port", old.port}}, false)["identity"].toObject();
             if (a["address"] == j["targetIdentity"].toObject()["address"]) throw std::runtime_error("source_and_target_are_the_same_host");
             j["sourceIdentity"] = a; j["phase"] = "fingerprints";
-            j["message"] = QString("Source: %1\n%2\n\nTarget: %3\n%4").arg(a["address"].toString(), a["fingerprint"].toString(),
-                j["targetIdentity"].toObject()["address"].toString(), j["targetIdentity"].toObject()["fingerprint"].toString());
+            j["message"] = approvalDetails(j);
             return j;
         });
         return;
