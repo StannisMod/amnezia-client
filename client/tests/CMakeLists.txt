@@ -26,6 +26,7 @@ set(CMAKE_AUTOUIC ON)
 
 qt6_add_resources(TEST_QRC
     ../server_scripts/serverScripts.qrc
+    ../resources/countries.qrc
 )
 
 set(_main_cpp "${CMAKE_CURRENT_SOURCE_DIR}/../main.cpp")
