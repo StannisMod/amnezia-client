@@ -96,7 +96,7 @@ def ready(name, tool, interface):
     raise RuntimeError('VPN startup failed')
 
 
-def fixture():
+def fixture(header_protection=False):
     # Real production Dockerfiles. Force the AWG userspace implementation so a
     # host kernel module cannot accidentally turn this into a different test.
     host('source', 'mkdir', '-p', '/tmp/awg', '/tmp/wg')
@@ -118,6 +118,9 @@ def fixture():
         sk, ck, psk = key('genkey'), key('genkey'), key('genpsk')
         sp, cp = key('pubkey', sk+'\n'), key('pubkey', ck+'\n')
         settings = 'Jc = 4\nJmin = 10\nJmax = 50\nS1 = 12\nS2 = 12\nS3 = 0\nS4 = 0\nH1 = 1001-1010\nH2 = 2001-2010\nH3 = 3001-3010\nH4 = 4001-4010\n' if awg else ''
+        if awg and header_protection:
+            settings = settings.replace('S3 = 0', 'S3 = 12').replace('S4 = 0', 'S4 = 12')
+            settings += 'HeaderProtectionKey = '+key('genkey')+'\n'
         config = f'[Interface]\nPrivateKey = {sk}\nAddress = {subnet}.1/24\nListenPort = {port}\n{settings}\n[Peer]\nPublicKey = {cp}\nPresharedKey = {psk}\nAllowedIPs = {subnet}.2/32\n'
         state = '/tmp/state-'+folder
         host('source', 'mkdir', '-p', state+'/'+folder)
@@ -130,6 +133,8 @@ def fixture():
         d('source', 'network', 'connect', 'amnezia-dns-net', name)
         d('source', 'start', name)
         ready(name, tool, iface)
+        if awg and header_protection:
+            assert 'HeaderProtectionKey' in d('source', 'exec', name, tool, 'showconf', iface)
         clients.append({'name': name, 'tool': tool, 'port': port, 'peer': cp, 'serverPublic': sp, 'settings': dict(line.split(' = ', 1) for line in settings.strip().splitlines()) if settings else {},
                         'config': f'[Interface]\nPrivateKey = {ck}\nAddress = {subnet}.2/32\n{settings}\n[Peer]\nPublicKey = {sp}\nPresharedKey = {psk}\nAllowedIPs = {subnet}.1/32,172.29.172.254/32\nEndpoint = ENDPOINT:{port}\nPersistentKeepalive = 1\n', 'ping': subnet+'.1'})
     # Standard DNS image/config, not a mocked resolver.

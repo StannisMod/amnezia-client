@@ -5327,6 +5327,22 @@ Create one from the current settings.</source>
         <source>Publish</source>
         <translation>Опубликовать</translation>
     </message>
+    <message>
+        <source>Enable AWG 3 header protection</source>
+        <translation>Включить защиту заголовков AWG 3</translation>
+    </message>
+    <message>
+        <source>Enable header protection?</source>
+        <translation>Включить защиту заголовков?</translation>
+    </message>
+    <message>
+        <source>The VPN will briefly restart. Device keys and users will be kept. Every user must import their update invitation into a compatible app and reconnect from the app. Static profiles and reconnects outside the app will stop working until updated. The operation is blocked until every user has an active update token and has confirmed the current settings from the compatible app.</source>
+        <translation>VPN ненадолго перезапустится. Ключи устройств и пользователи сохранятся. Каждый пользователь должен импортировать ссылку обновлений в совместимое приложение и переподключаться из него. Статические профили и переподключения вне приложения перестанут работать до обновления. Операция недоступна, пока у каждого пользователя нет действующего токена обновлений и подтверждения текущих настроек из совместимого приложения.</translation>
+    </message>
+    <message>
+        <source>Enable</source>
+        <translation>Включить</translation>
+    </message>
 </context>
 <context>
     <name>PageSettingsServersList</name>
@@ -6097,6 +6113,22 @@ Create one from the current settings.</source>
         <source>Connect</source>
         <translation>Подключиться</translation>
     </message>
+    <message>
+        <source>Connection updates enabled. Your device key and local settings were kept.</source>
+        <translation>Обновления подключения включены. Ключ устройства и локальные настройки сохранены.</translation>
+    </message>
+    <message>
+        <source>Connection updates</source>
+        <translation>Обновления подключения</translation>
+    </message>
+    <message>
+        <source>Allow this server to send signed settings to your existing VPN profile. The device key, DNS and local routing rules will be kept. Only enable updates from a server owner you trust.</source>
+        <translation>Разрешить серверу отправлять подписанные настройки в существующий профиль VPN. Ключ устройства, DNS и локальные правила маршрутизации сохранятся. Включайте обновления только от владельца сервера, которому доверяете.</translation>
+    </message>
+    <message>
+        <source>Enable updates</source>
+        <translation>Включить обновления</translation>
+    </message>
 </context>
 <context>
     <name>PageShare</name>
@@ -6309,6 +6341,22 @@ Create one from the current settings.</source>
     <message>
         <source>This stops future settings updates. VPN access stays active until you revoke the user.</source>
         <translation>Новые настройки перестанут поступать. Доступ к VPN сохранится, пока вы не отзовёте доступ пользователя.</translation>
+    </message>
+    <message>
+        <source>Share connection updates</source>
+        <translation>Выдать обновления подключения</translation>
+    </message>
+    <message>
+        <source>Connection updates</source>
+        <translation>Обновления подключения</translation>
+    </message>
+    <message>
+        <source>Send this link to the user who already has the VPN profile. Their existing device key will be kept.</source>
+        <translation>Отправьте ссылку пользователю, у которого уже есть профиль VPN. Его текущий ключ устройства сохранится.</translation>
+    </message>
+    <message>
+        <source>Save update invitation</source>
+        <translation>Сохранить ссылку обновлений</translation>
     </message>
 </context>
 <context>
@@ -7392,6 +7440,10 @@ FileZilla или другие SFTP-клиенты, а также смонтир�
         <source>VPN access revoked. The update token could not be revoked yet. Retry setup or publish settings when the update service is available.</source>
         <translation>Доступ к VPN отозван. Токен обновлений пока не удалось отозвать. Повторите настройку или публикацию, когда сервис обновлений будет доступен.</translation>
     </message>
+    <message>
+        <source>This update invitation must match exactly one existing self-hosted AmneziaVPN app profile. Import the original profile first.</source>
+        <translation>Ссылка обновлений должна соответствовать ровно одному существующему профилю собственного сервера для приложения AmneziaVPN. Сначала импортируйте исходный профиль.</translation>
+    </message>
 </context>
 <context>
     <name>RadioItemType</name>
@@ -7903,6 +7955,58 @@ Remove the server from the app to continue.</source>
     <message>
         <source>Could not verify the connection update. The existing profile was kept.</source>
         <translation>Не удалось проверить обновление подключения. Текущий профиль сохранён.</translation>
+    </message>
+    <message>
+        <source>Header protection requires an AWG 2/3 container.</source>
+        <translation>Защита заголовков поддерживается для контейнера AWG 2/3.</translation>
+    </message>
+    <message>
+        <source>Header protection was not enabled. The previous VPN settings were restored and republished.</source>
+        <translation>Защита заголовков не включена. Прежние настройки VPN восстановлены и опубликованы заново.</translation>
+    </message>
+    <message>
+        <source>Header protection failed and automatic recovery is incomplete. Check the server over SSH before retrying.</source>
+        <translation>Не удалось включить защиту заголовков и полностью восстановить сервер. Проверьте сервер через SSH перед повторной попыткой.</translation>
+    </message>
+    <message>
+        <source>The SSH connection ended without a confirmed result. Check the server before retrying.</source>
+        <translation>SSH-соединение завершилось без подтверждённого результата. Проверьте сервер перед повторной попыткой.</translation>
+    </message>
+    <message>
+        <source>Some users have not confirmed the current settings and AWG 3 support. Ask every user to update their connection from the compatible app before retrying.</source>
+        <translation>Некоторые пользователи ещё не подтвердили получение текущих настроек и поддержку AWG 3. Попросите каждого обновить подключение из совместимого приложения перед повторной попыткой.</translation>
+    </message>
+    <message>
+        <source>The delivery service identity changed. Check its restored keys before enabling protection.</source>
+        <translation>Ключи сервиса выдачи изменились. Проверьте восстановление его ключей перед включением защиты.</translation>
+    </message>
+    <message>
+        <source>Some VPN users have no active update token. Share connection updates with every user before enabling header protection.</source>
+        <translation>У некоторых пользователей VPN нет действующего токена обновлений. Выдайте каждому ссылку обновлений перед включением защиты заголовков.</translation>
+    </message>
+    <message>
+        <source>Run Set up connection updates again to upgrade the delivery service without changing issued tokens.</source>
+        <translation>Повторите «Настроить обновления подключений», чтобы обновить сервис выдачи с сохранением выданных токенов.</translation>
+    </message>
+    <message>
+        <source>The server does not meet the header protection requirements. Upgrade the protocol software first and check for unsaved configuration changes.</source>
+        <translation>Сервер не соответствует требованиям защиты заголовков. Сначала обновите ПО протокола и проверьте, нет ли несохранённых изменений конфигурации.</translation>
+    </message>
+    <message>
+        <source>The server switched successfully, but the local profile changed during the operation. Retry to synchronize its settings without replacing the device key.</source>
+        <translation>Сервер успешно переключён, но локальный профиль изменился во время операции. Повторите действие, чтобы синхронизировать настройки с сохранением ключа устройства.</translation>
+    </message>
+    <message>
+        <source>AWG 3 header protection enabled. Users must reconnect from the app to receive the signed settings.</source>
+        <translation>Защита заголовков AWG 3 включена. Пользователям нужно переподключиться из приложения, чтобы получить подписанные настройки.</translation>
+    </message>
+    <message>
+        <source>Connection updated, but readiness was not confirmed. Refresh again before the server enables AWG 3 protection.</source>
+        <translation>Подключение обновлено, но готовность не подтверждена. Повторите обновление перед включением защиты AWG 3 на сервере.</translation>
+    </message>
+    <message>
+        <source>The VPN configuration changed while preparing protection. Retry after other server edits finish.</source>
+        <translation>Конфигурация VPN изменилась во время подготовки защиты. Повторите действие после завершения других изменений на сервере.</translation>
     </message>
 </context>
 <context>

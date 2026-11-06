@@ -123,6 +123,21 @@ PageType {
                 Layout.fillWidth: true
                 Layout.leftMargin: 16
                 Layout.rightMargin: 16
+                visible: ConnectionUpdatesController.protectionServers.indexOf(ServersUiController.processedServerId) >= 0
+                    && ConnectionUpdatesController.canEnableHeaderProtection(ServersUiController.processedServerId, ServersUiController.processedContainerIndex)
+                text: qsTr("Enable AWG 3 header protection")
+                onClicked: showQuestionDrawer(qsTr("Enable header protection?"),
+                    qsTr("The VPN will briefly restart. Device keys and users will be kept. Every user must import their update invitation into a compatible app and reconnect from the app. Static profiles and reconnects outside the app will stop working until updated. The operation is blocked until every user has an active update token and has confirmed the current settings from the compatible app."),
+                    qsTr("Enable"), qsTr("Cancel"), function() {
+                        PageController.showBusyIndicator(true)
+                        ConnectionUpdatesController.enableHeaderProtection(ServersUiController.processedServerId, ServersUiController.processedContainerIndex)
+                    }, function() {})
+            }
+
+            ListItemType {
+                Layout.fillWidth: true
+                Layout.leftMargin: 16
+                Layout.rightMargin: 16
                 visible: ConnectionUpdatesController.enabledServers.indexOf(ServersUiController.processedServerId) >= 0
                     && ["awg", "wireguard"].indexOf(ContainerProps.containerTypeToString(ServersUiController.processedContainerIndex)) >= 0
                 text: qsTr("Publish connection settings")

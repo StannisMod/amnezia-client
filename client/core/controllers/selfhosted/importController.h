@@ -69,6 +69,7 @@ public:
 
 signals:
     void importFinished();
+    void updatesAttached(const QString &serverId);
     void importErrorOccurred(ErrorCode errorCode, bool goToPageHome);
     void restoreAppConfig(const QByteArray &data);
 

@@ -234,3 +234,109 @@ func TestCapacityAndRateLimits(t *testing.T) {
 		t.Fatal("unbounded request rate")
 	}
 }
+
+func TestConditionalPublicationAndCoverage(t *testing.T) {
+	dir := t.TempDir()
+	mustAdmin(t, dir, "init", request{Host: "127.0.0.1"})
+	a := request{Container: "amnezia-awg2", ClientPublicKey: testKey('A'), Settings: testSettings("vpn1.example.test")}
+	mustAdmin(t, dir, "issue", a)
+	report := mustAdmin(t, dir, "coverage", request{Container: a.Container, ClientPublicKeys: []string{testKey('A'), testKey('B'), testKey('A')}})
+	if report["total"] != 2 || report["covered"] != 1 || report["missing"] != 1 {
+		t.Fatal("incorrect coverage")
+	}
+	oldTag := report["stateTag"].(string)
+	mustAdmin(t, dir, "issue", request{Container: a.Container, ClientPublicKey: testKey('B'), Settings: a.Settings})
+	before, _ := os.ReadFile(filepath.Join(dir, "state.json"))
+	if _, e := admin(dir, "publish-if", request{Container: a.Container, Settings: testSettings("vpn2.example.test"), ExpectedState: oldTag}); e == nil {
+		t.Fatal("stale publication accepted")
+	}
+	after, _ := os.ReadFile(filepath.Join(dir, "state.json"))
+	if !bytes.Equal(before, after) {
+		t.Fatal("rejected publication changed state")
+	}
+	current := mustAdmin(t, dir, "coverage", request{Container: a.Container, ClientPublicKeys: []string{testKey('A'), testKey('B')}})
+	if current["missing"] != 0 {
+		t.Fatal("issued profiles not covered")
+	}
+	published := mustAdmin(t, dir, "publish-if", request{Container: a.Container, Settings: testSettings("vpn2.example.test"), ExpectedState: current["stateTag"].(string)})
+	if published["stateTag"] == current["stateTag"] {
+		t.Fatal("committed publication did not advance tag")
+	}
+	// Rollback republishes old settings as a new revision, never old state bytes.
+	mustAdmin(t, dir, "publish", request{Container: a.Container, Settings: testSettings("vpn1.example.test")})
+	state, e := readState(dir)
+	if e != nil {
+		t.Fatal(e)
+	}
+	for _, record := range state.Records {
+		if record.Revision != 3 {
+			t.Fatal("rollback decreased or failed to advance revision")
+		}
+	}
+	mustAdmin(t, dir, "revoke", a)
+	final := mustAdmin(t, dir, "coverage", request{Container: a.Container, ClientPublicKeys: []string{testKey('A'), testKey('B')}})
+	if final["missing"] != 1 {
+		t.Fatal("revoked token counted as covered")
+	}
+}
+
+func TestRejectsMalformedEndpointBeforePublishing(t *testing.T) {
+	for _, host := range []string{"https://vpn.example.test", "vpn.example.test/path", "bad\"host.example.test", "999.999.1.1", "vpn..example.test", "-bad.example.test", "vpn.example.test.", "vpn\nexample.test"} {
+		if settingsOK(testSettings(host), "amnezia-wireguard") == nil {
+			t.Fatal("invalid endpoint accepted")
+		}
+	}
+}
+
+func TestLivePublicationRevokesRemovedPeersAtomically(t *testing.T) {
+	dir := t.TempDir()
+	mustAdmin(t, dir, "init", request{Host: "127.0.0.1"})
+	a := request{Container: "amnezia-awg2", ClientPublicKey: testKey('A'), Settings: testSettings("vpn.example.test")}
+	b := a
+	b.ClientPublicKey = testKey('B')
+	mustAdmin(t, dir, "issue", a)
+	mustAdmin(t, dir, "issue", b)
+	wg := a
+	wg.Container = "amnezia-wireguard"
+	mustAdmin(t, dir, "issue", wg)
+	info := mustAdmin(t, dir, "info", request{})
+	tag := info["stateTag"].(string)
+	if _, e := admin(dir, "publish-if-live", request{Container: a.Container, Settings: a.Settings, ExpectedState: tag}); e == nil {
+		t.Fatal("missing authoritative peer list accepted")
+	}
+	mustAdmin(t, dir, "publish-if-live", request{Container: a.Container, Settings: testSettings("vpn2.example.test"), ExpectedState: tag, ClientPublicKeys: []string{a.ClientPublicKey}})
+	state, e := readState(dir)
+	if e != nil {
+		t.Fatal(e)
+	}
+	for _, rec := range state.Records {
+		if rec.Container == "amnezia-wireguard" {
+			if rec.Revoked || rec.Revision != 1 {
+				t.Fatal("other protocol was changed")
+			}
+			continue
+		}
+		if rec.ClientPublicKey == a.ClientPublicKey {
+			if rec.Revoked || rec.Revision != 2 {
+				t.Fatal("live peer not updated")
+			}
+		} else if !rec.Revoked || rec.Revision != 1 {
+			t.Fatal("removed peer received new configuration")
+		}
+	}
+	// Rollback changes parameters, never resurrects access to revoked feeds.
+	mustAdmin(t, dir, "publish", request{Container: a.Container, Settings: a.Settings})
+	state, _ = readState(dir)
+	for _, rec := range state.Records {
+		if rec.Container == a.Container && rec.ClientPublicKey == b.ClientPublicKey && !rec.Revoked {
+			t.Fatal("rollback resurrected removed peer")
+		}
+	}
+	mustAdmin(t, dir, "publish-live", request{Container: a.Container, Settings: a.Settings, ClientPublicKeys: []string{}})
+	state, _ = readState(dir)
+	for _, rec := range state.Records {
+		if rec.Container == a.Container && !rec.Revoked {
+			t.Fatal("empty live interface retained an active token")
+		}
+	}
+}

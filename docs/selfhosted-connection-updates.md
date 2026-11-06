@@ -88,8 +88,12 @@ The certificate lasts ten years; automatic key/certificate rotation and feed URL
 relocation are not part of v1. A server without a reachable update URL cannot
 repair a broken cached VPN endpoint until the feed becomes reachable again.
 
-This version does not enroll locally generated device keys, coordinate AWG
-protection activation across online/offline clients, move peer addresses/PSKs,
+Existing static profiles can now attach a keyless update invitation without
+changing their device key. Controlled header protection is described in
+[AWG 3 header protection](awg3-header-protection.md). The delivery service can be
+upgraded through setup while keeping its identity and tokens.
+
+This version does not enroll entirely new locally generated device keys, move peer addresses/PSKs,
 provide background OS-service refresh, or support other protocols/kernel AWG1.
 Desktop/mobile app checks occur in the shared UI connection flow; OS-only reconnects
 use the last accepted profile. Server migration and protection rollout remain

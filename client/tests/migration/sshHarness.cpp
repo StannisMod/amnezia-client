@@ -4,6 +4,7 @@
 #include <QFile>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QJsonArray>
 #include <libssh/libssh.h>
 #include "core/utils/selfhosted/pinnedSshSession.h"
 #include "core/utils/selfhosted/connectionUpdatesCommand.h"
@@ -27,7 +28,14 @@ int adminCommands(const QString &config)
         if (QString(action) != "info") request = {{"container", "amnezia-awg2"}, {"clientPublicKey", peer}, {"settings", settings}};
         QBuffer body; body.setData(QJsonDocument(request).toJson(QJsonDocument::Compact)); body.open(QIODevice::ReadOnly);
         if (!ssh.upload(body, path+"/request.json", body.size()).isEmpty()) return 23;
-        const auto result = ssh.execute(connectionUpdates::adminCommandScript(action, path));
+        const bool live = QString(action) == "publish" && info["features"].toArray().contains("live-publication-v1");
+        if (live) {
+            request["clientPublicKeys"] = c["clientPublicKeys"];
+            body.close(); body.setData(QJsonDocument(request).toJson(QJsonDocument::Compact)); body.open(QIODevice::ReadOnly);
+            ssh.execute("rm -f -- '"+path+"/request.json'");
+            if (!ssh.upload(body, path+"/request.json", body.size()).isEmpty()) return 27;
+        }
+        const auto result = ssh.execute(connectionUpdates::adminCommandScript(live ? QString("publish-live") : QString(action), path));
         ssh.execute("rm -f -- '"+path+"/request.json'");
         if (!result.succeeded()) return 24;
         const auto reply = QJsonDocument::fromJson(result.output).object();

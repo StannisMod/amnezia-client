@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
+suite=${1:-delivery}
+case "$suite" in delivery|rollout) ;; *) echo 'Usage: connection-updates-deploy.sh [delivery|rollout]' >&2; exit 2 ;; esac
 repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 docker build --network host -t amnezia-local-vpn-tests -f "$repo/scripts/local-tests/Dockerfile.vpn" "$repo/scripts/local-tests"
 runner="amnezia-connection-updates-test-$RANDOM-$(date +%s)"
@@ -15,4 +17,6 @@ for attempt in {1..60}; do
     sleep 1
 done
 if [[ "$ready" != true ]]; then docker logs "$runner"; exit 1; fi
-docker exec "$runner" python3 /src/client/tests/connection-updates/acceptance.py
+test_file=acceptance.py
+[[ "$suite" == rollout ]] && test_file=rollout_acceptance.py
+docker exec "$runner" python3 "/src/client/tests/connection-updates/$test_file"

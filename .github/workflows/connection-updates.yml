@@ -9,7 +9,7 @@ permissions:
 jobs:
   signed-updates:
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -28,3 +28,5 @@ jobs:
           ctest --test-dir build-connection-updates --output-on-failure
       - name: Isolated service deployment, restart and revocation
         run: bash scripts/local-tests/connection-updates-deploy.sh
+      - name: Real AWG 3 activation, signed delivery and post-publication rollback
+        run: bash scripts/local-tests/connection-updates-deploy.sh rollout

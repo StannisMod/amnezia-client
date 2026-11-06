@@ -95,6 +95,7 @@ def exercise_application_admin_commands(info, settings):
         request = Path(temp)/'admin.json'
         request.write_text(json.dumps({'host':ADDRESS['target'], 'port':2223, 'fingerprint':fingerprint,
                                        'key':SOURCE_CREDENTIALS['secret'], 'settings':settings,
+                                       'clientPublicKeys':d('target','exec','amnezia-awg2','awg','show','awg0','peers').split(),
                                        'publicKey':info['publicKey'], 'certificate':info['certificate']}))
         request.chmod(0o600)
         cmd('docker', 'run', '--rm', '--network', fixture.NETWORK,
@@ -140,7 +141,7 @@ print('PASS: migrated host accepts a later rollback into its delivery volume')
 def main():
     global ADDRESS, SOURCE_CREDENTIALS, SOURCE_IDENTITY
     fixture.setup()
-    clients, info, issued = fixture.fixture()
+    clients, info, issued = fixture.fixture(header_protection=True)
     ADDRESS = {s: cmd('docker', 'inspect', '-f', '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}', h).strip()
                for s,h in fixture.HOSTS.items()}
     host('source', 'mkdir', '-p', '/root/.ssh', '/run/sshd')

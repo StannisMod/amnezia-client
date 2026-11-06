@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/elliptic"
@@ -24,6 +25,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -35,9 +37,11 @@ import (
 
 const maxState = 4 << 20
 const maxSettings = 32 << 10
+const maxAdminRequest = maxState + maxSettings
 const payloadType = "amnezia-connection-update"
 
 var idPattern = regexp.MustCompile(`^[a-f0-9]{32}$`)
+var hostLabel = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 var awgKeys = strings.Fields("Jc Jmin Jmax S1 S2 S3 S4 H1 H2 H3 H4 I1 I2 I3 I4 I5 HeaderProtectionKey ContentPaddingAddition RekeyAfterTime RekeyTimeout RejectAfterTime KeepaliveTimeout MaxHandshakeAttempts RandomTrailers DisableCookies")
 
 type record struct {
@@ -57,10 +61,12 @@ type state struct {
 	Records     map[string]record `json:"records"`
 }
 type request struct {
-	Host            string          `json:"host"`
-	ClientPublicKey string          `json:"clientPublicKey"`
-	Container       string          `json:"container"`
-	Settings        json.RawMessage `json:"settings"`
+	ClientPublicKeys []string        `json:"clientPublicKeys"`
+	ExpectedState    string          `json:"expectedState"`
+	Host             string          `json:"host"`
+	ClientPublicKey  string          `json:"clientPublicKey"`
+	Container        string          `json:"container"`
+	Settings         json.RawMessage `json:"settings"`
 }
 type payload struct {
 	Type            string          `json:"type"`
@@ -82,6 +88,30 @@ func randomHex(n int) (string, error) {
 	b := make([]byte, n)
 	_, err := rand.Read(b)
 	return hex.EncodeToString(b), err
+}
+func hostOK(host string) bool {
+	if net.ParseIP(host) != nil {
+		return true
+	}
+	if len(host) > 253 || host != strings.ToLower(host) {
+		return false
+	}
+	labels := strings.Split(host, ".")
+	if len(labels) < 2 {
+		return false
+	}
+	numeric := true
+	for _, part := range labels {
+		if !hostLabel.MatchString(part) {
+			return false
+		}
+		for _, value := range part {
+			if value < '0' || value > '9' {
+				numeric = false
+			}
+		}
+	}
+	return !numeric
 }
 func keyOK(s string) bool {
 	b, e := base64.StdEncoding.Strict().DecodeString(s)
@@ -117,7 +147,7 @@ func settingsOK(raw json.RawMessage, container string) error {
 	}
 	var host, key string
 	var port int
-	if json.Unmarshal(s["hostName"], &host) != nil || host == "" || strings.ContainsAny(host, " /@%\t\r\n") || json.Unmarshal(s["server_pub_key"], &key) != nil || !keyOK(key) || json.Unmarshal(s["port"], &port) != nil || port < 1 || port > 65535 {
+	if json.Unmarshal(s["hostName"], &host) != nil || !hostOK(host) || json.Unmarshal(s["server_pub_key"], &key) != nil || !keyOK(key) || json.Unmarshal(s["port"], &port) != nil || port < 1 || port > 65535 {
 		return errors.New("invalid endpoint or server key")
 	}
 	return nil
@@ -176,7 +206,7 @@ func writeState(dir string, s *state) error {
 	return d.Sync()
 }
 func newState(host string) (*state, error) {
-	if host == "" || len(host) > 253 || strings.ContainsAny(host, " /@%\t\r\n") {
+	if !hostOK(host) {
 		return nil, errors.New("invalid host")
 	}
 	_, sign, e := ed25519.GenerateKey(rand.Reader)
@@ -208,14 +238,43 @@ func newState(host string) (*state, error) {
 	}
 	return &state{Host: host, SigningKey: sign, Certificate: cert, TLSKey: der, Records: map[string]record{}}, nil
 }
+func stateTag(s *state) string {
+	raw, _ := json.Marshal(s)
+	digest := sha256.Sum256(raw)
+	return hex.EncodeToString(digest[:])
+}
 func info(s *state) map[string]any {
-	return map[string]any{"version": 1, "host": s.Host, "publicKey": []byte(ed25519.PrivateKey(s.SigningKey).Public().(ed25519.PublicKey)), "certificate": s.Certificate}
+	return map[string]any{"version": 1, "stateTag": stateTag(s), "features": []string{"coverage-v1", "conditional-publication-v1", "awg3-header-protection-v1", "rollout-readiness-v1", "live-publication-v1"}, "host": s.Host, "publicKey": []byte(ed25519.PrivateKey(s.SigningKey).Public().(ed25519.PublicKey)), "certificate": s.Certificate}
+}
+func probe(s *state) error {
+	certificate, e := x509.ParseCertificate(s.Certificate)
+	if e != nil {
+		return e
+	}
+	roots := x509.NewCertPool()
+	roots.AddCert(certificate)
+	dialer := tls.Dialer{Config: &tls.Config{RootCAs: roots, ServerName: s.Host, MinVersion: tls.VersionTLS12}}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	connection, e := dialer.DialContext(ctx, "tcp", "127.0.0.1:8443")
+	if e != nil {
+		return e
+	}
+	return connection.Close()
 }
 func admin(dir, command string, req request) (map[string]any, error) {
-	if command == "info" {
+	if command == "readiness" {
+		return queryReadiness(req)
+	}
+	if command == "info" || command == "probe" {
 		s, e := readState(dir)
 		if e != nil {
 			return nil, e
+		}
+		if command == "probe" {
+			if e = probe(s); e != nil {
+				return nil, e
+			}
 		}
 		return info(s), nil
 	}
@@ -271,12 +330,61 @@ func admin(dir, command string, req request) (map[string]any, error) {
 		s.Records[id] = record{ID: id, TokenHash: hex.EncodeToString(hash[:]), ClientPublicKey: req.ClientPublicKey, Container: req.Container, Revision: 1, Settings: req.Settings}
 		out["id"] = id
 		out["token"] = token
-	case "publish":
+	case "coverage":
+		if !containerOK(req.Container) {
+			return nil, errors.New("invalid container")
+		}
+		covered := map[string]bool{}
+		for _, r := range s.Records {
+			if r.Container == req.Container && !r.Revoked {
+				covered[r.ClientPublicKey] = true
+			}
+		}
+		seen := map[string]bool{}
+		missing := 0
+		for _, key := range req.ClientPublicKeys {
+			if !keyOK(key) {
+				return nil, errors.New("invalid client key")
+			}
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			if !covered[key] {
+				missing++
+			}
+		}
+		out["total"] = len(seen)
+		out["missing"] = missing
+		out["covered"] = len(seen) - missing
+		return out, nil
+	case "publish", "publish-if", "publish-live", "publish-if-live":
+		if strings.HasPrefix(command, "publish-if") && (req.ExpectedState == "" || req.ExpectedState != stateTag(s)) {
+			return nil, errors.New("subscription state changed")
+		}
 		if e = settingsOK(req.Settings, req.Container); e != nil {
 			return nil, e
 		}
+		liveOnly := strings.HasSuffix(command, "-live")
+		peers := map[string]bool{}
+		if liveOnly {
+			if req.ClientPublicKeys == nil {
+				return nil, errors.New("live peer list required")
+			}
+			for _, key := range req.ClientPublicKeys {
+				if !keyOK(key) {
+					return nil, errors.New("invalid live peer key")
+				}
+				peers[key] = true
+			}
+		}
 		for id, r := range s.Records {
 			if r.Container == req.Container && !r.Revoked {
+				if liveOnly && !peers[r.ClientPublicKey] {
+					r.Revoked = true
+					s.Records[id] = r
+					continue
+				}
 				if r.Revision == ^uint64(0) {
 					return nil, errors.New("revision exhausted")
 				}
@@ -302,9 +410,14 @@ func admin(dir, command string, req request) (map[string]any, error) {
 		return nil, e
 	}
 	out["ok"] = true
+	out["stateTag"] = stateTag(s)
 	return out, nil
 }
-func handler(dir string) http.Handler {
+func handler(dir string, books ...*readinessBook) http.Handler {
+	book := newReadinessBook()
+	if len(books) > 0 {
+		book = books[0]
+	}
 	slots := make(chan struct{}, 4)
 	var rateMu sync.Mutex
 	allowance := 40.0
@@ -338,11 +451,16 @@ func handler(dir string) http.Handler {
 			http.Error(w, "busy", 503)
 			return
 		}
-		if r.Method != "GET" || r.URL.RawQuery != "" || !strings.HasPrefix(r.URL.Path, "/v1/connections/") {
+		ackRequest := r.Method == "POST" && strings.HasSuffix(r.URL.Path, "/ack")
+		if (r.Method != "GET" && !ackRequest) || r.URL.RawQuery != "" || !strings.HasPrefix(r.URL.Path, "/v1/connections/") {
 			http.NotFound(w, r)
 			return
 		}
-		id := strings.TrimPrefix(r.URL.Path, "/v1/connections/")
+		path := r.URL.Path
+		if ackRequest {
+			path = strings.TrimSuffix(path, "/ack")
+		}
+		id := strings.TrimPrefix(path, "/v1/connections/")
 		if !idPattern.MatchString(id) {
 			http.NotFound(w, r)
 			return
@@ -364,9 +482,32 @@ func handler(dir string) http.Handler {
 			http.Error(w, "unauthorized", 401)
 			return
 		}
+		if ackRequest {
+			var ack acknowledgement
+			raw, e := io.ReadAll(http.MaxBytesReader(w, r.Body, 65536))
+			if e != nil || json.Unmarshal(raw, &ack) != nil || book.acknowledge(s, rec, ack, time.Now()) != nil {
+				http.Error(w, "invalid acknowledgement", 400)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if book.challenge != nil {
+			w.Header().Set("X-Amnezia-Update-Features", "ack-v1")
+		}
 		now := time.Now().Unix()
 		p := payload{payloadType, 1, rec.ID, rec.ClientPublicKey, rec.Container, strconv.FormatUint(rec.Revision, 10), now, now + 600, rec.Settings}
 		b, e := json.Marshal(p)
+		if e == nil && book.challenge != nil {
+			var signed map[string]json.RawMessage
+			e = json.Unmarshal(b, &signed)
+			if e == nil {
+				signed["ackChallenge"], e = json.Marshal(book.publicChallenge())
+			}
+			if e == nil {
+				b, e = json.Marshal(signed)
+			}
+		}
 		if e != nil {
 			http.Error(w, "unavailable", 503)
 			return
@@ -384,9 +525,23 @@ func run() error {
 	if len(os.Args) > 1 {
 		command = os.Args[1]
 	}
+	if command == "activate-awg3" {
+		b, e := io.ReadAll(io.LimitReader(os.Stdin, maxAdminRequest+1))
+		if e != nil {
+			return errors.New("invalid request")
+		}
+		req, e := decodeRolloutRequest(b)
+		if e != nil {
+			return e
+		}
+		ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM)
+		defer cancel()
+		result := runRollout(ctx, req)
+		return json.NewEncoder(os.Stdout).Encode(result)
+	}
 	if command != "serve" {
-		b, e := io.ReadAll(io.LimitReader(os.Stdin, 65537))
-		if e != nil || len(b) > 65536 {
+		b, e := io.ReadAll(io.LimitReader(os.Stdin, maxAdminRequest+1))
+		if e != nil || len(b) > maxAdminRequest {
 			return errors.New("invalid request")
 		}
 		var req request
@@ -407,8 +562,21 @@ func run() error {
 	if e != nil {
 		return e
 	}
-	server := http.Server{Addr: ":8443", Handler: handler(dir), ReadHeaderTimeout: 5 * time.Second, WriteTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 8192, TLSConfig: &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{cert}}, ErrorLog: log.New(io.Discard, "", 0)}
+	book := newReadinessBook()
+	readiness, e := serveReadiness(readinessSocket, dir, book)
+	if e != nil {
+		return e
+	}
+	defer readiness.Close()
+	server := deliveryHTTPServer(dir, book, cert)
 	return server.ListenAndServeTLS("", "")
+}
+func deliveryHTTPServer(dir string, book *readinessBook, certificate tls.Certificate) *http.Server {
+	return &http.Server{Addr: ":8443", Handler: handler(dir, book),
+		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second,
+		WriteTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 8192,
+		TLSConfig: &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{certificate}},
+		ErrorLog:  log.New(io.Discard, "", 0)}
 }
 func main() {
 	if e := run(); e != nil {

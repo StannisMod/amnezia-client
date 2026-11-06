@@ -171,7 +171,11 @@ def inventory():
             require((mount['Type'] == 'bind' and mount['Source'] == '/lib/modules' and
                      mount['Destination'] == '/lib/modules') or
                     (name == 'amnezia-connection-updates' and mount['Type'] == 'volume' and
-                     mount['Name'] == VOLUME and mount['Destination'] == '/data'), 'custom_mounts')
+                     mount['Name'] == VOLUME and mount['Destination'] == '/data') or
+                    (name == 'amnezia-connection-updates' and mount['Type'] == 'tmpfs' and
+                     mount['Destination'] == '/run/amnezia-updates' and
+                     set(hc.get('Tmpfs', {}).get('/run/amnezia-updates', '').split(',')) ==
+                     {'rw', 'nosuid', 'nodev', 'noexec', 'size=2m', 'mode=0700'}), 'custom_mounts')
         if name == 'amnezia-connection-updates':
             require(c['Config'].get('Labels', {}).get('org.amnezia.connection-updates') == '1', 'unowned_delivery')
             volume = inspect('volume', VOLUME)

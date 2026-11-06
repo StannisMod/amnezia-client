@@ -21,6 +21,7 @@ public slots:
     void generateFullAccessConfig(const QString &serverId);
 
     void generateConnectionConfig(const QString &serverId, int containerIndex, const QString &clientName, bool updatable = false);
+    bool generateConnectionUpdates(const QString &serverId, int containerIndex, const QString &clientPublicKey);
     void generateOpenVpnConfig(const QString &serverId, const QString &clientName);
     void generateWireGuardConfig(const QString &serverId, const QString &clientName);
     void generateAwgConfig(const QString &serverId, int containerIndex, const QString &clientName);

@@ -7,7 +7,7 @@ namespace amnezia::connectionUpdates {
 // A private untagged snapshot must never turn administration into a registry pull.
 inline QString adminCommandScript(const QString &action, const QString &path)
 {
-    if (action != "issue" && action != "publish" && action != "revoke" && action != "info") return {};
+    if (action != "issue" && action != "publish" && action != "publish-live" && action != "revoke" && action != "info") return {};
     QString quoted = path; quoted.replace("'", "'\\''"); quoted = "'"+quoted+"/request.json'";
     return "chmod 600 "+quoted+
         " && delivery_id=$(sudo docker inspect -f '{{.Id}}' amnezia-connection-updates)"

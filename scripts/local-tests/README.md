@@ -54,6 +54,21 @@ revocation. Go race tests run from `client/server_scripts/connection_updates`;
 client/controller security tests are included in the full build's CTest suite.
 See [connection updates](../../docs/selfhosted-connection-updates.md).
 
+Controlled AWG 3 header protection has a real server/client acceptance suite:
+
+```sh
+bash scripts/local-tests/connection-updates-deploy.sh rollout
+```
+
+It checks device-key readiness, unchanged identities, protected fresh traffic and
+rollback after signed publication. The full SDK wrapper also supports linked Git
+worktrees using a private copy of their Git metadata; host metadata stays read-only.
+
+The unsigned iPhoneOS ARM64 build uses the standard
+`macos-15-intel` host when the hosted ARM64 pool cannot acquire runners.
+Both native macOS CPU lanes and the ARM64 race-CAS/performance diagnostics
+remain enabled.
+
 ### Server migration
 
 `bash scripts/local-tests/migration-scenario.sh` creates two disposable Docker

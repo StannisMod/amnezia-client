@@ -22,7 +22,8 @@ jobs:
       - name: Compile real protocol modules and run DNS/cancellation tests
         run: python3 scripts/routing/check_android_kotlin.py --build-dir '${{ runner.temp }}/endpoint-kotlin-check'
   apple:
-    runs-on: macos-15
+    # The iPhoneOS arm64 adapter is cross-typechecked with Xcode on Intel.
+    runs-on: macos-15-intel
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4

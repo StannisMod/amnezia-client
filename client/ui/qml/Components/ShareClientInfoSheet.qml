@@ -19,6 +19,7 @@ SheetType {
 
     property bool updatesAvailable: false
     signal revokeUpdatesRequested()
+    signal shareUpdatesRequested()
 
     signal renameRequested(string newName)
     signal revokeRequested()
@@ -118,6 +119,15 @@ SheetType {
                 clientNameEditor.textField.text = root.clientName
                 clientNameEditDrawer.open()
             }
+        }
+
+        ButtonType {
+            Layout.fillWidth: true
+            Layout.topMargin: 12
+            visible: root.updatesAvailable
+            variant: ButtonType.Secondary
+            text: qsTranslate("PageShare", "Share connection updates")
+            onClicked: root.shareUpdatesRequested()
         }
 
         ButtonType {

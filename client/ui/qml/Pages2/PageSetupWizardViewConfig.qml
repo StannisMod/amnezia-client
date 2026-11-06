@@ -37,6 +37,12 @@ PageType {
             }
         }
 
+        function onUpdatesAttached(serverId) {
+            PageController.showBusyIndicator(false)
+            PageController.goToPageHome()
+            PageController.showNotificationMessage(qsTr("Connection updates enabled. Your device key and local settings were kept."))
+        }
+
         function onImportFinished() {
             PageController.showBusyIndicator(false)
             PageController.goToPageHome()
@@ -63,7 +69,15 @@ PageType {
             NavigationBarType {
                 Layout.fillWidth: true
 
-                title: qsTr("New connection")
+                title: ImportController.isUpdateInvitation ? qsTr("Connection updates") : qsTr("New connection")
+            }
+
+            NotificationType {
+                Layout.fillWidth: true
+                Layout.leftMargin: 16
+                Layout.rightMargin: 16
+                visible: ImportController.isUpdateInvitation
+                text: qsTr("Allow this server to send signed settings to your existing VPN profile. The device key, DNS and local routing rules will be kept. Only enable updates from a server owner you trust.")
             }
 
             ColumnLayout {
@@ -186,7 +200,7 @@ PageType {
 
             Layout.fillWidth: true
 
-            text: qsTr("Connect")
+            text: ImportController.isUpdateInvitation ? qsTr("Enable updates") : qsTr("Connect")
 
             onClicked: {
                 if (cloakingCheckBox.checked) {
