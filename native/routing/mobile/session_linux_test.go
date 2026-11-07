@@ -13,6 +13,8 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"reflect"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -29,6 +31,66 @@ import (
 	"github.com/sagernet/sing/common/control"
 	"golang.org/x/sys/unix"
 )
+
+func TestNetworkDNSReloadRepreparesOriginalPolicy(t *testing.T) {
+	var session engine.SessionConfig
+	if err := json.Unmarshal(sampleConfig(t), &session); err != nil {
+		t.Fatal(err)
+	}
+	session.DNS = &dnspolicy.Config{Version: 1, Default: "local", PreserveNetworkDomains: true, Policies: map[string]dnspolicy.Resolver{"local": {Source: "network", Transport: "udp", Path: rules.Direct}}}
+	snapshot := func(iface, server, domain string) dnspolicy.NetworkSnapshot {
+		return dnspolicy.NetworkSnapshot{RoutingDomainsAvailable: true, Links: []dnspolicy.NetworkLink{{ID: "7", Interface: iface, Default: true, Domains: []string{domain}, Servers: []dnspolicy.NetworkServer{{Address: netip.MustParseAddr(server)}}}}}
+	}
+	first := snapshot("network-a", "192.0.2.53", "old.example")
+	session.NetworkDNS = &first
+	raw, err := json.Marshal(session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := string(raw)
+	compiled, _, err := compileSession(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var before map[string]any
+	if err = json.Unmarshal(compiled, &before); err != nil {
+		t.Fatal(err)
+	}
+	second := snapshot("network-b", "198.51.100.53", "new.example")
+	updated, _, err := compileSessionSnapshot(raw, &second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var after map[string]any
+	if err = json.Unmarshal(updated, &after); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(before["route"], after["route"]) {
+		t.Fatal("DNS reload changed application routing")
+	}
+	vpn := func(options map[string]any) any {
+		for _, v := range options["outbounds"].([]any) {
+			row := v.(map[string]any)
+			if row["tag"] == "vpn" {
+				return row
+			}
+		}
+		return nil
+	}
+	if !reflect.DeepEqual(vpn(before), vpn(after)) {
+		t.Fatal("DNS reload changed VPN identity")
+	}
+	encoded := string(updated)
+	if strings.Contains(encoded, "old.example") || strings.Contains(encoded, "192.0.2.53") || strings.Contains(encoded, "network-a") || !strings.Contains(encoded, "new.example") || !strings.Contains(encoded, "198.51.100.53") || !strings.Contains(encoded, "network-b") {
+		t.Fatal("old native DNS data survived replacement")
+	}
+	if string(raw) != original {
+		t.Fatal("original network-source policy mutated")
+	}
+	if _, _, err = compileSessionSnapshot(raw, &dnspolicy.NetworkSnapshot{}); err == nil {
+		t.Fatal("empty inventory fell back to previous snapshot")
+	}
+}
 
 func TestMobileNetworkDNSIsPreparedBeforeCapture(t *testing.T) {
 	var session engine.SessionConfig
@@ -134,10 +196,15 @@ func sampleConfig(t *testing.T, transport ...string) []byte {
 // gVisor FD endpoint without claiming an Android VpnService/device test.
 func TestOwnedPacketFDManagedDNSAndCleanup(t *testing.T) {
 	for _, transport := range []string{"awg", "wireguard"} {
-		t.Run(transport, func(t *testing.T) { testOwnedPacketFDManagedDNSAndCleanup(t, transport) })
+		t.Run(transport, func(t *testing.T) { testOwnedPacketFDManagedDNSAndCleanup(t, transport, false) })
 	}
 }
-func testOwnedPacketFDManagedDNSAndCleanup(t *testing.T, transport string) {
+func TestNetworkDNSReloadKeepsNativePacketOwner(t *testing.T) {
+	for _, transport := range []string{"awg", "wireguard"} {
+		t.Run(transport, func(t *testing.T) { testOwnedPacketFDManagedDNSAndCleanup(t, transport, true) })
+	}
+}
+func testOwnedPacketFDManagedDNSAndCleanup(t *testing.T, transport string, networkDNS bool) {
 	pair, e := unix.Socketpair(unix.AF_UNIX, unix.SOCK_DGRAM, 0)
 	if e != nil {
 		t.Fatal(e)
@@ -167,7 +234,11 @@ func testOwnedPacketFDManagedDNSAndCleanup(t *testing.T, transport string) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	session, e := Start(ctx, platform, sampleConfig(t, transport))
+	start := Start
+	if networkDNS {
+		start = StartWithNetworkDNS
+	}
+	session, e := start(ctx, platform, sampleConfig(t, transport))
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -198,6 +269,36 @@ func testOwnedPacketFDManagedDNSAndCleanup(t *testing.T, transport string) {
 	fake := answer.Answer[0].(*dns.A).A.String()
 	if !netip.MustParsePrefix("198.18.0.0/15").Contains(netip.MustParseAddr(fake)) {
 		t.Fatal("DNS response was not a FakeIP")
+	}
+	if networkDNS {
+		for range 3 {
+			session.SuspendNetworkDNS()
+			if e = session.ReloadNetworkDNS(dnspolicy.NetworkSnapshot{}); e != nil {
+				t.Fatal(e)
+			}
+			if released.Load() != 0 {
+				t.Fatal("DNS generation released native platform")
+			}
+			if e = platform.AutoDetectInterfaceControl(pair[0]); e != nil {
+				t.Fatal("DNS generation invalidated native protection", e)
+			}
+			if _, e = app.Write(packet); e != nil {
+				t.Fatal(e)
+			}
+			n, e = app.Read(reply)
+			if e != nil {
+				t.Fatal("DNS reload lost capture reader", e)
+			}
+			if n < 28 {
+				t.Fatal("truncated response after DNS reload")
+			}
+			if e = answer.Unpack(reply[28:n]); e != nil {
+				t.Fatal(e)
+			}
+			if len(answer.Answer) != 1 || answer.Answer[0].(*dns.A).A.String() != fake {
+				t.Fatal("DNS reload replaced FakeIP identity")
+			}
+		}
 	}
 	session.Close()
 	session.Close()

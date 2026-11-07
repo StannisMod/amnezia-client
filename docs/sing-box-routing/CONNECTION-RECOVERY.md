@@ -1,8 +1,9 @@
 # Connection-preserving recovery: Linux AWG/WG
 
 Work in progress, based on the verified TCP-dependency change (PR 15).
-The new transport operation and native capture prerequisites are implemented;
-automatic GUI/watchdog recovery and replaceable network DNS are not enabled yet.
+The transport operation, native capture prerequisites and independently
+replaceable Linux network DNS are implemented. Automatic GUI/watchdog recovery
+and protected-route observation are not integrated yet.
 
 ## Ownership boundaries
 
@@ -74,14 +75,42 @@ back into the TUN when the destination is not locally deliverable. Recovery
 recognizes the original output-only schema and the complete new schema, refusing
 partial or foreign tables before deletion.
 
-## Remaining integration
+## Replaceable Linux network DNS
 
-Network DNS must become a replaceable context separate from application flows.
-On physical-network change, cancel in-flight old-generation DNS, reject late
-answers and clear real caches; preserve FakeIP and application TCP identities.
-Unavailable/ambiguous inventory must pause new DNS without plaintext fallback,
-wrong-interface requests or full runtime teardown. Resolver-bus recovery must
-reapply only our TUN's settings.
+Real DNS now has a separate generation with its own service registry, resolver
+rules, real cache and interface-bound sockets. Its DNS-only Box has no inbounds,
+FakeIP database or VPN device; VPN queries borrow the original live VPN outbound.
+The main Box retains FakeIP identity, application routing and established TCP.
+Outer real-cache hits cannot bypass a suspended generation. Replacement reserves
+a generation before native preparation: a later suspension rejects both late
+answers and candidates still being prepared. Invalid snapshots never revive the
+old network's answers or sockets.
+
+Linux enables this path and serially reconciles native DNS inventory. Unavailable
+inventory pauses new real DNS while retaining existing application flows. The
+watcher retries after resolver or system-bus failure and reapplies settings only
+to our TUN. Explicit numeric DNS does not require native DNSEx inventory. Initial
+startup remains bounded; the established owner's transient resolver failures no
+longer become fatal Stats errors. This does not yet detect a route-only network
+change with unchanged DNS inventory: protected-route epochs remain pending.
+
+Tests preserve a real application TCP object/server accept while replacing DNS
+addresses, interface bindings, cached answers and DIRECT/VPN domain rules. They
+reject late responses, superseded preparation, invalid inventory and plaintext
+fallback when encrypted DNS fails. AWG/WG packet-FD tests retain the sole reader,
+native protection hooks and the same FakeIP across three DNS replacements, then
+verify explicit cleanup. A private D-Bus integration test restarts the synthetic
+resolver and the bus, verifies suspension/resumption and keeps the owner alive;
+three race-instrumented repetitions passed. It never uses the host system bus.
+Run it with `AMNEZIA_RESOLVED_RECOVERY_TEST=1` and `dbus-daemon` available.
+
+After enabling this path, the four native AWG/WG inner IPv4/IPv6 cases again kept
+the same WSS/bulk sockets across protected socket refresh, physical IPv4 removal
+and removal of the default route (only the VPN endpoint route retained). This
+validates the capture/runtime regression path with `--no-system-dns`; it is not
+a combined native-TUN/system-resolver failure acceptance test.
+
+## Remaining integration
 
 The Linux native recovery owner must coalesce network hints, observe actual
 protected endpoint routes (gateway changes need not emit a global NM event),

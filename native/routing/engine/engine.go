@@ -36,6 +36,7 @@ func Context(ctx context.Context, host Underlay) context.Context {
 	mixed.RegisterInbound(in)
 	out := outbound.NewRegistry()
 	registerDirect(out, host)
+	registerBorrowedDNSVPN(out)
 	awg.Register(out, host.ListenPacket)
 	wireguard.Register(out, host.ListenPacket)
 	d := dns.NewTransportRegistry()
@@ -45,7 +46,8 @@ func Context(ctx context.Context, host Underlay) context.Context {
 	transport.RegisterHTTPS(d)
 	fakeip.RegisterTransport(d)
 	hosts.RegisterTransport(d)
-	return box.Context(ctx, in, out, endpoint.NewRegistry(), d, boxservice.NewRegistry(), certificate.NewRegistry())
+	ctx = service.ContextWith[*runtimeHost](ctx, &runtimeHost{underlay: host})
+	return box.Context(ctx, in, out, endpoint.NewRegistry(), &networkDNSRegistry{DNSTransportRegistry: d}, boxservice.NewRegistry(), certificate.NewRegistry())
 }
 
 // New parses context-aware options, including the AWG extension. Logs are
@@ -64,6 +66,11 @@ func NewWithCache(ctx context.Context, raw []byte, cachePath string) (*box.Box, 
 		return nil, errors.New("invalid routing engine configuration")
 	}
 	options.Log = &option.LogOptions{Disabled: true}
+	if service.FromContext[*networkDNSProxy](ctx) != nil && options.DNS != nil {
+		// Real caches live in the replaceable DNS generation. An outer cache
+		// hit must never bypass the generation gate after a network change.
+		options.DNS.DNSClientOptions.DisableCache = true
+	}
 	if cachePath != "" {
 		if !filepath.IsAbs(cachePath) {
 			return nil, errors.New("routing cache requires private absolute path")

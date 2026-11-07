@@ -250,7 +250,7 @@ func Start(ctx context.Context, raw []byte, manageDNS bool) (*Session, error) {
 	if err != nil {
 		return nil, err
 	}
-	s.core, err = mobile.Start(ctx, platform, raw)
+	s.core, err = mobile.StartWithNetworkDNS(ctx, platform, raw)
 	if err != nil {
 		return nil, err
 	}
@@ -312,7 +312,9 @@ func Start(ctx context.Context, raw []byte, manageDNS bool) (*Session, error) {
 		if err = json.Unmarshal(raw, &effective); err != nil {
 			return nil, errors.New("invalid prepared DNS session")
 		}
-		s.dns, err = startResolvedLink(ctx, link.Attrs().Index, effective.DNSNetworkFingerprint)
+		// A resolver/network outage retires DNS work, not the TCP owner.
+		recovery := &networkDNSRecovery{nativeInventory: effective.DNS != nil && effective.DNS.NeedsNetwork(), fingerprint: effective.DNSNetworkFingerprint, suspend: s.core.SuspendNetworkDNS, reload: func(links []networkDNSLink) error { return s.core.ReloadNetworkDNS(linuxDNSSnapshot(links)) }}
+		s.dns, err = startResolvedLinkWithRecovery(ctx, link.Attrs().Index, effective.DNSNetworkFingerprint, recovery)
 		if err != nil {
 			return nil, err
 		}

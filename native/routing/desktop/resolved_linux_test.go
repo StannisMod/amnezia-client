@@ -10,8 +10,46 @@ import (
 	"testing"
 	"time"
 
+	"github.com/StannisMod/amnezia-client/native/routing/dnspolicy"
 	"github.com/godbus/dbus/v5"
+	"net/netip"
 )
+
+func TestNetworkDNSRecoveryRetiresUnavailableInventoryAndRetries(t *testing.T) {
+	links := []networkDNSLink{{Index: 7, Name: "uplink-a", Servers: []dnspolicy.NetworkServer{{Address: netip.MustParseAddr("192.0.2.53")}}}}
+	freezes, reloads := 0, 0
+	fail := false
+	r := &networkDNSRecovery{fingerprint: networkDNSFingerprint(links), suspend: func() { freezes++ }, reload: func(_ []networkDNSLink) error {
+		reloads++
+		if fail {
+			return errors.New("invalid inventory")
+		}
+		return nil
+	}}
+	if err := r.update(links, nil); err != nil || freezes != 0 || reloads != 0 {
+		t.Fatal("duplicate inventory disturbed DNS")
+	}
+	if r.update(nil, errors.New("bus unavailable")) == nil || freezes != 1 || reloads != 0 {
+		t.Fatal("bus loss retained old DNS")
+	}
+	// Same addresses after a bus/network interruption still need fresh sockets
+	// and cache: equal DNS addresses do not establish network identity.
+	if err := r.update(links, nil); err != nil || reloads != 1 {
+		t.Fatal("recovery reused retired generation")
+	}
+	links[0].Name = "uplink-b"
+	fail = true
+	if r.update(links, nil) == nil || r.fingerprint != "" {
+		t.Fatal("invalid candidate was published")
+	}
+	fail = false
+	if err := r.update(links, nil); err != nil || reloads != 3 {
+		t.Fatal("failed replacement was not retried")
+	}
+	if err := r.update(links, nil); err != nil || reloads != 3 {
+		t.Fatal("successful generation was repeatedly replaced")
+	}
+}
 
 func TestResolvedLinkRetriesSetterRace(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)

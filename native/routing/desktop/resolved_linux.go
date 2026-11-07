@@ -40,19 +40,51 @@ type resolvedLink struct {
 	err                error // published by closing done
 	once               sync.Once
 	networkFingerprint string
+	recovery           *networkDNSRecovery
+}
+
+// The watcher serially owns this state. Invalid inventories block new native
+// DNS work while established application flows remain owned by the live Box.
+type networkDNSRecovery struct {
+	fingerprint     string
+	nativeInventory bool
+	suspend         func()
+	reload          func([]networkDNSLink) error
+}
+
+func (r *networkDNSRecovery) unavailable() { r.suspend(); r.fingerprint = "" }
+func (r *networkDNSRecovery) update(links []networkDNSLink, err error) error {
+	if err != nil {
+		r.unavailable()
+		return err
+	}
+	fingerprint := networkDNSFingerprint(links)
+	if fingerprint == r.fingerprint {
+		return nil
+	}
+	r.unavailable()
+	if err = r.reload(links); err != nil {
+		return err
+	}
+	r.fingerprint = fingerprint
+	return nil
 }
 
 func startResolvedLink(ctx context.Context, index int, fingerprint ...string) (*resolvedLink, error) {
+	initial := ""
+	if len(fingerprint) > 0 {
+		initial = fingerprint[0]
+	}
+	return startResolvedLinkWithRecovery(ctx, index, initial, nil)
+}
+func startResolvedLinkWithRecovery(ctx context.Context, index int, fingerprint string, recovery *networkDNSRecovery) (*resolvedLink, error) {
 	runCtx, cancel := context.WithCancel(ctx)
 	conn, err := dbus.ConnectSystemBus(dbus.WithContext(runCtx))
 	if err != nil {
 		cancel()
 		return nil, errors.New("system resolver bus unavailable")
 	}
-	r := &resolvedLink{conn: conn, manager: conn.Object(resolvedService, "/org/freedesktop/resolve1"), index: int32(index), cancel: cancel, done: make(chan struct{})}
-	if len(fingerprint) > 0 {
-		r.networkFingerprint = fingerprint[0]
-	}
+	r := &resolvedLink{conn: conn, manager: conn.Object(resolvedService, "/org/freedesktop/resolve1"), index: int32(index), cancel: cancel, done: make(chan struct{}), networkFingerprint: fingerprint, recovery: recovery}
 	setupCtx, setupCancel := context.WithTimeout(runCtx, 5*time.Second)
 	defer setupCancel()
 	var path dbus.ObjectPath
@@ -78,7 +110,7 @@ func startResolvedLink(ctx context.Context, index int, fingerprint ...string) (*
 	}
 	go func() {
 		defer close(r.done)
-		defer conn.Close()
+		defer func() { r.conn.Close() }()
 		// Signals handle external resets immediately; the timer also covers
 		// invalidated/missed properties without spawning resolver processes.
 		ticker := time.NewTicker(time.Second)
@@ -87,13 +119,47 @@ func startResolvedLink(ctx context.Context, index int, fingerprint ...string) (*
 			select {
 			case <-runCtx.Done():
 				return
-			case <-signals:
+			case _, open := <-signals:
+				if !open {
+					signals = nil
+				}
 			case <-ticker.C:
 			}
 			checkCtx, checkCancel := context.WithTimeout(runCtx, 5*time.Second)
-			err := r.reconcile(checkCtx)
+			var err error
+			if r.recovery != nil && !r.conn.Connected() {
+				r.recovery.unavailable()
+				r.conn.Close()
+				var replacement *dbus.Conn
+				replacement, err = dbus.ConnectSystemBus(dbus.WithContext(runCtx))
+				if err == nil {
+					r.conn = replacement
+					r.manager = replacement.Object(resolvedService, "/org/freedesktop/resolve1")
+					// Polling continues across a bus restart even if adding the
+					// advisory signal subscription fails.
+					err = replacement.AddMatchSignalContext(checkCtx, dbus.WithMatchSender(resolvedService), dbus.WithMatchInterface("org.freedesktop.DBus.Properties"), dbus.WithMatchMember("PropertiesChanged"))
+					signals = make(chan *dbus.Signal, 16)
+					replacement.Signal(signals)
+				}
+			}
+			if err == nil {
+				err = r.reconcile(checkCtx)
+			}
 			checkCancel()
 			if err != nil {
+				if r.recovery != nil {
+					r.recovery.unavailable()
+					// Closed signal channels and queued resets must not create
+					// a busy loop while the bus/link/inventory is unavailable.
+					timer := time.NewTimer(time.Second)
+					select {
+					case <-runCtx.Done():
+						timer.Stop()
+						return
+					case <-timer.C:
+					}
+					continue
+				}
 				if runCtx.Err() == nil {
 					r.err = resolvedFailure("system resolver link configuration lost", err)
 				}
@@ -154,7 +220,22 @@ func (r *resolvedLink) apply(ctx context.Context) error {
 }
 
 func (r *resolvedLink) reconcile(ctx context.Context) error {
-	if r.networkFingerprint != "" {
+	if r.recovery != nil {
+		var links []networkDNSLink
+		var err error
+		if r.recovery.nativeInventory {
+			links, err = networkDNSInventory(ctx, r.conn)
+		}
+		if err = r.recovery.update(links, err); err != nil {
+			return err
+		}
+		// resolved can recreate link objects without restarting the system bus.
+		var path dbus.ObjectPath
+		if err = r.manager.CallWithContext(ctx, resolvedManager+".GetLink", 0, r.index).Store(&path); err != nil {
+			return err
+		}
+		r.link = r.conn.Object(resolvedService, path)
+	} else if r.networkFingerprint != "" {
 		links, err := networkDNSInventory(ctx, r.conn)
 		if err != nil {
 			return err
