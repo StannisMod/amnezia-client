@@ -94,6 +94,20 @@ func (c SessionConfig) PeerPublicKey() string {
 	}
 	return ""
 }
+
+func (c SessionConfig) PeerEndpoint() netip.AddrPort {
+	transport, err := c.Transport()
+	if err != nil {
+		return netip.AddrPort{}
+	}
+	if transport.Type == "wireguard" && transport.WireGuard != nil {
+		return transport.WireGuard.Endpoint
+	}
+	if transport.AWG != nil {
+		return transport.AWG.Endpoint
+	}
+	return netip.AddrPort{}
+}
 func (c SessionConfig) Compile() ([]byte, error) {
 	transport, err := c.Transport()
 	if err != nil {

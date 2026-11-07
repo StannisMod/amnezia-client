@@ -11,8 +11,8 @@ import (
 	"time"
 )
 
-// Feasibility probe for the pinned device primitive, not a production refresh
-// API. The same established TCP socket must survive reopening the UDP bind.
+// The production recovery API must preserve the established TCP socket when
+// reopening the protected UDP bind.
 // This preserves the UDP port; it does NOT test NAT rebinding or interface moves.
 func TestBindUpdatePreservesEstablishedTCP(t *testing.T) {
 	for _, standard := range []bool{false, true} {
@@ -31,7 +31,7 @@ func TestBindUpdatePreservesEstablishedTCP(t *testing.T) {
 					t.Fatal(e)
 				}
 				clientPort := uint16(reserved.LocalAddr().(*net.UDPAddr).Port)
-				reserved.Close()
+				defer reserved.Close()
 				params := map[string]string(nil)
 				if !standard {
 					params = map[string]string{"jc": "3", "jmin": "40", "jmax": "80", "s1": "16", "s2": "24", "s3": "8", "s4": "8", "h1": "1001", "h2": "1002", "h3": "1003", "h4": "1004"}
@@ -47,8 +47,15 @@ func TestBindUpdatePreservesEstablishedTCP(t *testing.T) {
 					t.Fatal(e)
 				}
 				var opens atomic.Int32
+				var claimed atomic.Bool
 				client, e := New(ctx, Config{Address: []netip.Addr{netip.MustParseAddr(clientIP)}, PrivateKey: aPriv, PublicKey: bPub, Endpoint: netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), peerPort), ListenPort: clientPort, AllowedIPs: []netip.Prefix{netip.MustParsePrefix(serverIP + mask)}, Parameters: params}, func(c context.Context, n, a string) (net.PacketConn, error) {
-					pc, e := lc.ListenPacket(c, n, a)
+					var pc net.PacketConn
+					var e error
+					if claimed.CompareAndSwap(false, true) {
+						pc = reserved
+					} else {
+						pc, e = lc.ListenPacket(c, n, a)
+					}
 					if e == nil {
 						opens.Add(1)
 					}
@@ -82,7 +89,7 @@ func TestBindUpdatePreservesEstablishedTCP(t *testing.T) {
 				stream.SetDeadline(time.Now().Add(10 * time.Second))
 				for cycle := 0; cycle < 4; cycle++ {
 					if cycle > 0 {
-						if e := client.device.BindUpdate(); e != nil {
+						if e := client.RefreshUnderlay(netip.AddrPort{}); e != nil {
 							t.Fatal(e)
 						}
 					}

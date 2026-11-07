@@ -38,6 +38,8 @@ type Session struct {
 	manageDNS    bool
 	dns          *resolvedLink
 	captureOwned bool
+	source       *sourceMarker
+	sourceError  error
 	once         sync.Once
 }
 
@@ -222,6 +224,14 @@ func Start(ctx context.Context, raw []byte, manageDNS bool) (*Session, error) {
 				t.Close()
 				return nil, errors.New("capture reverse-path configuration failed")
 			}
+			// Only our proxy-return packets receive captureMark in PREROUTING.
+			// Include it in this TUN's reverse lookup so a missing physical
+			// default route does not reject valid inner replies. Physical RPF
+			// and global sysctls remain unchanged.
+			if err = os.WriteFile("/proc/sys/net/ipv4/conf/"+InterfaceName+"/src_valid_mark", []byte("1"), 0600); err != nil {
+				t.Close()
+				return nil, errors.New("capture reverse-path configuration failed")
+			}
 			for _, p := range append(opts.Inet4Address, opts.Inet6Address...) {
 				address, err := netlink.ParseAddr(p.String())
 				if err != nil {
@@ -293,6 +303,10 @@ func Start(ctx context.Context, raw []byte, manageDNS bool) (*Session, error) {
 		}
 		s.rules = append(s.rules, r)
 	}
+	// Install before managed DNS/capture become visible to applications. The
+	// TCP connect hook marks before the kernel chooses its local source, while
+	// protected backend sockets keep the native-route exemption.
+	s.source, s.sourceError = attachStableTCPSource("/sys/fs/cgroup")
 	if manageDNS {
 		var effective engine.SessionConfig
 		if err = json.Unmarshal(raw, &effective); err != nil {
@@ -319,7 +333,12 @@ func (s *Session) Stats() (tunnel.Stats, error) {
 	}
 	return s.core.Stats()
 }
-func (s *Session) CaptureID() string { return InterfaceName }
+func (s *Session) CaptureID() string     { return InterfaceName }
+func (s *Session) StableTCPSource() bool { return s.source != nil }
+
+func (s *Session) RefreshUnderlay(remote netip.AddrPort) error {
+	return s.core.RefreshUnderlay(remote)
+}
 
 func (s *Session) Close() error {
 	return s.close(false)
@@ -341,6 +360,9 @@ func (s *Session) close(preserve bool) error {
 		}
 		if s.core != nil {
 			errs = append(errs, s.core.Close())
+		}
+		if s.source != nil {
+			errs = append(errs, s.source.Close())
 		}
 		if preserve {
 			return

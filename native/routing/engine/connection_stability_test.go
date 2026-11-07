@@ -274,6 +274,7 @@ func reproduceStability(t *testing.T, protocol, family string, pauses []time.Dur
 	}
 	var runtime *Runtime
 	var nativeStop func() error
+	var nativeRefresh func() error
 	start := func() {
 		if os.Getenv("AMNEZIA_STABILITY_HELPER") != "" {
 			kind := "awg"
@@ -285,7 +286,7 @@ func reproduceStability(t *testing.T, protocol, family string, pauses []time.Dur
 				data[strings.ToUpper(k[:1])+k[1:]] = v
 			}
 			profile, _ := json.Marshal(map[string]any{"protocol": kind, "dns1": "203.0.113.2", "sing_box_routing": map[string]any{"version": 1, "default": "vpn", "rules": []any{}}, kind + "_config_data": data})
-			nativeStop = stabilityStartNative(t, profile)
+			nativeStop, nativeRefresh = stabilityStartNative(t, profile)
 			return
 		}
 		var err error
@@ -306,8 +307,11 @@ func reproduceStability(t *testing.T, protocol, family string, pauses []time.Dur
 	// exercises sing-box's flow ownership, rather than dialing the VPN directly.
 	dial := func(context.Context, string, string) (net.Conn, error) {
 		if nativeStop != nil {
-			var dialer net.Dialer
-			return dialer.DialContext(ctx, "tcp", net.JoinHostPort(serverIP, "18443"))
+			c, err := stabilityNativeApplicationDial(ctx, net.JoinHostPort(serverIP, "18443"), os.Getenv("AMNEZIA_STABILITY_EARLY_CAPTURE") == "1")
+			if err == nil {
+				t.Logf("native application TCP local=%s peer=%s", c.LocalAddr(), c.RemoteAddr())
+			}
+			return c, err
 		}
 		app, router := net.Pipe()
 		go runtime.box.Router().RouteConnectionEx(ctx, router, adapter.InboundContext{Inbound: TUNTag, Network: "tcp", Source: M.ParseSocksaddr("127.0.0.1:12345"), Destination: M.Socksaddr{Addr: netip.MustParseAddr(serverIP), Port: 18443}}, nil)
@@ -434,9 +438,10 @@ func reproduceStability(t *testing.T, protocol, family string, pauses []time.Dur
 			chunks.Add(1)
 		}
 	}()
+	progressBudget := 100 * time.Second
 	waitProgress := func(w, c uint64) {
 		t.Helper()
-		timer := time.NewTimer(100 * time.Second)
+		timer := time.NewTimer(progressBudget)
 		defer timer.Stop()
 		tick := time.NewTicker(20 * time.Millisecond)
 		defer tick.Stop()
@@ -456,6 +461,59 @@ func reproduceStability(t *testing.T, protocol, family string, pauses []time.Dur
 		}
 	}
 	waitProgress(3, 3)
+	refresh := func() {
+		t.Helper()
+		var err error
+		if nativeRefresh != nil {
+			err = nativeRefresh()
+		} else {
+			err = runtime.RefreshUnderlay(netip.AddrPort{})
+		}
+		if err != nil {
+			t.Fatal("underlay refresh", err)
+		}
+		t.Log("protected UDP refreshed with the same runtime/TUN owner")
+	}
+	if os.Getenv("AMNEZIA_STABILITY_REFRESH") == "1" && len(pauses) == 0 {
+		for range 3 {
+			w, c := messages.Load(), chunks.Load()
+			refresh()
+			waitProgress(w+3, c+3)
+			if counted.accepts.Load() != 2 {
+				t.Fatal("refresh replaced established connections")
+			}
+		}
+	}
+	if os.Getenv("AMNEZIA_STABILITY_ADDRESS_MOVE") == "1" {
+		if nativeRefresh == nil {
+			t.Fatal("address move requires the real native owner")
+		}
+		w, c := messages.Load(), chunks.Load()
+		stabilityNativeAddressMove(t)
+		refresh()
+		progressBudget = 8 * time.Second
+		waitProgress(w+3, c+3)
+		progressBudget = 100 * time.Second
+		if counted.accepts.Load() != 2 {
+			t.Fatal("address move replaced application connections")
+		}
+		t.Log("same WSS and bulk TCP survived removal of the original physical IPv4 address")
+	}
+	if os.Getenv("AMNEZIA_STABILITY_REMOVE_DEFAULT") == "1" {
+		if nativeRefresh == nil {
+			t.Fatal("default removal requires native owner")
+		}
+		w, c := messages.Load(), chunks.Load()
+		stabilityNativeRemoveDefault(t)
+		refresh()
+		progressBudget = 8 * time.Second
+		waitProgress(w+3, c+3)
+		progressBudget = 100 * time.Second
+		if counted.accepts.Load() != 2 {
+			t.Fatal("default removal replaced established connections")
+		}
+		t.Log("same WSS and bulk TCP survive with only a native route to the VPN endpoint")
+	}
 	for _, duration := range pauses {
 		beforeDrops := link.dropped.Load()
 		link.blackhole.Store(true)
@@ -470,6 +528,9 @@ func reproduceStability(t *testing.T, protocol, family string, pauses []time.Dur
 			link.dropped.Add(stabilityNativeBlackhole(t, false, peerEndpoint))
 		}
 		recovered := time.Now()
+		if os.Getenv("AMNEZIA_STABILITY_REFRESH") == "1" {
+			refresh()
+		}
 		waitProgress(0, c+1)
 		firstRecord := time.Since(recovered)
 		waitProgress(w+3, c+3)

@@ -15,6 +15,8 @@ import (
 const captureMark = uint32(0x20000000)
 const captureTableName = "amnezia_route_capture"
 const captureOwner = "amnezia-routing:output-capture:v1"
+const captureInputOwner = "amnezia-routing:input-capture:v1"
+const captureForwardOwner = "amnezia-routing:no-forward:v1"
 
 // Mark only locally emitted packets. An iif lo policy also matches the kernel's
 // reverse-source lookup on physical ingress (fib_validate_source), breaking
@@ -29,6 +31,27 @@ func captureExpressions() []expr.Any {
 		&expr.Bitwise{SourceRegister: 1, DestRegister: 1, Len: 4, Mask: word(^captureMark), Xor: word(captureMark)},
 		&expr.Meta{Key: expr.MetaKeyMARK, SourceRegister: true, Register: 1},
 	}
+}
+
+func fromCaptureInterface() []expr.Any {
+	return []expr.Any{
+		&expr.Meta{Key: expr.MetaKeyIIFNAME, Register: 1},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: append([]byte(InterfaceName), 0)},
+	}
+}
+
+func captureInputExpressions() []expr.Any {
+	word := binaryutil.NativeEndian.PutUint32
+	return append(fromCaptureInterface(),
+		&expr.Meta{Key: expr.MetaKeyMARK, Register: 1},
+		&expr.Bitwise{SourceRegister: 1, DestRegister: 1, Len: 4, Mask: word(^captureMark), Xor: word(captureMark)},
+		&expr.Meta{Key: expr.MetaKeyMARK, SourceRegister: true, Register: 1})
+}
+func captureForwardExpressions() []expr.Any {
+	// The packet tunnel proxies local applications, never a routed LAN. A
+	// reply to an address no longer owned by the kernel must not escape onto
+	// a physical interface (or be forwarded back into the capture TUN).
+	return append(fromCaptureInterface(), &expr.Verdict{Kind: expr.VerdictDrop})
 }
 
 func captureTable() *nftables.Table {
@@ -61,6 +84,10 @@ func installCaptureMark() error {
 	chain := c.AddChain(&nftables.Chain{Name: "output", Table: table, Type: nftables.ChainTypeRoute,
 		Hooknum: nftables.ChainHookOutput, Priority: nftables.ChainPriorityMangle})
 	c.AddRule(&nftables.Rule{Table: table, Chain: chain, Exprs: captureExpressions(), UserData: []byte(captureOwner)})
+	input := c.AddChain(&nftables.Chain{Name: "input_mark", Table: table, Type: nftables.ChainTypeFilter, Hooknum: nftables.ChainHookPrerouting, Priority: nftables.ChainPriorityMangle})
+	c.AddRule(&nftables.Rule{Table: table, Chain: input, Exprs: captureInputExpressions(), UserData: []byte(captureInputOwner)})
+	forward := c.AddChain(&nftables.Chain{Name: "forward_guard", Table: table, Type: nftables.ChainTypeFilter, Hooknum: nftables.ChainHookForward, Priority: nftables.ChainPriorityFilter})
+	c.AddRule(&nftables.Rule{Table: table, Chain: forward, Exprs: captureForwardExpressions(), UserData: []byte(captureForwardOwner)})
 	if err := c.Flush(); err != nil {
 		return errors.New("capture packet marking installation failed")
 	}
@@ -80,13 +107,30 @@ func ownedCaptureTable() (*nftables.Table, error) {
 		return nil, err
 	}
 	count := 0
+	seen := make(map[string]bool)
 	for _, chain := range chains {
 		if chain.Table.Name != table.Name || chain.Table.Family != table.Family {
 			continue
 		}
 		count++
-		if chain.Name != "output" || chain.Type != nftables.ChainTypeRoute || chain.Hooknum == nil ||
-			*chain.Hooknum != *nftables.ChainHookOutput || chain.Priority == nil || *chain.Priority != *nftables.ChainPriorityMangle ||
+		var kind nftables.ChainType
+		var hook *nftables.ChainHook
+		var priority *nftables.ChainPriority
+		var owner string
+		var expressions []expr.Any
+		switch chain.Name {
+		case "output":
+			kind, hook, priority, owner, expressions = nftables.ChainTypeRoute, nftables.ChainHookOutput, nftables.ChainPriorityMangle, captureOwner, captureExpressions()
+		case "input_mark":
+			kind, hook, priority, owner, expressions = nftables.ChainTypeFilter, nftables.ChainHookPrerouting, nftables.ChainPriorityMangle, captureInputOwner, captureInputExpressions()
+		case "forward_guard":
+			kind, hook, priority, owner, expressions = nftables.ChainTypeFilter, nftables.ChainHookForward, nftables.ChainPriorityFilter, captureForwardOwner, captureForwardExpressions()
+		default:
+			return nil, errors.New("refusing recovery of an unrecognized packet marking chain")
+		}
+		seen[chain.Name] = true
+		if chain.Type != kind || chain.Hooknum == nil ||
+			*chain.Hooknum != *hook || chain.Priority == nil || *chain.Priority != *priority ||
 			(chain.Policy != nil && *chain.Policy != nftables.ChainPolicyAccept) || chain.Device != "" {
 			return nil, errors.New("refusing recovery of an unrecognized packet marking chain")
 		}
@@ -94,11 +138,13 @@ func ownedCaptureTable() (*nftables.Table, error) {
 		if err != nil {
 			return nil, err
 		}
-		if len(rules) != 1 || !bytes.Equal(rules[0].UserData, []byte(captureOwner)) || !reflect.DeepEqual(rules[0].Exprs, captureExpressions()) {
+		if len(rules) != 1 || !bytes.Equal(rules[0].UserData, []byte(owner)) || !reflect.DeepEqual(rules[0].Exprs, expressions) {
 			return nil, errors.New("refusing recovery of an unrecognized packet marking rule")
 		}
 	}
-	if count != 1 {
+	// Recognize the original output-only schema too, for explicit recovery
+	// after upgrade. A partial/new or foreign table is never silently erased.
+	if !seen["output"] || (count != 1 && !(count == 3 && seen["input_mark"] && seen["forward_guard"])) {
 		return nil, errors.New("refusing recovery of an unrecognized packet marking table")
 	}
 	return table, nil

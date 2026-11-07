@@ -173,7 +173,7 @@ func withStabilityNS(t *testing.T, path string, fn func() error) {
 
 // Launch the unchanged desktop helper: real OS capture, production nft/routing
 // ownership and protected sockets. Only system DNS management is disabled.
-func stabilityStartNative(t *testing.T, profile []byte) func() error {
+func stabilityStartNative(t *testing.T, profile []byte) (func() error, func() error) {
 	t.Helper()
 	helper := os.Getenv("AMNEZIA_STABILITY_HELPER")
 	command := exec.Command(helper, "--no-system-dns", "--cache-dir", t.TempDir())
@@ -191,6 +191,11 @@ func stabilityStartNative(t *testing.T, profile []byte) func() error {
 		t.Fatal(e)
 	}
 	ready := make(chan error, 1)
+	type acknowledgement struct {
+		ID uint64 `json:"request_id"`
+		OK bool   `json:"ok"`
+	}
+	acks := make(chan acknowledgement, 4)
 	scanned := make(chan struct{})
 	go func() {
 		defer close(scanned)
@@ -200,6 +205,7 @@ func stabilityStartNative(t *testing.T, profile []byte) func() error {
 			var row struct {
 				Type    string `json:"type"`
 				Message string `json:"message"`
+				acknowledgement
 			}
 			if json.Unmarshal(scanner.Bytes(), &row) != nil {
 				continue
@@ -215,6 +221,12 @@ func stabilityStartNative(t *testing.T, profile []byte) func() error {
 				}
 				t.Logf("native helper error: %s", row.Message)
 			}
+			if row.Type == "underlay_refreshed" {
+				select {
+				case acks <- row.acknowledgement:
+				default:
+				}
+			}
 		}
 		if !sent {
 			ready <- fmt.Errorf("helper exited before ready")
@@ -224,11 +236,15 @@ func stabilityStartNative(t *testing.T, profile []byte) func() error {
 		t.Fatal(e)
 	}
 	var once sync.Once
+	var inputMu sync.Mutex
+	var requestID uint64
 	var stopped error
 	stop := func() error {
 		once.Do(func() {
+			inputMu.Lock()
 			input.Write([]byte("stop\n"))
 			input.Close()
+			inputMu.Unlock()
 			done := make(chan error, 1)
 			go func() { done <- command.Wait() }()
 			select {
@@ -253,7 +269,34 @@ func stabilityStartNative(t *testing.T, profile []byte) func() error {
 		t.Fatalf("native helper ready timeout: %s", stderr.String())
 	}
 	t.Logf("native helper ready pid=%d; real amnrouting0 capture", command.Process.Pid)
-	return stop
+	refresh := func() error {
+		inputMu.Lock()
+		defer inputMu.Unlock()
+		requestID++
+		line, _ := json.Marshal(map[string]any{"type": "refresh_underlay", "request_id": requestID})
+		if _, err := input.Write(append(line, '\n')); err != nil {
+			return err
+		}
+		timer := time.NewTimer(5 * time.Second)
+		defer timer.Stop()
+		for {
+			select {
+			case ack := <-acks:
+				if ack.ID != requestID {
+					continue
+				}
+				if !ack.OK {
+					return fmt.Errorf("native underlay refresh failed")
+				}
+				return nil
+			case <-scanned:
+				return fmt.Errorf("native owner exited during refresh")
+			case <-timer.C:
+				return fmt.Errorf("native underlay refresh acknowledgement timed out")
+			}
+		}
+	}
+	return stop, refresh
 }
 func stabilityNativeBlackhole(t *testing.T, enabled bool, endpoint netip.AddrPort) uint64 {
 	t.Helper()

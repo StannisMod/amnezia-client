@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"errors"
+	"net/netip"
 	"sync"
 
 	"github.com/StannisMod/amnezia-client/native/routing/internal/builddeps"
@@ -18,6 +19,8 @@ type Runtime struct {
 	once        sync.Once
 	closeErr    error
 	diagnostics *Diagnostics
+	lifecycle   sync.Mutex
+	closed      bool
 }
 
 func StartRuntime(ctx context.Context, compiled []byte, cachePath string) (*Runtime, error) {
@@ -51,8 +54,37 @@ func (s *Runtime) Stats() (tunnel.Stats, error) {
 	return transport.Stats()
 }
 func (s *Runtime) Diagnostics() DiagnosticSnapshot { return s.diagnostics.Snapshot() }
+
+// RefreshUnderlay retains the Box, capture reader, route/flow ownership and
+// private TCP stack. It must never call Network.ResetNetwork: that operation
+// closes all tracked application connections in the pinned engine.
+func (s *Runtime) RefreshUnderlay(remote netip.AddrPort) error {
+	s.lifecycle.Lock()
+	defer s.lifecycle.Unlock()
+	if s.closed {
+		return errors.New("routing runtime is closed")
+	}
+	if err := s.box.Network().UpdateInterfaces(); err != nil {
+		return errors.New("native interface inventory refresh failed")
+	}
+	out, ok := s.box.Outbound().Outbound("vpn")
+	if !ok {
+		return errors.New("VPN outbound unavailable")
+	}
+	refresh, ok := out.(tunnel.UnderlayRefresher)
+	if !ok {
+		return errors.New("VPN underlay recovery unsupported")
+	}
+	return refresh.RefreshUnderlay(remote)
+}
 func (s *Runtime) Close() error {
-	s.once.Do(func() { s.cancel(); s.closeErr = s.box.Close() })
+	s.once.Do(func() {
+		s.lifecycle.Lock()
+		defer s.lifecycle.Unlock()
+		s.closed = true
+		s.cancel()
+		s.closeErr = s.box.Close()
+	})
 	return s.closeErr
 }
 

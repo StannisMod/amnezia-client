@@ -74,7 +74,7 @@ func main() {
 		return
 	}
 	defer session.Close()
-	write(map[string]any{"type": "ready", "interface": desktop.InterfaceName, "capture_id": session.CaptureID()})
+	write(map[string]any{"type": "ready", "interface": desktop.InterfaceName, "capture_id": session.CaptureID(), "stable_tcp_source": session.StableTCPSource()})
 	commands := make(chan string)
 	go func() {
 		defer close(commands)
@@ -98,6 +98,17 @@ func main() {
 			if command == "stop" {
 				return
 			}
+			request, remote, err := parseRecoveryRequest(command, config.PeerEndpoint().Port())
+			if err == nil {
+				err = session.RefreshUnderlay(remote)
+			}
+			message := ""
+			if err != nil {
+				message = "underlay recovery failed"
+			}
+			// A transient recovery error is an acknowledgement, not a fatal
+			// session error: keep capture, TCP state and the fail-closed guard.
+			write(map[string]any{"type": "underlay_refreshed", "request_id": request.ID, "ok": err == nil, "message": message})
 		case <-ticker.C:
 			stats, err := session.Stats()
 			if err != nil {
