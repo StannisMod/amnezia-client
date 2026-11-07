@@ -78,6 +78,12 @@ func startResolvedLink(ctx context.Context, index int, fingerprint ...string) (*
 	return startResolvedLinkWithRecovery(ctx, index, initial, nil)
 }
 func startResolvedLinkWithRecovery(ctx context.Context, index int, fingerprint string, recovery *networkDNSRecovery) (*resolvedLink, error) {
+	if recovery != nil && !recovery.nativeInventory {
+		// The explicit-DNS generation was already started before this watcher.
+		// Do not retire it on the first timer tick merely because there is no
+		// native-inventory fingerprint: that races the first app connection.
+		recovery.fingerprint = networkDNSFingerprint(nil)
+	}
 	runCtx, cancel := context.WithCancel(ctx)
 	conn, err := dbus.ConnectSystemBus(dbus.WithContext(runCtx))
 	if err != nil {

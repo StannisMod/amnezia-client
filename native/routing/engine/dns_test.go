@@ -113,6 +113,12 @@ func TestManagedDNSUpstreamCNAMECacheAndFakeIP(t *testing.T) {
 
 // App DNS caches can outlive a Go session. Preserve the identity of old FakeIPs.
 func TestFakeIPIdentitySurvivesSessionRestart(t *testing.T) {
+	testFakeIPIdentitySurvivesSessionRestart(t, false)
+}
+func TestNetworkDNSFakeIPIdentitySurvivesSessionRestart(t *testing.T) {
+	testFakeIPIdentitySurvivesSessionRestart(t, true)
+}
+func testFakeIPIdentitySurvivesSessionRestart(t *testing.T, networkDNS bool) {
 	cachePath := filepath.Join(t.TempDir(), "fakeip.db")
 	priv, pub := keys(t)
 	raw, err := (SessionConfig{Rules: rules.Config{Version: 1, Default: rules.VPN}, AWG: awg.Config{Address: []netip.Addr{netip.MustParseAddr("10.77.0.1")}, PrivateKey: priv, PublicKey: pub, Endpoint: netip.MustParseAddrPort("127.0.0.1:9"), AllowedIPs: []netip.Prefix{netip.MustParsePrefix("0.0.0.0/0")}}, Resolver: netip.MustParseAddrPort("1.1.1.1:53"), ResolverAction: rules.VPN}).Compile()
@@ -131,12 +137,22 @@ func TestFakeIPIdentitySurvivesSessionRestart(t *testing.T) {
 	for round := 0; round < 3; round++ {
 		ctx := Context(context.Background(), Underlay{DialContext: dial.DialContext, ListenPacket: lc.ListenPacket})
 		ctx = service.ContextWith[adapter.PlatformInterface](ctx, loopbackTestPlatform{})
-		instance, err := NewWithCache(ctx, raw, cachePath)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err = instance.Start(); err != nil {
-			t.Fatal(err)
+		var closeInstance func() error
+		if networkDNS {
+			owner, err := StartRuntimeWithNetworkDNS(ctx, raw, cachePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			closeInstance = owner.Close
+		} else {
+			instance, err := NewWithCache(ctx, raw, cachePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = instance.Start(); err != nil {
+				t.Fatal(err)
+			}
+			closeInstance = instance.Close
 		}
 		manager := service.FromContext[adapter.DNSTransportManager](ctx)
 		fake, _ := manager.Transport("fake")
@@ -162,7 +178,7 @@ func TestFakeIPIdentitySurvivesSessionRestart(t *testing.T) {
 		if err != nil || !address6.Is6() {
 			t.Fatal("missing IPv6 FakeIP", err)
 		}
-		if err = instance.Close(); err != nil {
+		if err = closeInstance(); err != nil {
 			t.Fatal(err)
 		}
 	}

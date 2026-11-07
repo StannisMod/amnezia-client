@@ -22,6 +22,7 @@ type recoveryResolver struct {
 	mu           sync.Mutex
 	fail         atomic.Bool
 	sets         atomic.Int32
+	checks       atomic.Int32
 	dns          []resolvedDNS
 	domains      []resolvedDomain
 	defaultRoute bool
@@ -65,10 +66,20 @@ func (m *recoveryResolver) GetAll(iface string) (map[string]dbus.Variant, *dbus.
 		}
 		return map[string]dbus.Variant{"DNSEx": dbus.MakeVariant([]networkDNSServer{}), "Domains": dbus.MakeVariant([]networkDNSDomain{}), "DNSOverTLS": dbus.MakeVariant("no")}, nil
 	}
+	m.checks.Add(1)
 	return map[string]dbus.Variant{"DNS": dbus.MakeVariant(m.dns), "Domains": dbus.MakeVariant(m.domains), "DefaultRoute": dbus.MakeVariant(m.defaultRoute), "DNSOverTLS": dbus.MakeVariant(m.tls)}, nil
 }
 
 func TestResolvedRecoverySurvivesInventoryResolverAndBusLoss(t *testing.T) {
+	for _, native := range []bool{true, false} {
+		name := "network"
+		if !native {
+			name = "explicit"
+		}
+		t.Run(name, func(t *testing.T) { testResolvedRecovery(t, native) })
+	}
+}
+func testResolvedRecovery(t *testing.T, native bool) {
 	if os.Getenv("AMNEZIA_RESOLVED_RECOVERY_TEST") != "1" {
 		t.Skip("opt-in private D-Bus integration")
 	}
@@ -148,7 +159,12 @@ func TestResolvedRecoverySurvivesInventoryResolverAndBusLoss(t *testing.T) {
 	first, service := startResolver()
 	var frozen atomic.Bool
 	var reloads atomic.Int32
-	recovery := &networkDNSRecovery{nativeInventory: true, fingerprint: networkDNSFingerprint(nil), suspend: func() { frozen.Store(true) }, reload: func(_ []networkDNSLink) error { reloads.Add(1); frozen.Store(false); return nil }}
+	recovery := &networkDNSRecovery{nativeInventory: native, fingerprint: func() string {
+		if native {
+			return networkDNSFingerprint(nil)
+		}
+		return ""
+	}(), suspend: func() { frozen.Store(true) }, reload: func(_ []networkDNSLink) error { reloads.Add(1); frozen.Store(false); return nil }}
 	owner, e := startResolvedLinkWithRecovery(ctx, 77, "", recovery)
 	if e != nil {
 		t.Fatal(e)
@@ -162,12 +178,18 @@ func TestResolvedRecoverySurvivesInventoryResolverAndBusLoss(t *testing.T) {
 		default:
 		}
 	}
-	first.fail.Store(true)
-	wait("invalid inventory did not suspend DNS", frozen.Load)
-	alive()
-	first.fail.Store(false)
-	wait("valid inventory did not resume DNS", func() bool { return !frozen.Load() && reloads.Load() > 0 })
-	alive()
+	wait("initial reconciliations did not run", func() bool { return first.checks.Load() >= 2 })
+	if reloads.Load() != 0 {
+		t.Fatal("startup watcher replaced the already valid DNS generation")
+	}
+	if native {
+		first.fail.Store(true)
+		wait("invalid inventory did not suspend DNS", frozen.Load)
+		alive()
+		first.fail.Store(false)
+		wait("valid inventory did not resume DNS", func() bool { return !frozen.Load() && reloads.Load() > 0 })
+		alive()
+	}
 	if _, e = service.ReleaseName(resolvedService); e != nil {
 		t.Fatal(e)
 	}
