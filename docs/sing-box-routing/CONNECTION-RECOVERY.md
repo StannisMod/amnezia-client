@@ -3,7 +3,7 @@
 Work in progress, based on the verified TCP-dependency change (PR 15).
 The transport operation, native capture prerequisites and independently
 replaceable Linux network DNS are implemented. Automatic GUI/watchdog recovery
-and protected-route observation are not integrated yet.
+is not integrated yet; native protected-route observation now drives recovery.
 
 ## Ownership boundaries
 
@@ -91,8 +91,8 @@ inventory pauses new real DNS while retaining existing application flows. The
 watcher retries after resolver or system-bus failure and reapplies settings only
 to our TUN. Explicit numeric DNS does not require native DNSEx inventory. Initial
 startup remains bounded; the established owner's transient resolver failures no
-longer become fatal Stats errors. This does not yet detect a route-only network
-change with unchanged DNS inventory: protected-route epochs remain pending.
+longer become fatal Stats errors. The native owner now invalidates real DNS on changes of the protected endpoint
+route even when the resolver addresses remain the same.
 
 Tests preserve a real application TCP object/server accept while replacing DNS
 addresses, interface bindings, cached answers and DIRECT/VPN domain rules. They
@@ -110,12 +110,51 @@ and removal of the default route (only the VPN endpoint route retained). This
 validates the capture/runtime regression path with `--no-system-dns`; it is not
 a combined native-TUN/system-resolver failure acceptance test.
 
+## Native protected-route recovery
+
+The Linux owner polls the actual endpoint route with the protected socket mark,
+UDP protocol and destination port. Its fingerprint includes the selected
+interface, preferred source, gateway, routing table, MTU and interface prefixes;
+a generic default-route query is insufficient. Each private netlink socket has
+one-second send/receive timeouts, with no global socket-timeout mutation.
+
+After the first handshake, a path change suspends old DNS and probes the current
+UDP socket through the same cryptographic peer. The probe respects the device's
+handshake rate limit. A fresh handshake ends pending recovery; queued data or a
+late response to the previous route cannot cancel a probe still in cooldown.
+Missing routes pause socket reopening. Otherwise failed/unconfirmed probes lead
+to socket-only refresh with 5-to-30-second backoff; submission/open success alone
+is never treated as recovered connectivity. Duplicate hints do not reset the
+wait/backoff. The owner respects longer configured AWG protocol wait intervals
+and leaves bounded initial connection and explicit teardown separate.
+
+Native acceptance removes the original physical IPv4, removes the default while
+a destination route still works, then deletes the original veth pair and moves
+to another interface, gateway and prefix. It retains the server's public source
+address: an initial fixture incorrectly let the server reply from its private
+transit address, which the configured-source filter correctly rejected. The
+corrected scenario must retain WS-ID/bulk-ID and two server accepts without any
+manual socket-refresh command; real owner counters prove the route was observed.
+The existing loss/delay check runs on the replacement interface. Both download
+and upload cases are mandatory in the Linux TCP CI script. These isolated tests
+do not establish behavior for physical Wi-Fi/cellular drivers or every routing
+policy (the lookup does not know an automatically allocated socket source port).
+
+The Linux package CI initially found a separate startup race: explicit DNS had
+no inventory fingerprint, so the first watcher tick unnecessarily retired its
+already valid generation. That raced a connection using a cached FakeIP after
+restart. A before/after installed-service reproduction failed with the old
+helper and passed 100 reconnect cycles plus endpoint migration with the fix.
+The permanent FakeIP table itself passed restart tests in both runtime modes.
+
 ## Remaining integration
 
-The Linux native recovery owner must coalesce network hints, observe actual
-protected endpoint routes (gateway changes need not emit a global NM event),
-respect protocol timers and retry without deleting an established session.
-Qt's numeric/domain reconnect and stale-peer paths must delegate to that owner.
+Qt's numeric/domain reconnect, wakeup and stale-peer paths must delegate to the
+native owner with confirmed runtime identity, so a lost IPC socket cannot trigger
+full teardown. Domain endpoint rotation, stale-control-result rejection and a
+combined installed-Qt/native-owner acceptance test remain required. Native DNS
+changes on interfaces unrelated to the selected VPN endpoint also need route
+epoch coverage beyond resolver inventory changes.
 Initial connection budgets, explicit disconnect and proven helper death remain
 separate. Windows/mobile/legacy/OpenVPN/Xray recovery is not claimed by this
 Linux routed implementation. Remote TCP/application deadlines, lost server NAT

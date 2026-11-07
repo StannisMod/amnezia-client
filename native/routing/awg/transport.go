@@ -247,6 +247,20 @@ func (t *Transport) RefreshUnderlay(remote netip.AddrPort) error {
 	return nil
 }
 
+func (t *Transport) ProbeUnderlay() error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.closed {
+		return net.ErrClosed
+	}
+	peer := t.device.LookupPeer(t.peerKey)
+	if peer == nil {
+		return errors.New("VPN recovery peer unavailable")
+	}
+	peer.SendKeepalive()
+	return peer.SendHandshakeInitiation(false)
+}
+
 func (t *Transport) Close() error {
 	t.mu.Lock()
 	defer t.mu.Unlock()

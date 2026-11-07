@@ -38,3 +38,22 @@ for direction in download upload; do
       "$1" -test.run "^TestConnectionStabilityReproduction$" -test.count 1 -test.timeout 10m -test.v
     ' _ "$output/engine.test" 2>&1 | tee "$output/$direction.log"
 done
+
+# Detect the real endpoint route from inside the helper; no test command may
+# reopen its socket. Delete the old physical interface, retain the server's
+# public identity, then verify the same WSS/bulk sockets on the new gateway.
+for direction in download upload; do
+  upload=0; if [ "$direction" = upload ]; then upload=1; fi
+  "${privilege[@]}" env AMNEZIA_STABILITY_REPRO=1 AMNEZIA_STABILITY_NO_OUTAGES=1 \
+    AMNEZIA_STABILITY_KERNEL_PEER=1 AMNEZIA_STABILITY_LAB=isolated-namespace \
+    AMNEZIA_STABILITY_HELPER="$output/amnezia-routing" AMNEZIA_STABILITY_UPLOAD="$upload" \
+    AMNEZIA_STABILITY_AUTOMATIC=1 AMNEZIA_STABILITY_ADDRESS_MOVE=1 \
+    AMNEZIA_STABILITY_REMOVE_DEFAULT=1 AMNEZIA_STABILITY_INTERFACE_MOVE=1 \
+    unshare --mount --net --fork bash -ec '
+      mount --make-rprivate /
+      ip link set lo up
+      mkdir -p /run/netns
+      mount -t tmpfs tmpfs /run/netns
+      "$1" -test.run "^TestConnectionStabilityReproduction$" -test.count 1 -test.timeout 2m -test.v
+    ' _ "$output/engine.test" 2>&1 | tee "$output/automatic-$direction.log"
+done

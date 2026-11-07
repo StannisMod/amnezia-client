@@ -155,8 +155,10 @@ func (s *Session) Stats() (tunnel.Stats, error) {
 	}
 	return s.core.Stats()
 }
-func (s *Session) CaptureID() string     { return strconv.FormatUint(s.luid, 10) }
-func (s *Session) StableTCPSource() bool { return false }
+func (s *Session) CaptureID() string                      { return strconv.FormatUint(s.luid, 10) }
+func (s *Session) StableTCPSource() bool                  { return false }
+func (s *Session) HintUnderlayNetwork() bool              { return false }
+func (s *Session) RecoveryDiagnostics() map[string]uint64 { return nil }
 
 func (s *Session) RefreshUnderlay(_ netip.AddrPort) error {
 	// Windows protection currently captures the initial endpoint's native route.

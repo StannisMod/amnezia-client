@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
@@ -80,4 +81,59 @@ func stabilityNativeApplicationDial(ctx context.Context, address string, early b
 		}
 	}
 	return d.DialContext(ctx, "tcp", address)
+}
+
+// Move the endpoint path to a different physical interface/gateway/prefix,
+// retaining the server's public address on its loopback. The old pair is
+// deleted; continuing traffic cannot accidentally use the retired interface.
+func stabilityNativeInterfaceMove(t *testing.T) {
+	t.Helper()
+	mode := os.Getenv("AMNEZIA_STABILITY_LAB")
+	if mode != "isolated-container" && mode != "isolated-namespace" {
+		t.Fatal("interface move requires isolated native fixture")
+	}
+	run := func(args ...string) {
+		t.Helper()
+		if b, e := exec.Command("ip", args...).CombinedOutput(); e != nil {
+			t.Fatalf("ip %v: %v %s", args, e, b)
+		}
+	}
+	run("link", "add", "stb-alt", "type", "veth", "peer", "name", "eth1", "netns", "stability-peer")
+	t.Cleanup(func() { exec.Command("ip", "link", "del", "stb-alt").Run() })
+	run("addr", "add", "198.51.100.1/24", "dev", "stb-alt")
+	run("link", "set", "stb-alt", "up")
+	run("-n", "stability-peer", "addr", "add", "198.51.100.2/24", "dev", "eth1")
+	run("-n", "stability-peer", "link", "set", "eth1", "up")
+	if dir := os.Getenv("AMNEZIA_STABILITY_TRACE"); dir != "" {
+		if e := os.MkdirAll(dir, 0755); e != nil {
+			t.Fatal(e)
+		}
+		f, e := os.Create(filepath.Join(dir, "interface-outer.txt"))
+		if e != nil {
+			t.Fatal(e)
+		}
+		capture := exec.Command("tcpdump", "-i", "stb-alt", "-n", "-l", "udp")
+		capture.Stdout = f
+		capture.Stderr = f
+		if e = capture.Start(); e != nil {
+			f.Close()
+			t.Fatal(e)
+		}
+		t.Cleanup(func() { capture.Process.Kill(); capture.Wait(); f.Close() })
+	}
+	run("-n", "stability-peer", "addr", "add", "203.0.113.2/32", "dev", "lo")
+	// Keep the server public source stable: this fixture changes the client
+	// uplink, not the configured cryptographic peer endpoint.
+	run("-n", "stability-peer", "route", "replace", "198.51.100.1/32", "dev", "eth1", "src", "203.0.113.2")
+	reply, e := exec.Command("ip", "-n", "stability-peer", "route", "get", "198.51.100.1").CombinedOutput()
+	if e != nil || !strings.Contains(string(reply), "src 203.0.113.2") {
+		t.Fatalf("peer public source changed: %v %s", e, reply)
+	}
+	run("route", "replace", "203.0.113.2/32", "via", "198.51.100.2", "dev", "stb-alt", "src", "198.51.100.1")
+	run("link", "del", "stb-underlay")
+	b, e := exec.Command("ip", "route", "get", "203.0.113.2", "mark", "0x40000000").CombinedOutput()
+	if e != nil || !strings.Contains(string(b), "via 198.51.100.2 dev stb-alt src 198.51.100.1") {
+		t.Fatalf("new interface/gateway path unavailable: %v %s", e, b)
+	}
+	t.Logf("new protected interface/gateway/prefix: %s", b)
 }

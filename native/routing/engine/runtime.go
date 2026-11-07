@@ -150,6 +150,22 @@ func (s *Runtime) RefreshUnderlay(remote netip.AddrPort) error {
 	}
 	return refresh.RefreshUnderlay(remote)
 }
+func (s *Runtime) ProbeUnderlay() error {
+	s.lifecycle.Lock()
+	defer s.lifecycle.Unlock()
+	if s.closed {
+		return errors.New("routing runtime is closed")
+	}
+	out, ok := s.box.Outbound().Outbound("vpn")
+	if !ok {
+		return errors.New("VPN outbound unavailable")
+	}
+	probe, ok := out.(tunnel.UnderlayProber)
+	if !ok {
+		return errors.New("VPN underlay probe unsupported")
+	}
+	return probe.ProbeUnderlay()
+}
 func (s *Runtime) Close() error {
 	s.once.Do(func() {
 		s.lifecycle.Lock()

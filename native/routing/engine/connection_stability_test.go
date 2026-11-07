@@ -472,7 +472,9 @@ func reproduceStability(t *testing.T, protocol, family string, pauses []time.Dur
 		if err != nil {
 			t.Fatal("underlay refresh", err)
 		}
-		t.Log("protected UDP refreshed with the same runtime/TUN owner")
+		if os.Getenv("AMNEZIA_STABILITY_AUTOMATIC") != "1" {
+			t.Log("protected UDP refreshed with the same runtime/TUN owner")
+		}
 	}
 	if os.Getenv("AMNEZIA_STABILITY_REFRESH") == "1" && len(pauses) == 0 {
 		for range 3 {
@@ -505,7 +507,9 @@ func reproduceStability(t *testing.T, protocol, family string, pauses []time.Dur
 		}
 		w, c := messages.Load(), chunks.Load()
 		stabilityNativeRemoveDefault(t)
-		refresh()
+		if os.Getenv("AMNEZIA_STABILITY_AUTOMATIC") != "1" {
+			refresh()
+		}
 		progressBudget = 8 * time.Second
 		waitProgress(w+3, c+3)
 		progressBudget = 100 * time.Second
@@ -513,6 +517,21 @@ func reproduceStability(t *testing.T, protocol, family string, pauses []time.Dur
 			t.Fatal("default removal replaced established connections")
 		}
 		t.Log("same WSS and bulk TCP survive with only a native route to the VPN endpoint")
+	}
+	if os.Getenv("AMNEZIA_STABILITY_INTERFACE_MOVE") == "1" {
+		if nativeRefresh == nil {
+			t.Fatal("interface move requires native owner")
+		}
+		w, c := messages.Load(), chunks.Load()
+		stabilityNativeInterfaceMove(t)
+		refresh()
+		progressBudget = 8 * time.Second
+		waitProgress(w+3, c+3)
+		progressBudget = 100 * time.Second
+		if counted.accepts.Load() != 2 {
+			t.Fatal("interface migration replaced application connections")
+		}
+		t.Log("same WSS and bulk TCP survived deletion of the physical interface and switch of gateway/prefix")
 	}
 	for _, duration := range pauses {
 		beforeDrops := link.dropped.Load()

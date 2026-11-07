@@ -16,6 +16,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -196,6 +197,7 @@ func stabilityStartNative(t *testing.T, profile []byte) (func() error, func() er
 		OK bool   `json:"ok"`
 	}
 	acks := make(chan acknowledgement, 4)
+	var pathChanges, probes, reopens atomic.Uint64
 	scanned := make(chan struct{})
 	go func() {
 		defer close(scanned)
@@ -203,12 +205,21 @@ func stabilityStartNative(t *testing.T, profile []byte) (func() error, func() er
 		sent := false
 		for scanner.Scan() {
 			var row struct {
-				Type    string `json:"type"`
-				Message string `json:"message"`
+				Type     string            `json:"type"`
+				Message  string            `json:"message"`
+				Recovery map[string]uint64 `json:"underlay_recovery"`
 				acknowledgement
 			}
 			if json.Unmarshal(scanner.Bytes(), &row) != nil {
 				continue
+			}
+			if row.Type == "status" {
+				pathChanges.Store(row.Recovery["path_changes"])
+				probes.Store(row.Recovery["probes"])
+				if row.Recovery["reopens"] != reopens.Load() {
+					t.Logf("native owner reopen attempt %d", row.Recovery["reopens"])
+				}
+				reopens.Store(row.Recovery["reopens"])
 			}
 			if !sent && row.Type == "ready" {
 				ready <- nil
@@ -269,7 +280,29 @@ func stabilityStartNative(t *testing.T, profile []byte) (func() error, func() er
 		t.Fatalf("native helper ready timeout: %s", stderr.String())
 	}
 	t.Logf("native helper ready pid=%d; real amnrouting0 capture", command.Process.Pid)
+	var lastAutoChanges uint64
 	refresh := func() error {
+		if os.Getenv("AMNEZIA_STABILITY_AUTOMATIC") == "1" {
+			deadline := time.NewTimer(8 * time.Second)
+			defer deadline.Stop()
+			tick := time.NewTicker(10 * time.Millisecond)
+			defer tick.Stop()
+			for {
+				if pathChanges.Load() > lastAutoChanges && probes.Load() > 0 {
+					lastAutoChanges = pathChanges.Load()
+					if reopens.Load() != 0 {
+						return fmt.Errorf("working authenticated socket was unnecessarily reopened")
+					}
+					t.Log("native owner detected the changed protected route; authenticated UDP remains open")
+					return nil
+				}
+				select {
+				case <-deadline.C:
+					return fmt.Errorf("native owner did not observe/probe changed protected route")
+				case <-tick.C:
+				}
+			}
+		}
 		inputMu.Lock()
 		defer inputMu.Unlock()
 		requestID++
@@ -348,6 +381,12 @@ func stabilityNativeImpairment(t *testing.T, enabled bool) {
 		dev := "stb-underlay"
 		if len(prefix) > 0 {
 			dev = "eth0"
+		}
+		if os.Getenv("AMNEZIA_STABILITY_INTERFACE_MOVE") == "1" {
+			dev = "stb-alt"
+			if len(prefix) > 0 {
+				dev = "eth1"
+			}
 		}
 		args := []string{"qdisc", "del", "dev", dev, "root"}
 		if enabled {

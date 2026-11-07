@@ -27,6 +27,7 @@ type Session struct {
 func (s *Session) Stats() (tunnel.Stats, error)                { return s.core.Stats() }
 func (s *Session) Diagnostics() engine.DiagnosticSnapshot      { return s.core.Diagnostics() }
 func (s *Session) RefreshUnderlay(remote netip.AddrPort) error { return s.core.RefreshUnderlay(remote) }
+func (s *Session) ProbeUnderlay() error                        { return s.core.ProbeUnderlay() }
 
 // Start consumes the platform and closes it on every failed-start path. No
 // fallback to the legacy backend is allowed once a routed session is requested.

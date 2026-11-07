@@ -30,3 +30,5 @@ func stabilityNativeRemoveDefault(t *testing.T)      { t.Fatal("requires Linux")
 func stabilityNativeApplicationDial(context.Context, string, bool) (net.Conn, error) {
 	return nil, errors.New("requires Linux")
 }
+
+func stabilityNativeInterfaceMove(t *testing.T) { t.Fatal("Linux native interface fixture required") }

@@ -87,6 +87,14 @@ func (o *Outbound) RefreshUnderlay(remote netip.AddrPort) error {
 	return t.RefreshUnderlay(remote)
 }
 
+func (o *Outbound) ProbeUnderlay() error {
+	t, err := o.get()
+	if err != nil {
+		return err
+	}
+	return t.ProbeUnderlay()
+}
+
 func (o *Outbound) addresses(ctx context.Context, d M.Socksaddr) ([]netip.Addr, error) {
 	if d.IsIP() {
 		return []netip.Addr{d.Addr}, nil

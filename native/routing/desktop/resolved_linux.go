@@ -41,6 +41,7 @@ type resolvedLink struct {
 	once               sync.Once
 	networkFingerprint string
 	recovery           *networkDNSRecovery
+	networkChanges     chan struct{}
 }
 
 // The watcher serially owns this state. Invalid inventories block new native
@@ -90,7 +91,7 @@ func startResolvedLinkWithRecovery(ctx context.Context, index int, fingerprint s
 		cancel()
 		return nil, errors.New("system resolver bus unavailable")
 	}
-	r := &resolvedLink{conn: conn, manager: conn.Object(resolvedService, "/org/freedesktop/resolve1"), index: int32(index), cancel: cancel, done: make(chan struct{}), networkFingerprint: fingerprint, recovery: recovery}
+	r := &resolvedLink{conn: conn, manager: conn.Object(resolvedService, "/org/freedesktop/resolve1"), index: int32(index), cancel: cancel, done: make(chan struct{}), networkFingerprint: fingerprint, recovery: recovery, networkChanges: make(chan struct{}, 1)}
 	setupCtx, setupCancel := context.WithTimeout(runCtx, 5*time.Second)
 	defer setupCancel()
 	var path dbus.ObjectPath
@@ -125,6 +126,10 @@ func startResolvedLinkWithRecovery(ctx context.Context, index int, fingerprint s
 			select {
 			case <-runCtx.Done():
 				return
+			case <-r.networkChanges:
+				if r.recovery != nil {
+					r.recovery.unavailable()
+				}
 			case _, open := <-signals:
 				if !open {
 					signals = nil
@@ -287,4 +292,17 @@ func (r *resolvedLink) Err() error {
 
 func (r *resolvedLink) Close() {
 	r.once.Do(func() { r.cancel(); <-r.done })
+}
+
+func (r *resolvedLink) networkChanged() {
+	if r.recovery == nil {
+		return
+	}
+	// Suspend immediately, then let the serial watcher prepare a generation.
+	// The native route actor never mutates its fingerprint or D-Bus connection.
+	r.recovery.suspend()
+	select {
+	case r.networkChanges <- struct{}{}:
+	default:
+	}
 }

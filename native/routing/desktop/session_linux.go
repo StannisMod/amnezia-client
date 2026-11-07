@@ -13,9 +13,12 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/StannisMod/amnezia-client/native/routing/dnspolicy"
 	"github.com/StannisMod/amnezia-client/native/routing/engine"
 	"github.com/StannisMod/amnezia-client/native/routing/mobile"
 	"github.com/StannisMod/amnezia-client/native/routing/tunnel"
@@ -40,6 +43,7 @@ type Session struct {
 	captureOwned bool
 	source       *sourceMarker
 	sourceError  error
+	recovery     *underlayRecovery
 	once         sync.Once
 }
 
@@ -165,6 +169,10 @@ func Recover() error {
 }
 
 func Start(ctx context.Context, raw []byte, manageDNS bool) (*Session, error) {
+	var effective engine.SessionConfig
+	if err := json.Unmarshal(raw, &effective); err != nil {
+		return nil, errors.New("invalid prepared routing session")
+	}
 	if err := preflight(); err != nil {
 		return nil, err
 	}
@@ -308,10 +316,6 @@ func Start(ctx context.Context, raw []byte, manageDNS bool) (*Session, error) {
 	// protected backend sockets keep the native-route exemption.
 	s.source, s.sourceError = attachStableTCPSource("/sys/fs/cgroup")
 	if manageDNS {
-		var effective engine.SessionConfig
-		if err = json.Unmarshal(raw, &effective); err != nil {
-			return nil, errors.New("invalid prepared DNS session")
-		}
 		// A resolver/network outage retires DNS work, not the TCP owner.
 		recovery := &networkDNSRecovery{nativeInventory: effective.DNS != nil && effective.DNS.NeedsNetwork(), fingerprint: effective.DNSNetworkFingerprint, suspend: s.core.SuspendNetworkDNS, reload: func(links []networkDNSLink) error { return s.core.ReloadNetworkDNS(linuxDNSSnapshot(links)) }}
 		s.dns, err = startResolvedLinkWithRecovery(ctx, link.Attrs().Index, effective.DNSNetworkFingerprint, recovery)
@@ -323,6 +327,27 @@ func Start(ctx context.Context, raw []byte, manageDNS bool) (*Session, error) {
 		return nil, err
 	}
 	s.captureOwned = true
+	stale := 240 * time.Second
+	if transport, e := effective.Transport(); e == nil && transport.AWG != nil {
+		for _, name := range []string{"rekey_after_time", "reject_after_time"} {
+			parts := strings.Split(transport.AWG.Parameters[name], "-")
+			seconds, e := strconv.ParseInt(parts[len(parts)-1], 10, 64)
+			if e == nil && seconds > 0 && seconds <= 86400 {
+				if wait := time.Duration(seconds*2+30) * time.Second; wait > stale {
+					stale = wait
+				}
+			}
+		}
+	}
+	s.recovery = startUnderlayRecovery(ctx, effective.PeerEndpoint(), stale, s.core.Stats, func() {
+		if s.dns != nil {
+			s.dns.networkChanged()
+		} else {
+			// --no-system-dns is confined to fixtures; explicit policies still
+			// need fresh real caches after a route epoch changes.
+			s.core.ReloadNetworkDNS(dnspolicy.NetworkSnapshot{})
+		}
+	}, s.core.ProbeUnderlay, func() error { return s.core.RefreshUnderlay(netip.AddrPort{}) })
 	ok = true
 	return s, nil
 }
@@ -339,7 +364,24 @@ func (s *Session) CaptureID() string     { return InterfaceName }
 func (s *Session) StableTCPSource() bool { return s.source != nil }
 
 func (s *Session) RefreshUnderlay(remote netip.AddrPort) error {
+	if s.recovery != nil && remote.IsValid() && remote.Port() > 0 && remote.Addr().Zone() == "" && !remote.Addr().IsUnspecified() && !remote.Addr().IsMulticast() {
+		s.recovery.hint(remote)
+	}
 	return s.core.RefreshUnderlay(remote)
+}
+
+func (s *Session) HintUnderlayNetwork() bool {
+	if s.recovery == nil {
+		return false
+	}
+	s.recovery.hint(netip.AddrPort{})
+	return true
+}
+func (s *Session) RecoveryDiagnostics() map[string]uint64 {
+	if s.recovery == nil {
+		return nil
+	}
+	return s.recovery.diagnostics()
 }
 
 func (s *Session) Close() error {
@@ -354,6 +396,9 @@ func (s *Session) Abort() error { return s.close(true) }
 func (s *Session) close(preserve bool) error {
 	var errs []error
 	s.once.Do(func() {
+		if s.recovery != nil {
+			s.recovery.close()
+		}
 		if s.dns != nil {
 			s.dns.Close()
 		}
