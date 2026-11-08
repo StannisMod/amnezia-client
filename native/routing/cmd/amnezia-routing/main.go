@@ -18,13 +18,19 @@ import (
 	"time"
 
 	"github.com/StannisMod/amnezia-client/native/routing/desktop"
+	"github.com/StannisMod/amnezia-client/native/routing/internal/builddeps"
 )
 
 func main() {
 	noDNS := flag.Bool("no-system-dns", false, "isolated namespace test only: caller supplies resolver configuration")
 	recoverOnly := flag.Bool("recover", false, "explicit recovery of recognized fail-closed state after a child crash")
 	cacheDir := flag.String("cache-dir", desktop.DefaultCacheDir(), "private service cache directory")
+	buildInfo := flag.Bool("build-info", false, "print compiled dependency provenance without starting VPN")
 	flag.Parse()
+	if *buildInfo {
+		json.NewEncoder(os.Stdout).Encode(builddeps.Source())
+		return
+	}
 	lock, err := desktop.PreparePrivateCache(*cacheDir)
 	if err != nil {
 		os.Exit(1)

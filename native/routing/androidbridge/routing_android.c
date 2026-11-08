@@ -145,3 +145,10 @@ JNIEXPORT jbyteArray JNICALL Java_org_amnezia_awg_RoutingBackend_diagnostics(JNI
     free(json);
     return result;
 }
+
+JNIEXPORT jbyteArray JNICALL Java_org_amnezia_awg_RoutingBackend_buildInfo(JNIEnv *env, jobject self) {
+    char *raw=RoutingBuildInfoJSON();if(!raw)return NULL;
+    size_t size=strlen(raw);jbyteArray bytes=(*env)->NewByteArray(env,(jsize)size);
+    if(bytes)(*env)->SetByteArrayRegion(env,bytes,0,(jsize)size,(const jbyte*)raw);
+    free(raw);return bytes;
+}

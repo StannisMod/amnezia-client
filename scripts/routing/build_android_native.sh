@@ -13,6 +13,7 @@ test "$(git -C "$RUNNER_TEMP/routing-awg" rev-parse HEAD)" = 5c16489e2cd9ed3a0a7
 python3 "$repo/native/routing/prepare_android.py" --module "$RUNNER_TEMP/routing-awg/tunnel/tools/libwg-go" --go-root "$(go env GOROOT)" --patched-go-root "$RUNNER_TEMP/routing-go"
 export GOROOT="$RUNNER_TEMP/routing-go"
 export PATH="$GOROOT/bin:$PATH"
+python3 "$repo/native/routing/internal/builddeps/verify.py" --module "$RUNNER_TEMP/routing-awg/tunnel/tools/libwg-go" --scope desktop_android --go "$GOROOT/bin/go" --output "$RUNNER_TEMP/routing-tcp-provenance.json"
 case "$ABI" in
   arm64-v8a) export GOARCH=arm64; target=aarch64-linux-android28 ;;
   armeabi-v7a) export GOARCH=arm GOARM=7; target=armv7a-linux-androideabi28 ;;
@@ -27,9 +28,10 @@ export CGO_LDFLAGS='-Wl,-soname=libwg-go.so -Wl,-z,max-page-size=16384'
 mkdir -p "$output"
 (cd "$RUNNER_TEMP/routing-awg/tunnel/tools/libwg-go" && go build -mod=readonly -tags linux,with_gvisor,amnezia_android_bridge -trimpath -buildvcs=false -buildmode=c-shared -o "$output/libwg-go.so" .)
 "$tools/llvm-readelf" --dyn-syms -W "$output/libwg-go.so" > "$output/symbols.txt"
-for symbol in Java_org_amnezia_awg_GoBackend_awgTurnOn Java_org_amnezia_awg_RoutingBackend_validate Java_org_amnezia_awg_RoutingBackend_start Java_org_amnezia_awg_RoutingBackend_stop Java_org_amnezia_awg_RoutingBackend_stats; do
+for symbol in Java_org_amnezia_awg_GoBackend_awgTurnOn Java_org_amnezia_awg_RoutingBackend_validate Java_org_amnezia_awg_RoutingBackend_start Java_org_amnezia_awg_RoutingBackend_stop Java_org_amnezia_awg_RoutingBackend_stats Java_org_amnezia_awg_RoutingBackend_buildInfo; do
   grep -F "$symbol" "$output/symbols.txt"
 done
 test "$(grep -c '_cgo_topofstack$' "$output/symbols.txt")" = 1
 "$tools/llvm-readelf" -l -W "$output/libwg-go.so" > "$output/elf-layout.txt"
+python3 "$repo/native/routing/internal/builddeps/verify.py" --module "$RUNNER_TEMP/routing-awg/tunnel/tools/libwg-go" --scope desktop_android --binary "$output/libwg-go.so" --output "$output/tcp-dependency.json"
 sha256sum "$output/libwg-go.so" > "$output/SHA256SUMS"

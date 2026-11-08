@@ -20,6 +20,8 @@ void AmneziaRoutingStop(int64_t);
 int32_t AmneziaRoutingFeed(int64_t, uint8_t *, int32_t);
 // Diagnostics returns owned UTF-8 JSON; caller must free it.
 char *AmneziaRoutingDiagnostics(int64_t);
+// Owned build identifiers only; caller frees with free().
+char *AmneziaRoutingBuildInfo(void);
 // Owned JSON array of the public system resolver's numeric servers; free().
 char *AmneziaRoutingSystemDNS(void);
 int32_t AmneziaRoutingValidate(char *,int32_t);

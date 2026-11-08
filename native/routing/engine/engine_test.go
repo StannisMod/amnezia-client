@@ -86,9 +86,9 @@ func testFakeIPSharedAddressEgress(t *testing.T, defaultPolicy rules.Action, rea
 	defer cancel()
 	aPriv, aPub := keys(t)
 	bPriv, bPub := keys(t)
-	var lc net.ListenConfig
+	aPort, rawListen := reserveTestUnderlay(t)
 	listen := func(ctx context.Context, n, a string) (net.PacketConn, error) {
-		pc, err := lc.ListenPacket(ctx, n, a)
+		pc, err := rawListen(ctx, n, a)
 		if err != nil {
 			return nil, err
 		}
@@ -97,13 +97,6 @@ func testFakeIPSharedAddressEgress(t *testing.T, defaultPolicy rules.Action, rea
 		}
 		return pc, nil
 	}
-	// Reserve the client's outer port so both peers have fixed endpoints.
-	reserved, e := net.ListenPacket("udp4", "127.0.0.1:0")
-	if e != nil {
-		t.Fatal(e)
-	}
-	aPort := uint16(reserved.LocalAddr().(*net.UDPAddr).Port)
-	reserved.Close()
 	params := map[string]string{"jc": "2", "jmin": "40", "jmax": "80", "s1": "16", "s2": "24", "h1": "1001", "h2": "1002", "h3": "1003", "h4": "1004"}
 	standardWG := len(transport) > 0 && transport[0] == "wireguard"
 	if standardWG {

@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "fix_id": "rack-flight-v1",
+  "profiles": {
+    "desktop_android": {
+      "upstream_version": "v0.0.0-20231202080848-1f7806d17489",
+      "upstream_commit": "1f7806d17489620e45d46c33933cf8f7010a1436",
+      "module": "github.com/StannisMod/gvisor",
+      "version": "v0.0.0-20261106123450-8155b9498bd4",
+      "commit": "8155b9498bd45bf332199ed5167cbfc6963ebd67",
+      "sum": "h1:W+1xMS1yGhKupMJUMVALHrMsBK5jXUEXVEQYqJ68r/g=",
+      "go_mod_sum": "h1:10sU+Uh5KKNv1+2x2A0Gvzt8FjD3ASIhorV3YsauXhk=",
+      "source_sha256": {
+        "pkg/tcpip/transport/tcp/snd.go": "bdfbdcbedd9514c418bc95f70e8ce92ef804694b41314d1dfbcbd11b692448fb",
+        "pkg/tcpip/transport/tcp/rack.go": "dcc688b482f3a1af74228b97544cf008baa454ec1536a53c0e5bb40f67266407",
+        "pkg/tcpip/transport/tcp/segment.go": "1670f3cffb98140b2d37f1cca2817ab740479cc11af8e0f616397c247c4945c8",
+        "pkg/amnezia/recovery.go": "4a36bb0e633e1cf6551b54f135702223bcb402a0929aab6a9ba0af344762dcb9",
+        "NOTICE-AMNEZIA": "6ee2f057c37cfa924a29b5cecf032670156f85b30e6190ce835180543c7d2035"
+      }
+    },
+    "apple": {
+      "upstream_version": "v0.0.0-20260122175437-89a5d21be8f0",
+      "upstream_commit": "89a5d21be8f0440c78fa6bbc01f98e23021e7132",
+      "module": "github.com/StannisMod/gvisor",
+      "version": "v0.0.0-20261106123454-9cf7fba2d57c",
+      "commit": "9cf7fba2d57c7fe7251d3b491d2cb513b8a2cc60",
+      "sum": "h1:pEWgJFRhdRNuYXaNs2Adxlx7hLX3su+12nAgx05rg6k=",
+      "go_mod_sum": "h1:QkHjoMIBaYtpVufgwv3keYAbln78mBoCuShZrPrer1Q=",
+      "source_sha256": {
+        "pkg/tcpip/transport/tcp/snd.go": "19e587cc956d858a4a6c2561df7c66f327e6fc2a92173aa8ec5df0a4c13b8b74",
+        "pkg/tcpip/transport/tcp/rack.go": "bfaf2f56c70ca6e990ad2b50b0a272eb8416dd288903b0f55293ace4eb73e1e0",
+        "pkg/tcpip/transport/tcp/segment.go": "ba770fe775df4ec70589ed34d307938ea1b0d27dc47164c1774d868c58368374",
+        "pkg/amnezia/recovery.go": "0e77f1b176445f79e0b09e3dbf8bd072d7bd21b2c3b749bc5e3f61d8b917f77e",
+        "NOTICE-AMNEZIA": "fc17dfae8a058fadf375dbff4812da8a5f869b1e72ac01c6d934cfaa5f14cb52"
+      }
+    }
+  }
+}

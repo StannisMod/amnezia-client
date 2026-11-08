@@ -9,6 +9,7 @@ import org.json.JSONObject
 @Keep
 object RoutingBackend {
     external fun validate(config: ByteArray): Boolean
+    external fun buildInfo(): ByteArray
 
     // Native code consumes tunFd on success and on every failed-start path.
     external fun start(tunFd: Int, config: ByteArray, host: RoutingHost): Long

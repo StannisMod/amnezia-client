@@ -105,15 +105,9 @@ func TestSplitDNSSimultaneousPolicies(t *testing.T) {
 	defer cancel()
 	aPriv, aPub := keys(t)
 	bPriv, bPub := keys(t)
-	reserved, err := net.ListenPacket("udp4", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	aPort := uint16(reserved.LocalAddr().(*net.UDPAddr).Port)
-	reserved.Close()
+	aPort, listen := reserveTestUnderlay(t)
 	var dial net.Dialer
-	var lc net.ListenConfig
-	b, err := awg.New(ctx, awg.Config{Address: []netip.Addr{netip.MustParseAddr("10.77.0.2")}, PrivateKey: bPriv, PublicKey: aPub, Endpoint: netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), aPort), AllowedIPs: []netip.Prefix{netip.MustParsePrefix("10.77.0.1/32")}}, lc.ListenPacket)
+	b, err := awg.New(ctx, awg.Config{Address: []netip.Addr{netip.MustParseAddr("10.77.0.2")}, PrivateKey: bPriv, PublicKey: aPub, Endpoint: netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), aPort), AllowedIPs: []netip.Prefix{netip.MustParsePrefix("10.77.0.1/32")}}, listen)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,7 +176,7 @@ func TestSplitDNSSimultaneousPolicies(t *testing.T) {
 	json.Unmarshal(raw, &compiled)
 	delete(compiled, "inbounds")
 	raw, _ = json.Marshal(compiled)
-	ctx = Context(ctx, Underlay{DialContext: dial.DialContext, ListenPacket: lc.ListenPacket})
+	ctx = Context(ctx, Underlay{DialContext: dial.DialContext, ListenPacket: listen})
 	ctx = service.ContextWith[adapter.PlatformInterface](ctx, loopbackTestPlatform{})
 	instance, err := New(ctx, raw)
 	if err != nil {

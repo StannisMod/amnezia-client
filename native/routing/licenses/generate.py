@@ -6,6 +6,7 @@ packages. This does not classify license compatibility or cover other app SDKs.
 """
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -40,6 +41,14 @@ def notices(root):
 
 def generate(module, output, go='go', host_root=None):
     module, output = Path(module).resolve(), Path(output).resolve()
+    core = Path(__file__).resolve().parents[1]
+    spec = importlib.util.spec_from_file_location('routing_dependency_verifier', core / 'internal/builddeps/verify.py')
+    verifier = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(verifier)
+    provenance = verifier.check(module, go=go)
+    archive_provenance = None
+    if provenance['profile']=='apple':
+        archive_provenance=verifier.verify_archive_file(module/'out/libwg-go.a','apple')
     if output == module or module in output.parents:
         # Reproducible inventories must never recursively include their output.
         raise ValueError('license output must be outside the source module')
@@ -83,7 +92,7 @@ def generate(module, output, go='go', host_root=None):
     if missing:
         raise ValueError('modules without notices: ' + ', '.join(missing))
     output.mkdir(parents=True, exist_ok=True)
-    manifest = {'schema_version': 1, 'scope': 'declared build-module graph and Go runtime; excludes other app SDKs',
+    manifest = {'schema_version': 1, 'tcp_recovery': provenance, 'tcp_recovery_archive':archive_provenance, 'scope': 'declared build-module graph and Go runtime; excludes other app SDKs',
                 'go_version': command(go, module, 'version').strip(), 'modules': inventory,
                 'runtime_notices': runtime_notices, 'host_notices': host_notices, 'missing_notices': missing}
     (output / 'inventory.json').write_text(json.dumps(manifest, indent=2, sort_keys=True) + '\n')
