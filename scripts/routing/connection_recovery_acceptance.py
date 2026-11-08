@@ -144,7 +144,19 @@ def run(qt_probe, peer_binary, temporary):
                             return
                         assert process.poll() is None, 'production protocol exited'
                         time.sleep(.05)
-                    raise AssertionError(reason)
+                    diagnostic = {'reason': reason, 'counters': dict(counters),
+                                  'errors': list(errors), 'events': events[-12:],
+                                  'peer_process': peer.poll(), 'dns_relay_process': dns.poll()}
+                    try:
+                        live = status()
+                        diagnostic['runtime'] = {key: live.get(key) for key in
+                                                 ('runtime_id', 'runtime_pid', 'runtime_alive', 'underlay_recovery')}
+                        diagnostic['route'] = subprocess.run(
+                            ['ip', 'route', 'get', '192.0.2.10', 'mark', '0x40000000'],
+                            capture_output=True, text=True, timeout=5).stdout
+                    except Exception as error:
+                        diagnostic['diagnostic_error'] = str(error)
+                    raise AssertionError(json.dumps(diagnostic))
 
                 threads = []
                 try:
@@ -194,6 +206,63 @@ def run(qt_probe, peer_binary, temporary):
                         thread.start()
                         threads.append(thread)
                     wait_for(lambda: counters['echo'] >= 3 and counters['bulk'] >= 12288, 'streams never started')
+                    # Ordinary installed-package regression: impair only the
+                    # synthetic physical veth, with the real protocol/service
+                    # running. Existing echo/bulk sockets have no redial path.
+                    physical_faults = {}
+                    physical_event = len(events)
+                    for fault in ('outer-blackhole', 'physical-link-down'):
+                        baseline = dict(counters)
+                        started = time.monotonic()
+                        table = 'amn_preserve_chaos'
+                        try:
+                            if fault == 'outer-blackhole':
+                                rules = (f'add table inet {table}\n'
+                                         f'add chain inet {table} output {{ type filter hook output priority -10; policy accept; }}\n'
+                                         f'add chain inet {table} input {{ type filter hook input priority -10; policy accept; }}\n'
+                                         f'add rule inet {table} output oifname "{host_if}" udp dport {port} counter drop\n'
+                                         f'add rule inet {table} input iifname "{host_if}" udp sport {port} counter drop\n')
+                                command('nft', '-f', '-', input=rules, text=True)
+                            else:
+                                command('ip', 'link', 'set', host_if, 'down')
+                            signal_driver('network')
+                            time.sleep(3)
+                            if fault == 'outer-blackhole':
+                                witness = command('nft', '-j', 'list', 'table', 'inet', table,
+                                                  stdout=subprocess.PIPE, text=True).stdout
+                                entries = json.loads(witness)['nftables']
+                                dropped = sum(expr['counter']['packets'] for row in entries if 'rule' in row
+                                              for expr in row['rule']['expr'] if 'counter' in expr)
+                                assert dropped > 0, 'outer blackhole affected no packets'
+                        finally:
+                            if fault == 'outer-blackhole':
+                                subprocess.run(['nft', 'delete', 'table', 'inet', table], check=False, timeout=10)
+                            else:
+                                command('ip', 'link', 'set', host_if, 'up')
+                                # Linux flushes static nexthop routes on DOWN;
+                                # UP alone does not restore an external path.
+                                # Reinstall only this fixture's owned WAN routes,
+                                # as the external network manager would do.
+                                for address in ('1.1.1.1', '8.8.8.8', '192.0.2.10', '192.0.2.20'):
+                                    command('ip', 'route', 'replace', address + '/32',
+                                            'via', '10.204.0.2', 'dev', host_if)
+                        native_route = command('ip', '-j', 'route', 'get', '192.0.2.10', 'mark', '0x40000000',
+                                               stdout=subprocess.PIPE, text=True).stdout
+                        assert json.loads(native_route)[0]['dev'] == host_if, 'fixture failed to restore external route'
+                        restored = time.monotonic()
+                        signal_driver('network')
+                        baseline = dict(counters)
+                        wait_for(lambda: counters['echo'] >= baseline['echo'] + 3 and
+                                 counters['bulk'] >= baseline['bulk'] + 12288,
+                                 fault + ' did not preserve original streams', 30)
+                        live = status()
+                        assert live['runtime_id'] == runtime and live['runtime_pid'] == pid
+                        assert socket.if_nametoindex('amnrouting0') == capture
+                        physical_faults[fault] = {'status': 'PASS', 'fault_seconds': 3,
+                                                  'resume_ms': round((time.monotonic() - restored) * 1000),
+                                                  'total_ms': round((time.monotonic() - started) * 1000)}
+                        print('PRESERVATION ' + json.dumps({'transport': transport, 'strict': strict, 'fault': fault, **physical_faults[fault]}), flush=True)
+                    assert not [row for row in events[physical_event:] if row.get('event') == 'state' and row['state'] != 4], events
                     binding_event = len(events)
                     baseline = dict(counters)
                     signal_driver('network')
@@ -229,7 +298,8 @@ def run(qt_probe, peer_binary, temporary):
                     assert not status().get('runtime_alive'), 'explicit stop left a live runtime'
                     report[transport + ('-strict' if strict else '-open')] = {
                         'same_runtime_pid_tun': 'PASS', 'same_echo_bulk_sockets': 'PASS', 'signal_burst_and_ipc_loss': 'PASS',
-                        'native_domain_rotation': 'PASS', 'fakeip_and_saved_profile': 'PASS', 'explicit_stop': 'PASS'}
+                        'native_domain_rotation': 'PASS', 'fakeip_and_saved_profile': 'PASS', 'explicit_stop': 'PASS',
+                        'physical_faults': physical_faults}
                 finally:
                     stop_io.set()
                     for connection in sockets:

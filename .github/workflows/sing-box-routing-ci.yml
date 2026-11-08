@@ -609,9 +609,26 @@ jobs:
           cmake --build build-dns-tests
           sudo env AMNEZIA_REQUIRE_ROUTE_TESTS=1 ctest --test-dir build-dns-tests --output-on-failure
 
+  linux-connection-chaos:
+    needs: cancel-superseded
+    runs-on: ubuntu-22.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and run isolated Linux TCP chaos regression
+        env:
+          CHAOS_OUTPUT: ${{ github.workspace }}/chaos-results
+        run: bash scripts/routing/chaos/run.sh --build --suite smoke
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: linux-tcp-chaos-smoke
+          path: chaos-results/**
+          if-no-files-found: error
+
   build-gate:
     if: always()
-    needs: [cancel-superseded, core-tests, core-cross-compile, client-linux, client-windows, client-android, client-ios, linux-dns-regression]
+    needs: [cancel-superseded, core-tests, core-cross-compile, client-linux, client-windows, client-android, client-ios, linux-dns-regression, linux-connection-chaos]
     runs-on: ubuntu-22.04
     steps:
       - name: Fail for any failed, cancelled or skipped required lane

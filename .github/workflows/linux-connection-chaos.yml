@@ -1,0 +1,37 @@
+name: Linux extended TCP chaos
+on:
+  push:
+    branches: [feature/linux-connection-chaos]
+    paths:
+      - '.github/workflows/linux-connection-chaos.yml'
+      - 'scripts/routing/chaos/**'
+      - 'native/routing/engine/*stability*.go'
+  workflow_dispatch:
+    inputs:
+      suite:
+        type: choice
+        options: [full, soak, smoke]
+        default: full
+      repeat:
+        description: Matrix repetitions (1..100)
+        default: '1'
+permissions:
+  contents: read
+jobs:
+  chaos:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run standalone Docker matrix
+        env:
+          CHAOS_OUTPUT: ${{ github.workspace }}/chaos-results
+          SUITE: ${{ inputs.suite || 'smoke' }}
+          REPEAT: ${{ inputs.repeat || '1' }}
+        run: bash scripts/routing/chaos/run.sh --build --suite "$SUITE" --repeat "$REPEAT"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: linux-tcp-chaos-extended
+          path: chaos-results/**
+          if-no-files-found: error

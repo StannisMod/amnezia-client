@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - '**'
+      - '!feature/linux-connection-chaos' # Isolated regression workflow; no deployment
       - '!dev' # Hosted four-platform validation: sing-box-routing-ci.yml
       - '!feature/common-routing' # Hosted validation: sing-box-routing-ci.yml and routing-linux-acceptance.yml
       - '!feature/sing-box-routing' # Four-platform baseline: sing-box-routing-ci.yml
