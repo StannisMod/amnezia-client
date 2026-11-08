@@ -4,12 +4,13 @@ import json,os,pathlib,subprocess,sys,time
 
 def run(*args, peer=False, check=True):
     prefix=['ip','netns','exec','stability-peer'] if peer else []
-    r=subprocess.run(prefix+list(args),check=check,text=True,capture_output=True,timeout=10)
-    if r.returncode and check: raise RuntimeError(r.stderr)
+    r=subprocess.run(prefix+list(args),check=False,text=True,capture_output=True,timeout=10)
+    if r.returncode and check: raise RuntimeError(' '.join(prefix+list(args))+': '+r.stderr)
     return r.stdout
 
 def nft(text):
-    subprocess.run(['nft','-f','-'],input=text,text=True,check=True,capture_output=True,timeout=10)
+    result=subprocess.run(['nft','-f','-'],input=text,text=True,check=False,capture_output=True,timeout=10)
+    if result.returncode:raise RuntimeError('nft fault setup: '+result.stderr)
 
 NETEM={
  'delay':['delay','200ms','100ms','25%'],

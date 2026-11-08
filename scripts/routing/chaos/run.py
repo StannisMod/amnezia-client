@@ -89,7 +89,9 @@ def main():
   ET.SubElement(case,'system-out').text=str(directory/'run.log')
   root.set('tests',str(len(cases)));root.set('failures',str(sum(c['status']=='FAIL' for c in cases)))
   ET.ElementTree(root).write(out/'junit.xml',encoding='unicode',xml_declaration=True)
-  report['status']='FAIL' if any(c['status']=='FAIL' for c in cases) else 'PASS'
+  report['expected_cases']=len(matrix)
+  report['completed']=len(cases)==len(matrix)
+  report['status']='FAIL' if any(c['status']=='FAIL' for c in cases) else ('PASS' if report['completed'] else 'RUNNING')
   (out/'report.json').write_text(json.dumps(report,indent=2)+'\n')
   print(f'[{index}/{len(matrix)}] {row["status"]} {name} {elapsed}s'+(' '+failure if failure else ''),flush=True)
   if failure:print(text[-2000:],flush=True)
