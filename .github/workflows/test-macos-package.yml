@@ -1,0 +1,141 @@
+name: macOS universal test package
+
+on:
+  push:
+    branches: [build/all-platform-test-packages]
+    paths: [.github/workflows/test-macos-package.yml]
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact application source commit
+        required: true
+        default: '5248ed68c137cf3251456b4b728fdfbddec35cb9'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-test-package-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  SOURCE_SHA: ${{ inputs.source_sha || '5248ed68c137cf3251456b4b728fdfbddec35cb9' }}
+
+jobs:
+  macos-universal:
+    runs-on: macos-26
+    timeout-minutes: 120
+    defaults:
+      run:
+        working-directory: source
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          path: source
+          submodules: recursive
+      - name: Verify application source
+        run: test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: '26.4'
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: source/native/routing/go.mod
+          cache-dependency-path: source/native/routing/go.sum
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.14'
+      - uses: jurplel/install-qt-action@v4.3.1
+        with:
+          version: '6.10.1'
+          host: mac
+          target: desktop
+          arch: clang_64
+          modules: qtremoteobjects qt5compat qtshadertools qthttpserver qtwebsockets
+          dir: ${{ runner.temp }}
+      - name: Install build tooling
+        run: |
+          pip install conan==2.28.0
+          conan profile detect --force
+      - uses: actions/cache@v4
+        with:
+          path: ~/.conan2
+          key: macos-test-universal-qt6101-${{ runner.arch }}-${{ hashFiles('source/conanfile.py', 'source/recipes/**/conanfile.py', 'source/native/routing/internal/builddeps/lock.json') }}
+          restore-keys: macos-test-universal-qt6101-${{ runner.arch }}-
+      - name: Build the ordinary classic macOS application and service
+        env:
+          QT_INSTALL_DIR: ${{ runner.temp }}
+          MACOS_UNSIGNED_BUILD: '1'
+          AMNEZIA_BUILD_TESTS: 'ON'
+        run: |
+          set -euo pipefail
+          deploy/build.sh --generator Ninja 2>&1 | tee macos-build.log
+      - name: Package with local ad-hoc application signatures
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/sign-test-stage.py" <<'PY'
+          import pathlib, subprocess, sys
+          stage = pathlib.Path(sys.argv[1])
+          magic = {bytes.fromhex(s) for s in ('cffaedfe','cefaedfe','feedfacf','feedface','cafebabe','bebafeca','cafebabf','bfbafeca')}
+          for item in stage.rglob('*'):
+              if not item.is_file() or item.is_symlink():
+                  continue
+              with item.open('rb') as stream:
+                  macho = stream.read(4) in magic
+              if macho:
+                  subprocess.run(['codesign','--force','--sign','-','--timestamp=none',str(item)],check=True)
+          bundles = sorted((p for p in stage.rglob('*') if p.is_dir() and p.suffix in ('.framework','.app','.xpc','.appex')),key=lambda p:len(p.parts),reverse=True)
+          for item in bundles:
+              subprocess.run(['codesign','--force','--sign','-','--timestamp=none',str(item)],check=True)
+          apps = [p for p in bundles if p.name == 'AmneziaVPN.app']
+          assert len(apps) == 1
+          subprocess.run(['codesign','--verify','--deep','--strict',str(apps[0])],check=True)
+          PY
+          export TEST_SIGNER="$RUNNER_TEMP/sign-test-stage.py"
+          export TEST_PYTHON="$(command -v python3)"
+          cat > "$RUNNER_TEMP/sign-test-stage.cmake" <<'CMAKE'
+          execute_process(COMMAND "$ENV{TEST_PYTHON}" "$ENV{TEST_SIGNER}" "${CPACK_TEMPORARY_DIRECTORY}" RESULT_VARIABLE status)
+          if(NOT status EQUAL 0)
+            message(FATAL_ERROR "Test bundle ad-hoc signature failed")
+          endif()
+          CMAKE
+          (cd deploy/build && cpack -G productbuild -D "CPACK_PRE_BUILD_SCRIPTS=$RUNNER_TEMP/sign-test-stage.cmake")
+      - name: Verify package, architectures and source provenance
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib,json,os,pathlib,subprocess
+          packages=list(pathlib.Path('deploy/build').glob('AmneziaVPN_*_macos_x64.pkg'))
+          assert len(packages)==1
+          package=packages[0]
+          expanded=pathlib.Path(os.environ['RUNNER_TEMP'])/'verified-macos-package'
+          subprocess.run(['pkgutil','--expand-full',str(package),str(expanded)],check=True)
+          apps=[p for p in expanded.rglob('AmneziaVPN.app') if p.is_dir()]
+          assert len(apps)==1
+          app=apps[0]
+          subprocess.run(['codesign','--verify','--deep','--strict',str(app)],check=True)
+          archs={}
+          for name in ('AmneziaVPN','AmneziaVPN-service'):
+              path=app/'Contents/MacOS'/name
+              values=subprocess.check_output(['lipo','-archs',str(path)],text=True).split()
+              assert set(values)=={'arm64','x86_64'},(name,values)
+              archs[name]=values
+          dist=pathlib.Path('test-dist');dist.mkdir()
+          target=dist/('AmneziaVPN_5.1.0.0_macos_universal_'+os.environ['SOURCE_SHA'][:7]+'_TEST.pkg')
+          target.write_bytes(package.read_bytes())
+          digest=hashlib.sha256(target.read_bytes()).hexdigest()
+          (dist/'SHA256SUMS').write_text(digest+'  '+target.name+'\n')
+          report={'source_sha':os.environ['SOURCE_SHA'],'platform':'macos','architectures':archs,'application_signing':'ad-hoc verified','installer_signing':'unsigned','notarization':False,'network_extension':False,'artifact':target.name,'sha256':digest,'bytes':target.stat().st_size}
+          (dist/'macos-build-manifest.json').write_text(json.dumps(report,indent=2)+'\n')
+          print(json.dumps(report,indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: macos-universal-test-package
+          path: |
+            source/test-dist/**
+            source/macos-build.log
+            source/deploy/build/client/tests/qt-regression.xml
+          if-no-files-found: error
