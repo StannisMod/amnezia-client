@@ -61,6 +61,7 @@ func (c TransportConfig) outbound() (map[string]any, error) {
 // SessionConfig keeps legacy AWG JSON readable. Platform hosts own capture,
 // socket protection and OS restoration; new hosts supply an explicit transport.
 type SessionConfig struct {
+	EndpointHost          string                     `json:"endpoint_host,omitempty"`
 	NetworkDNS            *dnspolicy.NetworkSnapshot `json:"network_dns,omitempty"`
 	DNSNetworkFingerprint string                     `json:"dns_network_fingerprint,omitempty"`
 	Rules                 rules.Config               `json:"rules"`

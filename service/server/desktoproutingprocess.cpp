@@ -6,6 +6,7 @@
 #include <QTimer>
 #include <QStringList>
 #include <QRegularExpression>
+#include <QUuid>
 
 #include "killswitch.h"
 
@@ -42,7 +43,25 @@ DesktopRoutingProcess::DesktopRoutingProcess(QObject *parent) : QObject(parent)
 }
 
 bool DesktopRoutingProcess::isActive() const { return m_owned || m_process.state() != QProcess::NotRunning; }
-QJsonObject DesktopRoutingProcess::status() const { return m_status; }
+QJsonObject DesktopRoutingProcess::status() const {
+    auto result = m_status;
+    const bool alive = m_process.state() == QProcess::Running;
+    result.insert("runtime_id", m_runtimeId);
+    result.insert("runtime_alive", alive);
+    result.insert("runtime_pid", double(m_process.processId()));
+    result.insert("preserves_connections", alive && m_preservesConnections);
+    return result;
+}
+bool DesktopRoutingProcess::matchesRuntime(const QString &id) const {
+    return !id.isEmpty() && id == m_runtimeId;
+}
+bool DesktopRoutingProcess::networkChanged(const QString &id) {
+    if (!matchesRuntime(id) || m_process.state() != QProcess::Running || !m_preservesConnections
+            || !m_status.value("connected").toBool() || m_stopping) return false;
+    const auto bytes = QJsonDocument(QJsonObject{{"type", "network_changed"},
+        {"request_id", double(++m_controlId)}}).toJson(QJsonDocument::Compact) + '\n';
+    return m_process.write(bytes) == bytes.size(); // Queued, not proof of recovery.
+}
 
 bool DesktopRoutingProcess::start(const QJsonObject &profile, bool strictKillSwitch)
 {
@@ -52,6 +71,9 @@ bool DesktopRoutingProcess::start(const QJsonObject &profile, bool strictKillSwi
     m_status = {{"connected", false}, {"deviceIpv4Address", "172.19.0.1"},
                 {"serverIpv4Gateway", "172.19.0.2"}, {"rxBytes", 0}, {"txBytes", 0}};
     m_buffer.clear();
+    m_runtimeId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    m_preservesConnections = false;
+    m_controlId = 0;
     if (!KillSwitch::instance()->beginRoutedSession(executablePath())) return false;
     m_owned = true; // includes service firewall exceptions before spawn
     m_process.start(executablePath(), {});
@@ -90,6 +112,7 @@ void DesktopRoutingProcess::stop(bool notify)
     }
     m_status.insert("connected", false);
     m_stopping = false;
+    if (!m_owned) { m_runtimeId.clear(); m_preservesConnections = false; }
     if (notify) emit disconnected();
 }
 
@@ -104,6 +127,7 @@ void DesktopRoutingProcess::readOutput()
         m_buffer.remove(0, newline + 1);
         const auto type = row.value("type").toString();
         if (type == "ready") {
+            m_preservesConnections = row.value("preserves_connections").toBool();
             if (!KillSwitch::instance()->routedInterfaceReady(row.value("capture_id").toString())) {
                 stop(false); emit failed(); emit disconnected(); return;
             }

@@ -35,6 +35,15 @@ def node(state_file, fixture_file, upstream_port):
             data, sender = s.recvfrom(65535)
             state = json.loads(state_file.read_text())
             if s in dns_sockets:
+                cursor, labels = 12, []
+                while cursor < len(data) and data[cursor]:
+                    length = data[cursor]
+                    if length > 63 or cursor + 1 + length > len(data):
+                        break
+                    labels.append(data[cursor + 1:cursor + 1 + length].decode('ascii', errors='replace'))
+                    cursor += 1 + length
+                with state_file.with_suffix('.queries.jsonl').open('a') as observations:
+                    observations.write(json.dumps('.'.join(labels)) + '\n')
                 # Leave time to prove unrelated native traffic stays blocked
                 # during bootstrap, while the service's private socket works.
                 time.sleep(.25)

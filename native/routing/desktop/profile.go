@@ -36,15 +36,16 @@ func text(v any) string {
 // checked independently by the service.
 func ProfileSession(raw []byte) (engine.SessionConfig, error) {
 	var profile struct {
-		Protocol  string            `json:"protocol"`
-		DNS       string            `json:"dns1"`
-		DNSPath   rules.Action      `json:"sing_box_dns_path"`
-		SplitDNS  *dnspolicy.Config `json:"sing_box_dns"`
-		Rules     rules.Config      `json:"sing_box_routing"`
-		AWG       map[string]any    `json:"awg_config_data"`
-		WireGuard map[string]any    `json:"wireguard_config_data"`
-		AppScope  int               `json:"appSplitTunnelType"`
-		Apps      []string          `json:"splitTunnelApps"`
+		EndpointHost string            `json:"routing_endpoint_host"`
+		Protocol     string            `json:"protocol"`
+		DNS          string            `json:"dns1"`
+		DNSPath      rules.Action      `json:"sing_box_dns_path"`
+		SplitDNS     *dnspolicy.Config `json:"sing_box_dns"`
+		Rules        rules.Config      `json:"sing_box_routing"`
+		AWG          map[string]any    `json:"awg_config_data"`
+		WireGuard    map[string]any    `json:"wireguard_config_data"`
+		AppScope     int               `json:"appSplitTunnelType"`
+		Apps         []string          `json:"splitTunnelApps"`
 	}
 	if len(raw) > 4<<20 {
 		return engine.SessionConfig{}, errors.New("routing profile exceeds size limit")
@@ -59,6 +60,12 @@ func ProfileSession(raw []byte) (engine.SessionConfig, error) {
 		return engine.SessionConfig{}, errors.New("a numeric DNS resolver is required")
 	}
 	config := engine.SessionConfig{Rules: profile.Rules, Resolver: netip.AddrPortFrom(resolver, 53), ResolverAction: profile.DNSPath, DNS: profile.SplitDNS}
+	if profile.EndpointHost != "" {
+		config.EndpointHost, err = rules.NormalizeDomain(profile.EndpointHost)
+		if err != nil {
+			return config, errors.New("invalid VPN endpoint hostname")
+		}
+	}
 	if profile.AppScope < 0 || profile.AppScope > 2 {
 		return config, errors.New("invalid desktop application scope")
 	}

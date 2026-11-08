@@ -26,7 +26,10 @@ func parseRecoveryRequest(line string, port uint16) (recoveryRequest, netip.Addr
 	}
 	d := json.NewDecoder(strings.NewReader(line))
 	d.DisallowUnknownFields()
-	if d.Decode(&request) != nil || d.Decode(new(any)) != io.EOF || request.Type != "refresh_underlay" || request.ID == 0 || request.ID > 1<<53-1 {
+	if d.Decode(&request) != nil || d.Decode(new(any)) != io.EOF || (request.Type != "refresh_underlay" && request.Type != "network_changed") || request.ID == 0 || request.ID > 1<<53-1 {
+		return request, netip.AddrPort{}, invalid
+	}
+	if request.Type == "network_changed" && request.Address != "" {
 		return request, netip.AddrPort{}, invalid
 	}
 	if request.Address == "" {

@@ -6,6 +6,7 @@
 
 #include <QJsonDocument>
 #include <QJsonArray>
+#include <QStringList>
 #include "killswitch.h"
 #include <QJsonObject>
 #include <QJsonValue>
@@ -45,7 +46,13 @@ DaemonLocalServerConnection::DaemonLocalServerConnection(QObject* parent,
           &DaemonLocalServerConnection::backendFailure);
 #if defined(MZ_LINUX) || defined(MZ_WINDOWS)
   auto routing = DesktopRoutingProcess::instance();
-  connect(routing, &DesktopRoutingProcess::connected, this, &DaemonLocalServerConnection::connected);
+  connect(routing, &DesktopRoutingProcess::connected, this, [this,routing](const QString &pubkey) {
+    auto row=routing->status();
+    row.insert("type","connected");
+    row.insert("pubkey",pubkey);
+    row.insert("ownership_protocol",1);
+    write(row);
+  });
   connect(routing, &DesktopRoutingProcess::disconnected, this, &DaemonLocalServerConnection::disconnected);
   connect(routing, &DesktopRoutingProcess::failed, this, [this] { backendFailure(DaemonError::ERROR_FATAL); });
 #endif
@@ -120,7 +127,19 @@ void DaemonLocalServerConnection::parseCommand(const QByteArray& data) {
     const auto id = obj.value("lookup_id");
     // Fixed public bootstrap resolvers: an IPC client cannot turn this into an
     // arbitrary destination/port exception. A new attempt alternates resolvers.
-    const QHostAddress resolver(obj.value("alternate").toBool() ? "8.8.8.8" : "1.1.1.1");
+    QHostAddress resolver(obj.value("alternate").toBool() ? "8.8.8.8" : "1.1.1.1");
+#ifdef Q_OS_LINUX
+    const QStringList resolvers{"1.1.1.1", "2606:4700:4700::1111", "8.8.8.8", "2001:4860:4860::8888"};
+    if (obj.contains("resolver_index")) {
+      const auto value = obj.value("resolver_index");
+      const int index = value.toInt(-1);
+      if (!value.isDouble() || index < 0 || index >= resolvers.size() || value.toDouble() != double(index)) {
+        write(QJsonObject{{"type", "endpoint_resolved"}, {"lookup_id", id}, {"addresses", QJsonArray{}}});
+        return;
+      }
+      resolver = QHostAddress(resolvers.at(index));
+    }
+#endif
     m_endpointDns.start(obj.value("host").toString(), resolver,
       [](quint16 port, const QHostAddress &address, bool enabled) {
         return KillSwitch::instance()->endpointDnsAllowed(port, address, enabled);
@@ -159,27 +178,44 @@ void DaemonLocalServerConnection::parseCommand(const QByteArray& data) {
     return;
   }
 
+#if defined(MZ_LINUX) || defined(MZ_WINDOWS)
+  if (type == "routing_network_changed") {
+    const auto id = obj.value("runtime_id").toString();
+    const bool queued = DesktopRoutingProcess::instance()->networkChanged(id);
+    write(QJsonObject{{"type", "routing_network_hint"}, {"runtime_id", id}, {"queued", queued}});
+    return;
+  }
+#endif
+
   if (type == "deactivate") {
     m_endpointDns.cancel();
 #if defined(MZ_LINUX) || defined(MZ_WINDOWS)
+    const auto expectedRuntime = obj.value("runtime_id").toString();
+    if (!expectedRuntime.isEmpty() && !DesktopRoutingProcess::instance()->matchesRuntime(expectedRuntime)) {
+      write(QJsonObject{{"type", "runtime_changed"}, {"runtime_id", expectedRuntime}});
+      return; // A stale GUI must not stop a replacement owner or legacy tunnel.
+    }
     if (DesktopRoutingProcess::instance()->isActive()) {
       DesktopRoutingProcess::instance()->stop();
       if (obj.value("request_ack").toBool() && !DesktopRoutingProcess::instance()->isActive())
-        write(QJsonObject{{"type", "deactivated"}});
+        write(QJsonObject{{"type", "deactivated"}, {"runtime_id", expectedRuntime}, {"cleanup_id", obj.value("cleanup_id")}});
       return;
     }
 #endif
     const bool cleaned = Daemon::instance()->deactivate(true);
-    if (obj.value("request_ack").toBool() && cleaned) write(QJsonObject{{"type", "deactivated"}});
+    if (obj.value("request_ack").toBool() && cleaned) write(QJsonObject{{"type", "deactivated"}, {"cleanup_id", obj.value("cleanup_id")}});
     return;
   }
 
   if (type == "status") {
+    const auto statusId = obj.value("status_id");
     QJsonObject obj = Daemon::instance()->getStatus();
 #if defined(MZ_LINUX) || defined(MZ_WINDOWS)
     if (DesktopRoutingProcess::instance()->isActive()) obj = DesktopRoutingProcess::instance()->status();
 #endif
     obj.insert("type", "status");
+    obj.insert("ownership_protocol", 1);
+    if (!statusId.isUndefined()) obj.insert("status_id", statusId);
     write(obj);
     return;
   }
@@ -201,10 +237,7 @@ void DaemonLocalServerConnection::parseCommand(const QByteArray& data) {
 }
 
 void DaemonLocalServerConnection::connected(const QString& pubkey) {
-  QJsonObject obj;
-  obj.insert("type", "connected");
-  obj.insert("pubkey", QJsonValue(pubkey));
-  write(obj);
+  write(QJsonObject{{"type","connected"},{"pubkey",pubkey}});
 }
 
 void DaemonLocalServerConnection::disconnected() {

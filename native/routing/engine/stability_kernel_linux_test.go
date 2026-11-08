@@ -95,8 +95,14 @@ func stabilityKernelPeer(t *testing.T, config awg.Config) (netip.AddrPort, net.L
 			command("route", "add", config.AllowedIPs[0].String(), "dev", "stb-peer")
 		}
 		listener, e = net.Listen("tcp", net.JoinHostPort(address.String(), "18443"))
+		if e == nil && os.Getenv("AMNEZIA_STABILITY_DOMAIN_MOVE") == "1" {
+			endpoint = stabilityDomainFrontdoors(t, endpoint)
+		}
 		return e
 	})
+	if os.Getenv("AMNEZIA_STABILITY_DOMAIN_MOVE") == "1" {
+		command("route", "add", "1.1.1.1/32", "via", "203.0.113.2", "dev", "stb-underlay")
+	}
 	// Capture only headers on the synthetic peer interface. TLS contents/keys are
 	// never recorded. ss exposes kernel retransmission/window/timer diagnostics.
 	if directory := os.Getenv("AMNEZIA_STABILITY_TRACE"); directory != "" {
@@ -197,7 +203,7 @@ func stabilityStartNative(t *testing.T, profile []byte) (func() error, func() er
 		OK bool   `json:"ok"`
 	}
 	acks := make(chan acknowledgement, 4)
-	var pathChanges, probes, reopens atomic.Uint64
+	var pathChanges, probes, reopens, endpointChanges atomic.Uint64
 	scanned := make(chan struct{})
 	go func() {
 		defer close(scanned)
@@ -215,6 +221,7 @@ func stabilityStartNative(t *testing.T, profile []byte) (func() error, func() er
 			}
 			if row.Type == "status" {
 				pathChanges.Store(row.Recovery["path_changes"])
+				endpointChanges.Store(row.Recovery["endpoint_changes"])
 				probes.Store(row.Recovery["probes"])
 				if row.Recovery["reopens"] != reopens.Load() {
 					t.Logf("native owner reopen attempt %d", row.Recovery["reopens"])
@@ -283,11 +290,27 @@ func stabilityStartNative(t *testing.T, profile []byte) (func() error, func() er
 	var lastAutoChanges uint64
 	refresh := func() error {
 		if os.Getenv("AMNEZIA_STABILITY_AUTOMATIC") == "1" {
-			deadline := time.NewTimer(8 * time.Second)
+			budget := 8 * time.Second
+			if os.Getenv("AMNEZIA_STABILITY_DOMAIN_MOVE") == "1" {
+				budget = 45 * time.Second
+			}
+			deadline := time.NewTimer(budget)
 			defer deadline.Stop()
 			tick := time.NewTicker(10 * time.Millisecond)
 			defer tick.Stop()
 			for {
+				if os.Getenv("AMNEZIA_STABILITY_DOMAIN_MOVE") == "1" {
+					if endpointChanges.Load() > 0 {
+						t.Log("native owner moved the same peer to a fresh DNS answer without a manual refresh")
+						return nil
+					}
+					select {
+					case <-deadline.C:
+						return fmt.Errorf("native owner did not rotate the failed domain endpoint")
+					case <-tick.C:
+					}
+					continue
+				}
 				if pathChanges.Load() > lastAutoChanges && probes.Load() > 0 {
 					lastAutoChanges = pathChanges.Load()
 					if reopens.Load() != 0 {

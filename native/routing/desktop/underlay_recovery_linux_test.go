@@ -3,6 +3,7 @@
 package desktop
 
 import (
+	"context"
 	"errors"
 	"net/netip"
 	"testing"
@@ -112,5 +113,100 @@ func TestProtectedRouteLookupUsesLocalEndpoint(t *testing.T) {
 	}
 	if _, err := protectedRouteFingerprint(netip.AddrPort{}); err == nil {
 		t.Fatal("invalid endpoint accepted")
+	}
+}
+
+func TestLateEndpointDiscoveryCannotOverrideNewOwnerIntent(t *testing.T) {
+	original := netip.MustParseAddrPort("192.0.2.1:51820")
+	candidate := netip.MustParseAddrPort("[2001:db8::1]:51820")
+	r := &underlayRecovery{endpoint: original, hints: make(chan struct{}, 1)}
+	calls := 0
+	refresh := func(got netip.AddrPort) error {
+		calls++
+		if got != candidate {
+			t.Fatal("unexpected candidate")
+		}
+		return errors.New("open failed")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if r.applyCandidate(ctx, candidate, 0, refresh) || calls != 0 {
+		t.Fatal("cancelled DNS result reopened a socket")
+	}
+	r.hint(netip.MustParseAddrPort("192.0.2.2:51820"))
+	if r.applyCandidate(context.Background(), candidate, 0, refresh) || calls != 0 {
+		t.Fatal("old DNS result overrode a newer endpoint command")
+	}
+	if r.applyCandidate(context.Background(), netip.MustParseAddrPort("[2001:db8::1]:99"), 1, refresh) || calls != 0 {
+		t.Fatal("DNS changed configured server port")
+	}
+	if !r.applyCandidate(context.Background(), candidate, 1, refresh) || calls != 1 || r.endpoint != candidate {
+		t.Fatal("failed socket open discarded the validated desired endpoint")
+	}
+}
+
+func TestRecoveryAcceptsTwoHandshakesWithinTheSameSecond(t *testing.T) {
+	refreshes := 0
+	p := recoveryPolicy{invalidate: func() {}, probe: func() error { return nil }, refresh: func() error { refreshes++; return nil }}
+	now := time.Unix(100, 0)
+	stats := tunnel.Stats{LastHandshake: 100, LastHandshakeNano: 100000000010}
+	p.step(now, "a", true, stats, false)
+	p.step(now.Add(time.Millisecond), "b", true, stats, false)
+	stats.LastHandshakeNano++
+	p.step(now.Add(2*time.Millisecond), "b", true, stats, false)
+	p.step(now.Add(6*time.Second), "b", true, stats, false)
+	if refreshes != 0 || p.pending {
+		t.Fatal("coarse seconds lost a valid authenticated probe")
+	}
+}
+func TestWakeupHintInvalidatesDNSWithoutRouteChange(t *testing.T) {
+	invalidations := 0
+	p := recoveryPolicy{invalidate: func() { invalidations++ }, probe: func() error { return nil }, refresh: func() error { return nil }}
+	now := time.Unix(100, 0)
+	stats := tunnel.Stats{LastHandshake: 1}
+	p.step(now, "same-lan-shape", true, stats, false)
+	p.step(now.Add(time.Second), "same-lan-shape", true, stats, true)
+	for range 50 {
+		p.step(now.Add(2*time.Second), "same-lan-shape", true, stats, true)
+	}
+	if invalidations != 1 {
+		t.Fatal("duplicate hints repeatedly replaced DNS")
+	}
+	p.step(now.Add(time.Hour), "same-lan-shape", true, stats, true)
+	if invalidations != 2 {
+		t.Fatal("wakeup reused stale real DNS on an indistinguishable LAN")
+	}
+}
+
+func TestRecoveryWaitsForLongerConfiguredHandshakeBudget(t *testing.T) {
+	refreshes := 0
+	p := recoveryPolicy{probeWait: time.Minute, invalidate: func() {}, probe: func() error { return nil }, refresh: func() error { refreshes++; return nil }}
+	now := time.Unix(100, 0)
+	stats := tunnel.Stats{LastHandshake: 1}
+	p.step(now, "a", true, stats, false)
+	p.step(now.Add(time.Second), "b", true, stats, false)
+	p.step(now.Add(30*time.Second), "b", true, stats, false)
+	if refreshes != 0 {
+		t.Fatal("configured handshake wait was shortened")
+	}
+	p.step(now.Add(61*time.Second), "b", true, stats, false)
+	p.step(now.Add(92*time.Second), "b", true, stats, false)
+	if refreshes != 1 {
+		t.Fatal("retry backoff violated the configured minimum")
+	}
+}
+
+func TestSuccessfulTargetSubmissionDoesNotProvokeAnotherSocketReopen(t *testing.T) {
+	probes, reopens := 0, 0
+	p := recoveryPolicy{invalidate: func() {}, probe: func() error { probes++; return nil }, refresh: func() error { reopens++; return nil }}
+	now := time.Unix(100, 0)
+	stats := tunnel.Stats{LastHandshake: 100, LastHandshakeNano: 100000000001}
+	p.step(now, "a", true, stats, false)
+	p.submittedTarget(now.Add(time.Second), "new-address", true)
+	stats.LastHandshakeNano++
+	p.step(now.Add(2*time.Second), "new-address", true, stats, false)
+	p.step(now.Add(8*time.Second), "new-address", true, stats, false)
+	if probes != 0 || reopens != 0 || p.pending {
+		t.Fatal("fresh target handshake was probed/opened again", probes, reopens)
 	}
 }

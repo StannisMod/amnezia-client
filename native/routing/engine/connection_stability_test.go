@@ -281,11 +281,19 @@ func reproduceStability(t *testing.T, protocol, family string, pauses []time.Dur
 			if protocol == "amnezia-wireguard" {
 				kind = "wireguard"
 			}
-			data := map[string]any{"client_priv_key": aPriv, "server_pub_key": bPub, "client_ip": clientIP, "hostName": peerEndpoint.Addr().String(), "port": peerEndpoint.Port(), "allowed_ips": []string{"0.0.0.0/0", "::/0"}, "mtu": "1280"}
+			initialEndpoint := peerEndpoint
+			if os.Getenv("AMNEZIA_STABILITY_DOMAIN_MOVE") == "1" {
+				initialEndpoint = stabilityNativeDomainEndpoint(t, peerEndpoint)
+			}
+			data := map[string]any{"client_priv_key": aPriv, "server_pub_key": bPub, "client_ip": clientIP, "hostName": initialEndpoint.Addr().String(), "port": initialEndpoint.Port(), "allowed_ips": []string{"0.0.0.0/0", "::/0"}, "mtu": "1280"}
 			for k, v := range params {
 				data[strings.ToUpper(k[:1])+k[1:]] = v
 			}
-			profile, _ := json.Marshal(map[string]any{"protocol": kind, "dns1": "203.0.113.2", "sing_box_routing": map[string]any{"version": 1, "default": "vpn", "rules": []any{}}, kind + "_config_data": data})
+			profileValues := map[string]any{"protocol": kind, "dns1": "203.0.113.2", "sing_box_routing": map[string]any{"version": 1, "default": "vpn", "rules": []any{}}, kind + "_config_data": data}
+			if os.Getenv("AMNEZIA_STABILITY_DOMAIN_MOVE") == "1" {
+				profileValues["routing_endpoint_host"] = "endpoint.test"
+			}
+			profile, _ := json.Marshal(profileValues)
 			nativeStop, nativeRefresh = stabilityStartNative(t, profile)
 			return
 		}
@@ -485,6 +493,22 @@ func reproduceStability(t *testing.T, protocol, family string, pauses []time.Dur
 				t.Fatal("refresh replaced established connections")
 			}
 		}
+	}
+	if os.Getenv("AMNEZIA_STABILITY_DOMAIN_MOVE") == "1" {
+		if nativeRefresh == nil {
+			t.Fatal("domain move requires native owner")
+		}
+		w, c := messages.Load(), chunks.Load()
+		stabilityNativeDomainMove(t)
+		t.Log("old endpoint blackholed; control DNS now points to another address of the same peer")
+		refresh()
+		progressBudget = 40 * time.Second
+		waitProgress(w+3, c+3)
+		progressBudget = 100 * time.Second
+		if counted.accepts.Load() != 2 {
+			t.Fatal("domain migration replaced application connections")
+		}
+		t.Log("same WSS and bulk TCP survived domain endpoint migration without restarting the runtime")
 	}
 	if os.Getenv("AMNEZIA_STABILITY_ADDRESS_MOVE") == "1" {
 		if nativeRefresh == nil {

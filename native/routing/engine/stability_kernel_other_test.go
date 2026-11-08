@@ -32,3 +32,10 @@ func stabilityNativeApplicationDial(context.Context, string, bool) (net.Conn, er
 }
 
 func stabilityNativeInterfaceMove(t *testing.T) { t.Fatal("Linux native interface fixture required") }
+
+func stabilityNativeDomainMove(t *testing.T) { t.Fatal("Linux native domain fixture required") }
+
+func stabilityNativeDomainEndpoint(t *testing.T, endpoint netip.AddrPort) netip.AddrPort {
+	t.Fatal("Linux native domain fixture required")
+	return endpoint
+}

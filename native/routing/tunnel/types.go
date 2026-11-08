@@ -3,7 +3,7 @@ package tunnel
 
 import "net/netip"
 
-type Stats struct{ RXBytes, TXBytes, LastHandshake uint64 }
+type Stats struct{ RXBytes, TXBytes, LastHandshake, LastHandshakeNano uint64 }
 type Capabilities struct {
 	TCP bool `json:"tcp"`
 	UDP bool `json:"udp"`

@@ -74,7 +74,7 @@ func main() {
 		return
 	}
 	defer session.Close()
-	write(map[string]any{"type": "ready", "interface": desktop.InterfaceName, "capture_id": session.CaptureID(), "stable_tcp_source": session.StableTCPSource()})
+	write(map[string]any{"type": "ready", "interface": desktop.InterfaceName, "capture_id": session.CaptureID(), "stable_tcp_source": session.StableTCPSource(), "preserves_connections": session.RecoveryDiagnostics() != nil})
 	commands := make(chan string)
 	go func() {
 		defer close(commands)
@@ -100,7 +100,13 @@ func main() {
 			}
 			request, remote, err := parseRecoveryRequest(command, config.PeerEndpoint().Port())
 			if err == nil {
-				err = session.RefreshUnderlay(remote)
+				if request.Type == "network_changed" {
+					if !session.HintUnderlayNetwork() {
+						err = fmt.Errorf("underlay hint unsupported")
+					}
+				} else {
+					err = session.RefreshUnderlay(remote)
+				}
 			}
 			message := ""
 			if err != nil {

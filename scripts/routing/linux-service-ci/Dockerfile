@@ -1,4 +1,5 @@
-FROM ubuntu:22.04
+ARG BASE_UBUNTU_VERSION=22.04
+FROM ubuntu:${BASE_UBUNTU_VERSION}
 ENV DEBIAN_FRONTEND=noninteractive container=docker
 RUN apt-get update && apt-get install -y --no-install-recommends \
     systemd systemd-sysv dbus libnss-resolve sudo psmisc python3 iproute2 nftables iptables \

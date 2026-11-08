@@ -603,11 +603,12 @@ void LinuxFirewall::teardownTrafficSplitting()
 bool LinuxFirewall::setEndpointDnsAllowed(quint16 port, const QString &resolver, bool enabled)
 {
     if (!isInstalled()) return true;
+    const QString program = resolver.contains(':') ? "ip6tables" : "iptables";
     QStringList rule{"-p", "udp", "-m", "owner", "--uid-owner", "0", "--sport", QString::number(port),
                      "-d", resolver, "--dport", "53", "-m", "comment", "--comment", "amnezia-endpoint-dns", "-j", "ACCEPT"};
     QStringList args{"-w", enabled ? "-I" : "-D", kRootChain};
     if (enabled) args << "1";
     args << rule;
-    if (!enabled && executeIptables("iptables", QStringList{"-w", "-C", kRootChain} + rule, true) != 0) return true;
-    return executeIptables("iptables", args) == 0;
+    if (!enabled && executeIptables(program, QStringList{"-w", "-C", kRootChain} + rule, true) != 0) return true;
+    return executeIptables(program, args) == 0;
 }

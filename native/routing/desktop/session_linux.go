@@ -21,6 +21,7 @@ import (
 	"github.com/StannisMod/amnezia-client/native/routing/dnspolicy"
 	"github.com/StannisMod/amnezia-client/native/routing/engine"
 	"github.com/StannisMod/amnezia-client/native/routing/mobile"
+	"github.com/StannisMod/amnezia-client/native/routing/rules"
 	"github.com/StannisMod/amnezia-client/native/routing/tunnel"
 	"github.com/sagernet/netlink"
 	"github.com/sagernet/sing-box/adapter"
@@ -327,19 +328,63 @@ func Start(ctx context.Context, raw []byte, manageDNS bool) (*Session, error) {
 		return nil, err
 	}
 	s.captureOwned = true
-	stale := 240 * time.Second
+	stale := 15 * time.Second
+	probeWait := 5 * time.Second
 	if transport, e := effective.Transport(); e == nil && transport.AWG != nil {
 		for _, name := range []string{"rekey_after_time", "reject_after_time"} {
 			parts := strings.Split(transport.AWG.Parameters[name], "-")
 			seconds, e := strconv.ParseInt(parts[len(parts)-1], 10, 64)
-			if e == nil && seconds > 0 && seconds <= 86400 {
+			baseline := int64(120)
+			if name == "reject_after_time" {
+				baseline = 180
+			}
+			if e == nil && seconds > baseline && seconds <= 86400 {
 				if wait := time.Duration(seconds*2+30) * time.Second; wait > stale {
 					stale = wait
 				}
 			}
 		}
 	}
-	s.recovery = startUnderlayRecovery(ctx, effective.PeerEndpoint(), stale, s.core.Stats, func() {
+	if transport, e := effective.Transport(); e == nil && transport.AWG != nil {
+		parts := strings.Split(transport.AWG.Parameters["rekey_timeout"], "-")
+		if seconds, e := strconv.ParseInt(parts[len(parts)-1], 10, 64); e == nil && seconds > 5 && seconds <= 86400 {
+			probeWait = time.Duration(seconds) * time.Second
+		}
+	}
+	var discover func(context.Context, netip.AddrPort) (netip.AddrPort, error)
+	if effective.EndpointHost != "" {
+		hostname, e := rules.NormalizeDomain(effective.EndpointHost)
+		if e != nil || hostname != effective.EndpointHost {
+			return nil, errors.New("invalid VPN endpoint hostname")
+		}
+		attempt := 0
+		discover = func(ctx context.Context, current netip.AddrPort) (netip.AddrPort, error) {
+			resolvers := []string{"1.1.1.1:53", "[2606:4700:4700::1111]:53", "8.8.8.8:53", "[2001:4860:4860::8888]:53"}
+			start := attempt
+			attempt++
+			for i := 0; i < len(resolvers) && ctx.Err() == nil; i++ {
+				resolver := netip.MustParseAddrPort(resolvers[(start+i)%len(resolvers)])
+				if _, e := protectedRouteFingerprint(resolver); e != nil {
+					continue
+				}
+				addresses, e := lookupEndpoint(ctx, hostname, underlay, resolver)
+				if e != nil {
+					continue
+				}
+				for n := 0; n < len(addresses) && ctx.Err() == nil; n++ {
+					candidate := netip.AddrPortFrom(addresses[(n+start)%len(addresses)], current.Port())
+					if candidate == current {
+						continue
+					}
+					if _, e := protectedRouteFingerprint(candidate); e == nil {
+						return candidate, nil
+					}
+				}
+			}
+			return netip.AddrPort{}, errors.New("VPN endpoint discovery unavailable")
+		}
+	}
+	s.recovery = startUnderlayRecovery(ctx, effective.PeerEndpoint(), stale, probeWait, s.core.Stats, func() {
 		if s.dns != nil {
 			s.dns.networkChanged()
 		} else {
@@ -347,7 +392,7 @@ func Start(ctx context.Context, raw []byte, manageDNS bool) (*Session, error) {
 			// need fresh real caches after a route epoch changes.
 			s.core.ReloadNetworkDNS(dnspolicy.NetworkSnapshot{})
 		}
-	}, s.core.ProbeUnderlay, func() error { return s.core.RefreshUnderlay(netip.AddrPort{}) })
+	}, s.core.ProbeUnderlay, s.core.RefreshUnderlay, discover)
 	ok = true
 	return s, nil
 }

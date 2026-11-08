@@ -52,19 +52,21 @@ public:
         }
         if (ace.size() > 253 || name.isEmpty()) { finish(); return; }
         name.append(char(0));
-        if (!m_socket.bind(QHostAddress::AnyIPv4, 0, QUdpSocket::DontShareAddress)) { finish(); return; }
+        if (!m_socket.bind(resolver.protocol() == QAbstractSocket::IPv6Protocol ? QHostAddress::AnyIPv6 : QHostAddress::AnyIPv4, 0, QUdpSocket::DontShareAddress)) { finish(); return; }
         // On partial firewall failure attempt cleanup while still owning the port.
         m_open = true;
         if (!m_firewall || !m_firewall(m_socket.localPort(), resolver, true)) { finish(); return; }
         quint16 id = quint16(QRandomGenerator::system()->generate());
+        int sent = 0;
         for (quint16 type : {quint16(1), quint16(28)}) {
             QByteArray query;
             append16(query, id++); append16(query, 0x0100); append16(query, 1);
             append16(query, 0); append16(query, 0); append16(query, 0);
             query.append(name); append16(query, type); append16(query, 1);
             m_queries.append(query);
-            m_socket.writeDatagram(query, resolver, dnsPort);
+            if (m_socket.writeDatagram(query, resolver, dnsPort) == query.size()) ++sent;
         }
+        if (sent == 0) { finish(); return; }
         m_deadline.start(timeoutMs);
     }
 

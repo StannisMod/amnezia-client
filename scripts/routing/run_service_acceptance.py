@@ -27,8 +27,10 @@ def ps(script):
     return subprocess.check_output(["powershell", "-NoProfile", "-Command", script], text=True, timeout=20).strip()
 
 
+NATIVE_PROBE_HOST = "1.1.1.1"
+
 def native_connect():
-    with socket.create_connection(("1.1.1.1", 443), timeout=5):
+    with socket.create_connection((NATIVE_PROBE_HOST, 443), timeout=5):
         pass
 
 
@@ -81,6 +83,7 @@ class WindowsPipeStream:
 
 
 def main():
+    global NATIVE_PROBE_HOST
     parser = argparse.ArgumentParser()
     parser.add_argument("--peer", type=Path, required=True)
     parser.add_argument("--qt-probe", type=Path, required=True)
@@ -105,7 +108,7 @@ def main():
         rescue_report.unlink(missing_ok=True)
         rescue = subprocess.Popen([
             sys.executable, str(Path(__file__).with_name('linux_ci_rescue.py')),
-            '--confirm-disposable-runner', '--qt-probe', str(args.qt_probe.resolve()),
+            '--confirm-disposable-runner', '--deadline', '900', '--qt-probe', str(args.qt_probe.resolve()),
             '--report', str(rescue_report),
         ], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
         armed = time.monotonic() + 3
@@ -116,6 +119,7 @@ def main():
             time.sleep(0.02)
     report = {"installed_service": "FAIL", "not_run": ["physical host", "full GUI interaction", "network handover", "performance parity"]}
     peer = stream = sock = None
+    close_native_witness = None
     reader_thread = reader_stop = reader_stream = None
     temporary = tempfile.TemporaryDirectory()
     events = queue.Queue()
@@ -258,6 +262,10 @@ def main():
             assert len(helpers)==1, 'installed backend is missing or duplicated'
             info=json.loads(subprocess.check_output([str(helpers[0]),'--build-info'],text=True,timeout=15))
             report['packaged_tcp_recovery']=deps.verify_info(info,'desktop_android')
+        if not win and args.ci_rescue:
+            from native_wan_fixture import start as start_native_witness
+            NATIVE_PROBE_HOST, close_native_witness = start_native_witness()
+            report["native_route_witness"] = "CONTROLLED_PRIVATE_NETNS_TCP_443"
         native_connect()
         if win:
             assert ps("(Get-Service -Name 'AmneziaVPN-service').Status") == "Running"
@@ -376,6 +384,8 @@ def main():
         if not win:
             from endpoint_migration_acceptance import run as endpoint_migration
             report["endpoint_migration"] = endpoint_migration(args.qt_probe.resolve(), args.peer.resolve(), temporary.name)
+            from connection_recovery_acceptance import run as preserving_recovery
+            report["preserving_recovery"] = preserving_recovery(args.qt_probe.resolve(), args.peer.resolve(), temporary.name)
         after = snapshot()
         assert after == before, "installed-service route/DNS restoration differed"
         report.update(installed_service="PASS", strict_kill_switch="PASS", system_resolver="PASS", application_scope="PASS", ipc_reconnect="PASS", helper_crash_recovery="PASS", observers=counts, os_state_restored=True)
@@ -429,6 +439,8 @@ def main():
             close_channel()
             if peer is not None: peer.terminate(); peer.wait(timeout=15)
             temporary.cleanup()
+            if close_native_witness is not None:
+                close_native_witness()
             rescued_pass = False
             if rescue is not None:
                 if report.get("installed_service") == "PASS":

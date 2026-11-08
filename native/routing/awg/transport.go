@@ -141,6 +141,7 @@ func (t *Transport) Stats() (Stats, error) {
 		return Stats{}, errors.New("AWG statistics unavailable")
 	}
 	var stats Stats
+	var handshakeNano uint64
 	for _, line := range strings.Split(raw, "\n") {
 		key, value, ok := strings.Cut(line, "=")
 		if !ok {
@@ -152,12 +153,17 @@ func (t *Transport) Stats() (Stats, error) {
 			stats.RXBytes += n
 		case "tx_bytes":
 			stats.TXBytes += n
+		case "last_handshake_time_nsec":
+			if n < 1000000000 {
+				handshakeNano = n
+			}
 		case "last_handshake_time_sec":
 			if n > stats.LastHandshake {
 				stats.LastHandshake = n
 			}
 		}
 	}
+	stats.LastHandshakeNano = stats.LastHandshake*1000000000 + handshakeNano
 	return stats, nil
 }
 

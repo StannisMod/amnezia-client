@@ -12,9 +12,15 @@ private:
         return query;
     }
 private slots:
+    void resolvesViaOwnedSocketAndClosesExceptionBeforeCompletion_data() {
+        QTest::addColumn<QHostAddress>("resolver");
+        QTest::newRow("IPv4") << QHostAddress(QHostAddress::LocalHost);
+        QTest::newRow("IPv6") << QHostAddress(QHostAddress::LocalHostIPv6);
+    }
     void resolvesViaOwnedSocketAndClosesExceptionBeforeCompletion() {
+        QFETCH(QHostAddress,resolver);
         QUdpSocket dns;
-        QVERIFY(dns.bind(QHostAddress(QHostAddress::LocalHost), quint16(0)));
+        QVERIFY(dns.bind(resolver, quint16(0)));
         EndpointDnsLookup lookup;
         bool allowed = false, completed = false, validFirewall = true;
         quint16 source = 0;
@@ -27,9 +33,9 @@ private slots:
                 dns.writeDatagram(reply(packet), sender, port);
             }
         });
-        lookup.start("vpn.example.org", QHostAddress::LocalHost,
+        lookup.start("vpn.example.org", resolver,
             [&](quint16 port, const QHostAddress &address, bool enabled) {
-                validFirewall &= address == QHostAddress(QHostAddress::LocalHost);
+                validFirewall &= address == resolver;
                 if (enabled) { validFirewall &= port != 0; source = port; }
                 else { validFirewall &= port == source; }
                 allowed = enabled; return true;

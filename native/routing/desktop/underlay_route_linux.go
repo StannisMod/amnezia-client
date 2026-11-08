@@ -98,6 +98,9 @@ func protectedRouteFingerprint(endpoint netip.AddrPort) (string, error) {
 	if iface.Name == InterfaceName || iface.Flags&net.FlagUp == 0 {
 		return "", errors.New("protected endpoint route does not leave capture")
 	}
+	if !source.IsValid() || (source.IsLoopback() && iface.Flags&net.FlagLoopback == 0) || netip.MustParsePrefix("172.19.0.0/30").Contains(source.Unmap()) || netip.MustParsePrefix("fdfe:dcba:9876::/126").Contains(source.Unmap()) {
+		return "", errors.New("protected endpoint has no usable native source")
+	}
 	addresses, err := iface.Addrs()
 	if err != nil {
 		return "", err

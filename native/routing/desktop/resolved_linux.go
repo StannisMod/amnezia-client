@@ -42,6 +42,7 @@ type resolvedLink struct {
 	networkFingerprint string
 	recovery           *networkDNSRecovery
 	networkChanges     chan struct{}
+	networkEpoch       string
 }
 
 // The watcher serially owns this state. Invalid inventories block new native
@@ -92,6 +93,14 @@ func startResolvedLinkWithRecovery(ctx context.Context, index int, fingerprint s
 		return nil, errors.New("system resolver bus unavailable")
 	}
 	r := &resolvedLink{conn: conn, manager: conn.Object(resolvedService, "/org/freedesktop/resolve1"), index: int32(index), cancel: cancel, done: make(chan struct{}), networkFingerprint: fingerprint, recovery: recovery, networkChanges: make(chan struct{}, 1)}
+	if recovery != nil {
+		r.networkEpoch, err = nativeNetworkEpoch()
+		if err != nil {
+			cancel()
+			conn.Close()
+			return nil, errors.New("native network epoch unavailable")
+		}
+	}
 	setupCtx, setupCancel := context.WithTimeout(runCtx, 5*time.Second)
 	defer setupCancel()
 	var path dbus.ObjectPath
@@ -105,6 +114,9 @@ func startResolvedLinkWithRecovery(ctx context.Context, index int, fingerprint s
 		r.link = conn.Object(resolvedService, path)
 		return r.apply(setupCtx)
 	})
+	if err == nil && recovery != nil {
+		err = waitResolvedLink(setupCtx, func() error { return r.reconcile(setupCtx) })
+	}
 	if err == nil {
 		err = conn.AddMatchSignalContext(setupCtx, dbus.WithMatchObjectPath(path), dbus.WithMatchInterface("org.freedesktop.DBus.Properties"), dbus.WithMatchMember("PropertiesChanged"))
 	}
@@ -232,10 +244,29 @@ func (r *resolvedLink) apply(ctx context.Context) error {
 
 func (r *resolvedLink) reconcile(ctx context.Context) error {
 	if r.recovery != nil {
+		epoch, err := nativeNetworkEpoch()
+		if err != nil {
+			r.recovery.unavailable()
+			return err
+		}
+		if epoch != r.networkEpoch {
+			r.recovery.unavailable()
+			r.networkEpoch = epoch
+		}
 		var links []networkDNSLink
-		var err error
 		if r.recovery.nativeInventory {
 			links, err = networkDNSInventory(ctx, r.conn)
+		}
+		if err == nil {
+			after, epochErr := nativeNetworkEpoch()
+			if epochErr != nil {
+				err = epochErr
+			} else if after != epoch {
+				err = errors.New("native DNS inventory changed during snapshot")
+			}
+		}
+		if err == nil {
+			err = ctx.Err()
 		}
 		if err = r.recovery.update(links, err); err != nil {
 			return err

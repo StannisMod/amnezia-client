@@ -2,8 +2,9 @@
 
 Work in progress, based on the verified TCP-dependency change (PR 15).
 The transport operation, native capture prerequisites and independently
-replaceable Linux network DNS are implemented. Automatic GUI/watchdog recovery
-is not integrated yet; native protected-route observation now drives recovery.
+replaceable Linux network DNS are implemented. The Linux routed application,
+service and helper now share the established-runtime recovery path. Final
+installed-service and exact-commit CI validation is required before readiness.
 
 ## Ownership boundaries
 
@@ -147,15 +148,62 @@ restart. A before/after installed-service reproduction failed with the old
 helper and passed 100 reconnect cycles plus endpoint migration with the fix.
 The permanent FakeIP table itself passed restart tests in both runtime modes.
 
-## Remaining integration
+## Application/service ownership and endpoint discovery
 
-Qt's numeric/domain reconnect, wakeup and stale-peer paths must delegate to the
-native owner with confirmed runtime identity, so a lost IPC socket cannot trigger
-full teardown. Domain endpoint rotation, stale-control-result rejection and a
-combined installed-Qt/native-owner acceptance test remain required. Native DNS
-changes on interfaces unrelated to the selected VPN endpoint also need route
-epoch coverage beyond resolver inventory changes.
-Initial connection budgets, explicit disconnect and proven helper death remain
-separate. Windows/mobile/legacy/OpenVPN/Xray recovery is not claimed by this
-Linux routed implementation. Remote TCP/application deadlines, lost server NAT
-state and explicit physical-interface bindings remain external constraints.
+The service assigns a UUID to each native runtime and advertises its capability
+and liveness. Connected notifications carry that identity, so recovery is bound
+before the GUI can observe Connected or receive a queued network event. Status
+requests have generations; replies preceding activation cannot bind a new
+protocol to an obsolete owner. Cleanup acknowledgements have independent request
+IDs and the runtime UUID. A stale GUI cannot stop a replacement runtime.
+
+Network/wakeup notifications and the established watchdog now hint the native
+owner. The GUI retains its state across IPC loss and reconnects to the same
+service. Only a matching, confirmed dead child permits bounded full recreation;
+a replacement owner is abandoned without global GUI route/DNS cleanup. Routed
+Linux delegates all OS/DNS ownership to the child and skips legacy GUI stack
+reset and saved-route clearing. Explicit user disconnect still waits for real
+service cleanup. Numeric routed endpoints use the same acknowledged initial
+connection state machine as domain endpoints.
+
+The immutable original endpoint hostname crosses the private activation boundary.
+After an unconfirmed path probe, the helper resolves only that control-plane
+name through protected fixed bootstrap resolvers, including IPv6. UDP truncation
+or failure can retry TCP to the same resolver; application names never use this
+path. Validated answers may rotate only the existing peer address, retaining
+port, keys, tunnel addresses, routing, FakeIP and TCP objects. Cancellation,
+network hints and newer endpoint commands invalidate late candidates. Fresh
+handshake nanoseconds distinguish two handshakes within one wall-clock second.
+The new target submission is recorded before another route sample, avoiding a
+redundant probe/reopen after a successful migration.
+
+The default established-traffic health probe starts after 15 seconds without
+receive/handshake progress. This is not a TCP timeout or a teardown budget.
+Longer configured AWG waits remain respected, including its rekey timeout.
+Absent paths pause reopening; retry exhaustion never releases an established
+runtime. Global native interface/route/rule epochs also refresh real DNS when a
+non-VPN interface changes while the server route and DNS addresses stay equal.
+Explicit wakeup/network hints cover indistinguishable LAN topologies and use
+wall time only for DNS-hint debounce; retry/traffic budgets remain monotonic.
+
+Validation includes the real WireguardProtocol/base class, real local IPC,
+foreign-owner and obsolete-cleanup rejection, a network callback delivered
+synchronously from Connected, IPv6 bootstrap sockets, private D-Bus restart,
+changes on another native table, and exclusion of owned capture state from
+network epochs. Native domain migration preserves original WSS and bulk sockets
+in AWG/WG, inner IPv4/IPv6, download/upload cases with the old front door blocked.
+The installed production driver additionally checks the same runtime PID, TUN,
+echo/bulk sockets and FakeIP across signal bursts, IPC loss and domain rotation,
+with strict protection enabled and disabled. It has no application redial loop.
+
+## Scope and limits
+
+This stage targets Linux routed AWG/WG. Other platform/legacy recovery behavior
+is retained. Modern Linux cgroup-v2/BPF support provides stable native TCP source
+selection; unsupported kernels expose limited capability. Remote application/TCP
+deadlines, destroyed server NAT/state, a cryptographically different peer,
+explicit physical bindings and networks with no usable route/transport remain
+external limits. Bootstrap is control-plane DNS through the fixed resolver set;
+private-only endpoint naming, additional encrypted bootstrap transports and
+network-specific NAT64 discovery are not claimed. No host VPN or resolver is
+modified by the isolated acceptance fixtures.
