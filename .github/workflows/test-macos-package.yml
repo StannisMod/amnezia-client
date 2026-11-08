@@ -75,17 +75,40 @@ jobs:
         run: |
           set -euo pipefail
           cat > "$RUNNER_TEMP/sign-test-stage.py" <<'PY'
-          import pathlib, subprocess, sys
+          import pathlib, plistlib, subprocess, sys
           stage = pathlib.Path(sys.argv[1])
           magic = {bytes.fromhex(s) for s in ('cffaedfe','cefaedfe','feedfacf','feedface','cafebabe','bebafeca','cafebabf','bfbafeca')}
+          bundles = sorted((p for p in stage.rglob('*') if p.is_dir() and not p.is_symlink() and p.suffix in ('.framework','.app','.xpc','.appex')),key=lambda p:len(p.parts),reverse=True)
+          main_executables = set()
+          for bundle in bundles:
+              info = bundle/'Contents/Info.plist'
+              if info.is_file():
+                  name = plistlib.loads(info.read_bytes()).get('CFBundleExecutable')
+                  if name:
+                      main_executables.add(bundle/'Contents/MacOS'/name)
+          for bundle in bundles:
+              macos = bundle/'Contents/MacOS'
+              if not macos.is_dir():
+                  continue
+              for item in list(macos.iterdir()):
+                  if not item.is_file() or item.is_symlink():
+                      continue
+                  with item.open('rb') as stream:
+                      macho = stream.read(4) in magic
+                  if not macho:
+                      resources = bundle/'Contents/Resources'
+                      resources.mkdir(exist_ok=True)
+                      target = resources/item.name
+                      assert not target.exists(), target
+                      item.rename(target)
+                      item.symlink_to('../Resources/'+item.name)
           for item in stage.rglob('*'):
               if not item.is_file() or item.is_symlink():
                   continue
               with item.open('rb') as stream:
                   macho = stream.read(4) in magic
-              if macho:
+              if macho and item not in main_executables:
                   subprocess.run(['codesign','--force','--sign','-','--timestamp=none',str(item)],check=True)
-          bundles = sorted((p for p in stage.rglob('*') if p.is_dir() and p.suffix in ('.framework','.app','.xpc','.appex')),key=lambda p:len(p.parts),reverse=True)
           for item in bundles:
               subprocess.run(['codesign','--force','--sign','-','--timestamp=none',str(item)],check=True)
           apps = [p for p in bundles if p.name == 'AmneziaVPN.app']
