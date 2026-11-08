@@ -26,6 +26,9 @@ def start():
     try:
         command('ip', 'netns', 'add', namespace)
         command('ip', 'link', 'add', interface, 'type', 'veth', 'peer', 'name', 'eth0', 'netns', namespace)
+        # This witness tests IPv4 only. Prevent delayed IPv6 DAD from adding
+        # a fixture-local route after the VPN restoration baseline is taken.
+        command('ip', 'link', 'set', 'dev', interface, 'addrgenmode', 'none')
         command('ip', 'addr', 'add', '10.205.0.1/30', 'dev', interface)
         command('ip', 'link', 'set', interface, 'up')
         prefix = ('ip', 'netns', 'exec', namespace)

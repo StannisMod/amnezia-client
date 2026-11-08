@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Installed Qt service/real resolver acceptance on disposable CI hosts only."""
 import argparse
+import difflib
 import faulthandler
 import http.client
 import ipaddress
@@ -387,7 +388,16 @@ def main():
             from connection_recovery_acceptance import run as preserving_recovery
             report["preserving_recovery"] = preserving_recovery(args.qt_probe.resolve(), args.peer.resolve(), temporary.name)
         after = snapshot()
-        assert after == before, "installed-service route/DNS restoration differed"
+        if after != before:
+            report["os_state_before"] = before
+            report["os_state_after"] = after
+            def state_text(value):
+                return value if isinstance(value, str) else json.dumps(value, indent=2, sort_keys=True) + "\n"
+            report["os_state_diff"] = "".join(
+                "".join(difflib.unified_diff(state_text(before[key]).splitlines(True), state_text(after[key]).splitlines(True),
+                                           fromfile="before/" + key, tofile="after/" + key))
+                for key in before if before[key] != after[key])
+            raise AssertionError("installed-service route/DNS restoration differed:\n" + report["os_state_diff"])
         report.update(installed_service="PASS", strict_kill_switch="PASS", system_resolver="PASS", application_scope="PASS", ipc_reconnect="PASS", helper_crash_recovery="PASS", observers=counts, os_state_restored=True)
     except Exception as error:
         report["failure"] = str(error)

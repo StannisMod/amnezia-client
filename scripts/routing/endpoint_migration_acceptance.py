@@ -107,6 +107,8 @@ def run(qt_probe, peer_binary, temporary):
         toggle(False)
         command('ip', 'netns', 'add', namespace)
         command('ip', 'link', 'add', host_if, 'type', 'veth', 'peer', 'name', 'eth0', 'netns', namespace)
+        # This fixture's physical link is IPv4-only; avoid a late IPv6 DAD epoch during the first DNS dial.
+        command('ip', 'link', 'set', 'dev', host_if, 'addrgenmode', 'none')
         command('ip', 'addr', 'add', '10.203.0.1/30', 'dev', host_if)
         command('ip', 'link', 'set', host_if, 'up')
         def ns(*args): command('ip', 'netns', 'exec', namespace, *args)
