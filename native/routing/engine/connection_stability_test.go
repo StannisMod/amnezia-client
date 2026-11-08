@@ -132,7 +132,11 @@ func TestConnectionStabilityReproduction(t *testing.T) {
 }
 
 func reproduceStability(t *testing.T, protocol, family string, pauses []time.Duration) {
-	ctx, cancel := context.WithTimeout(context.Background(), 240*time.Second)
+	lifetime := 240 * time.Second
+	if os.Getenv("AMNEZIA_CHAOS_PROFILE") != "" {
+		lifetime = max(lifetime, stabilityChaosSeconds("AMNEZIA_CHAOS_SECONDS", 3)+stabilityChaosSeconds("AMNEZIA_CHAOS_RECOVERY_SECONDS", 30)+60*time.Second)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), lifetime)
 	defer cancel()
 	clientIP, serverIP, mask := "10.77.0.1", "10.77.0.2", "/32"
 	if family == "IPv6" {
@@ -380,7 +384,7 @@ func reproduceStability(t *testing.T, protocol, family string, pauses []time.Dur
 		}()
 		t.Log("bulk direction=upload; server validates each record and returns its sequence")
 	}
-	response, e := (&http.Client{Transport: httpTransport, Timeout: 200 * time.Second}).Do(request)
+	response, e := (&http.Client{Transport: httpTransport, Timeout: lifetime}).Do(request)
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -389,6 +393,7 @@ func reproduceStability(t *testing.T, protocol, family string, pauses []time.Dur
 		t.Fatal("unexpected initial bulk connection")
 	}
 	var messages, chunks atomic.Uint64
+	var pauseWS atomic.Bool
 	if os.Getenv("AMNEZIA_STABILITY_TRACE") != "" {
 		stop, done := make(chan struct{}), make(chan struct{})
 		go func() {
@@ -409,6 +414,9 @@ func reproduceStability(t *testing.T, protocol, family string, pauses []time.Dur
 	wsDone, bulkDone := make(chan error, 1), make(chan error, 1)
 	go func() {
 		for seq := uint64(0); ; seq++ {
+			for pauseWS.Load() {
+				time.Sleep(20 * time.Millisecond)
+			}
 			if e := websocket.Message.Send(ws, fmt.Sprint(seq)); e != nil {
 				wsDone <- e
 				return
@@ -469,6 +477,13 @@ func reproduceStability(t *testing.T, protocol, family string, pauses []time.Dur
 		}
 	}
 	waitProgress(3, 3)
+	if os.Getenv("AMNEZIA_CHAOS_PROFILE") != "" {
+		progressBudget = stabilityChaosSeconds("AMNEZIA_CHAOS_RECOVERY_SECONDS", 30)
+		stabilityNativeChaos(t, func() { w, c := messages.Load(), chunks.Load(); waitProgress(w+3, c+3) }, pauseWS.Store)
+		if counted.accepts.Load() != 2 || wsAccepts.Load() != 1 || bulkAccepts.Load() != 1 {
+			t.Fatal("chaos replaced application TCP connections")
+		}
+	}
 	refresh := func() {
 		t.Helper()
 		var err error
@@ -586,29 +601,31 @@ func reproduceStability(t *testing.T, protocol, family string, pauses []time.Dur
 		}
 		t.Logf("at=%s same WSS/TLS survived %s; resumed in %s; dropped=%d; accepts=2 WS-ID=1 bulk-ID=1", time.Now().Format(time.RFC3339Nano), duration, time.Since(recovered).Round(time.Millisecond), link.dropped.Load()-beforeDrops)
 	}
-	w, c := messages.Load(), chunks.Load()
-	beforeDrops := link.dropped.Load()
-	link.impaired.Store(true)
-	if nativeStop != nil {
-		stabilityNativeImpairment(t, true)
-	}
-	impairStart := time.Now()
-	if seconds, err := strconv.Atoi(os.Getenv("AMNEZIA_STABILITY_IMPAIRMENT_SECONDS")); err == nil && seconds > 0 && seconds <= 30 {
-		time.Sleep(time.Duration(seconds) * time.Second)
-	}
-	waitProgress(w+10, c+10)
-	t.Logf("impaired progress elapsed=%s WS=%d records=%d verified_bytes=%d", time.Since(impairStart).Round(time.Millisecond), messages.Load()-w, chunks.Load()-c, (chunks.Load()-c)*4096)
-	link.impaired.Store(false)
-	if nativeStop != nil {
-		stabilityNativeImpairment(t, false)
-	}
-	if nativeStop != nil {
-		t.Logf("native netem profile=%s survived; this iproute2 has no seed option", os.Getenv("AMNEZIA_STABILITY_PROFILE"))
-	} else {
-		t.Logf("10%% loss + 5..20ms delay per direction survived; seed=604111 dropped=%d", link.dropped.Load()-beforeDrops)
-	}
-	if counted.accepts.Load() != 2 {
-		t.Fatal("impairment caused new accept")
+	if os.Getenv("AMNEZIA_CHAOS_PROFILE") == "" {
+		w, c := messages.Load(), chunks.Load()
+		beforeDrops := link.dropped.Load()
+		link.impaired.Store(true)
+		if nativeStop != nil {
+			stabilityNativeImpairment(t, true)
+		}
+		impairStart := time.Now()
+		if seconds, err := strconv.Atoi(os.Getenv("AMNEZIA_STABILITY_IMPAIRMENT_SECONDS")); err == nil && seconds > 0 && seconds <= 30 {
+			time.Sleep(time.Duration(seconds) * time.Second)
+		}
+		waitProgress(w+10, c+10)
+		t.Logf("impaired progress elapsed=%s WS=%d records=%d verified_bytes=%d", time.Since(impairStart).Round(time.Millisecond), messages.Load()-w, chunks.Load()-c, (chunks.Load()-c)*4096)
+		link.impaired.Store(false)
+		if nativeStop != nil {
+			stabilityNativeImpairment(t, false)
+		}
+		if nativeStop != nil {
+			t.Logf("native netem profile=%s survived; this iproute2 has no seed option", os.Getenv("AMNEZIA_STABILITY_PROFILE"))
+		} else {
+			t.Logf("10%% loss + 5..20ms delay per direction survived; seed=604111 dropped=%d", link.dropped.Load()-beforeDrops)
+		}
+		if counted.accepts.Load() != 2 {
+			t.Fatal("impairment caused new accept")
+		}
 	}
 	// This is the destructive operation reached by the current reconnect chain.
 	closedAt := time.Now()
