@@ -50,6 +50,7 @@ class ControllerImpl : public QObject {
   virtual void resolveEndpoint(const QString &, std::function<void(QList<QHostAddress>)> complete) { complete({}); }
   virtual void cancelEndpointLookup() {}
   virtual QString routingRuntimeId() const { return {}; }
+  virtual bool routingRecoverySupported() const { return false; }
   virtual void hintRoutingNetwork(const QString &) { checkStatus(); }
 
   // This method is used to retrieve the VPN tunnel status (mainly the number

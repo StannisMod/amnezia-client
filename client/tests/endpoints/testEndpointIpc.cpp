@@ -31,7 +31,12 @@ private slots:
         QTRY_COMPARE(initialized.count(),1);
         controller.activate({{"protocol","awg"},{"sing_box_routing",QJsonObject{}}});
         QTRY_VERIFY(service->canReadLine());
-        QCOMPARE(QJsonDocument::fromJson(service->readLine()).object().value("type").toString(),"activate");
+        const auto activation=QJsonDocument::fromJson(service->readLine()).object();
+        QCOMPARE(activation.value("type").toString(),"activate");
+        send({{"type","routing_activated"},{"activation_id",activation.value("activation_id").toDouble()+1},{"runtime_id","wrong-activation"}});
+        send({{"type","routing_activated"},{"activation_id",activation.value("activation_id")},{"runtime_id","owner-a"}});
+        QTRY_COMPARE(controller.routingRuntimeId(),QString("owner-a"));
+        QVERIFY(!controller.routingRecoverySupported()); // Ownership alone is not a capability claim.
         auto status=[&](const QJsonValue &serial,const QString &id){return QJsonObject{
             {"type","status"},{"ownership_protocol",1},{"status_id",serial},{"runtime_id",id},{"runtime_alive",true},{"preserves_connections",true},
             {"connected",true},{"date",QDateTime::currentDateTime().toString()},
@@ -42,7 +47,7 @@ private slots:
         auto request=QJsonDocument::fromJson(service->readLine()).object();
         send(status(request.value("status_id"),"owner-a"));
         QTRY_COMPARE(controller.routingRuntimeId(),QString("owner-a"));
-        QCOMPARE(runtime.count(),1);
+        QTRY_COMPARE(runtime.count(),1);
         controller.hintRoutingNetwork("foreign-owner");
         QTRY_VERIFY(service->canReadLine());
         request=QJsonDocument::fromJson(service->readLine()).object();

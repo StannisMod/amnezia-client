@@ -23,7 +23,7 @@ WireguardProtocol::WireguardProtocol(const QJsonObject &configuration, QObject *
                     if (!m_endpointSession.wanted() || (m_endpointSession.phase()!=Phase::Connecting && m_endpointSession.phase()!=Phase::Connected)) return;
                 }
                 m_backendEstablished = true;
-                if (usesRoutedBackend() && !m_impl->routingRuntimeId().isEmpty())
+                if (usesRoutedBackend() && m_impl->routingRecoverySupported() && !m_impl->routingRuntimeId().isEmpty())
                     m_preservedRuntimeId=m_impl->routingRuntimeId();
                 // Bind before Connected is observable: a queued network event
                 // must never enter legacy teardown in the first status roundtrip.
@@ -60,7 +60,15 @@ WireguardProtocol::WireguardProtocol(const QJsonObject &configuration, QObject *
     m_impl->initialize(nullptr, nullptr);
     connect(m_impl.get(), &ControllerImpl::routingRuntimeStatus, this,
             [this](const QString &id, bool alive, bool preserves) {
-        if (!m_backendEstablished || !usesEndpointSession()) return;
+        if (!usesEndpointSession()) return;
+        if (m_preservedRuntimeId.isEmpty() && !m_impl->routingRuntimeId().isEmpty() && id!=m_impl->routingRuntimeId()) {
+            m_backendEstablished=false;m_runtimeReplaced=true;m_peerPoll.stop();
+            m_endpointSession.abandonReplacedBackend();
+            setLastError(ErrorCode::VpnEndpointCleanupFailed);
+            emit protocolError(ErrorCode::VpnEndpointCleanupFailed);
+            return;
+        }
+        if (!m_backendEstablished) return;
         if (m_preservedRuntimeId.isEmpty()) {
 #if defined(Q_OS_LINUX) && !defined(Q_OS_ANDROID)
             if (alive && preserves && !id.isEmpty() && m_impl->routingRuntimeId() == id)

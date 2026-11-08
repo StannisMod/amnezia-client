@@ -159,6 +159,9 @@ void DaemonLocalServerConnection::parseCommand(const QByteArray& data) {
       if (!DesktopRoutingProcess::instance()->start(obj.value("routing_profile").toObject(), KillSwitch::instance()->isStrictKillSwitchEnabled())) {
         backendFailure(DaemonError::ERROR_FATAL);
         disconnected();
+      } else {
+        write(QJsonObject{{"type","routing_activated"},{"activation_id",obj.value("activation_id")},
+                          {"runtime_id",DesktopRoutingProcess::instance()->status().value("runtime_id")}});
       }
       return;
     }

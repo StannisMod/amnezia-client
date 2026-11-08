@@ -16,6 +16,7 @@ public:
     void deactivateWithAck() override { ++deactivations; emit deactivated(); }
     void checkStatus() override { emit routingRuntimeStatus(id, true, true); }
     QString routingRuntimeId() const override { return id; }
+    bool routingRecoverySupported() const override { return true; }
     void hintRoutingNetwork(const QString &expected) override { QCOMPARE(expected,id); ++hints; }
     void getBackendLogs(std::function<void(const QString &)> &&) override {}
     void cleanupBackendLogs() override {}

@@ -134,13 +134,14 @@ void LocalSocketController::daemonConnected() {
 
 void LocalSocketController::activate(const QJsonObject &rawConfig) {
   m_runtimeId.clear();
+  m_preserveCapability = false;
   m_routedActivation = rawConfig.contains("sing_box_routing");
   m_activationStatusFloor = m_statusId;
   m_waitingCleanupId = 0;
 #if defined(MZ_LINUX) || defined(MZ_WINDOWS)
   if (rawConfig.contains("sing_box_routing")) {
     m_deviceIpv4 = "172.19.0.1";
-    write(QJsonObject{{"type", "activate"}, {"routing_profile", rawConfig}});
+    write(QJsonObject{{"type", "activate"}, {"routing_profile", rawConfig}, {"activation_id", double(++m_activationId)}});
     return;
   }
 #endif
@@ -462,6 +463,7 @@ void LocalSocketController::parseCommand(const QByteArray& command) {
       const bool alive = obj.value("runtime_alive").toBool();
       const bool preserves = obj.value("preserves_connections").toBool();
       if (m_runtimeId.isEmpty() && m_ownershipProtocol && alive && preserves && !id.isEmpty()) m_runtimeId = id;
+      if (id==m_runtimeId && alive && preserves) m_preserveCapability=true;
       emit routingRuntimeStatus(id, alive, preserves);
     }
   }
@@ -507,6 +509,13 @@ void LocalSocketController::parseCommand(const QByteArray& command) {
     return;
   }
 
+  if (type == "routing_activated") {
+    if (!m_routedActivation || obj.value("activation_id").toDouble()!=double(m_activationId)) return;
+    const auto id=obj.value("runtime_id").toString();
+    if (!id.isEmpty()) {m_runtimeId=id;m_ownershipProtocol=true;}
+    return;
+  }
+
   if (type == "endpoint_resolved") {
     if (obj.value("lookup_id").toDouble() != double(m_endpointLookupId) || !m_endpointCompletion) return;
     QList<QHostAddress> addresses;
@@ -525,6 +534,7 @@ void LocalSocketController::parseCommand(const QByteArray& command) {
     m_waitingCleanupId = 0;
     m_pendingConfirmedDeactivation = false;
     m_runtimeId.clear();
+    m_preserveCapability = false;
     emit deactivated();
     return;
   }
@@ -573,12 +583,17 @@ void LocalSocketController::parseCommand(const QByteArray& command) {
   if (type == "connected") {
     if (m_routedActivation && m_ownershipProtocol &&
         (obj.value("runtime_id").toString().isEmpty() || !obj.value("runtime_alive").toBool())) return;
+    if (m_routedActivation && !m_runtimeId.isEmpty() && m_ownershipProtocol && obj.value("runtime_id").toString()!=m_runtimeId) {
+      emit routingRuntimeStatus(obj.value("runtime_id").toString(),obj.value("runtime_alive").toBool(),obj.value("preserves_connections").toBool());
+      return;
+    }
     if (m_routedActivation && obj.value("ownership_protocol").toInt()>=1 &&
         obj.value("runtime_alive").toBool() && obj.value("preserves_connections").toBool()) {
       const auto id=obj.value("runtime_id").toString();
       if (!id.isEmpty() && (m_runtimeId.isEmpty() || m_runtimeId==id)) {
         m_runtimeId=id;
         m_ownershipProtocol=true;
+        m_preserveCapability=true;
       }
     }
     QJsonValue pubkey = obj.value("pubkey");
