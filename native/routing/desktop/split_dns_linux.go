@@ -209,6 +209,9 @@ func prepareLinuxDNSSnapshot(config *engine.SessionConfig, links []networkDNSLin
 // Ordinary DIRECT keeps destination-based routing. Only a DNS policy explicitly
 // scoped to a network interface binds its protected sockets to that interface.
 func linuxUnderlay(iface string) (engine.Underlay, error) {
+	if iface == InterfaceName {
+		return engine.Underlay{}, errors.New("DNS network interface points at managed tunnel")
+	}
 	if iface != "" {
 		if _, err := net.InterfaceByName(iface); err != nil {
 			return engine.Underlay{}, errors.New("DNS network interface is unavailable")

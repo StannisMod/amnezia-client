@@ -15,6 +15,8 @@ public:
     void stop(bool notify = true);
     bool isActive() const;
     QJsonObject status() const;
+    bool matchesRuntime(const QString &id) const;
+    bool networkChanged(const QString &id);
 signals:
     void connected(const QString &publicKey);
     void disconnected();
@@ -27,4 +29,7 @@ private:
     QJsonObject m_status;
     bool m_stopping = false;
     bool m_owned = false;
+    QString m_runtimeId;
+    bool m_preservesConnections = false;
+    quint64 m_controlId = 0;
 };

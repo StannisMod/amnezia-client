@@ -61,6 +61,7 @@ private slots:
             {"awg_config_data", QJsonObject{{"hostName", "vpn.example.org"}, {"port", 51820}, {"client_priv_key", "SECRET"}}}};
         const auto first = activationConfig(profile, "192.0.2.1");
         const auto second = activationConfig(profile, "192.0.2.2");
+        QVERIFY(!profile.contains("routing_endpoint_host"));
         QCOMPARE(first.value("hostName").toString(), "192.0.2.1");
         QCOMPARE(second.value("awg_config_data").toObject().value("hostName").toString(), "192.0.2.2");
         QCOMPARE(second.value("awg_config_data").toObject().value("client_priv_key").toString(), "SECRET");

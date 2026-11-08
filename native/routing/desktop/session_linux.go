@@ -13,11 +13,15 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/StannisMod/amnezia-client/native/routing/dnspolicy"
 	"github.com/StannisMod/amnezia-client/native/routing/engine"
 	"github.com/StannisMod/amnezia-client/native/routing/mobile"
+	"github.com/StannisMod/amnezia-client/native/routing/rules"
 	"github.com/StannisMod/amnezia-client/native/routing/tunnel"
 	"github.com/sagernet/netlink"
 	"github.com/sagernet/sing-box/adapter"
@@ -38,6 +42,9 @@ type Session struct {
 	manageDNS    bool
 	dns          *resolvedLink
 	captureOwned bool
+	source       *sourceMarker
+	sourceError  error
+	recovery     *underlayRecovery
 	once         sync.Once
 }
 
@@ -163,6 +170,10 @@ func Recover() error {
 }
 
 func Start(ctx context.Context, raw []byte, manageDNS bool) (*Session, error) {
+	var effective engine.SessionConfig
+	if err := json.Unmarshal(raw, &effective); err != nil {
+		return nil, errors.New("invalid prepared routing session")
+	}
 	if err := preflight(); err != nil {
 		return nil, err
 	}
@@ -222,6 +233,14 @@ func Start(ctx context.Context, raw []byte, manageDNS bool) (*Session, error) {
 				t.Close()
 				return nil, errors.New("capture reverse-path configuration failed")
 			}
+			// Only our proxy-return packets receive captureMark in PREROUTING.
+			// Include it in this TUN's reverse lookup so a missing physical
+			// default route does not reject valid inner replies. Physical RPF
+			// and global sysctls remain unchanged.
+			if err = os.WriteFile("/proc/sys/net/ipv4/conf/"+InterfaceName+"/src_valid_mark", []byte("1"), 0600); err != nil {
+				t.Close()
+				return nil, errors.New("capture reverse-path configuration failed")
+			}
 			for _, p := range append(opts.Inet4Address, opts.Inet6Address...) {
 				address, err := netlink.ParseAddr(p.String())
 				if err != nil {
@@ -240,7 +259,7 @@ func Start(ctx context.Context, raw []byte, manageDNS bool) (*Session, error) {
 	if err != nil {
 		return nil, err
 	}
-	s.core, err = mobile.Start(ctx, platform, raw)
+	s.core, err = mobile.StartWithNetworkDNS(ctx, platform, raw)
 	if err != nil {
 		return nil, err
 	}
@@ -293,12 +312,14 @@ func Start(ctx context.Context, raw []byte, manageDNS bool) (*Session, error) {
 		}
 		s.rules = append(s.rules, r)
 	}
+	// Install before managed DNS/capture become visible to applications. The
+	// TCP connect hook marks before the kernel chooses its local source, while
+	// protected backend sockets keep the native-route exemption.
+	s.source, s.sourceError = attachStableTCPSource("/sys/fs/cgroup")
 	if manageDNS {
-		var effective engine.SessionConfig
-		if err = json.Unmarshal(raw, &effective); err != nil {
-			return nil, errors.New("invalid prepared DNS session")
-		}
-		s.dns, err = startResolvedLink(ctx, link.Attrs().Index, effective.DNSNetworkFingerprint)
+		// A resolver/network outage retires DNS work, not the TCP owner.
+		recovery := &networkDNSRecovery{nativeInventory: effective.DNS != nil && effective.DNS.NeedsNetwork(), fingerprint: effective.DNSNetworkFingerprint, suspend: s.core.SuspendNetworkDNS, reload: func(links []networkDNSLink) error { return s.core.ReloadNetworkDNS(linuxDNSSnapshot(links)) }}
+		s.dns, err = startResolvedLinkWithRecovery(ctx, link.Attrs().Index, effective.DNSNetworkFingerprint, recovery)
 		if err != nil {
 			return nil, err
 		}
@@ -307,6 +328,71 @@ func Start(ctx context.Context, raw []byte, manageDNS bool) (*Session, error) {
 		return nil, err
 	}
 	s.captureOwned = true
+	stale := 15 * time.Second
+	probeWait := 5 * time.Second
+	if transport, e := effective.Transport(); e == nil && transport.AWG != nil {
+		for _, name := range []string{"rekey_after_time", "reject_after_time"} {
+			parts := strings.Split(transport.AWG.Parameters[name], "-")
+			seconds, e := strconv.ParseInt(parts[len(parts)-1], 10, 64)
+			baseline := int64(120)
+			if name == "reject_after_time" {
+				baseline = 180
+			}
+			if e == nil && seconds > baseline && seconds <= 86400 {
+				if wait := time.Duration(seconds*2+30) * time.Second; wait > stale {
+					stale = wait
+				}
+			}
+		}
+	}
+	if transport, e := effective.Transport(); e == nil && transport.AWG != nil {
+		parts := strings.Split(transport.AWG.Parameters["rekey_timeout"], "-")
+		if seconds, e := strconv.ParseInt(parts[len(parts)-1], 10, 64); e == nil && seconds > 5 && seconds <= 86400 {
+			probeWait = time.Duration(seconds) * time.Second
+		}
+	}
+	var discover func(context.Context, netip.AddrPort) (netip.AddrPort, error)
+	if effective.EndpointHost != "" {
+		hostname, e := rules.NormalizeDomain(effective.EndpointHost)
+		if e != nil || hostname != effective.EndpointHost {
+			return nil, errors.New("invalid VPN endpoint hostname")
+		}
+		attempt := 0
+		discover = func(ctx context.Context, current netip.AddrPort) (netip.AddrPort, error) {
+			resolvers := []string{"1.1.1.1:53", "[2606:4700:4700::1111]:53", "8.8.8.8:53", "[2001:4860:4860::8888]:53"}
+			start := attempt
+			attempt++
+			for i := 0; i < len(resolvers) && ctx.Err() == nil; i++ {
+				resolver := netip.MustParseAddrPort(resolvers[(start+i)%len(resolvers)])
+				if _, e := protectedRouteFingerprint(resolver); e != nil {
+					continue
+				}
+				addresses, e := lookupEndpoint(ctx, hostname, underlay, resolver)
+				if e != nil {
+					continue
+				}
+				for n := 0; n < len(addresses) && ctx.Err() == nil; n++ {
+					candidate := netip.AddrPortFrom(addresses[(n+start)%len(addresses)], current.Port())
+					if candidate == current {
+						continue
+					}
+					if _, e := protectedRouteFingerprint(candidate); e == nil {
+						return candidate, nil
+					}
+				}
+			}
+			return netip.AddrPort{}, errors.New("VPN endpoint discovery unavailable")
+		}
+	}
+	s.recovery = startUnderlayRecovery(ctx, effective.PeerEndpoint(), stale, probeWait, s.core.Stats, func() {
+		if s.dns != nil {
+			s.dns.networkChanged()
+		} else {
+			// --no-system-dns is confined to fixtures; explicit policies still
+			// need fresh real caches after a route epoch changes.
+			s.core.ReloadNetworkDNS(dnspolicy.NetworkSnapshot{})
+		}
+	}, s.core.ProbeUnderlay, s.core.RefreshUnderlay, discover)
 	ok = true
 	return s, nil
 }
@@ -319,7 +405,29 @@ func (s *Session) Stats() (tunnel.Stats, error) {
 	}
 	return s.core.Stats()
 }
-func (s *Session) CaptureID() string { return InterfaceName }
+func (s *Session) CaptureID() string     { return InterfaceName }
+func (s *Session) StableTCPSource() bool { return s.source != nil }
+
+func (s *Session) RefreshUnderlay(remote netip.AddrPort) error {
+	if s.recovery != nil && remote.IsValid() && remote.Port() > 0 && remote.Addr().Zone() == "" && !remote.Addr().IsUnspecified() && !remote.Addr().IsMulticast() {
+		s.recovery.hint(remote)
+	}
+	return s.core.RefreshUnderlay(remote)
+}
+
+func (s *Session) HintUnderlayNetwork() bool {
+	if s.recovery == nil {
+		return false
+	}
+	s.recovery.hint(netip.AddrPort{})
+	return true
+}
+func (s *Session) RecoveryDiagnostics() map[string]uint64 {
+	if s.recovery == nil {
+		return nil
+	}
+	return s.recovery.diagnostics()
+}
 
 func (s *Session) Close() error {
 	return s.close(false)
@@ -333,6 +441,9 @@ func (s *Session) Abort() error { return s.close(true) }
 func (s *Session) close(preserve bool) error {
 	var errs []error
 	s.once.Do(func() {
+		if s.recovery != nil {
+			s.recovery.close()
+		}
 		if s.dns != nil {
 			s.dns.Close()
 		}
@@ -341,6 +452,9 @@ func (s *Session) close(preserve bool) error {
 		}
 		if s.core != nil {
 			errs = append(errs, s.core.Close())
+		}
+		if s.source != nil {
+			errs = append(errs, s.source.Close())
 		}
 		if preserve {
 			return

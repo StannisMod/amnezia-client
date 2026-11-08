@@ -77,6 +77,13 @@ void VpnConnection::onKillSwitchModeChanged(bool enabled)
 void VpnConnection::onConnectionStateChanged(Vpn::ConnectionState state)
 {
 #ifdef AMNEZIA_DESKTOP
+#if defined(Q_OS_LINUX) && !defined(Q_OS_ANDROID)
+    // The routed child owns DNS and every tracked OS entry, including rollback.
+    // Legacy GUI cleanup must not reset that state or a replacement owner.
+    if (m_vpnConfiguration.contains("sing_box_routing")) return;
+#endif
+    if (auto *wireguard = qobject_cast<WireguardProtocol *>(m_vpnProtocol.data());
+            wireguard && (wireguard->usesRoutedBackend() || wireguard->runtimeWasReplaced())) return;
     if (!m_serversRepository || !m_appSettingsRepository) {
         qCritical() << "VpnConnection::onConnectionStateChanged: repositories not initialized";
         return;
@@ -605,6 +612,14 @@ QString VpnConnection::bytesPerSecToText(quint64 bytes)
 void VpnConnection::reconnectToVpn() {
     if (m_vpnProtocol.isNull())
         return;
+
+#ifdef AMNEZIA_DESKTOP
+    if (auto *wireguard = qobject_cast<WireguardProtocol *>(m_vpnProtocol.data());
+            wireguard && wireguard->preservesConnectionState()) {
+        wireguard->reconnect();
+        return;
+    }
+#endif
 
     if (m_connectionState != Vpn::ConnectionState::Connected) {
         qWarning() << QString("Reconnect triggered on %1 during inappropriate state: %2; ignoring slot")

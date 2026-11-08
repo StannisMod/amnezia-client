@@ -88,6 +88,17 @@ public:
         m_seenPeer = false;
         setPhase(Phase::Connected);
     }
+    // Only after a service status proves another runtime owns the backend.
+    // Transport loss is never sufficient: abandoning then must not issue a
+    // teardown against the replacement or leave a cleanup timer running.
+    void abandonReplacedBackend()
+    {
+        cancelLookup();
+        m_timer.stop();
+        m_wanted = false;
+        m_backendMayExist = false;
+        setPhase(Phase::Idle);
+    }
     // Lack of traffic while idle is not a failure. Require outbound traffic,
     // no inbound progress AND no new handshake for the entire stale interval.
     // nowMs comes from a monotonic clock; wall-clock adjustments cannot trip it.

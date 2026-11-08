@@ -16,6 +16,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -94,8 +95,14 @@ func stabilityKernelPeer(t *testing.T, config awg.Config) (netip.AddrPort, net.L
 			command("route", "add", config.AllowedIPs[0].String(), "dev", "stb-peer")
 		}
 		listener, e = net.Listen("tcp", net.JoinHostPort(address.String(), "18443"))
+		if e == nil && os.Getenv("AMNEZIA_STABILITY_DOMAIN_MOVE") == "1" {
+			endpoint = stabilityDomainFrontdoors(t, endpoint)
+		}
 		return e
 	})
+	if os.Getenv("AMNEZIA_STABILITY_DOMAIN_MOVE") == "1" {
+		command("route", "add", "1.1.1.1/32", "via", "203.0.113.2", "dev", "stb-underlay")
+	}
 	// Capture only headers on the synthetic peer interface. TLS contents/keys are
 	// never recorded. ss exposes kernel retransmission/window/timer diagnostics.
 	if directory := os.Getenv("AMNEZIA_STABILITY_TRACE"); directory != "" {
@@ -173,7 +180,7 @@ func withStabilityNS(t *testing.T, path string, fn func() error) {
 
 // Launch the unchanged desktop helper: real OS capture, production nft/routing
 // ownership and protected sockets. Only system DNS management is disabled.
-func stabilityStartNative(t *testing.T, profile []byte) func() error {
+func stabilityStartNative(t *testing.T, profile []byte) (func() error, func() error) {
 	t.Helper()
 	helper := os.Getenv("AMNEZIA_STABILITY_HELPER")
 	command := exec.Command(helper, "--no-system-dns", "--cache-dir", t.TempDir())
@@ -191,6 +198,12 @@ func stabilityStartNative(t *testing.T, profile []byte) func() error {
 		t.Fatal(e)
 	}
 	ready := make(chan error, 1)
+	type acknowledgement struct {
+		ID uint64 `json:"request_id"`
+		OK bool   `json:"ok"`
+	}
+	acks := make(chan acknowledgement, 4)
+	var pathChanges, probes, reopens, endpointChanges atomic.Uint64
 	scanned := make(chan struct{})
 	go func() {
 		defer close(scanned)
@@ -198,11 +211,22 @@ func stabilityStartNative(t *testing.T, profile []byte) func() error {
 		sent := false
 		for scanner.Scan() {
 			var row struct {
-				Type    string `json:"type"`
-				Message string `json:"message"`
+				Type     string            `json:"type"`
+				Message  string            `json:"message"`
+				Recovery map[string]uint64 `json:"underlay_recovery"`
+				acknowledgement
 			}
 			if json.Unmarshal(scanner.Bytes(), &row) != nil {
 				continue
+			}
+			if row.Type == "status" {
+				pathChanges.Store(row.Recovery["path_changes"])
+				endpointChanges.Store(row.Recovery["endpoint_changes"])
+				probes.Store(row.Recovery["probes"])
+				if row.Recovery["reopens"] != reopens.Load() {
+					t.Logf("native owner reopen attempt %d", row.Recovery["reopens"])
+				}
+				reopens.Store(row.Recovery["reopens"])
 			}
 			if !sent && row.Type == "ready" {
 				ready <- nil
@@ -215,6 +239,12 @@ func stabilityStartNative(t *testing.T, profile []byte) func() error {
 				}
 				t.Logf("native helper error: %s", row.Message)
 			}
+			if row.Type == "underlay_refreshed" {
+				select {
+				case acks <- row.acknowledgement:
+				default:
+				}
+			}
 		}
 		if !sent {
 			ready <- fmt.Errorf("helper exited before ready")
@@ -224,11 +254,15 @@ func stabilityStartNative(t *testing.T, profile []byte) func() error {
 		t.Fatal(e)
 	}
 	var once sync.Once
+	var inputMu sync.Mutex
+	var requestID uint64
 	var stopped error
 	stop := func() error {
 		once.Do(func() {
+			inputMu.Lock()
 			input.Write([]byte("stop\n"))
 			input.Close()
+			inputMu.Unlock()
 			done := make(chan error, 1)
 			go func() { done <- command.Wait() }()
 			select {
@@ -253,7 +287,72 @@ func stabilityStartNative(t *testing.T, profile []byte) func() error {
 		t.Fatalf("native helper ready timeout: %s", stderr.String())
 	}
 	t.Logf("native helper ready pid=%d; real amnrouting0 capture", command.Process.Pid)
-	return stop
+	var lastAutoChanges uint64
+	refresh := func() error {
+		if os.Getenv("AMNEZIA_STABILITY_AUTOMATIC") == "1" {
+			budget := 8 * time.Second
+			if os.Getenv("AMNEZIA_STABILITY_DOMAIN_MOVE") == "1" {
+				budget = 45 * time.Second
+			}
+			deadline := time.NewTimer(budget)
+			defer deadline.Stop()
+			tick := time.NewTicker(10 * time.Millisecond)
+			defer tick.Stop()
+			for {
+				if os.Getenv("AMNEZIA_STABILITY_DOMAIN_MOVE") == "1" {
+					if endpointChanges.Load() > 0 {
+						t.Log("native owner moved the same peer to a fresh DNS answer without a manual refresh")
+						return nil
+					}
+					select {
+					case <-deadline.C:
+						return fmt.Errorf("native owner did not rotate the failed domain endpoint")
+					case <-tick.C:
+					}
+					continue
+				}
+				if pathChanges.Load() > lastAutoChanges && probes.Load() > 0 {
+					lastAutoChanges = pathChanges.Load()
+					if reopens.Load() != 0 {
+						return fmt.Errorf("working authenticated socket was unnecessarily reopened")
+					}
+					t.Log("native owner detected the changed protected route; authenticated UDP remains open")
+					return nil
+				}
+				select {
+				case <-deadline.C:
+					return fmt.Errorf("native owner did not observe/probe changed protected route")
+				case <-tick.C:
+				}
+			}
+		}
+		inputMu.Lock()
+		defer inputMu.Unlock()
+		requestID++
+		line, _ := json.Marshal(map[string]any{"type": "refresh_underlay", "request_id": requestID})
+		if _, err := input.Write(append(line, '\n')); err != nil {
+			return err
+		}
+		timer := time.NewTimer(5 * time.Second)
+		defer timer.Stop()
+		for {
+			select {
+			case ack := <-acks:
+				if ack.ID != requestID {
+					continue
+				}
+				if !ack.OK {
+					return fmt.Errorf("native underlay refresh failed")
+				}
+				return nil
+			case <-scanned:
+				return fmt.Errorf("native owner exited during refresh")
+			case <-timer.C:
+				return fmt.Errorf("native underlay refresh acknowledgement timed out")
+			}
+		}
+	}
+	return stop, refresh
 }
 func stabilityNativeBlackhole(t *testing.T, enabled bool, endpoint netip.AddrPort) uint64 {
 	t.Helper()
@@ -305,6 +404,12 @@ func stabilityNativeImpairment(t *testing.T, enabled bool) {
 		dev := "stb-underlay"
 		if len(prefix) > 0 {
 			dev = "eth0"
+		}
+		if os.Getenv("AMNEZIA_STABILITY_INTERFACE_MOVE") == "1" {
+			dev = "stb-alt"
+			if len(prefix) > 0 {
+				dev = "eth1"
+			}
 		}
 		args := []string{"qdisc", "del", "dev", dev, "root"}
 		if enabled {

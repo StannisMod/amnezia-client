@@ -35,6 +35,15 @@ def node(state_file, fixture_file, upstream_port):
             data, sender = s.recvfrom(65535)
             state = json.loads(state_file.read_text())
             if s in dns_sockets:
+                cursor, labels = 12, []
+                while cursor < len(data) and data[cursor]:
+                    length = data[cursor]
+                    if length > 63 or cursor + 1 + length > len(data):
+                        break
+                    labels.append(data[cursor + 1:cursor + 1 + length].decode('ascii', errors='replace'))
+                    cursor += 1 + length
+                with state_file.with_suffix('.queries.jsonl').open('a') as observations:
+                    observations.write(json.dumps('.'.join(labels)) + '\n')
                 # Leave time to prove unrelated native traffic stays blocked
                 # during bootstrap, while the service's private socket works.
                 time.sleep(.25)
@@ -98,6 +107,8 @@ def run(qt_probe, peer_binary, temporary):
         toggle(False)
         command('ip', 'netns', 'add', namespace)
         command('ip', 'link', 'add', host_if, 'type', 'veth', 'peer', 'name', 'eth0', 'netns', namespace)
+        # This fixture's physical link is IPv4-only; avoid a late IPv6 DAD epoch during the first DNS dial.
+        command('ip', 'link', 'set', 'dev', host_if, 'addrgenmode', 'none')
         command('ip', 'addr', 'add', '10.203.0.1/30', 'dev', host_if)
         command('ip', 'link', 'set', host_if, 'up')
         def ns(*args): command('ip', 'netns', 'exec', namespace, *args)

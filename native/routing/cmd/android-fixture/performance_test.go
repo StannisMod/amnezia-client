@@ -15,6 +15,7 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -103,7 +104,8 @@ func BenchmarkTunnelBulk(b *testing.B) {
 					b.Fatal(err)
 				}
 				b.Cleanup(func() { listener.Close() })
-				go observeBulk(listener, "VPN")
+				var accepted atomic.Int64
+				go observeBulk(listener, "VPN", &accepted)
 				address = listener.Addr().String()
 				var d net.Dialer
 				dial = d.DialContext

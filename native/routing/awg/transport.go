@@ -107,6 +107,9 @@ func (c Config) uapi() (string, error) {
 type Transport struct {
 	Net      *FlowStack
 	device   *device.Device
+	bind     *packetBind
+	peerKey  device.NoisePublicKey
+	endpoint netip.AddrPort
 	mu       sync.RWMutex
 	closed   bool
 	address4 netip.Addr
@@ -138,6 +141,7 @@ func (t *Transport) Stats() (Stats, error) {
 		return Stats{}, errors.New("AWG statistics unavailable")
 	}
 	var stats Stats
+	var handshakeNano uint64
 	for _, line := range strings.Split(raw, "\n") {
 		key, value, ok := strings.Cut(line, "=")
 		if !ok {
@@ -149,12 +153,17 @@ func (t *Transport) Stats() (Stats, error) {
 			stats.RXBytes += n
 		case "tx_bytes":
 			stats.TXBytes += n
+		case "last_handshake_time_nsec":
+			if n < 1000000000 {
+				handshakeNano = n
+			}
 		case "last_handshake_time_sec":
 			if n > stats.LastHandshake {
 				stats.LastHandshake = n
 			}
 		}
 	}
+	stats.LastHandshakeNano = stats.LastHandshake*1000000000 + handshakeNano
 	return stats, nil
 }
 
@@ -182,12 +191,15 @@ func New(ctx context.Context, c Config, listen ListenUnderlay) (*Transport, erro
 	if e != nil {
 		return nil, errors.New("create AWG flow stack failed")
 	}
-	bind := &packetBind{ctx: ctx, listen: listen, endpoint: c.Endpoint}
+	bind := &packetBind{ctx: ctx, listen: listen, endpoint: c.Endpoint, listenPort: c.ListenPort}
 	d, e := NewConfiguredDevice(tun, bind, ipc)
 	if e != nil {
 		return nil, errors.New("AWG configuration or underlay startup failed")
 	}
-	t := &Transport{Net: n, device: d}
+	// uapi has already validated the key's encoding and length.
+	public, _ := base64.StdEncoding.DecodeString(c.PublicKey)
+	t := &Transport{Net: n, device: d, bind: bind, endpoint: c.Endpoint}
+	copy(t.peerKey[:], public)
 	for _, a := range c.Address {
 		if a.Is4() && !t.address4.IsValid() {
 			t.address4 = a
@@ -197,6 +209,62 @@ func New(ctx context.Context, c Config, listen ListenUnderlay) (*Transport, erro
 		}
 	}
 	return t, nil
+}
+
+// RefreshUnderlay replaces only the protected UDP socket and, optionally, the
+// address of the same cryptographic peer. A zero endpoint retains the current
+// target. The flow stack, TCP sockets, peer identity/configuration and counters survive
+// failures too: callers may retry without destroying the session.
+// Success means the socket was opened and a rate-limited probe was submitted,
+// not that the peer has answered or the external network is usable.
+func (t *Transport) RefreshUnderlay(remote netip.AddrPort) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.closed {
+		return net.ErrClosed
+	}
+	if remote == (netip.AddrPort{}) {
+		remote = t.endpoint
+	}
+	if !remote.IsValid() || remote.Port() == 0 || remote.Addr().Zone() != "" || remote.Addr().IsUnspecified() || remote.Addr().IsMulticast() {
+		return errors.New("invalid VPN recovery endpoint")
+	}
+	remote = netip.AddrPortFrom(remote.Addr().Unmap(), remote.Port())
+	peer := t.device.LookupPeer(t.peerKey)
+	if peer == nil {
+		return errors.New("VPN recovery peer unavailable")
+	}
+	t.endpoint = remote
+	if err := t.device.BindClose(); err != nil {
+		return errors.New("VPN underlay close failed")
+	}
+	t.bind.setEndpoint(remote)
+	ipc := fmt.Sprintf("public_key=%s\nupdate_only=true\nendpoint=%s\n", hex.EncodeToString(t.peerKey[:]), remote)
+	if err := t.device.IpcSet(ipc); err != nil {
+		return errors.New("VPN recovery endpoint update failed")
+	}
+	if err := t.device.BindUpdate(); err != nil {
+		return errors.New("VPN underlay reopen failed")
+	}
+	peer.SendKeepalive()
+	if err := peer.SendHandshakeInitiation(false); err != nil {
+		return errors.New("VPN underlay probe failed")
+	}
+	return nil
+}
+
+func (t *Transport) ProbeUnderlay() error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.closed {
+		return net.ErrClosed
+	}
+	peer := t.device.LookupPeer(t.peerKey)
+	if peer == nil {
+		return errors.New("VPN recovery peer unavailable")
+	}
+	peer.SendKeepalive()
+	return peer.SendHandshakeInitiation(false)
 }
 
 func (t *Transport) Close() error {

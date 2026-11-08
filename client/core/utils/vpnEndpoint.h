@@ -57,6 +57,10 @@ inline QJsonObject activationConfig(QJsonObject config, const QString &address)
 {
     const QString key = config.value(QStringLiteral("protocol")).toString() + QStringLiteral("_config_data");
     auto data = config.value(key).toObject();
+    const auto original = normalizeHost(data.value(QStringLiteral("hostName")).toString());
+    if (config.contains(QStringLiteral("sing_box_routing")) && !original.isEmpty() && QHostAddress(original).isNull())
+        config[QStringLiteral("routing_endpoint_host")] = original;
+    else config.remove(QStringLiteral("routing_endpoint_host"));
     data[QStringLiteral("hostName")] = address;
     config[key] = data;
     config[QStringLiteral("hostName")] = address;

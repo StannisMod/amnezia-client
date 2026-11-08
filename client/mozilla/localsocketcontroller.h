@@ -30,6 +30,9 @@ class LocalSocketController final : public ControllerImpl {
   void deactivateWithAck() override;
   void resolveEndpoint(const QString &host, std::function<void(QList<QHostAddress>)> complete) override;
   void cancelEndpointLookup() override;
+  QString routingRuntimeId() const override { return m_runtimeId; }
+  bool routingRecoverySupported() const override { return m_preserveCapability; }
+  void hintRoutingNetwork(const QString &id) override;
 
   void checkStatus() override;
 
@@ -64,6 +67,13 @@ class LocalSocketController final : public ControllerImpl {
   QByteArray m_buffer;
 
   QString m_deviceIpv4;
+  QString m_runtimeId;
+  quint64 m_statusId = 0, m_activationStatusFloor = 0;
+  bool m_routedActivation = false;
+  bool m_ownershipProtocol = false;
+  bool m_preserveCapability = false;
+  quint64 m_activationId = 0;
+  quint64 m_cleanupId = 0, m_waitingCleanupId = 0;
   quint32 m_endpointLookupId = 0;
   quint32 m_endpointResolverAttempt = 0;
   std::function<void(QList<QHostAddress>)> m_endpointCompletion;

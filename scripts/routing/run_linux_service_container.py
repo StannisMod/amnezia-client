@@ -21,15 +21,17 @@ def run(*argv, **kwargs):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--package', type=Path, required=True)
+    parser.add_argument('--ubuntu-version', choices=('22.04','24.04'), default='22.04')
     parser.add_argument('--peer', type=Path, required=True)
     parser.add_argument('--qt-probe', type=Path, required=True)
     parser.add_argument('--report', type=Path, required=True)
     parser.add_argument('--diagnose-capture-mark', action='store_true')
     parser.add_argument('--helper', type=Path, help='diagnostic replacement; not installer acceptance')
+    parser.add_argument('--service', type=Path, help='diagnostic service replacement; not installer acceptance')
     args = parser.parse_args()
     repo = Path(__file__).resolve().parents[2]
     runtime = Path(os.environ['RUNNER_TEMP']).resolve()
-    for path in (args.package, args.peer, args.qt_probe, args.helper):
+    for path in (args.package, args.peer, args.qt_probe, args.helper, args.service):
         if path is not None:
             path.resolve(strict=True)
             if not (path.resolve().is_relative_to(repo) or path.resolve().is_relative_to(runtime)):
@@ -37,7 +39,7 @@ def main():
     report = args.report.resolve()
     name = 'routing-service-' + uuid.uuid4().hex[:12]
     image = name + ':test'
-    run('docker', 'build', '--tag', image, repo / 'scripts/routing/linux-service-ci', timeout=600)
+    run('docker', 'build', '--build-arg', 'BASE_UBUNTU_VERSION=' + args.ubuntu_version, '--tag', image, repo / 'scripts/routing/linux-service-ci', timeout=600)
     try:
         run('docker', 'run', '--detach', '--name', name, '--privileged', '--cgroupns=private',
             '--tmpfs', '/run', '--tmpfs', '/run/lock', '--tmpfs', '/tmp',
@@ -64,12 +66,13 @@ def main():
         execute('mount', '--bind', '/run/systemd/resolve/stub-resolv.conf', '/etc/resolv.conf')
         execute('mkdir', '-p', '/artifacts')
         execute('env', 'QT_QPA_PLATFORM=offscreen', 'bash', str(repo / 'scripts/routing/install_service_in_container.sh'),
-                str(args.package.resolve()), str(args.helper.resolve()) if args.helper else '', timeout=240)
+                str(args.package.resolve()), str(args.helper.resolve()) if args.helper else '',
+                str(args.service.resolve()) if args.service else '', timeout=240)
         execute('python3', '-u', str(repo / 'scripts/routing/run_service_acceptance.py'),
                 '--peer', str(args.peer.resolve()), '--qt-probe', str(args.qt_probe.resolve()),
                 '--report', '/artifacts/' + report.name, '--resolver-cycles', '100', '--ci-rescue',
                 *(['--diagnose-capture-mark'] if args.diagnose_capture_mark else []),
-                *([] if args.helper else ['--require-notices']), timeout=720)
+                *([] if args.helper or args.service else ['--require-notices']), timeout=1000)
     finally:
         report.parent.mkdir(parents=True, exist_ok=True)
         # Preserve PID 1 output even if systemd never reached journald.

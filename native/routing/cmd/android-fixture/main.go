@@ -38,6 +38,7 @@ import (
 )
 
 var bulkEnabled bool
+var persistentEnabled bool
 var transportKind string
 var recordDNS bool
 
@@ -53,6 +54,7 @@ type fixture struct {
 	closePeer                            []io.Closer
 	server, client                       *ecdh.PrivateKey
 	directTCP, directUDP, vpnTCP, vpnUDP atomic.Int64
+	bulkTCP                              atomic.Int64
 	dnsQueries                           atomic.Int64
 	dnsNamesMu                           sync.Mutex
 	dnsNames                             []string
@@ -91,13 +93,14 @@ func (b *fixtureBind) Send(packets [][]byte, endpoint conn.Endpoint) error {
 	return err
 }
 
-// Optional bounded stream observer used only by the comparative CI benchmark.
-func observeBulk(listener net.Listener, label string) {
+// Optional bounded stream observer used by disposable performance/recovery tests.
+func observeBulk(listener net.Listener, label string, count *atomic.Int64) {
 	for {
 		c, err := listener.Accept()
 		if err != nil {
 			return
 		}
+		count.Add(1)
 		go func() {
 			defer c.Close()
 			c.SetDeadline(time.Now().Add(120 * time.Second))
@@ -132,7 +135,13 @@ func observeTCP(listener net.Listener, label string, count *atomic.Int64) {
 			return
 		}
 		count.Add(1)
-		go func() { defer c.Close(); fmt.Fprintln(c, label) }()
+		go func() {
+			defer c.Close()
+			fmt.Fprintln(c, label)
+			if persistentEnabled {
+				io.Copy(c, c)
+			}
+		}()
 	}
 }
 
@@ -218,7 +227,7 @@ func (f *fixture) start() error {
 				return e
 			}
 			f.closePeer = append(f.closePeer, listener)
-			go observeBulk(listener, "VPN")
+			go observeBulk(listener, "VPN", &f.bulkTCP)
 		}
 		quicUDP, e := stack.ListenUDPAddrPort(netip.AddrPortFrom(netip.MustParseAddr(ip), fixturequic.Port))
 		if e != nil {
@@ -284,6 +293,7 @@ func (f *fixture) start() error {
 
 func main() {
 	flag.StringVar(&transportKind, "transport", "awg", "disposable peer protocol: awg or wireguard")
+	flag.BoolVar(&persistentEnabled, "persistent", false, "keep the disposable TCP echo connection open for recovery acceptance")
 	flag.BoolVar(&bulkEnabled, "bulk", false, "enable bounded performance-test stream observers")
 	flag.BoolVar(&recordDNS, "record-dns", false, "record bounded synthetic DNS observations for split DNS acceptance")
 	flag.StringVar(&sharedIP, "shared-ip", sharedIP, "native host address used by both controlled observers")
@@ -381,7 +391,7 @@ func main() {
 	control.HandleFunc("/stats", func(w http.ResponseWriter, _ *http.Request) {
 		// Datagram counts identify delivery/peer response failures without
 		// persisting handshake payloads, keys or private UAPI configuration.
-		json.NewEncoder(w).Encode(map[string]int64{"direct_tcp": f.directTCP.Load(), "direct_udp": f.directUDP.Load(), "vpn_tcp": f.vpnTCP.Load(), "vpn_udp": f.vpnUDP.Load(), "dns_queries": f.dnsQueries.Load(), "outer_received": f.outerRX.Load(), "outer_sent": f.outerTX.Load()})
+		json.NewEncoder(w).Encode(map[string]int64{"direct_tcp": f.directTCP.Load(), "direct_udp": f.directUDP.Load(), "vpn_tcp": f.vpnTCP.Load(), "bulk_tcp": f.bulkTCP.Load(), "vpn_udp": f.vpnUDP.Load(), "dns_queries": f.dnsQueries.Load(), "outer_received": f.outerRX.Load(), "outer_sent": f.outerTX.Load()})
 	})
 	control.HandleFunc("/peer", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {

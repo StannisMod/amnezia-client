@@ -10,15 +10,26 @@
 
 #include "mozilla/localsocketcontroller.h"
 
-WireguardProtocol::WireguardProtocol(const QJsonObject &configuration, QObject *parent)
+WireguardProtocol::WireguardProtocol(const QJsonObject &configuration, QObject *parent, ControllerImpl *controller)
     : VpnProtocol(configuration, parent)
 {
-    m_impl.reset(new LocalSocketController());
+    m_impl.reset(controller ? controller : new LocalSocketController());
     setupEndpointSession();
     connect(m_impl.get(), &ControllerImpl::connected, this,
             [this](const QString &pubkey, const QDateTime &connectionTimestamp) {
-                if (m_domainEndpoint) m_endpointSession.connected();
+                if (m_stopped) return;
+                if (usesEndpointSession()) {
+                    using Phase=amnezia::VpnEndpointSession::Phase;
+                    if (!m_endpointSession.wanted() || (m_endpointSession.phase()!=Phase::Connecting && m_endpointSession.phase()!=Phase::Connected)) return;
+                }
+                m_backendEstablished = true;
+                if (usesRoutedBackend() && m_impl->routingRecoverySupported() && !m_impl->routingRuntimeId().isEmpty())
+                    m_preservedRuntimeId=m_impl->routingRuntimeId();
+                // Bind before Connected is observable: a queued network event
+                // must never enter legacy teardown in the first status roundtrip.
+                if (usesEndpointSession()) m_endpointSession.connected();
                 else setConnectionState(Vpn::ConnectionState::Connected);
+                m_impl->checkStatus();
             });
     connect(m_impl.get(), &ControllerImpl::statusUpdated, this,
             [this](const QString& serverIpv4Gateway,
@@ -42,10 +53,45 @@ WireguardProtocol::WireguardProtocol(const QJsonObject &configuration, QObject *
 
     connect(m_impl.get(), &ControllerImpl::disconnected, this,
             [this]() {
-                if (m_domainEndpoint) m_endpointSession.recover();
+                if (preservesConnectionState()) { m_impl->checkStatus(); return; }
+                if (usesEndpointSession()) m_endpointSession.recover();
                 else setConnectionState(Vpn::ConnectionState::Disconnected);
             });
     m_impl->initialize(nullptr, nullptr);
+    connect(m_impl.get(), &ControllerImpl::routingRuntimeStatus, this,
+            [this](const QString &id, bool alive, bool preserves) {
+        if (!usesEndpointSession()) return;
+        if (m_preservedRuntimeId.isEmpty() && !m_impl->routingRuntimeId().isEmpty() && id!=m_impl->routingRuntimeId()) {
+            m_backendEstablished=false;m_runtimeReplaced=true;m_peerPoll.stop();
+            m_endpointSession.abandonReplacedBackend();
+            setLastError(ErrorCode::VpnEndpointCleanupFailed);
+            emit protocolError(ErrorCode::VpnEndpointCleanupFailed);
+            return;
+        }
+        if (!m_backendEstablished) return;
+        if (m_preservedRuntimeId.isEmpty()) {
+#if defined(Q_OS_LINUX) && !defined(Q_OS_ANDROID)
+            if (alive && preserves && !id.isEmpty() && m_impl->routingRuntimeId() == id)
+                m_preservedRuntimeId = id;
+#endif
+            return;
+        }
+        if (id != m_preservedRuntimeId) {
+            // Another owner or service generation is not ours to tear down.
+            m_backendEstablished = false;
+            m_peerPoll.stop();
+            m_runtimeReplaced = true;
+            m_endpointSession.abandonReplacedBackend();
+            setLastError(ErrorCode::VpnEndpointCleanupFailed);
+            emit protocolError(ErrorCode::VpnEndpointCleanupFailed);
+            return;
+        }
+        if (!alive) {
+            m_preservedRuntimeId.clear();
+            m_backendEstablished = false;
+            m_endpointSession.recover(); // Proven dead child, with matching ownership.
+        }
+    });
 }
 
 WireguardProtocol::~WireguardProtocol()
@@ -56,10 +102,13 @@ WireguardProtocol::~WireguardProtocol()
 
 void WireguardProtocol::stop()
 {
+    m_backendEstablished = false;
+    m_preservedRuntimeId.clear();
+    m_peerPoll.stop();
     if (guardStop()) {
         return;
     }
-    if (m_domainEndpoint) m_endpointSession.stop();
+    if (usesEndpointSession()) m_endpointSession.stop();
     else stopMzImpl();
 }
 
@@ -71,7 +120,7 @@ ErrorCode WireguardProtocol::startMzImpl()
     const bool allowIpv6 = m_rawConfig.contains("sing_box_routing");
     const QHostAddress literal(host);
     m_domainEndpoint = literal.isNull();
-    if (m_domainEndpoint) {
+    if (usesEndpointSession()) {
         m_endpointSession.start(host, allowIpv6);
         return ErrorCode::NoError;
     }
@@ -97,6 +146,7 @@ ErrorCode WireguardProtocol::stopMzImpl()
 
 ErrorCode WireguardProtocol::start()
 {
+    m_runtimeReplaced = false;
     resetStopGuard();
     return startMzImpl();
 }
@@ -105,6 +155,8 @@ void WireguardProtocol::setupEndpointSession()
 {
     using Session = amnezia::VpnEndpointSession;
     m_endpointSession.resolver = [this](const QString &host, Session::Completion complete) {
+        const QHostAddress literal(host);
+        if (!literal.isNull()) { complete({literal}); return; }
         m_impl->resolveEndpoint(host, std::move(complete));
     };
     m_endpointSession.cancelResolver = [this] { m_impl->cancelEndpointLookup(); };
@@ -143,10 +195,11 @@ void WireguardProtocol::setupEndpointSession()
         emit protocolError(error);
     };
     connect(m_impl.get(), &ControllerImpl::deactivated, this, [this] {
-        if (m_domainEndpoint) m_endpointSession.deactivated();
+        if (usesEndpointSession()) m_endpointSession.deactivated();
     });
     connect(m_impl.get(), &ControllerImpl::handshakeUpdated, this, [this](qint64 handshakeMs, quint64 tx, quint64 rx) {
-        if (m_domainEndpoint) m_endpointSession.observePeer(handshakeMs, tx, rx, m_peerClock.elapsed());
+        if (usesEndpointSession() && !preservesConnectionState())
+            m_endpointSession.observePeer(handshakeMs, tx, rx, m_peerClock.elapsed());
     });
     // Honour longer AWG protocol timers instead of treating a valid slow rekey
     // as an outage. A range's upper bound is the conservative boundary.
@@ -162,7 +215,8 @@ void WireguardProtocol::setupEndpointSession()
 
 void WireguardProtocol::reconnect()
 {
-    if (m_domainEndpoint) {
+    if (preservesConnectionState()) { m_impl->hintRoutingNetwork(m_preservedRuntimeId); return; }
+    if (usesEndpointSession()) {
         const QString protocol = m_rawConfig.value(configKey::vpnProto).toString();
         const QString host = m_rawConfig.value(protocol + "_config_data").toObject().value(configKey::hostName).toString();
         m_endpointSession.start(host, m_rawConfig.contains("sing_box_routing"));
@@ -170,4 +224,20 @@ void WireguardProtocol::reconnect()
     }
     stop();
     if (const auto error = start(); error != ErrorCode::NoError) emit protocolError(error);
+}
+
+bool WireguardProtocol::usesEndpointSession() const {
+    return usesRoutedBackend() || m_domainEndpoint;
+}
+
+bool WireguardProtocol::usesRoutedBackend() const {
+#if defined(Q_OS_LINUX) && !defined(Q_OS_ANDROID)
+    return m_rawConfig.contains("sing_box_routing");
+#else
+    return false;
+#endif
+}
+
+bool WireguardProtocol::preservesConnectionState() const {
+    return m_backendEstablished && !m_preservedRuntimeId.isEmpty();
 }

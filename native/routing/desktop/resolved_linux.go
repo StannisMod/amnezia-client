@@ -40,18 +40,66 @@ type resolvedLink struct {
 	err                error // published by closing done
 	once               sync.Once
 	networkFingerprint string
+	recovery           *networkDNSRecovery
+	networkChanges     chan struct{}
+	networkEpoch       string
+}
+
+// The watcher serially owns this state. Invalid inventories block new native
+// DNS work while established application flows remain owned by the live Box.
+type networkDNSRecovery struct {
+	fingerprint     string
+	nativeInventory bool
+	suspend         func()
+	reload          func([]networkDNSLink) error
+}
+
+func (r *networkDNSRecovery) unavailable() { r.suspend(); r.fingerprint = "" }
+func (r *networkDNSRecovery) update(links []networkDNSLink, err error) error {
+	if err != nil {
+		r.unavailable()
+		return err
+	}
+	fingerprint := networkDNSFingerprint(links)
+	if fingerprint == r.fingerprint {
+		return nil
+	}
+	r.unavailable()
+	if err = r.reload(links); err != nil {
+		return err
+	}
+	r.fingerprint = fingerprint
+	return nil
 }
 
 func startResolvedLink(ctx context.Context, index int, fingerprint ...string) (*resolvedLink, error) {
+	initial := ""
+	if len(fingerprint) > 0 {
+		initial = fingerprint[0]
+	}
+	return startResolvedLinkWithRecovery(ctx, index, initial, nil)
+}
+func startResolvedLinkWithRecovery(ctx context.Context, index int, fingerprint string, recovery *networkDNSRecovery) (*resolvedLink, error) {
+	if recovery != nil && !recovery.nativeInventory {
+		// The explicit-DNS generation was already started before this watcher.
+		// Do not retire it on the first timer tick merely because there is no
+		// native-inventory fingerprint: that races the first app connection.
+		recovery.fingerprint = networkDNSFingerprint(nil)
+	}
 	runCtx, cancel := context.WithCancel(ctx)
 	conn, err := dbus.ConnectSystemBus(dbus.WithContext(runCtx))
 	if err != nil {
 		cancel()
 		return nil, errors.New("system resolver bus unavailable")
 	}
-	r := &resolvedLink{conn: conn, manager: conn.Object(resolvedService, "/org/freedesktop/resolve1"), index: int32(index), cancel: cancel, done: make(chan struct{})}
-	if len(fingerprint) > 0 {
-		r.networkFingerprint = fingerprint[0]
+	r := &resolvedLink{conn: conn, manager: conn.Object(resolvedService, "/org/freedesktop/resolve1"), index: int32(index), cancel: cancel, done: make(chan struct{}), networkFingerprint: fingerprint, recovery: recovery, networkChanges: make(chan struct{}, 1)}
+	if recovery != nil {
+		r.networkEpoch, err = nativeNetworkEpoch()
+		if err != nil {
+			cancel()
+			conn.Close()
+			return nil, errors.New("native network epoch unavailable")
+		}
 	}
 	setupCtx, setupCancel := context.WithTimeout(runCtx, 5*time.Second)
 	defer setupCancel()
@@ -66,6 +114,9 @@ func startResolvedLink(ctx context.Context, index int, fingerprint ...string) (*
 		r.link = conn.Object(resolvedService, path)
 		return r.apply(setupCtx)
 	})
+	if err == nil && recovery != nil {
+		err = waitResolvedLink(setupCtx, func() error { return r.reconcile(setupCtx) })
+	}
 	if err == nil {
 		err = conn.AddMatchSignalContext(setupCtx, dbus.WithMatchObjectPath(path), dbus.WithMatchInterface("org.freedesktop.DBus.Properties"), dbus.WithMatchMember("PropertiesChanged"))
 	}
@@ -78,7 +129,7 @@ func startResolvedLink(ctx context.Context, index int, fingerprint ...string) (*
 	}
 	go func() {
 		defer close(r.done)
-		defer conn.Close()
+		defer func() { r.conn.Close() }()
 		// Signals handle external resets immediately; the timer also covers
 		// invalidated/missed properties without spawning resolver processes.
 		ticker := time.NewTicker(time.Second)
@@ -87,13 +138,51 @@ func startResolvedLink(ctx context.Context, index int, fingerprint ...string) (*
 			select {
 			case <-runCtx.Done():
 				return
-			case <-signals:
+			case <-r.networkChanges:
+				if r.recovery != nil {
+					r.recovery.unavailable()
+				}
+			case _, open := <-signals:
+				if !open {
+					signals = nil
+				}
 			case <-ticker.C:
 			}
 			checkCtx, checkCancel := context.WithTimeout(runCtx, 5*time.Second)
-			err := r.reconcile(checkCtx)
+			var err error
+			if r.recovery != nil && !r.conn.Connected() {
+				r.recovery.unavailable()
+				r.conn.Close()
+				var replacement *dbus.Conn
+				replacement, err = dbus.ConnectSystemBus(dbus.WithContext(runCtx))
+				if err == nil {
+					r.conn = replacement
+					r.manager = replacement.Object(resolvedService, "/org/freedesktop/resolve1")
+					// Polling continues across a bus restart even if adding the
+					// advisory signal subscription fails.
+					err = replacement.AddMatchSignalContext(checkCtx, dbus.WithMatchSender(resolvedService), dbus.WithMatchInterface("org.freedesktop.DBus.Properties"), dbus.WithMatchMember("PropertiesChanged"))
+					signals = make(chan *dbus.Signal, 16)
+					replacement.Signal(signals)
+				}
+			}
+			if err == nil {
+				err = r.reconcile(checkCtx)
+			}
 			checkCancel()
 			if err != nil {
+				if r.recovery != nil {
+					r.recovery.unavailable()
+					// Closed signal channels and queued resets must not create
+					// a busy loop while the bus/link/inventory is unavailable.
+					timer := time.NewTimer(time.Second)
+					select {
+					case <-runCtx.Done():
+						timer.Stop()
+						return
+					case <-timer.C:
+					}
+					continue
+				}
 				if runCtx.Err() == nil {
 					r.err = resolvedFailure("system resolver link configuration lost", err)
 				}
@@ -154,7 +243,41 @@ func (r *resolvedLink) apply(ctx context.Context) error {
 }
 
 func (r *resolvedLink) reconcile(ctx context.Context) error {
-	if r.networkFingerprint != "" {
+	if r.recovery != nil {
+		epoch, err := nativeNetworkEpoch()
+		if err != nil {
+			r.recovery.unavailable()
+			return err
+		}
+		if epoch != r.networkEpoch {
+			r.recovery.unavailable()
+			r.networkEpoch = epoch
+		}
+		var links []networkDNSLink
+		if r.recovery.nativeInventory {
+			links, err = networkDNSInventory(ctx, r.conn)
+		}
+		if err == nil {
+			after, epochErr := nativeNetworkEpoch()
+			if epochErr != nil {
+				err = epochErr
+			} else if after != epoch {
+				err = errors.New("native DNS inventory changed during snapshot")
+			}
+		}
+		if err == nil {
+			err = ctx.Err()
+		}
+		if err = r.recovery.update(links, err); err != nil {
+			return err
+		}
+		// resolved can recreate link objects without restarting the system bus.
+		var path dbus.ObjectPath
+		if err = r.manager.CallWithContext(ctx, resolvedManager+".GetLink", 0, r.index).Store(&path); err != nil {
+			return err
+		}
+		r.link = r.conn.Object(resolvedService, path)
+	} else if r.networkFingerprint != "" {
 		links, err := networkDNSInventory(ctx, r.conn)
 		if err != nil {
 			return err
@@ -200,4 +323,17 @@ func (r *resolvedLink) Err() error {
 
 func (r *resolvedLink) Close() {
 	r.once.Do(func() { r.cancel(); <-r.done })
+}
+
+func (r *resolvedLink) networkChanged() {
+	if r.recovery == nil {
+		return
+	}
+	// Suspend immediately, then let the serial watcher prepare a generation.
+	// The native route actor never mutates its fingerprint or D-Bus connection.
+	r.recovery.suspend()
+	select {
+	case r.networkChanges <- struct{}{}:
+	default:
+	}
 }

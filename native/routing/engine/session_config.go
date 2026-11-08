@@ -61,6 +61,7 @@ func (c TransportConfig) outbound() (map[string]any, error) {
 // SessionConfig keeps legacy AWG JSON readable. Platform hosts own capture,
 // socket protection and OS restoration; new hosts supply an explicit transport.
 type SessionConfig struct {
+	EndpointHost          string                     `json:"endpoint_host,omitempty"`
 	NetworkDNS            *dnspolicy.NetworkSnapshot `json:"network_dns,omitempty"`
 	DNSNetworkFingerprint string                     `json:"dns_network_fingerprint,omitempty"`
 	Rules                 rules.Config               `json:"rules"`
@@ -93,6 +94,20 @@ func (c SessionConfig) PeerPublicKey() string {
 		return transport.AWG.PublicKey
 	}
 	return ""
+}
+
+func (c SessionConfig) PeerEndpoint() netip.AddrPort {
+	transport, err := c.Transport()
+	if err != nil {
+		return netip.AddrPort{}
+	}
+	if transport.Type == "wireguard" && transport.WireGuard != nil {
+		return transport.WireGuard.Endpoint
+	}
+	if transport.AWG != nil {
+		return transport.AWG.Endpoint
+	}
+	return netip.AddrPort{}
 }
 func (c SessionConfig) Compile() ([]byte, error) {
 	transport, err := c.Transport()

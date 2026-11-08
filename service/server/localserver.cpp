@@ -12,6 +12,9 @@
 #include "ipc.h"
 #include "killswitch.h"
 #include "logger.h"
+#ifdef Q_OS_LINUX
+#include "desktoproutingprocess.h"
+#endif
 
 #ifdef Q_OS_WIN
     #include "tapcontroller_win.h"
@@ -52,6 +55,16 @@ LocalServer::LocalServer(QObject *parent) : QObject(parent),
     m_networkWatcher.initialize();
     connect(&m_networkWatcher, &NetworkWatcher::networkChanged, &m_ipcServer, &IpcServer::networkChanged);
     connect(&m_networkWatcher, &NetworkWatcher::wakeup, &m_ipcServer, &IpcServer::wakeup);
+#ifdef Q_OS_LINUX
+    // The service-owned tunnel must receive hints even when no GUI is attached.
+    // A GUI may forward the same signal; the native owner coalesces duplicates.
+    auto *routing = DesktopRoutingProcess::instance();
+    const auto hint = [routing] {
+        routing->networkChanged(routing->status().value("runtime_id").toString());
+    };
+    connect(&m_networkWatcher, &NetworkWatcher::networkChanged, routing, hint);
+    connect(&m_networkWatcher, &NetworkWatcher::wakeup, routing, hint);
+#endif
     KillSwitch::instance()->init();
 
 #ifdef Q_OS_LINUX

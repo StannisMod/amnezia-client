@@ -494,7 +494,11 @@ bool KillSwitch::enableKillSwitch(const QJsonObject &configStr, int vpnAdapterIn
 
 bool KillSwitch::endpointDnsAllowed(quint16 port, const QHostAddress &resolver, bool enabled)
 {
-    if (port == 0 || (resolver != QHostAddress("1.1.1.1") && resolver != QHostAddress("8.8.8.8"))) return false;
+    bool allowed = resolver == QHostAddress("1.1.1.1") || resolver == QHostAddress("8.8.8.8");
+#ifdef Q_OS_LINUX
+    allowed = allowed || resolver == QHostAddress("2606:4700:4700::1111") || resolver == QHostAddress("2001:4860:4860::8888");
+#endif
+    if (port == 0 || !allowed) return false;
 #ifdef Q_OS_LINUX
     return LinuxFirewall::setEndpointDnsAllowed(port, resolver.toString(), enabled);
 #elif defined(Q_OS_MACOS)

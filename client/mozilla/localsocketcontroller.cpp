@@ -65,6 +65,13 @@ LocalSocketController::~LocalSocketController() {
 void LocalSocketController::errorOccurred(
     QLocalSocket::LocalSocketError error) {
   logger.error() << "Error occurred:" << error;
+  if (!m_runtimeId.isEmpty()) {
+    m_daemonState = eInitializing;
+    ++m_initializingRetry;
+    m_initializingTimer.start(qMin(5000, CONNECTION_RETRY_TIMER_MSEC * int(qMin(m_initializingRetry, 10u))));
+    emit disconnected(); // Transport loss; the protocol retains its confirmed owner.
+    return;
+  }
 
   if (m_daemonState == eInitializing) {
     if (m_initializingRetry++ < MAX_CONNECTION_RETRY) {
@@ -126,10 +133,15 @@ void LocalSocketController::daemonConnected() {
 }
 
 void LocalSocketController::activate(const QJsonObject &rawConfig) {
+  m_runtimeId.clear();
+  m_preserveCapability = false;
+  m_routedActivation = rawConfig.contains("sing_box_routing");
+  m_activationStatusFloor = m_statusId;
+  m_waitingCleanupId = 0;
 #if defined(MZ_LINUX) || defined(MZ_WINDOWS)
   if (rawConfig.contains("sing_box_routing")) {
     m_deviceIpv4 = "172.19.0.1";
-    write(QJsonObject{{"type", "activate"}, {"routing_profile", rawConfig}});
+    write(QJsonObject{{"type", "activate"}, {"routing_profile", rawConfig}, {"activation_id", double(++m_activationId)}});
     return;
   }
 #endif
@@ -285,6 +297,8 @@ void LocalSocketController::deactivate() {
 
   QJsonObject json;
   json.insert("type", "deactivate");
+  if (!m_runtimeId.isEmpty()) json.insert("runtime_id", m_runtimeId);
+  m_routedActivation = false;
   write(json);
   emit disconnected();
 }
@@ -293,9 +307,17 @@ void LocalSocketController::deactivateWithAck() {
   // No synthetic completion. A disconnected socket does not prove that the
   // privileged service has restored DNS and removed its capture routes.
   m_pendingConfirmedDeactivation = true;
-  if (m_daemonState != eReady || m_socket->state() != QLocalSocket::ConnectedState) return;
+  if (m_waitingCleanupId == 0) m_waitingCleanupId = ++m_cleanupId;
+  if (m_daemonState != eReady || m_socket->state() != QLocalSocket::ConnectedState) {
+    if (m_socket->state() == QLocalSocket::UnconnectedState) checkStatus();
+    return;
+  }
+  if (!m_runtimeId.isEmpty() && !m_ownershipProtocol) return;
   m_pendingConfirmedDeactivation = false;
-  write(QJsonObject{{"type", "deactivate"}, {"request_ack", true}});
+  auto request = QJsonObject{{"type", "deactivate"}, {"request_ack", true}, {"cleanup_id", double(m_waitingCleanupId)}};
+  if (!m_runtimeId.isEmpty()) request.insert("runtime_id", m_runtimeId);
+  m_routedActivation = false;
+  write(request);
 }
 
 void LocalSocketController::cancelEndpointLookup() {
@@ -309,20 +331,41 @@ void LocalSocketController::resolveEndpoint(const QString &host, std::function<v
   cancelEndpointLookup();
   if (m_daemonState != eReady || m_socket->state() != QLocalSocket::ConnectedState) { complete({}); return; }
   m_endpointCompletion = std::move(complete);
-  write(QJsonObject{{"type", "resolve_endpoint"}, {"host", host}, {"lookup_id", double(m_endpointLookupId)},
-                    {"alternate", (m_endpointResolverAttempt++ % 2) != 0}});
+  const auto attempt = m_endpointResolverAttempt++;
+  auto request = QJsonObject{{"type", "resolve_endpoint"}, {"host", host}, {"lookup_id", double(m_endpointLookupId)},
+                            {"alternate", (attempt % 2) != 0}};
+#ifdef MZ_LINUX
+  request.insert("resolver_index", int(attempt % 4));
+#endif
+  write(request);
 }
 
 void LocalSocketController::checkStatus() {
   logger.debug() << "Check status";
+  if (m_socket->state() == QLocalSocket::UnconnectedState &&
+      (!m_runtimeId.isEmpty() || m_pendingConfirmedDeactivation)) {
+    if (m_initializingTimer.isActive()) return;
+    m_buffer.clear();
+    initializeInternal();
+    return;
+  }
+  if (m_socket->state() != QLocalSocket::ConnectedState) return;
 
   if (m_daemonState == eReady || m_daemonState == eInitializing) {
     Q_ASSERT(m_socket);
 
     QJsonObject json;
     json.insert("type", "status");
+    json.insert("status_id", double(++m_statusId));
     write(json);
   }
+}
+
+void LocalSocketController::hintRoutingNetwork(const QString &id) {
+  if (!id.isEmpty() && id == m_runtimeId && m_daemonState == eReady &&
+      m_socket->state() == QLocalSocket::ConnectedState)
+    write(QJsonObject{{"type", "routing_network_changed"}, {"runtime_id", id}});
+  checkStatus();
 }
 
 void LocalSocketController::getBackendLogs(
@@ -409,11 +452,27 @@ void LocalSocketController::parseCommand(const QByteArray& command) {
 
   logger.debug() << "Parse command:" << type;
 
+  if (type == "status") {
+    // A response queued before activate must never bind the new GUI session
+    // to the owner it explicitly replaced.
+    const auto serial = obj.value("status_id");
+    if (serial.isDouble() && serial.toDouble() != double(m_statusId)) return;
+    m_ownershipProtocol = obj.value("ownership_protocol").toInt() >= 1;
+    if (m_routedActivation && serial.isDouble() && serial.toDouble() > double(m_activationStatusFloor)) {
+      const auto id = obj.value("runtime_id").toString();
+      const bool alive = obj.value("runtime_alive").toBool();
+      const bool preserves = obj.value("preserves_connections").toBool();
+      if (m_runtimeId.isEmpty() && m_ownershipProtocol && alive && preserves && !id.isEmpty()) m_runtimeId = id;
+      if (id==m_runtimeId && alive && preserves) m_preserveCapability=true;
+      emit routingRuntimeStatus(id, alive, preserves);
+    }
+  }
+
   if (m_daemonState == eInitializing && type == "status") {
     m_daemonState = eReady;
     // A leftover tunnel may never have completed a handshake and therefore
     // have no valid connection date. Teardown must not depend on that date.
-    if (m_pendingConfirmedDeactivation) {
+    if (m_pendingConfirmedDeactivation || m_waitingCleanupId != 0) {
       deactivateWithAck();
       emit initialized(true, false, QDateTime());
       return;
@@ -450,6 +509,13 @@ void LocalSocketController::parseCommand(const QByteArray& command) {
     return;
   }
 
+  if (type == "routing_activated") {
+    if (!m_routedActivation || obj.value("activation_id").toDouble()!=double(m_activationId)) return;
+    const auto id=obj.value("runtime_id").toString();
+    if (!id.isEmpty()) {m_runtimeId=id;m_ownershipProtocol=true;}
+    return;
+  }
+
   if (type == "endpoint_resolved") {
     if (obj.value("lookup_id").toDouble() != double(m_endpointLookupId) || !m_endpointCompletion) return;
     QList<QHostAddress> addresses;
@@ -463,6 +529,12 @@ void LocalSocketController::parseCommand(const QByteArray& command) {
   }
 
   if (type == "deactivated") {
+    if (m_waitingCleanupId == 0 || (m_ownershipProtocol && obj.value("cleanup_id").toDouble() != double(m_waitingCleanupId))) return;
+    if (!m_runtimeId.isEmpty() && obj.value("runtime_id").toString() != m_runtimeId) return;
+    m_waitingCleanupId = 0;
+    m_pendingConfirmedDeactivation = false;
+    m_runtimeId.clear();
+    m_preserveCapability = false;
     emit deactivated();
     return;
   }
@@ -509,6 +581,21 @@ void LocalSocketController::parseCommand(const QByteArray& command) {
   }
 
   if (type == "connected") {
+    if (m_routedActivation && m_ownershipProtocol &&
+        (obj.value("runtime_id").toString().isEmpty() || !obj.value("runtime_alive").toBool())) return;
+    if (m_routedActivation && !m_runtimeId.isEmpty() && m_ownershipProtocol && obj.value("runtime_id").toString()!=m_runtimeId) {
+      emit routingRuntimeStatus(obj.value("runtime_id").toString(),obj.value("runtime_alive").toBool(),obj.value("preserves_connections").toBool());
+      return;
+    }
+    if (m_routedActivation && obj.value("ownership_protocol").toInt()>=1 &&
+        obj.value("runtime_alive").toBool() && obj.value("preserves_connections").toBool()) {
+      const auto id=obj.value("runtime_id").toString();
+      if (!id.isEmpty() && (m_runtimeId.isEmpty() || m_runtimeId==id)) {
+        m_runtimeId=id;
+        m_ownershipProtocol=true;
+        m_preserveCapability=true;
+      }
+    }
     QJsonValue pubkey = obj.value("pubkey");
     if (!pubkey.isString()) {
       logger.error() << "Unexpected pubkey value";

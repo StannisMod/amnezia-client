@@ -49,6 +49,9 @@ class ControllerImpl : public QObject {
   virtual void deactivateWithAck() { deactivate(); }
   virtual void resolveEndpoint(const QString &, std::function<void(QList<QHostAddress>)> complete) { complete({}); }
   virtual void cancelEndpointLookup() {}
+  virtual QString routingRuntimeId() const { return {}; }
+  virtual bool routingRecoverySupported() const { return false; }
+  virtual void hintRoutingNetwork(const QString &) { checkStatus(); }
 
   // This method is used to retrieve the VPN tunnel status (mainly the number
   // of bytes sent and received). It's called always when the VPN tunnel is
@@ -83,6 +86,7 @@ class ControllerImpl : public QObject {
   void disconnected();
   void deactivated();
   void handshakeUpdated(qint64 handshakeMs, quint64 txBytes, quint64 rxBytes);
+  void routingRuntimeStatus(const QString &id, bool alive, bool preservesConnections);
 
   // This method should be emitted after a checkStatus() call.
   // "serverIpv4Gateway" is the current VPN tunnel gateway.

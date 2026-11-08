@@ -24,7 +24,7 @@ def main():
     parser.add_argument('--report', type=Path, required=True)
     parser.add_argument('--deadline', type=int, default=420)
     args = parser.parse_args()
-    if sys.platform != 'linux' or os.geteuid() != 0 or not 30 <= args.deadline <= 600:
+    if sys.platform != 'linux' or os.geteuid() != 0 or not 30 <= args.deadline <= 1200:
         parser.error('requires root on a disposable Linux CI host and a bounded deadline')
     trigger = threading.Event()
     cancelled = threading.Event()

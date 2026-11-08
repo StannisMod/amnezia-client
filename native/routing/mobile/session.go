@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net/netip"
 	"sync"
 
+	"github.com/StannisMod/amnezia-client/native/routing/dnspolicy"
 	"github.com/StannisMod/amnezia-client/native/routing/engine"
 	"github.com/StannisMod/amnezia-client/native/routing/tunnel"
 	"github.com/sagernet/sing-box/adapter"
@@ -15,18 +17,31 @@ import (
 )
 
 type Session struct {
-	core     *engine.Runtime
-	platform *Platform
-	once     sync.Once
-	closeErr error
+	core             *engine.Runtime
+	platform         *Platform
+	once             sync.Once
+	closeErr         error
+	networkDNSConfig []byte
 }
 
-func (s *Session) Stats() (tunnel.Stats, error)           { return s.core.Stats() }
-func (s *Session) Diagnostics() engine.DiagnosticSnapshot { return s.core.Diagnostics() }
+func (s *Session) Stats() (tunnel.Stats, error)                { return s.core.Stats() }
+func (s *Session) Diagnostics() engine.DiagnosticSnapshot      { return s.core.Diagnostics() }
+func (s *Session) RefreshUnderlay(remote netip.AddrPort) error { return s.core.RefreshUnderlay(remote) }
+func (s *Session) ProbeUnderlay() error                        { return s.core.ProbeUnderlay() }
 
 // Start consumes the platform and closes it on every failed-start path. No
 // fallback to the legacy backend is allowed once a routed session is requested.
 func Start(ctx context.Context, p *Platform, raw []byte) (*Session, error) {
+	return start(ctx, p, raw, false)
+}
+
+// StartWithNetworkDNS allows the Linux owner to retire native DNS generations
+// independently of the packet tunnel. Other hosts retain their existing path.
+func StartWithNetworkDNS(ctx context.Context, p *Platform, raw []byte) (*Session, error) {
+	return start(ctx, p, raw, true)
+}
+
+func start(ctx context.Context, p *Platform, raw []byte, networkDNS bool) (*Session, error) {
 	if p == nil {
 		return nil, errors.New("missing native platform")
 	}
@@ -42,12 +57,33 @@ func Start(ctx context.Context, p *Platform, raw []byte) (*Session, error) {
 	}
 	ctx = engine.Context(ctx, p.Underlay())
 	ctx = service.ContextWith[adapter.PlatformInterface](ctx, p)
-	instance, err := engine.StartRuntime(ctx, compiled, cachePath)
+	startRuntime := engine.StartRuntime
+	if networkDNS {
+		startRuntime = engine.StartRuntimeWithNetworkDNS
+	}
+	instance, err := startRuntime(ctx, compiled, cachePath)
 	if err != nil {
 		return nil, err
 	}
 	ok = true
-	return &Session{core: instance, platform: p}, nil
+	s := &Session{core: instance, platform: p}
+	if networkDNS {
+		s.networkDNSConfig = append([]byte(nil), raw...)
+	}
+	return s, nil
+}
+
+func (s *Session) SuspendNetworkDNS() { s.core.SuspendNetworkDNS() }
+func (s *Session) ReloadNetworkDNS(snapshot dnspolicy.NetworkSnapshot) error {
+	// Retire before validating/preparing: an unavailable inventory must never
+	// revive the previous network's cached answers or interface-bound sockets.
+	return s.core.UpdateNetworkDNS(func() ([]byte, error) {
+		if s.networkDNSConfig == nil {
+			return nil, errors.New("native DNS reload unavailable")
+		}
+		compiled, _, err := compileSessionSnapshot(s.networkDNSConfig, &snapshot)
+		return compiled, err
+	})
 }
 func (s *Session) Close() error {
 	s.once.Do(func() {
@@ -65,6 +101,9 @@ func (s *Session) Close() error {
 func Validate(raw []byte) error { _, _, err := compileSession(raw); return err }
 
 func compileSession(raw []byte) ([]byte, string, error) {
+	return compileSessionSnapshot(raw, nil)
+}
+func compileSessionSnapshot(raw []byte, snapshot *dnspolicy.NetworkSnapshot) ([]byte, string, error) {
 	if len(raw) > 4<<20 {
 		return nil, "", errors.New("routing configuration exceeds size limit")
 	}
@@ -81,6 +120,9 @@ func compileSession(raw []byte) ([]byte, string, error) {
 		return nil, "", errors.New("invalid trailing routing configuration")
 	}
 	if config.DNS != nil && config.DNS.NeedsNetwork() {
+		if snapshot != nil {
+			config.NetworkDNS = snapshot
+		}
 		if config.NetworkDNS == nil {
 			return nil, "", errors.New("native network DNS snapshot is required")
 		}

@@ -7,6 +7,7 @@ import (
 	"net/netip"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/amnezia-vpn/amneziawg-go/v3/conn"
 )
@@ -16,11 +17,14 @@ import (
 type ListenUnderlay func(context.Context, string, string) (net.PacketConn, error)
 
 type packetBind struct {
-	mu       sync.Mutex
-	ctx      context.Context
-	listen   ListenUnderlay
-	endpoint netip.AddrPort
-	pc       net.PacketConn
+	mu          sync.Mutex
+	sendGate    chan struct{}
+	ctx         context.Context
+	listen      ListenUnderlay
+	endpoint    netip.AddrPort
+	pc          net.PacketConn
+	listenPort  uint16
+	lastNetwork string
 }
 
 var _ conn.Bind = (*packetBind)(nil)
@@ -31,9 +35,20 @@ func (b *packetBind) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
 	if b.pc != nil {
 		return nil, 0, conn.ErrBindAlreadyOpen
 	}
+	if b.sendGate == nil {
+		b.sendGate = make(chan struct{}, 1)
+	}
+	remote := b.endpoint
 	network, address := "udp4", "0.0.0.0"
-	if b.endpoint.Addr().Is6() {
+	if remote.Addr().Is6() {
 		network, address = "udp6", "::"
+	}
+	if b.listenPort != 0 {
+		port = b.listenPort
+	} else if b.lastNetwork != "" && b.lastNetwork != network {
+		// An automatic IPv4 port has no existing NAT binding to preserve on
+		// IPv6 (or vice versa), and may belong to another local socket there.
+		port = 0
 	}
 	pc, err := b.listen(b.ctx, network, net.JoinHostPort(address, strconv.Itoa(int(port))))
 	if err != nil {
@@ -45,6 +60,7 @@ func (b *packetBind) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
 		return nil, 0, errors.New("underlay returned an invalid UDP local address")
 	}
 	b.pc = pc
+	b.lastNetwork = network
 	// Capture this generation, so reopening never makes an old reader consume
 	// datagrams from the new socket.
 	receive := func(packets [][]byte, sizes []int, eps []conn.Endpoint) (int, error) {
@@ -58,7 +74,7 @@ func (b *packetBind) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
 				continue
 			}
 			addr = netip.AddrPortFrom(addr.Addr().Unmap(), addr.Port())
-			if addr != b.endpoint {
+			if addr != remote {
 				continue
 			}
 			sizes[0] = n
@@ -87,23 +103,60 @@ func (b *packetBind) SetMark(mark uint32) error {
 	return nil
 }
 func (b *packetBind) BatchSize() int { return 1 }
-func (b *packetBind) Send(bufs [][]byte, ep conn.Endpoint) error {
+func (b *packetBind) Send(bufs [][]byte, _ conn.Endpoint) error {
+	b.mu.Lock()
+	gate := b.sendGate
+	b.mu.Unlock()
+	if gate == nil {
+		return net.ErrClosed
+	}
+	select {
+	case gate <- struct{}{}:
+	default:
+		// Other senders also hold the device's network read lock. Do not
+		// accumulate an unbounded queue ahead of a pending BindClose.
+		timer := time.NewTimer(100 * time.Millisecond)
+		defer timer.Stop()
+		select {
+		case gate <- struct{}{}:
+		case <-timer.C:
+			return errors.New("VPN UDP sender busy")
+		}
+	}
+	defer func() { <-gate }()
 	b.mu.Lock()
 	pc := b.pc
+	remote := b.endpoint
 	b.mu.Unlock()
 	if pc == nil {
 		return net.ErrClosed
 	}
-	if ep.DstToString() != b.endpoint.String() {
-		return conn.ErrWrongEndpointType
+	// The device holds its network read lock during Send. An indefinitely
+	// blocked UDP write would stop BindClose from acquiring the write lock and
+	// make recovery/user disconnect hang. UDP loss is recoverable; deleting the
+	// inner TCP stack to break that lock is not. Bound each batch, without
+	// changing TCP timers, and serialize deadlines shared by this socket.
+	if err := pc.SetWriteDeadline(time.Now().Add(time.Second)); err != nil {
+		return err
 	}
+	defer pc.SetWriteDeadline(time.Time{})
+	// This bind belongs to exactly one configured peer. The control-plane
+	// target stays authoritative even if an authenticated packet queued before
+	// a refresh makes the device remember the retired endpoint afterward.
 	for _, p := range bufs {
-		if _, err := pc.WriteTo(p, net.UDPAddrFromAddrPort(b.endpoint)); err != nil {
+		if _, err := pc.WriteTo(p, net.UDPAddrFromAddrPort(remote)); err != nil {
 			return err
 		}
 	}
 	return nil
 }
+
+func (b *packetBind) setEndpoint(remote netip.AddrPort) {
+	b.mu.Lock()
+	b.endpoint = remote
+	b.mu.Unlock()
+}
+
 func (b *packetBind) ParseEndpoint(s string) (conn.Endpoint, error) {
 	a, e := netip.ParseAddrPort(s)
 	return endpoint(a), e

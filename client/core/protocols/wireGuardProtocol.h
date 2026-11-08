@@ -18,12 +18,15 @@ class WireguardProtocol : public VpnProtocol
     Q_OBJECT
 
 public:
-    explicit WireguardProtocol(const QJsonObject& configuration, QObject* parent = nullptr);
+    explicit WireguardProtocol(const QJsonObject& configuration, QObject* parent = nullptr, ControllerImpl *controller = nullptr);
     virtual ~WireguardProtocol() override;
 
     ErrorCode start() override;
     void stop() override;
     void reconnect();
+    bool preservesConnectionState() const;
+    bool runtimeWasReplaced() const { return m_runtimeReplaced; }
+    bool usesRoutedBackend() const;
 
     ErrorCode startMzImpl();
     ErrorCode stopMzImpl();
@@ -35,6 +38,10 @@ private:
     QTimer m_peerPoll;
     QElapsedTimer m_peerClock;
     bool m_domainEndpoint = false;
+    bool m_backendEstablished = false;
+    bool m_runtimeReplaced = false;
+    QString m_preservedRuntimeId;
+    bool usesEndpointSession() const;
     void setupEndpointSession();
 };
 

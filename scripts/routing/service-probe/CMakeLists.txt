@@ -19,3 +19,7 @@ target_include_directories(routing-endpoint-probe PRIVATE
 target_compile_definitions(routing-endpoint-probe PRIVATE
     $<$<PLATFORM_ID:Linux>:MZ_LINUX> $<$<PLATFORM_ID:Windows>:MZ_WINDOWS>)
 target_link_libraries(routing-endpoint-probe PRIVATE Qt6::Core Qt6::Network)
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_subdirectory(wireguard)
+endif()
