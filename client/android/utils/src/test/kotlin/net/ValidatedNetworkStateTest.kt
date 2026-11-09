@@ -37,4 +37,14 @@ class ValidatedNetworkStateTest {
         state.reset()
         assertFalse(state.update("new-wifi", true))
     }
+    @Test fun retainedTunnelCanProbeReplacementWithoutPublicInternetValidation() {
+        val state = ValidatedNetworkState<String>()
+        assertFalse(state.available("wifi", true))
+        state.update("wifi", true)
+        assertFalse(state.available("mobile", false))
+        assertTrue(state.available("mobile", true))
+        state.lost("wifi")
+        assertTrue(state.available("wifi", true))
+    }
+
 }

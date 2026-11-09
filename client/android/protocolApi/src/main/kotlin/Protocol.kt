@@ -42,6 +42,7 @@ abstract class Protocol {
         underlayIdentity = identity
         underlayProtect = protect
     }
+    open fun connectionDiagnostics(): JSONObject? = null
     open val preservesConnections: Boolean get() = false
     open fun refreshVpn(vpnBuilder: Builder, protect: (Int) -> Boolean, force: Boolean) = reconnectVpn(vpnBuilder, protect)
 

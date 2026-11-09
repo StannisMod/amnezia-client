@@ -10,7 +10,7 @@ object AwgCorePolicy {
         if (result.optString("protocol") !in setOf("awg", "wireguard")) return result
         // Explicit diagnostic override, never an automatic failed-start fallback.
         if (result.optBoolean("android_legacy_awg_backend", false)) {
-            require(!result.has("sing_box_routing")) { "Legacy AWG cannot enforce domain routing" }
+            require(!result.has("sing_box_routing") && !result.has("sing_box_dns")) { "Legacy AWG cannot enforce shared routing or DNS policies" }
             return result
         }
         if (!result.has("sing_box_routing")) {
@@ -37,6 +37,11 @@ object AwgCorePolicy {
                     .put("value", prefix.toString()).put("action", "vpn"))
                 // A profile that never enabled IPv6 must not gain an implicit
                 // native IPv6 bypass just because FakeIP capture has a ULA.
+                val clientAddresses = data.optString("client_ip").split(',').mapNotNull {
+                    it.trim().takeIf { value -> value.isNotBlank() }?.let { value -> InetNetwork.parse(value) }
+                }
+                if (prefixes.none { it.isIpv4 } && clientAddresses.none { it.isIpv4 })
+                    rules.put(JSONObject().put("kind", "cidr").put("value", "0.0.0.0/0").put("action", "block"))
                 if (prefixes.none { it.isIpv6 } && !data.optString("client_ip").contains(':'))
                     rules.put(JSONObject().put("kind", "cidr").put("value", "::/0").put("action", "block"))
             }
@@ -86,14 +91,11 @@ object AwgCorePolicy {
         return result
     }
 
-    fun allTrafficUsesVpn(config: JSONObject): Boolean {
-        val route = config.optJSONObject("sing_box_routing") ?: return false
-        if (route.optString("default") != "vpn") return false
-        val rules = route.optJSONArray("rules") ?: JSONArray()
-        return (0 until rules.length()).none {
-            val row = rules.getJSONObject(it)
-            !row.optBoolean("disabled") && row.optString("action") == "direct"
-        }
+    fun transportAdapter(protocol: String, extensionParameters: Boolean): String {
+        require(protocol in setOf("awg", "wireguard"))
+        // Imported WireGuard extension profiles used the same AWG device in
+        // the original Android backend; keep that wire format and its options.
+        return if (protocol == "awg" || extensionParameters) "awg" else "wireguard"
     }
 
     /** No application DIRECT or physical DNS socket may bypass Android lockdown. */

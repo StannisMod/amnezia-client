@@ -69,6 +69,13 @@ open class Wireguard : Protocol() {
     private var routedStatusJob: Job? = null
     private var routedRecoveryJob: Job? = null
     private val recoveryState = UnderlayRecoveryState()
+    override fun connectionDiagnostics(): JSONObject {
+        val shared = routedHandle
+        val legacy = tunnelHandle
+        return JSONObject().put("backend", if (shared > 0) "shared" else if (legacy >= 0) "legacy" else "stopped")
+            .put("session_id", if (shared > 0) shared else legacy.toLong())
+            .put("preserves_connections", shared > 0)
+    }
     override val preservesConnections: Boolean get() = routedHandle > 0
     private val routedScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -94,10 +101,10 @@ open class Wireguard : Protocol() {
             val key = line.substringBefore('=')
             if (line.contains('=') && key !in excluded) parameters.put(key, line.substringAfter('='))
         }
+        val adapterType = AwgCorePolicy.transportAdapter(transportType, parameters.length() != 0 || wg.persistentKeepalive?.contains('-') == true)
         val session = JSONObject().apply {
             put("cache_path", java.io.File(context.filesDir, "routing-fakeip-v1.db").absolutePath)
             put("rules", config.getJSONObject("sing_box_routing"))
-            put("disable_ipv6", AwgCorePolicy.allTrafficUsesVpn(config) && wg.addresses.none { it.isIpv6 })
             if (splitDNS != null) {
                 put("dns", splitDNS)
                 if (splitDNS.optBoolean("preserve_network_domains") || splitDNS.getJSONObject("policies").keys().asSequence().any {
@@ -113,8 +120,8 @@ open class Wireguard : Protocol() {
                 put("resolver_action", if (resolver.isLoopbackAddress) "direct" else config.optString("sing_box_dns_path", "vpn"))
             }
             put("vpn", JSONObject().apply {
-                put("type", transportType)
-                put(transportType, JSONObject().apply {
+                put("type", adapterType)
+                put(adapterType, JSONObject().apply {
                     put("address", JSONArray(wg.addresses.map { it.address.hostAddress!!.substringBefore('%') }))
                     put("private_key", data.getString("client_priv_key"))
                     put("public_key", data.getString("server_pub_key"))
@@ -123,11 +130,10 @@ open class Wireguard : Protocol() {
                     put("allowed_ips", allowed)
                     put("mtu", wg.mtu)
                     // Preserve AWG 3.1 ranges; the shared native validator checks them.
-                    if (transportType == "awg") {
+                    if (adapterType == "awg") {
                         put("keepalive", wg.persistentKeepalive ?: "0")
                         put("parameters", parameters)
                     } else {
-                        if (parameters.length() != 0) throw VpnStartException("Obfuscated WireGuard requires the AWG adapter")
                         val keepalive = (wg.persistentKeepalive ?: "0").toIntOrNull()
                         if (keepalive == null || keepalive !in 0..65535) throw VpnStartException("Invalid WireGuard keepalive")
                         put("keepalive", keepalive)
@@ -213,7 +219,7 @@ open class Wireguard : Protocol() {
         if (handle > 0) RoutingBackend.stop(handle)
     }
 
-    private var tunnelHandle: Int = -1
+    @Volatile private var tunnelHandle: Int = -1
     private var config: WireguardConfig? = null // save config for reconnect
     protected open val ifName: String = "amn0"
     private lateinit var scope: CoroutineScope
@@ -484,8 +490,14 @@ open class Wireguard : Protocol() {
                         synchronized(endpointLock) { generation == endpointHealthGeneration && originalProfile != null }
                     }
                     EndpointHealthPolicy.Action.EXHAUSTED -> {
-                        if (synchronized(endpointLock) { generation == endpointHealthGeneration })
-                            onError("VPN endpoint recovery exhausted; check the server and reconnect")
+                        if (synchronized(endpointLock) { generation == endpointHealthGeneration }) {
+                            if (routedHandle > 0) {
+                                // The retained recovery worker already retries
+                                // with bounded backoff. An offline network is
+                                // not a fatal error or a request to destroy TCP.
+                                Log.w(TAG, "AWG peer unavailable; retaining TCP while waiting for network")
+                            } else onError("VPN endpoint recovery exhausted; check the server and reconnect")
+                        }
                         return@launch
                     }
                 }

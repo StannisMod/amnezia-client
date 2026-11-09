@@ -64,6 +64,7 @@ const val ACTION_DISCONNECT = "org.amnezia.vpn.action.disconnect"
 const val ACTION_CONNECT = "org.amnezia.vpn.action.connect"
 
 const val MSG_VPN_CONFIG = "VPN_CONFIG"
+const val MSG_CONNECTION_DIAGNOSTICS = "CONNECTION_DIAGNOSTICS"
 const val MSG_ERROR = "ERROR"
 const val MSG_SAVE_LOGS = "SAVE_LOGS"
 const val MSG_CLIENT_NAME = "CLIENT_NAME"
@@ -168,6 +169,7 @@ open class AmneziaVpnService : VpnService() {
                             clientMessenger.send {
                                 ServiceEvent.STATUS.packToMessage {
                                     putStatus(this@AmneziaVpnService.protocolState.value)
+                                    vpnProto?.existingProtocol?.connectionDiagnostics()?.let { putString(MSG_CONNECTION_DIAGNOSTICS, it.toString()) }
                                 }
                             }
                         }
@@ -211,7 +213,7 @@ open class AmneziaVpnService : VpnService() {
         connectionScope = CoroutineScope(SupervisorJob() + Dispatchers.IO + connectionExceptionHandler)
         loadServerData()
         launchProtocolStateHandler()
-        networkState = NetworkState(this) { reconnect() }
+        networkState = NetworkState(this, { reconnect() }, { vpnProto?.existingProtocol?.preservesConnections == true })
         trafficStats = TrafficStats()
         registerBroadcastReceivers()
     }
@@ -599,11 +601,11 @@ open class AmneziaVpnService : VpnService() {
 
     @MainThread
     private fun reconnect(endpointRecovery: Boolean = false) {
-        if (!isConnected && !((endpointRecovery || vpnProto?.protocol?.preservesConnections == true) && (protocolState.value == CONNECTING || protocolState.value == RECONNECTING))) return
+        if (!isConnected && !((endpointRecovery || vpnProto?.existingProtocol?.preservesConnections == true) && (protocolState.value == CONNECTING || protocolState.value == RECONNECTING))) return
 
         Log.d(TAG, "Reconnect VPN")
 
-        if (vpnProto?.protocol?.preservesConnections == true) {
+        if (vpnProto?.existingProtocol?.preservesConnections == true) {
             vpnProto?.protocol?.refreshVpn(Builder(), ::protect, endpointRecovery)
             return
         }

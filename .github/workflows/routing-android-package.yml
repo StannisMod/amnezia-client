@@ -1,6 +1,6 @@
 # Independent emulator-host APK lane using the same deploy entry point and pins
 # as the full matrix. Its result is not the four-platform build gate.
-name: Routed Android emulator client package
+name: Android shared-core client packages
 on:
   push:
     branches: [dev, feature/sing-box-routing, feature/android-primary-awg-core]
@@ -8,6 +8,10 @@ on:
       - client/android/**
       - client/platforms/android/**
       - native/routing/**
+      - '!native/routing/cmd/android-fixture/**'
+      - '!native/routing/cmd/traffic-probe/**'
+      - '!native/routing/internal/fixturequic/**'
+      - '!native/routing/**/*_test.go'
       - scripts/routing/build_android_native.sh
       - scripts/routing/verify_android_payload.py
       - .github/workflows/routing-android-package.yml

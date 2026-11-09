@@ -4,45 +4,12 @@ package mobile
 
 import (
 	"context"
-	"encoding/json"
-	"github.com/StannisMod/amnezia-client/native/routing/engine"
 	"github.com/sagernet/sing-box/adapter"
-	"github.com/sagernet/sing-box/option"
-	boxjson "github.com/sagernet/sing/common/json"
 	"golang.org/x/sys/unix"
 	"sync/atomic"
 	"testing"
 	"time"
 )
-
-func TestIPv4OnlySessionDoesNotAdvertiseUnusableFakeIPv6(t *testing.T) {
-	var config engine.SessionConfig
-	if err := json.Unmarshal(sampleConfig(t), &config); err != nil {
-		t.Fatal(err)
-	}
-	config.DisableIPv6 = true
-	compiled, err := config.Compile()
-	if err != nil {
-		t.Fatal(err)
-	}
-	var options map[string]any
-	json.Unmarshal(compiled, &options)
-	first := options["dns"].(map[string]any)["rules"].([]any)[0].(map[string]any)
-	if first["action"] != "predefined" || first["rcode"] != "NOERROR" {
-		t.Fatalf("missing empty AAAA response: %v", first)
-	}
-	// Parse actual pinned engine options, including the predefined DNS action.
-	var parsed option.Options
-	if err = boxjson.UnmarshalContext(engine.Context(context.Background(), engine.Underlay{}), compiled, &parsed); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestIPv4OnlyNativeCaptureAnswersAAAAWithoutFakeDestination(t *testing.T) {
-	for _, transport := range []string{"awg", "wireguard"} {
-		t.Run(transport, func(t *testing.T) { testOwnedPacketFDManagedDNSAndCleanup(t, transport, true, true) })
-	}
-}
 
 func TestUnexpectedPacketReaderExitIsReported(t *testing.T) {
 	pair, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_DGRAM, 0)

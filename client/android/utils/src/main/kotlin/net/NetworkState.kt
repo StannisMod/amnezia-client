@@ -26,7 +26,8 @@ private const val TAG = "NetworkState"
 
 class NetworkState(
     private val context: Context,
-    private val onNetworkChange: () -> Unit
+    private val onNetworkChange: () -> Unit,
+    private val canRetainConnections: () -> Boolean = { false }
 ) {
     private val lostNetworks = ConcurrentHashMap.newKeySet<Network>()
     private val state = ValidatedNetworkState<Network>()
@@ -156,12 +157,16 @@ class NetworkState(
         object : NetworkCallback() {
             override fun onAvailable(network: Network) {
                 lostNetworks.remove(network)
+                if (canRetainConnections()) preferredDnsNetwork = network
                 Log.v(TAG, "onAvailable: $network")
+                if (state.available(network, canRetainConnections())) onNetworkChange()
             }
 
             override fun onCapabilitiesChanged(network: Network, networkCapabilities: NetworkCapabilities) {
                 Log.v(TAG, "onCapabilitiesChanged: $network, $networkCapabilities")
-                if (networkCapabilities.hasCapability(NET_CAPABILITY_VALIDATED)) preferredDnsNetwork = network
+                val changed = preferredDnsNetwork != network
+                if (canRetainConnections() || networkCapabilities.hasCapability(NET_CAPABILITY_VALIDATED)) preferredDnsNetwork = network
+                if (changed && canRetainConnections()) onNetworkChange()
                 checkNetworkState(network, networkCapabilities)
             }
 
@@ -176,12 +181,14 @@ class NetworkState(
             }
 
             override fun onLinkPropertiesChanged(network: Network, linkProperties: LinkProperties) {
+                if (!canRetainConnections() && dnsFingerprints[network] == null) return
                 val current = dnsFingerprint(linkProperties)
                 val previous = dnsFingerprints.put(network, current)
                 val path = pathFingerprint(linkProperties)
                 val oldPath = pathFingerprints.put(network, path)
                 if (network == preferredDnsNetwork &&
-                    ((previous != null && current != previous) || (oldPath != null && oldPath != path))) onNetworkChange()
+                    ((previous != null && current != previous) ||
+                        (canRetainConnections() && (oldPath == null || oldPath != path)))) onNetworkChange()
             }
 
             override fun onLost(network: Network) {
@@ -191,7 +198,10 @@ class NetworkState(
                 dnsNetworks.entries.removeAll { it.value == network }
                 dnsFingerprints.remove(network)
                 pathFingerprints.remove(network)
-                if (preferredDnsNetwork == network) { preferredDnsNetwork = null; onNetworkChange() }
+                if (preferredDnsNetwork == network) {
+                    preferredDnsNetwork = null
+                    if (canRetainConnections()) onNetworkChange()
+                }
             }
         }
     }

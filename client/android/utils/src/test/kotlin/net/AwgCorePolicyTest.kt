@@ -63,4 +63,19 @@ class AwgCorePolicyTest {
         assertEquals("direct", nativeDns.getString("path"));assertEquals("192.0.2.53", nativeDns.getString("server"))
     }
 
+    @Test fun wireguardExtensionsRetainTheirOriginalDeviceFormat() {
+        assertEquals("wireguard", AwgCorePolicy.transportAdapter("wireguard", false))
+        assertEquals("awg", AwgCorePolicy.transportAdapter("wireguard", true))
+        assertEquals("awg", AwgCorePolicy.transportAdapter("awg", false))
+    }
+
+    @Test fun ipv6OnlyProfileDoesNotGainImplicitNativeIpv4Bypass() {
+        val input = profile().put("dns1", "fd77::53")
+        input.getJSONObject("awg_config_data").put("client_ip", "fd77::1/128")
+            .put("allowed_ips", JSONArray().put("::/0"))
+        val result = AwgCorePolicy.prepare(input)
+        val rules = result.getJSONObject("sing_box_routing").getJSONArray("rules")
+        assertTrue((0 until rules.length()).any { rules.getJSONObject(it).optString("value") == "0.0.0.0/0" && rules.getJSONObject(it).optString("action") == "block" })
+    }
+
 }
