@@ -12,6 +12,7 @@ import org.amnezia.vpn.util.net.EndpointHealthPolicy
 import org.amnezia.vpn.util.net.AwgCorePolicy
 import org.amnezia.vpn.util.net.UnderlayRecoveryState
 import android.os.SystemClock
+import android.os.Build
 import kotlinx.coroutines.SupervisorJob
 import org.amnezia.awg.RoutingBackend
 import org.amnezia.awg.RoutingHost
@@ -80,8 +81,8 @@ open class Wireguard : Protocol() {
     private val routedScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private fun startRouted(config: JSONObject, vpnBuilder: Builder, protect: (Int) -> Boolean) {
-        if (lockdownEnabled() && !AwgCorePolicy.lockdownSafe(config)) {
-            throw VpnStartException("DIRECT routing or network DNS is unavailable while Android VPN lockdown is enabled")
+        if (!AwgCorePolicy.platformSafe(Build.VERSION.SDK_INT, lockdownEnabled(), config)) {
+            throw VpnStartException(if (Build.VERSION.SDK_INT < 29) "DIRECT routing requires Android 10 or newer" else "DIRECT routing or network DNS is unavailable while Android VPN lockdown is enabled")
         }
         // Use the existing profile parser, including every AWG 3.1 parameter,
         // but never materialize the legacy site's cached IP exclusions.
@@ -181,7 +182,7 @@ open class Wireguard : Protocol() {
                 // Lockdown may be enabled while a routed tunnel is active.
                 // Stop rather than allowing protected DIRECT proxy sockets to
                 // circumvent the user's OS policy. The OS keeps traffic blocked.
-                if (lockdownEnabled() && !AwgCorePolicy.lockdownSafe(config)) {
+                if (!AwgCorePolicy.platformSafe(Build.VERSION.SDK_INT, lockdownEnabled(), config)) {
                     synchronized(endpointLock) { stopVpn() }
                     state.value = DISCONNECTED
                     onError("Experimental domain routing stopped because Android VPN lockdown is enabled")

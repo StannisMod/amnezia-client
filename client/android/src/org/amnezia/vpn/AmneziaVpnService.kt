@@ -533,14 +533,15 @@ open class AmneziaVpnService : VpnService() {
         }
 
         if (config.has("sing_box_routing") &&
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && isLockdownEnabled &&
-            !org.amnezia.vpn.util.net.AwgCorePolicy.lockdownSafe(config)
+            !org.amnezia.vpn.util.net.AwgCorePolicy.platformSafe(Build.VERSION.SDK_INT,
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && isLockdownEnabled, config)
         ) {
             // Policy rejection must precede prepare()/the permission activity.
             // Repeated rejected starts may already be DISCONNECTED, so notify
             // clients explicitly instead of relying on a StateFlow transition.
             protocolState.value = DISCONNECTED
-            onError("Experimental domain routing is unavailable while Android VPN lockdown is enabled")
+            onError(if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) "DIRECT routing requires Android 10 or newer; use an all-VPN policy on Android 9"
+                    else "DIRECT routing or network DNS is unavailable while Android VPN lockdown is enabled")
             clientMessengers.send {
                 ServiceEvent.STATUS.packToMessage { putStatus(DISCONNECTED) }
             }

@@ -36,6 +36,7 @@ class AwgCorePolicyTest {
             assertEquals("cidr", rule.getString("kind"));assertEquals("192.0.2.5/32", rule.getString("value"))
             assertEquals(if (mode == 1) "vpn" else "direct", rule.getString("action"))
             assertFalse(AwgCorePolicy.lockdownSafe(result))
+            assertEquals("vpn", result.getJSONObject("sing_box_dns").getJSONObject("policies").getJSONObject("vpn").getString("path"))
         }
     }
     @Test fun lockdownRejectsDirectTrafficAndPhysicalDnsButAllowsVpnAndBlock() {
@@ -57,6 +58,7 @@ class AwgCorePolicyTest {
         input.getJSONObject("awg_config_data").put("allowed_ips", JSONArray().put("10.0.0.0/8"))
         val result = AwgCorePolicy.prepare(input)
         assertEquals("direct", result.getJSONObject("sing_box_routing").getString("default"))
+        assertEquals(2, result.getJSONObject("sing_box_routing").getInt("version"))
         assertEquals("vpn", result.getJSONObject("sing_box_dns").getJSONObject("policies").getJSONObject("profile").getString("path"))
         input.put("dns1", "192.0.2.53")
         val nativeDns = AwgCorePolicy.prepare(input).getJSONObject("sing_box_dns").getJSONObject("policies").getJSONObject("profile")
@@ -76,6 +78,16 @@ class AwgCorePolicyTest {
         val result = AwgCorePolicy.prepare(input)
         val rules = result.getJSONObject("sing_box_routing").getJSONArray("rules")
         assertTrue((0 until rules.length()).any { rules.getJSONObject(it).optString("value") == "0.0.0.0/0" && rules.getJSONObject(it).optString("action") == "block" })
+    }
+
+    @Test fun unavailableAndroid9LockdownQueryCannotEnableProtectedDirectBypass() {
+        val safe = AwgCorePolicy.prepare(profile())
+        assertTrue(AwgCorePolicy.platformSafe(28, false, safe))
+        assertTrue(AwgCorePolicy.platformSafe(35, true, safe))
+        safe.getJSONObject("sing_box_routing").put("default", "direct")
+        assertFalse(AwgCorePolicy.platformSafe(28, false, safe))
+        assertFalse(AwgCorePolicy.platformSafe(35, true, safe))
+        assertTrue(AwgCorePolicy.platformSafe(35, false, safe))
     }
 
 }

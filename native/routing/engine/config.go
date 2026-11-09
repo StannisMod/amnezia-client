@@ -49,11 +49,22 @@ func (c RoutingConfig) compile(vpn map[string]any) ([]byte, error) {
 		return nil, e
 	}
 	preRules := append([]any{map[string]any{"inbound": []string{TUNTag}, "port": 53, "action": "hijack-dns"}}, scopeRules...)
-	// FakeIP and explicit domain identities remain authoritative. Sniff only
-	// IP-literal flows (e.g. browser DoH), without rewriting their destination.
-	preRules = append(preRules, map[string]any{"type": "logical", "mode": "and", "rules": []any{
-		map[string]any{"inbound": []string{TUNTag}}, map[string]any{"domain_regex": []string{".+"}, "invert": true}},
-		"action": "sniff", "sniffer": []string{"http", "tls", "quic"}, "timeout": "300ms"})
+	// Optional domain policies need visible Host/SNI for IP-literal flows.
+	// Ordinary all-VPN/application-only sessions must not pay the inspection
+	// delay (notably for server-first protocols) when no name rule can use it.
+	needsNames := false
+	for _, rule := range c.Rules.Rules {
+		if !rule.Disabled && (rule.Kind == rules.Domain || rule.Kind == rules.Suffix) {
+			needsNames = true
+			break
+		}
+	}
+	if needsNames {
+		preRules = append(preRules, map[string]any{"type": "logical", "mode": "and", "rules": []any{
+			map[string]any{"inbound": []string{TUNTag}}, map[string]any{"domain_regex": []string{".+"}, "invert": true}},
+			"action": "sniff", "sniffer": []string{"http", "tls", "quic"}, "timeout": "300ms"})
+	}
+
 	route["rules"] = append(preRules, userRules...)
 	config := map[string]any{
 		"log":       map[string]any{"disabled": true},

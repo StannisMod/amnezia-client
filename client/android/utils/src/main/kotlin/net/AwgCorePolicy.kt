@@ -45,7 +45,7 @@ object AwgCorePolicy {
                 if (prefixes.none { it.isIpv6 } && !data.optString("client_ip").contains(':'))
                     rules.put(JSONObject().put("kind", "cidr").put("value", "::/0").put("action", "block"))
             }
-            result.put("sing_box_routing", JSONObject().put("version", 1)
+            result.put("sing_box_routing", JSONObject().put("version", 2)
                 .put("default", if (restricted || mode == 1 && rules.length() > 0) "direct" else "vpn")
                 .put("rules", rules))
             if (restricted && !result.has("sing_box_dns")) {
@@ -69,24 +69,15 @@ object AwgCorePolicy {
         if (!result.has("sing_box_dns")) {
             val server = result.optString("dns1").ifBlank { result.optString("dns2") }
             require(server.isNotBlank()) { "VPN DNS resolver is missing" }
-            val routing = result.getJSONObject("sing_box_routing")
-            var direct = routing.optString("default") == "direct"
-            val rules = routing.optJSONArray("rules") ?: JSONArray()
-            for (index in 0 until rules.length()) {
-                val row = rules.getJSONObject(index)
-                if (!row.optBoolean("disabled") && row.optString("action") == "direct" &&
-                    row.optString("kind") in setOf("domain", "suffix") &&
-                    row.optString("ports").isBlank() && row.optString("network").isBlank()) direct = true
-            }
+            // Existing raw routing profiles without a DNS policy used the
+            // selected profile resolver through VPN. The C++ site-rule editor
+            // supplies its explicit follow-routing DNS policy separately.
+            val path = if (parseInetAddress(server).isLoopbackAddress) "direct"
+                else result.optString("sing_box_dns_path", "vpn")
             val policies = JSONObject().put("vpn", JSONObject().put("transport", "udp")
-                .put("server", server).put("path", "vpn"))
-            val dns = JSONObject().put("version", 1).put("default", "vpn")
-                .put("follow_routing", direct).put("policies", policies).put("rules", JSONArray())
-            if (direct) {
-                policies.put("direct", JSONObject().put("source", "network").put("path", "direct").put("transport", "udp"))
-                dns.put("direct", "direct").put("vpn", "vpn")
-            }
-            result.put("sing_box_dns", dns)
+                .put("server", server).put("path", path))
+            result.put("sing_box_dns", JSONObject().put("version", 1).put("default", "vpn")
+                .put("follow_routing", false).put("policies", policies).put("rules", JSONArray()))
         }
         return result
     }
@@ -97,6 +88,11 @@ object AwgCorePolicy {
         // the original Android backend; keep that wire format and its options.
         return if (protocol == "awg" || extensionParameters) "awg" else "wireguard"
     }
+
+    // API 28 cannot query VPN lockdown. Only policies with no protected
+    // application DIRECT/network-DNS path can be enabled safely there.
+    fun platformSafe(sdk: Int, lockdown: Boolean, config: JSONObject): Boolean =
+        if (sdk < 29 || lockdown) lockdownSafe(config) else true
 
     /** No application DIRECT or physical DNS socket may bypass Android lockdown. */
     fun lockdownSafe(config: JSONObject): Boolean {
