@@ -2,8 +2,11 @@ name: Android routed VPN acceptance
 
 on:
   push:
-    branches: [dev, feature/sing-box-routing]
+    branches: [dev, feature/sing-box-routing, feature/android-primary-awg-core]
     paths:
+      - client/android/**
+      - native/routing/androidbridge/**
+      - scripts/routing/android/**
       - .github/workflows/routing-android-acceptance.yml
       - recipes/libagw/**
       - scripts/routing/android/**

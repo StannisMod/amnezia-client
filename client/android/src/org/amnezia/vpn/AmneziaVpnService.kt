@@ -391,6 +391,7 @@ open class AmneziaVpnService : VpnService() {
                 VpnStateStore.store { VpnState(protocolState, serverName, serverIndex, vpnProto) }
 
                 when (protocolState) {
+                    CONNECTING -> { networkState.bindNetworkListener() }
                     CONNECTED -> {
                         networkState.bindNetworkListener()
                         // if (isActivityConnected) launchSendingStatistics()
@@ -508,7 +509,12 @@ open class AmneziaVpnService : VpnService() {
 
         Log.d(TAG, "Start VPN connection")
 
-        val config = parseConfigToJson(vpnConfig)
+        val config = try {
+            parseConfigToJson(vpnConfig)?.let { org.amnezia.vpn.util.net.AwgCorePolicy.prepare(it) }
+        } catch (_: Exception) {
+            onError("Invalid AWG routing policy")
+            null
+        }
         saveServerData(config)
         if (config == null) {
             onError("Invalid VPN config")
@@ -525,7 +531,8 @@ open class AmneziaVpnService : VpnService() {
         }
 
         if (config.has("sing_box_routing") &&
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && isLockdownEnabled
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && isLockdownEnabled &&
+            !org.amnezia.vpn.util.net.AwgCorePolicy.lockdownSafe(config)
         ) {
             // Policy rejection must precede prepare()/the permission activity.
             // Repeated rejected starts may already be DISCONNECTED, so notify
@@ -555,6 +562,9 @@ open class AmneziaVpnService : VpnService() {
                 }
                 protocol.configureEndpointResolver(networkState::resolveEndpoint)
                 protocol.configureNetworkDns(networkState::dnsSnapshot, networkState::bindDnsSocket)
+                protocol.configureUnderlay(networkState::underlayIdentity) { fd ->
+                    protect(fd) && networkState.bindVpnSocket(fd)
+                }
                 protocol.configureEndpointRecovery { current -> mainScope.launch { if (current()) reconnect(true) } }
                 protocol.startVpn(config, Builder(), ::protect)
             }
@@ -589,10 +599,14 @@ open class AmneziaVpnService : VpnService() {
 
     @MainThread
     private fun reconnect(endpointRecovery: Boolean = false) {
-        if (!isConnected && !(endpointRecovery && (protocolState.value == CONNECTING || protocolState.value == RECONNECTING))) return
+        if (!isConnected && !((endpointRecovery || vpnProto?.protocol?.preservesConnections == true) && (protocolState.value == CONNECTING || protocolState.value == RECONNECTING))) return
 
         Log.d(TAG, "Reconnect VPN")
 
+        if (vpnProto?.protocol?.preservesConnections == true) {
+            vpnProto?.protocol?.refreshVpn(Builder(), ::protect, endpointRecovery)
+            return
+        }
         protocolState.value = RECONNECTING
 
         connectionJob = connectionScope.launch {

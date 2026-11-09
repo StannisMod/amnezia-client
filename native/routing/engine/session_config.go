@@ -61,6 +61,7 @@ func (c TransportConfig) outbound() (map[string]any, error) {
 // SessionConfig keeps legacy AWG JSON readable. Platform hosts own capture,
 // socket protection and OS restoration; new hosts supply an explicit transport.
 type SessionConfig struct {
+	DisableIPv6           bool                       `json:"disable_ipv6,omitempty"`
 	EndpointHost          string                     `json:"endpoint_host,omitempty"`
 	NetworkDNS            *dnspolicy.NetworkSnapshot `json:"network_dns,omitempty"`
 	DNSNetworkFingerprint string                     `json:"dns_network_fingerprint,omitempty"`
@@ -118,5 +119,17 @@ func (c SessionConfig) Compile() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return (RoutingConfig{Rules: c.Rules, Resolver: c.Resolver, ResolverAction: c.ResolverAction, Applications: c.Applications, DNS: c.DNS}).compile(vpn)
+	compiled, err := (RoutingConfig{Rules: c.Rules, Resolver: c.Resolver, ResolverAction: c.ResolverAction, Applications: c.Applications, DNS: c.DNS}).compile(vpn)
+	if err != nil || !c.DisableIPv6 {
+		return compiled, err
+	}
+	var options map[string]any
+	if err = json.Unmarshal(compiled, &options); err != nil {
+		return nil, err
+	}
+	dns := options["dns"].(map[string]any)
+	// The capture has ULA addresses for FakeIP, not a usable IPv6 VPN source.
+	// Do not advertise fake AAAA destinations for all-VPN IPv4-only profiles.
+	dns["rules"] = append([]any{map[string]any{"inbound": []string{TUNTag}, "query_type": []string{"AAAA"}, "action": "predefined", "rcode": "NOERROR"}}, dns["rules"].([]any)...)
+	return json.Marshal(options)
 }

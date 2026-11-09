@@ -20,6 +20,7 @@ import (
 	"sync/atomic"
 	"unsafe"
 
+	"github.com/StannisMod/amnezia-client/native/routing/dnspolicy"
 	"github.com/StannisMod/amnezia-client/native/routing/engine"
 	"github.com/StannisMod/amnezia-client/native/routing/mobile"
 	"github.com/sagernet/sing-box/adapter"
@@ -90,7 +91,7 @@ func RoutingStart(fd int32, raw string, host C.uintptr_t) int64 {
 		hooks.Release()
 		return -1
 	}
-	session, err := mobile.Start(context.Background(), platform, []byte(raw))
+	session, err := mobile.StartWithNetworkDNS(context.Background(), platform, []byte(raw))
 	if err != nil {
 		return -1
 	}
@@ -149,4 +150,61 @@ func RoutingDiagnostics(handle int64) *C.char {
 func RoutingBuildInfoJSON() *C.char {
 	raw, _ := json.Marshal(engine.BuildInfo())
 	return C.CString(string(raw))
+}
+
+//export RoutingRefresh
+func RoutingRefresh(handle int64, endpoint string, reopen int32) int32 {
+	routedSessions.Lock()
+	session := routedSessions.sessions[handle]
+	routedSessions.Unlock()
+	if session == nil {
+		return 0
+	}
+	if reopen == 0 {
+		if session.ProbeUnderlay() != nil {
+			return 0
+		}
+		return 1
+	}
+	var remote netip.AddrPort
+	if endpoint != "" {
+		var err error
+		remote, err = netip.ParseAddrPort(endpoint)
+		if err != nil {
+			return 0
+		}
+	}
+	if session.RefreshUnderlay(remote) != nil {
+		return 0
+	}
+	return 1
+}
+
+//export RoutingReloadDNS
+func RoutingReloadDNS(handle int64, raw string) int32 {
+	routedSessions.Lock()
+	session := routedSessions.sessions[handle]
+	routedSessions.Unlock()
+	if session == nil {
+		return 0
+	}
+	session.SuspendNetworkDNS()
+	var snapshot dnspolicy.NetworkSnapshot
+	if err := json.Unmarshal([]byte(raw), &snapshot); err != nil {
+		return 0
+	}
+	if session.ReloadNetworkDNS(snapshot) != nil {
+		return 0
+	}
+	return 1
+}
+
+//export RoutingSuspendDNS
+func RoutingSuspendDNS(handle int64) {
+	routedSessions.Lock()
+	session := routedSessions.sessions[handle]
+	routedSessions.Unlock()
+	if session != nil {
+		session.SuspendNetworkDNS()
+	}
 }

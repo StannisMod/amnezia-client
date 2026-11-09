@@ -9,6 +9,8 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import org.amnezia.vpn.util.net.DomainEndpointRefresh
 import org.amnezia.vpn.util.net.EndpointHealthPolicy
+import org.amnezia.vpn.util.net.AwgCorePolicy
+import org.amnezia.vpn.util.net.UnderlayRecoveryState
 import android.os.SystemClock
 import kotlinx.coroutines.SupervisorJob
 import org.amnezia.awg.RoutingBackend
@@ -65,11 +67,14 @@ open class Wireguard : Protocol() {
     @Volatile private var routedHandle = -1L
     @Volatile private var routedConfig: JSONObject? = null
     private var routedStatusJob: Job? = null
+    private var routedRecoveryJob: Job? = null
+    private val recoveryState = UnderlayRecoveryState()
+    override val preservesConnections: Boolean get() = routedHandle > 0
     private val routedScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private fun startRouted(config: JSONObject, vpnBuilder: Builder, protect: (Int) -> Boolean) {
-        if (lockdownEnabled()) {
-            throw VpnStartException("Experimental domain routing is unavailable while Android VPN lockdown is enabled")
+        if (lockdownEnabled() && !AwgCorePolicy.lockdownSafe(config)) {
+            throw VpnStartException("DIRECT routing or network DNS is unavailable while Android VPN lockdown is enabled")
         }
         // Use the existing profile parser, including every AWG 3.1 parameter,
         // but never materialize the legacy site's cached IP exclusions.
@@ -83,10 +88,6 @@ open class Wireguard : Protocol() {
         if (transportType != "awg" && transportType != "wireguard") throw VpnStartException("Unsupported routing adapter")
         val data = config.getJSONObject(transportType + "_config_data")
         val allowed = data.getJSONArray("allowed_ips")
-        val allowedSet = (0 until allowed.length()).map { allowed.getString(it).trim() }.toSet()
-        if ("0.0.0.0/0" !in allowedSet) {
-            throw VpnStartException("Experimental domain routing requires an IPv4 default route in the VPN profile")
-        }
         val parameters = JSONObject()
         val excluded = setOf("private_key", "public_key", "preshared_key", "replace_peers", "replace_allowed_ips", "allowed_ip", "endpoint", "persistent_keepalive_interval", "listen_port")
         for (line in wg.toWgUserspaceString().lineSequence()) {
@@ -96,6 +97,7 @@ open class Wireguard : Protocol() {
         val session = JSONObject().apply {
             put("cache_path", java.io.File(context.filesDir, "routing-fakeip-v1.db").absolutePath)
             put("rules", config.getJSONObject("sing_box_routing"))
+            put("disable_ipv6", AwgCorePolicy.allTrafficUsesVpn(config) && wg.addresses.none { it.isIpv6 })
             if (splitDNS != null) {
                 put("dns", splitDNS)
                 if (splitDNS.optBoolean("preserve_network_domains") || splitDNS.getJSONObject("policies").keys().asSequence().any {
@@ -151,17 +153,20 @@ open class Wireguard : Protocol() {
             configAppSplitTunneling(config)
         }
         stopRouted()
+        val initialNetwork = underlayIdentity?.invoke()
+        Log.i(TAG, "AWG backend: shared TCP/DNS core")
         routedConfig = JSONObject(config.toString())
         buildVpnInterface(capture, vpnBuilder)
         vpnBuilder.establish().use { descriptor ->
             if (descriptor == null) throw VpnStartException("Cannot establish the routed VPN interface")
-            routedHandle = RoutingBackend.start(descriptor.detachFd(), session, RoutingHost(protect, networkDnsProtect))
+            routedHandle = RoutingBackend.start(descriptor.detachFd(), session, RoutingHost(underlayProtect ?: protect, networkDnsProtect))
         }
         if (routedHandle <= 0) {
             routedHandle = -1L
             // Do not silently retry the legacy backend or expose VPN flows.
             throw VpnStartException("Domain routing startup failed; check the profile and routing rules")
         }
+        recoveryState.start(routedHandle, initialNetwork, wg.endpoint.toString())
         ++endpointBackendEpoch
         val statusHandle = routedHandle
         routedStatusJob = routedScope.launch {
@@ -170,23 +175,37 @@ open class Wireguard : Protocol() {
                 // Lockdown may be enabled while a routed tunnel is active.
                 // Stop rather than allowing protected DIRECT proxy sockets to
                 // circumvent the user's OS policy. The OS keeps traffic blocked.
-                if (lockdownEnabled()) {
-                    stopRouted()
+                if (lockdownEnabled() && !AwgCorePolicy.lockdownSafe(config)) {
+                    synchronized(endpointLock) { stopVpn() }
                     state.value = DISCONNECTED
                     onError("Experimental domain routing stopped because Android VPN lockdown is enabled")
                     break
                 }
-                if (!announced) {
-                    val snapshot = RoutingBackend.stats(statusHandle) ?: break
-                    if (routedHandle != statusHandle) break
-                    if (snapshot[2] > 0) { state.value = CONNECTED; announced = true }
+                val snapshot = RoutingBackend.stats(statusHandle)
+                if (routedHandle != statusHandle) break
+                if (snapshot == null) {
+                    synchronized(endpointLock) {
+                        if (routedHandle == statusHandle) {
+                            stopVpn()
+                            onError("VPN packet capture stopped; reconnect is required")
+                        }
+                    }
+                    break
                 }
+                if (!announced && snapshot[2] > 0) { state.value = CONNECTED; announced = true }
                 delay(1000)
             }
         }
+        // Close the startup race: the usable physical path may have changed
+        // while DNS/native startup ran before the handle became observable.
+        requestRoutedRecovery(false)
     }
 
     private fun stopRouted() {
+        routedRecoveryJob?.cancel()
+        routedRecoveryJob = null
+        recoveryState.stop()
+        routedConfig = null
         routedStatusJob?.cancel()
         routedStatusJob = null
         val handle = routedHandle
@@ -237,15 +256,16 @@ open class Wireguard : Protocol() {
     }
 
     override suspend fun startVpn(config: JSONObject, vpnBuilder: Builder, protect: (Int) -> Boolean) {
+        val prepared = AwgCorePolicy.prepare(config)
         val generation = synchronized(endpointLock) {
             endpointRefreshJob?.cancel()
             ++endpointHealthGeneration
             endpointHealthJob?.cancel()
             endpointCandidates = DomainEndpointRefresh.Candidates()
-            originalProfile = JSONObject(config.toString())
+            originalProfile = JSONObject(prepared.toString())
             ++endpointGeneration
         }
-        val resolved = refreshEndpoint(config)
+        val resolved = refreshEndpoint(prepared)
         currentCoroutineContext().ensureActive()
         synchronized(endpointLock) {
             if (generation != endpointGeneration) return
@@ -255,11 +275,12 @@ open class Wireguard : Protocol() {
             } else {
                 stopRouted()
                 routedConfig = null
+                Log.i(TAG, "AWG backend: legacy (explicit override)")
                 val wireguardConfig = parseConfig(resolved)
                 start(wireguardConfig, vpnBuilder, protect)
                 this.config = wireguardConfig
             }
-            startEndpointWatchdog(config)
+            startEndpointWatchdog(prepared)
         }
     }
 
@@ -436,7 +457,7 @@ open class Wireguard : Protocol() {
     private fun startEndpointWatchdog(profile: JSONObject) {
         ++endpointHealthGeneration
         endpointHealthJob?.cancel()
-        if (!DomainEndpointRefresh.isDomain(endpointHost(profile)) || endpointRecovery == null) return
+        if ((routedHandle <= 0 && !DomainEndpointRefresh.isDomain(endpointHost(profile))) || endpointRecovery == null) return
         val generation = endpointHealthGeneration
         val data = profile.getJSONObject(profile.getString("protocol") + "_config_data")
         val health = EndpointHealthPolicy(EndpointHealthPolicy.staleBudget(
@@ -482,10 +503,114 @@ open class Wireguard : Protocol() {
         originalProfile = null
         if (routedConfig != null) stopRouted()
         if (tunnelHandle != -1) turnOffVpn()
+        releaseNetworkHooks()
         state.value = DISCONNECTED
     }
 
+    override fun refreshVpn(vpnBuilder: Builder, protect: (Int) -> Boolean, force: Boolean) {
+        if (routedHandle > 0) requestRoutedRecovery(force) else reconnectVpn(vpnBuilder, protect)
+    }
+
+    private fun requestRoutedRecovery(force: Boolean) = synchronized(endpointLock) {
+        val handle = routedHandle
+        val profile = originalProfile?.let { JSONObject(it.toString()) } ?: return@synchronized
+        if (handle <= 0) return@synchronized
+        val ticket = recoveryState.request(force) ?: return@synchronized
+        routedRecoveryJob?.cancel()
+        RoutingBackend.suspendNetworkDns(handle)
+        routedRecoveryJob = routedScope.launch {
+            var attempt = 0
+            while (true) {
+                currentCoroutineContext().ensureActive()
+                try {
+                    val identity = underlayIdentity?.invoke()
+                        ?: throw VpnException("Underlying network is unavailable")
+                    val decision = recoveryState.decide(ticket, identity) ?: return@launch
+                    val reopen = decision.reopen
+                    var endpoint = decision.endpoint
+                    val before = RoutingBackend.stats(handle)
+                    synchronized(endpointLock) {
+                        if (!recoveryState.current(ticket) || handle != routedHandle) return@launch
+                        if (!RoutingBackend.refresh(handle, endpoint, reopen)) {
+                            recoveryState.transportFailed(ticket)
+                            throw VpnException("Protected UDP refresh failed")
+                        }
+                        // Rebind to the cached peer before doing any DNS work:
+                        // slow/broken bootstrap DNS must not stall a usable IP.
+                        recoveryState.commitTransport(ticket, identity, endpoint)
+                    }
+                    val dns = profile.optJSONObject("sing_box_dns")
+                    val needsNetwork = dns?.let { options ->
+                        options.optBoolean("preserve_network_domains") ||
+                            options.getJSONObject("policies").keys().asSequence().any {
+                                options.getJSONObject("policies").getJSONObject(it).optString("source") == "network"
+                            }
+                    } ?: false
+                    val inventory = if (needsNetwork) networkDnsSnapshot?.invoke()
+                        ?: throw VpnException("Network DNS is unavailable")
+                    else JSONObject().put("links", JSONArray()).put("routing_domains_available", false)
+                    currentCoroutineContext().ensureActive()
+                    if (underlayIdentity?.invoke() != identity) continue
+                    synchronized(endpointLock) {
+                        if (!recoveryState.current(ticket) || handle != routedHandle) return@launch
+                        if (!RoutingBackend.reloadNetworkDns(handle, inventory.toString().toByteArray(Charsets.UTF_8)))
+                            throw VpnException("Network DNS refresh failed")
+                    }
+                    if (decision.verifyPeer) {
+                        var authenticated = false
+                        repeat(6) {
+                            currentCoroutineContext().ensureActive()
+                            if (!recoveryState.current(ticket)) return@launch
+                            val now = RoutingBackend.stats(handle)
+                            if (now != null && before != null && (now[0] > before[0] || now[2] > 0 && now[2] != before[2])) authenticated = true
+                            if (!authenticated) {
+                                delay(1000)
+                                synchronized(endpointLock) {
+                                    if (recoveryState.current(ticket) && handle == routedHandle)
+                                        RoutingBackend.refresh(handle, endpoint, false)
+                                }
+                            }
+                        }
+                        if (authenticated) recoveryState.authenticated(ticket)
+                        else {
+                            // The original TCP state remains alive even if the
+                            // peer's domain or the physical network is absent.
+                            recoveryState.transportFailed(ticket)
+                            if (DomainEndpointRefresh.isDomain(endpointHost(profile))) {
+                                val resolver = endpointResolver ?: throw VpnException("Endpoint DNS is unavailable")
+                                val address = DomainEndpointRefresh.resolve(endpointHost(profile), resolver,
+                                    attempts = 1, timeoutMs = 5000, retryMs = 0, candidates = endpointCandidates)
+                                val data = profile.getJSONObject(profile.getString("protocol") + "_config_data")
+                                val replacement = InetEndpoint(parseInetAddress(address), data.getInt("port")).toString()
+                                if (replacement != endpoint) synchronized(endpointLock) {
+                                    if (!recoveryState.current(ticket) || handle != routedHandle) return@launch
+                                    if (!RoutingBackend.refresh(handle, replacement, true)) {
+                                        recoveryState.transportFailed(ticket)
+                                        throw VpnException("Peer endpoint refresh failed")
+                                    }
+                                    endpoint = replacement
+                                    recoveryState.commitTransport(ticket, identity, endpoint)
+                                }
+                            }
+                            throw VpnException("Awaiting authenticated peer progress")
+                        }
+                    }
+                    Log.i(TAG, "AWG network refreshed; TUN and TCP owner retained")
+                    return@launch
+                } catch (cancelled: CancellationException) { throw cancelled }
+                catch (_: Exception) {
+                    // Network absence is not a stop request. Keep the capture,
+                    // flow stack and original TCP streams until explicit stop.
+                    if (synchronized(endpointLock) { !recoveryState.current(ticket) || handle != routedHandle }) return@launch
+                    if (attempt == 0) Log.i(TAG, "AWG waiting for network; existing TCP owner retained")
+                    delay(minOf(30000L, 1000L shl minOf(attempt++, 5)))
+                }
+            }
+        }
+    }
+
     override fun reconnectVpn(vpnBuilder: Builder, protect: (Int) -> Boolean) {
+        if (routedHandle > 0) { requestRoutedRecovery(false); return }
         val snapshot = synchronized(endpointLock) { originalProfile?.let { JSONObject(it.toString()) } }
         if (snapshot != null && DomainEndpointRefresh.isDomain(endpointHost(snapshot))) {
             synchronized(endpointLock) {

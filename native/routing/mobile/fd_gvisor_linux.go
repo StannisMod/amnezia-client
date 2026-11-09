@@ -4,6 +4,7 @@ package mobile
 
 import (
 	"io"
+	"net"
 	"os"
 	"sync"
 
@@ -50,10 +51,13 @@ func (p *packetDescriptor) Start() error {
 	p.startOnce.Do(func() {
 		go func() {
 			defer close(p.done)
+			defer p.PacketFlow.Close()
 			packet := make([]byte, 65535)
 			for {
 				n, err := p.file.Read(packet)
-				if err != nil {
+				if err != nil || n == 0 {
+					// A TUN cannot carry a zero-length IP packet. Treat EOF
+					// consistently for pollable files and packet-FD adapters.
 					return
 				}
 				if n > 0 {
@@ -65,6 +69,15 @@ func (p *packetDescriptor) Start() error {
 		}()
 	})
 	return nil
+}
+
+func (p *packetDescriptor) CaptureError() error {
+	select {
+	case <-p.done:
+		return net.ErrClosed
+	default:
+		return nil
+	}
 }
 
 func (p *packetDescriptor) Close() error {

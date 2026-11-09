@@ -123,7 +123,7 @@ func (c Config) Validate() error {
 	if _, err := c.uapi(); err != nil {
 		return err
 	}
-	if c.MTU != 0 && (c.MTU < 1280 || c.MTU > 65535) {
+	if c.MTU != 0 && !validFlowMTU(c.Address, c.MTU) {
 		return errors.New("AWG MTU outside supported range")
 	}
 	return nil
@@ -184,7 +184,7 @@ func New(ctx context.Context, c Config, listen ListenUnderlay) (*Transport, erro
 	if c.MTU == 0 {
 		c.MTU = 1280
 	}
-	if c.MTU < 1280 || c.MTU > 65535 {
+	if !validFlowMTU(c.Address, c.MTU) {
 		return nil, errors.New("AWG MTU outside supported range")
 	}
 	tun, n, e := NewFlowTUN(c.Address, c.MTU)

@@ -3,6 +3,7 @@
 #include <jni.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <stddef.h>
 #include <string.h>
 #include <unistd.h>
 #include "_cgo_export.h"
@@ -151,4 +152,24 @@ JNIEXPORT jbyteArray JNICALL Java_org_amnezia_awg_RoutingBackend_buildInfo(JNIEn
     size_t size=strlen(raw);jbyteArray bytes=(*env)->NewByteArray(env,(jsize)size);
     if(bytes)(*env)->SetByteArrayRegion(env,bytes,0,(jsize)size,(const jbyte*)raw);
     free(raw);return bytes;
+}
+
+JNIEXPORT jboolean JNICALL Java_org_amnezia_awg_RoutingBackend_refresh(JNIEnv *env,jobject self,jlong handle,jstring endpoint,jboolean reopen) {
+ const char *text=endpoint?(*env)->GetStringUTFChars(env,endpoint,NULL):NULL;
+ if(endpoint&&!text)return JNI_FALSE;
+ GoString target={text?text:"",text?(ptrdiff_t)strlen(text):0};
+ int ok=RoutingRefresh(handle,target,reopen?1:0);
+ if(text)(*env)->ReleaseStringUTFChars(env,endpoint,text);
+ return ok?JNI_TRUE:JNI_FALSE;
+}
+JNIEXPORT jboolean JNICALL Java_org_amnezia_awg_RoutingBackend_reloadNetworkDns(JNIEnv *env,jobject self,jlong handle,jbyteArray snapshot) {
+ if(!snapshot)return JNI_FALSE;
+ jsize len=(*env)->GetArrayLength(env,snapshot);
+ jbyte *bytes=(*env)->GetByteArrayElements(env,snapshot,NULL);if(!bytes)return JNI_FALSE;
+ int ok=RoutingReloadDNS(handle,(GoString){(const char*)bytes,len});
+ (*env)->ReleaseByteArrayElements(env,snapshot,bytes,JNI_ABORT);
+ return ok?JNI_TRUE:JNI_FALSE;
+}
+JNIEXPORT void JNICALL Java_org_amnezia_awg_RoutingBackend_suspendNetworkDns(JNIEnv *env,jobject self,jlong handle) {
+ RoutingSuspendDNS(handle);
 }

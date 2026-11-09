@@ -44,10 +44,22 @@ type FlowStack struct {
 	cancel   context.CancelFunc
 }
 
+func validFlowMTU(addresses []netip.Addr, mtu int) bool {
+	if mtu < 576 || mtu > 65535 {
+		return false
+	}
+	for _, address := range addresses {
+		if address.Is6() && mtu < 1280 {
+			return false
+		}
+	}
+	return true
+}
+
 // NewFlowTUN creates an owned private packet interface; both returned values
 // share the same idempotent shutdown. It never installs a native OS interface.
 func NewFlowTUN(addresses []netip.Addr, mtu int) (tun.Device, *FlowStack, error) {
-	if len(addresses) == 0 || mtu < 1280 || mtu > 65535 {
+	if len(addresses) == 0 || !validFlowMTU(addresses, mtu) {
 		return nil, nil, errors.New("invalid AWG flow interface")
 	}
 	ctx, cancel := context.WithCancel(context.Background())

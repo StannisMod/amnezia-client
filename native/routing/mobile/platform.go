@@ -45,6 +45,7 @@ type Platform struct {
 	taken     bool
 	closed    bool
 	addresses []netip.Addr
+	capture   tun.Tun
 }
 
 var _ adapter.PlatformInterface = (*Platform)(nil)
@@ -74,6 +75,20 @@ func (p *Platform) Close() error {
 		p.hooks.Release()
 	}
 	return err
+}
+
+// CaptureError distinguishes an unavailable external network (recoverable)
+// from a terminated packet reader, which cannot retain application TCP.
+func (p *Platform) CaptureError() error {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if p.closed {
+		return net.ErrClosed
+	}
+	if state, ok := p.capture.(interface{ CaptureError() error }); ok {
+		return state.CaptureError()
+	}
+	return nil
 }
 
 func (p *Platform) AutoDetectInterfaceControl(fd int) error {
@@ -153,6 +168,7 @@ func (p *Platform) OpenInterface(opts *tun.Options, _ option.TunPlatformOptions)
 	}
 	if err == nil {
 		p.taken = true
+		p.capture = t
 		for _, prefix := range opts.Inet4Address {
 			p.addresses = append(p.addresses, prefix.Addr())
 		}
@@ -172,8 +188,8 @@ func (p *Platform) UsePlatformAutoDetectInterfaceControl() bool            { ret
 func (p *Platform) UsePlatformInterface() bool                             { return true }
 func (p *Platform) ProcessPlatformOptions(option.TunPlatformOptions) error { return nil }
 
-// The existing Amnezia mobile service performs full session restart on native
-// network changes. Do not create a competing Go interface-monitor lifecycle.
+// Native hosts deliver network changes and own recovery of protected sockets.
+// Do not create a competing Go interface-monitor lifecycle.
 func (p *Platform) UsePlatformDefaultInterfaceMonitor() bool { return true }
 func (p *Platform) CreateDefaultInterfaceMonitor(logger.Logger) tun.DefaultInterfaceMonitor {
 	return nil

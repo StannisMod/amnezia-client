@@ -24,7 +24,12 @@ type Session struct {
 	networkDNSConfig []byte
 }
 
-func (s *Session) Stats() (tunnel.Stats, error)                { return s.core.Stats() }
+func (s *Session) Stats() (tunnel.Stats, error) {
+	if err := s.platform.CaptureError(); err != nil {
+		return tunnel.Stats{}, err
+	}
+	return s.core.Stats()
+}
 func (s *Session) Diagnostics() engine.DiagnosticSnapshot      { return s.core.Diagnostics() }
 func (s *Session) RefreshUnderlay(remote netip.AddrPort) error { return s.core.RefreshUnderlay(remote) }
 func (s *Session) ProbeUnderlay() error                        { return s.core.ProbeUnderlay() }
@@ -35,8 +40,8 @@ func Start(ctx context.Context, p *Platform, raw []byte) (*Session, error) {
 	return start(ctx, p, raw, false)
 }
 
-// StartWithNetworkDNS allows the Linux owner to retire native DNS generations
-// independently of the packet tunnel. Other hosts retain their existing path.
+// StartWithNetworkDNS allows native owners to retire DNS generations
+// independently of the packet tunnel and its established TCP streams.
 func StartWithNetworkDNS(ctx context.Context, p *Platform, raw []byte) (*Session, error) {
 	return start(ctx, p, raw, true)
 }

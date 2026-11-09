@@ -204,7 +204,7 @@ func TestNetworkDNSReloadKeepsNativePacketOwner(t *testing.T) {
 		t.Run(transport, func(t *testing.T) { testOwnedPacketFDManagedDNSAndCleanup(t, transport, true) })
 	}
 }
-func testOwnedPacketFDManagedDNSAndCleanup(t *testing.T, transport string, networkDNS bool) {
+func testOwnedPacketFDManagedDNSAndCleanup(t *testing.T, transport string, networkDNS bool, ipv4Only ...bool) {
 	pair, e := unix.Socketpair(unix.AF_UNIX, unix.SOCK_DGRAM, 0)
 	if e != nil {
 		t.Fatal(e)
@@ -238,7 +238,14 @@ func testOwnedPacketFDManagedDNSAndCleanup(t *testing.T, transport string, netwo
 	if networkDNS {
 		start = StartWithNetworkDNS
 	}
-	session, e := start(ctx, platform, sampleConfig(t, transport))
+	raw := sampleConfig(t, transport)
+	if len(ipv4Only) > 0 && ipv4Only[0] {
+		var config engine.SessionConfig
+		json.Unmarshal(raw, &config)
+		config.DisableIPv6 = true
+		raw, _ = json.Marshal(config)
+	}
+	session, e := start(ctx, platform, raw)
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -300,6 +307,24 @@ func testOwnedPacketFDManagedDNSAndCleanup(t *testing.T, transport string, netwo
 			}
 		}
 	}
+	if len(ipv4Only) > 0 && ipv4Only[0] {
+		if _, e = app.Write(dnsPacket(t, dns.TypeAAAA)); e != nil {
+			t.Fatal(e)
+		}
+		n, e = app.Read(reply)
+		if e != nil {
+			t.Fatal(e)
+		}
+		if n < 28 {
+			t.Fatal("truncated AAAA answer")
+		}
+		if e = answer.Unpack(reply[28:n]); e != nil {
+			t.Fatal(e)
+		}
+		if answer.Rcode != dns.RcodeSuccess || len(answer.Answer) != 0 {
+			t.Fatalf("IPv4-only capture advertised IPv6: %v", answer)
+		}
+	}
 	session.Close()
 	session.Close()
 	if _, e = unix.FcntlInt(uintptr(pair[0]), unix.F_GETFD, 0); e != unix.EBADF {
@@ -339,10 +364,14 @@ func TestFailedStartReleasesCaptureAndHost(t *testing.T) {
 	}
 }
 
-func dnsPacket(t *testing.T) []byte {
+func dnsPacket(t *testing.T, kinds ...uint16) []byte {
 	t.Helper()
 	query := new(dns.Msg)
-	query.SetQuestion("packet.test.", dns.TypeA)
+	kind := uint16(dns.TypeA)
+	if len(kinds) > 0 {
+		kind = kinds[0]
+	}
+	query.SetQuestion("packet.test.", kind)
 	payload, e := query.Pack()
 	if e != nil {
 		t.Fatal(e)
