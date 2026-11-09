@@ -315,6 +315,23 @@ func TestMobileRecoveryKeepsInteractiveAndDelayedMediaTCP(t *testing.T) {
 							t.Fatal(e)
 						}
 					}
+                    if !vpnIPv6 {
+                        // A real IPv6 destination is different from a virtual
+                        // IPv6 FakeIP with an IPv4 origin. Report it promptly
+                        // without leaking to native egress or killing the old
+                        // interactive TCP connection.
+                        nativeBefore:=protected.Load()
+                        unavailable,err:=appStack.DialContext(ctx,"tcp","[2001:db8:dead::2]:18443")
+                        if err==nil {
+                            unavailable.SetReadDeadline(time.Now().Add(2*time.Second))
+                            var one [1]byte
+                            _,err=unavailable.Read(one[:]);unavailable.Close()
+                        }
+                        if err==nil {t.Fatal("IPv4-only VPN accepted an unavailable real IPv6 origin")}
+                        if timeout,ok:=err.(net.Error);ok&&timeout.Timeout(){t.Fatal("unavailable IPv6 stalled instead of failing promptly")}
+                        if protected.Load()!=nativeBefore{t.Fatal("unavailable IPv6 attempted native bypass")}
+                        exchange(interactive,[]byte("interactive-still-alive-after-ipv6-failure"))
+                    }
 					// Start a distinct large media flow after an established interactive session.
 					media := dial()
 					defer media.Close()

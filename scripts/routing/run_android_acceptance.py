@@ -14,6 +14,8 @@ import shutil
 import subprocess
 import time
 import zipfile
+import urllib.request
+import threading
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -54,11 +56,27 @@ def snapshot():
     status = adb("shell", "cat", f"/proc/{pid[0]}/status")
     descriptors = adb("shell", "ls", f"/proc/{pid[0]}/fd").split()
     targets = adb("shell", f'for fd in /proc/{pid[0]}/fd/*; do readlink "$fd" || true; done').splitlines()
-    return {"pid": int(pid[0]), "fd_count": len(descriptors),
+    link_text = adb("shell", "ip", "link", "show")
+    capture_links = {name: int(index) for index, name in re.findall(r"(?m)^([0-9]+): ([^: ]+):", link_text) if name.startswith("tun")}
+    return {"capture_links": capture_links, "pid": int(pid[0]), "fd_count": len(descriptors),
             "eventfds": targets.count("anon_inode:[eventfd]"),
             "capture_fds": sum(target in ("/dev/tun", "/dev/net/tun", "anon_inode:[tun]") for target in targets),
             "threads": int(re.search(r"^Threads:\s+(\d+)", status, re.M)[1]),
             "rss_kib": int(re.search(r"^VmRSS:\s+(\d+)", status, re.M)[1])}
+
+
+
+def fault_host_guard():
+    if Path('/.dockerenv').exists():
+        links = json.loads(subprocess.check_output(['ip', '-j', 'link', 'show'], text=True))
+        assert {row['ifname'] for row in links} <= {'lo', 'stability6'}, 'fault tests require Docker --network none'
+    else:
+        assert os.environ.get('GITHUB_ACTIONS') == 'true' and os.environ.get('RUNNER_ENVIRONMENT') == 'github-hosted', 'fault tests require an isolated Docker or disposable GitHub-hosted runner'
+
+
+def nft_command(*args, text=None, check=True):
+    prefix = [] if os.geteuid() == 0 else ['sudo', '-n']
+    return subprocess.run(prefix + ['nft', *args], input=text, text=True, capture_output=True, check=check, timeout=10)
 
 
 def main():
@@ -69,8 +87,21 @@ def main():
     parser.add_argument("--quic-ca", type=Path, required=True)
     parser.add_argument("--work", type=Path, required=True)
     parser.add_argument("--cycles", type=int, default=100)
+    parser.add_argument("--source-sha", help="test-harness commit when a read-only worktree has no mounted Git metadata")
+    parser.add_argument("--apk-source-sha", help="record the actual packaged client source independently of the harness")
+    parser.add_argument("--primary-only", action="store_true", help="focused retained-TCP debug run; not full acceptance")
     args = parser.parse_args()
     check_ipc_contract()
+    for value in (args.source_sha, args.apk_source_sha):
+        assert value is None or re.fullmatch(r'[0-9a-f]{40}', value), 'invalid source revision'
+    source_sha = args.source_sha or run('git', 'rev-parse', 'HEAD', cwd=ROOT, capture_output=True, text=True).stdout.strip()
+    fault_host_guard()
+    fixture = json.loads(args.fixture.read_text())
+    protocol = fixture['protocol']
+    peer_port = int(fixture[protocol + '_config_data']['port'])
+    assert 1 <= peer_port <= 65535
+    fault_table = 'aap_' + str(os.getpid())
+    timer = None
     work = args.work.resolve(); work.mkdir(parents=True, exist_ok=True)
     sdk = Path(os.environ["ANDROID_HOME"])
     tools = sdk / "build-tools/36.0.0"
@@ -115,13 +146,20 @@ def main():
     assert adb("shell", "getprop", "ro.kernel.qemu") == "1", "only disposable Android emulators are supported"
     adb("root"); adb("wait-for-device")
     assert adb("shell", "id", "-u") == "0", "rooted emulator is needed to measure the actual service process"
-    report = {"schema_version": 1, "source_sha": run("git", "rev-parse", "HEAD", capture_output=True, text=True).stdout.strip(),
+    report = {"schema_version": 1, "source_sha": source_sha, "apk_source_sha": args.apk_source_sha,
               "apk_sha256": hashlib.sha256(args.apk.read_bytes()).hexdigest(), "native_payloads": payload_hashes(args.apk),
               "environment": "disposable Android emulator; independent host and AWG-netstack observers",
-              "cycles_requested": args.cycles, "native_vpn_acceptance": "FAIL", "resources": {},
+              "protocol": protocol, "cycles_requested": args.cycles,
+              "retained_resources": {}, "native_vpn_acceptance": "FAIL", "resources": {},
               "not_run": ["physical device", "Wi-Fi/cellular handover", "Android 9 lockdown query restriction", "physical-device policy behavior", "performance parity"]}
     admin = "org.amnezia.routingtest/.RoutingPolicyReceiver"
     try:
+        # Only the emulator was accepted above. Remove stale test-only device
+        # ownership/signatures from an interrupted prior disposable run.
+        subprocess.run(['adb', 'shell', 'dpm', 'remove-active-admin', admin], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+        for package in ('org.amnezia.routingtest', PACKAGE):
+            subprocess.run(['adb', 'uninstall', package], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
+        adb("shell", "settings", "put", "global", "private_dns_mode", "off")
         adb("install", "-r", "-t", str(target))
         adb("install", "-r", "-t", str(instrument))
         assert "Success" in adb("shell", "dpm", "set-device-owner", admin), "AVD device owner setup failed"
@@ -129,12 +167,49 @@ def main():
         # am instrument does not set a useful shell exit code on test failure.
         # Require the explicit PASS result and successful resource assertions.
         command = ["adb", "shell", "am", "instrument", "-w", "-r", "-e", "cycles", str(args.cycles),
+                   "-e", "primary_only", str(args.primary_only).lower(),
                    "org.amnezia.routingtest/org.amnezia.routingtest.RoutingInstrumentation"]
         with (work / "instrumentation.log").open("w") as log:
             process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+            timer = threading.Timer(2400, process.kill); timer.daemon = True; timer.start()
             started = time.monotonic(); output = []
             for line in process.stdout:
                 print(line, end="", flush=True); log.write(line); log.flush(); output.append(line)
+                if "RETAIN_CHECKPOINT " in line:
+                    name = line.strip().split("RETAIN_CHECKPOINT ", 1)[1]
+                    assert name in ('before', 'after', 'restore_mtu', 'drop_mtu', 'drop_before_media', 'restore_before_media', 'drop_with_media', 'restore_with_media', 'wifi_off', 'wifi_on', 'safe_policy_before', 'safe_policy_after')
+                    if name.startswith('drop_'):
+                        nft_command('delete', 'table', 'inet', fault_table, check=False)
+                        rules = (f'add table inet {fault_table}\n'
+                                 f'add chain inet {fault_table} output {{ type filter hook output priority -10; policy accept; }}\n'
+                                 f'add chain inet {fault_table} input {{ type filter hook input priority -10; policy accept; }}\n'
+                                 f'add rule inet {fault_table} output ip daddr 127.0.0.1 udp dport {peer_port} counter drop\n'
+                                 f'add rule inet {fault_table} input ip saddr 127.0.0.1 udp sport {peer_port} counter drop\n')
+                        if name == 'drop_mtu':
+                            rules = (f'add table inet {fault_table}\n'
+                                     f'add chain inet {fault_table} output {{ type filter hook output priority -10; policy accept; }}\n'
+                                     f'add rule inet {fault_table} output ip saddr 127.0.0.1 udp sport {peer_port} ip length > 1200 counter drop\n')
+                        nft_command('-f', '-', text=rules)
+                    elif name.startswith('restore_'):
+                        witness = json.loads(nft_command('-j', 'list', 'table', 'inet', fault_table).stdout)
+                        dropped = sum(expr['counter']['packets'] for entry in witness['nftables'] if 'rule' in entry
+                                      for expr in entry['rule']['expr'] if 'counter' in expr)
+                        assert dropped > 0, 'outer blackhole affected no encrypted packets'
+                        report.setdefault('dropped_outer_packets', {})[name] = dropped
+                        nft_command('delete', 'table', 'inet', fault_table)
+                        if name == 'restore_mtu':
+                            report['mtu_restored_wall_ns'] = time.time_ns()
+                            print(f"RESTORED_NS={report['mtu_restored_wall_ns']}", flush=True)
+                    elif name == 'wifi_off': adb('shell', 'svc', 'wifi', 'disable')
+                    elif name == 'wifi_on': adb('shell', 'svc', 'wifi', 'enable')
+                    if name in ('before', 'after', 'safe_policy_before', 'safe_policy_after'):
+                        report['retained_resources'][name] = snapshot()
+                    with urllib.request.urlopen('http://127.0.0.1:18080/stats', timeout=5) as response:
+                        stats = json.load(response)
+                    local = work / ('stats-' + name + '.json');local.write_text(json.dumps(stats))
+                    remote = f'/data/user/0/{PACKAGE}/files/routing-stats-{name}.json'
+                    adb('push', str(local), remote);adb('shell', 'restorecon', remote);adb('shell', 'chmod', '644', remote)
+                    adb('shell', 'touch', f'/data/user/0/{PACKAGE}/files/routing-retain-{name}.ready')
                 if "POLICY_CHECKPOINT " in line:
                     mode = line.strip().split("POLICY_CHECKPOINT ", 1)[1]
                     assert mode in ("off", "alwayson", "lockdown")
@@ -165,17 +240,41 @@ def main():
                 if time.monotonic() - started > 2400:
                     process.kill(); raise TimeoutError("Android acceptance exceeded 40 minutes")
             assert process.wait(timeout=15) == 0
+            timer.cancel()
         output = "".join(output)
-        assert "INSTRUMENTATION_RESULT: routing_result=PASS" in output, "Android service acceptance failed; see instrumentation.log"
-        before, after = (report["resources"][label] for label in ("baseline", "after_cycles"))
-        assert before["pid"] == after["pid"], "service process replacement hid resource cleanup"
-        assert after["fd_count"] <= before["fd_count"] + 8, "descriptor growth across reconnects"
-        assert after["threads"] <= before["threads"] + 24, "thread growth across reconnects"
-        report["resource_limits"] = {"fd_growth": 8, "thread_growth": 24, "rss": "measured only; Go heap retention varies"}
-        report["native_vpn_acceptance"] = "PASS"
-        report["android_os_always_on_lockdown"] = "PASS"
-        report["legacy_awg_transition"] = "PASS"
+        if args.primary_only:
+            assert "INSTRUMENTATION_RESULT: routing_result=PASS_PRIMARY_ONLY" in output, 'focused TCP acceptance failed'
+            report['native_vpn_acceptance'] = 'PASS_PRIMARY_ONLY'
+        else:
+            assert "INSTRUMENTATION_RESULT: routing_result=PASS\n" in output, "Android service acceptance failed; see instrumentation.log"
+            before, after = (report["resources"][label] for label in ("baseline", "after_cycles"))
+            assert before["pid"] == after["pid"], "service process replacement hid resource cleanup"
+            assert after["fd_count"] <= before["fd_count"] + 8, "descriptor growth across reconnects"
+            assert after["threads"] <= before["threads"] + 24, "thread growth across reconnects"
+            report["resource_limits"] = {"fd_growth": 8, "thread_growth": 24, "rss": "measured only; Go heap retention varies"}
+            report["native_vpn_acceptance"] = "PASS"
+            report["android_os_always_on_lockdown"] = "PASS"
+            report["legacy_awg_transition"] = "PASS"
+        match = re.search(r'INSTRUMENTATION_RESULT: retained_result=(\{[^\n]*\})', output)
+        assert match, 'retained TCP result missing'
+        report['retained_tcp'] = json.loads(match[1])
+        metrics = {}
+        for record in re.findall(r'MTU_RESULT ([^\r\n]+)', output):
+            for field, value in re.findall(r'(\w+)=(\d+)', record):
+                metrics[field] = int(value)
+        assert metrics.keys() >= {'short_echoes', 'media_chunks', 'verified_large_downlink_ms', 'media_resumed_after_restore_ms'}, 'incomplete size-loss measurements'
+        report['size_loss_measurements'] = metrics
+        for first, last in ([('before', 'after')] if args.primary_only else [('before', 'after'), ('safe_policy_before', 'safe_policy_after')]):
+            a, b = report['retained_resources'][first], report['retained_resources'][last]
+            assert a['pid'] == b['pid'] and a['capture_links'] and a['capture_links'] == b['capture_links'], 'network/policy change recreated service or TUN'
+            assert a['capture_fds'] == 1 and b['capture_fds'] == 1, 'capture ownership changed'
+        report['ordinary_app_only_preserving_recovery'] = 'PASS'
+        if not args.primary_only: report['all_vpn_lockdown'] = 'PASS'
     finally:
+        if timer is not None: timer.cancel()
+        nft_command('delete', 'table', 'inet', fault_table, check=False)
+        try: adb('shell', 'svc', 'wifi', 'enable')
+        except subprocess.CalledProcessError: pass
         try:
             adb("shell", "am", "broadcast", "-a", "org.amnezia.routingtest.POLICY", "-n", admin, "--es", "mode", "off")
             adb("shell", "dpm", "remove-active-admin", admin)

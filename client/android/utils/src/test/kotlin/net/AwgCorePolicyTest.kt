@@ -6,7 +6,7 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class AwgCorePolicyTest {
-    private fun profile(): JSONObject = JSONObject("""{"protocol":"awg","dns1":"10.77.0.2","appSplitTunnelType":1,"splitTunnelType":0,"appSplitTunnelApps":["org.telegram.messenger"],"awg_config_data":{"allowed_ips":["0.0.0.0/0"],"client_priv_key":"keep-me","mtu":"1380","PersistentKeepalive":"25"}}""")
+    private fun profile(): JSONObject = JSONObject("""{"protocol":"awg","dns1":"10.77.0.2","appSplitTunnelType":1,"splitTunnelType":0,"splitTunnelApps":["org.telegram.messenger"],"awg_config_data":{"allowed_ips":["0.0.0.0/0"],"client_priv_key":"keep-me","mtu":"1380","PersistentKeepalive":"25"}}""")
     @Test fun ordinaryAppOnlyAwgUsesSharedCoreAndVpnDnsWithoutSiteFlag() {
         val input = profile(); val original = input.toString()
         val result = AwgCorePolicy.prepare(input)
@@ -15,7 +15,7 @@ class AwgCorePolicyTest {
         val dns = result.getJSONObject("sing_box_dns")
         assertEquals("vpn", dns.getString("default"));assertFalse(dns.getBoolean("follow_routing"))
         assertEquals("vpn", dns.getJSONObject("policies").getJSONObject("vpn").getString("path"))
-        assertEquals(input.getJSONArray("appSplitTunnelApps").toString(), result.getJSONArray("appSplitTunnelApps").toString())
+        assertEquals(input.getJSONArray("splitTunnelApps").toString(), result.getJSONArray("splitTunnelApps").toString())
         assertEquals(input.getJSONObject("awg_config_data").toString(), result.getJSONObject("awg_config_data").toString())
         assertEquals(original, input.toString());assertTrue(AwgCorePolicy.lockdownSafe(result))
     }

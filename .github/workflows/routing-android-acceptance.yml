@@ -42,8 +42,14 @@ jobs:
   actual-apk-service:
     runs-on: ubuntu-22.04
     timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        transport: [awg, wireguard]
     steps:
       - uses: actions/checkout@v4
+      - name: Install isolated fault-test tools
+        run: sudo apt-get update && sudo apt-get install -y nftables
       - uses: actions/setup-go@v5
         with:
           go-version-file: native/routing/go.mod
@@ -185,9 +191,9 @@ jobs:
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           script: |
-            "$RUNNER_TEMP/android-fixture" --config "$RUNNER_TEMP/fixture.json" --quic-ca "$RUNNER_TEMP/quic.der" > fixture-server.log 2>&1 & echo $! > "$RUNNER_TEMP/fixture.pid"
+            "$RUNNER_TEMP/android-fixture" --transport "${{ matrix.transport }}" --persistent --bulk --config "$RUNNER_TEMP/fixture.json" --quic-ca "$RUNNER_TEMP/quic.der" > fixture-server.log 2>&1 & echo $! > "$RUNNER_TEMP/fixture.pid"
             for i in $(seq 1 30); do test -s "$RUNNER_TEMP/fixture.json" && break; sleep 1; done
-            python3 scripts/routing/run_android_acceptance.py --apk "$FEATURE_APK" --fixture "$RUNNER_TEMP/fixture.json" --quic-probe "$RUNNER_TEMP/android-traffic-probe" --quic-ca "$RUNNER_TEMP/quic.der" --work "$RUNNER_TEMP/android-acceptance" --cycles "${{ inputs.cycles || '100' }}"
+            python3 scripts/routing/run_android_acceptance.py --apk "$FEATURE_APK" --fixture "$RUNNER_TEMP/fixture.json" --quic-probe "$RUNNER_TEMP/android-traffic-probe" --quic-ca "$RUNNER_TEMP/quic.der" --work "$RUNNER_TEMP/android-acceptance" --cycles "${{ inputs.cycles || '100' }}" --apk-source-sha "$(python3 -c 'import json;print(json.load(open("tested-apk-source.json"))["head_sha"])')"
       - name: Stop the local peer and remove ephemeral private configuration
         if: always()
         run: |
@@ -196,7 +202,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: android-actual-apk-acceptance
+          name: android-actual-apk-acceptance-${{ matrix.transport }}
           if-no-files-found: error
           path: |
             tested-apk-source.json

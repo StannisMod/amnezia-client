@@ -16,6 +16,7 @@ import android.os.SystemClock;
 import org.json.JSONArray;
 import org.json.JSONObject;
 import java.io.BufferedReader;
+import java.io.DataInputStream;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
@@ -30,6 +31,12 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import android.net.ConnectivityManager;
+import android.net.Network;
+import android.net.NetworkCapabilities;
 import java.util.concurrent.TimeUnit;
 
 /** Tests the installed production service over its existing Messenger API.
@@ -38,16 +45,21 @@ import java.util.concurrent.TimeUnit;
  * IPC numbers below are checked against source by the host driver.
  */
 public final class RoutingInstrumentation extends Instrumentation {
-    private static final int REGISTER = 0, UNREGISTER = 1, CONNECT = 2, DISCONNECT = 3;
+    private static final int REGISTER = 0, UNREGISTER = 1, CONNECT = 2, DISCONNECT = 3, REQUEST_STATUS = 4;
     private static final int DISCONNECTED = 0, CONNECTED = 1;
     private final Object lock = new Object();
     private final List<String> passed = new ArrayList<>();
     private volatile int state = -1;
     private volatile boolean serviceError;
     private volatile String serviceErrorText = "";
+    private volatile JSONObject diagnostics;
+    private volatile boolean retainedCheck;
+    private volatile boolean retainedStateChanged;
+    private JSONObject retainedResult;
     private Messenger service, replies;
     private JSONObject fixture;
     private int cycles = 100;
+    private boolean primaryOnly;
     private final CountDownLatch bound = new CountDownLatch(1);
     private final ServiceConnection connection = new ServiceConnection() {
         @Override public void onServiceConnected(ComponentName name, IBinder binder) {
@@ -61,6 +73,7 @@ public final class RoutingInstrumentation extends Instrumentation {
     @Override public void onCreate(Bundle args) {
         super.onCreate(args);
         cycles = Integer.parseInt(args.getString("cycles", "100"));
+        primaryOnly = Boolean.parseBoolean(args.getString("primary_only", "false"));
         start();
     }
     @Override public void onStart() {
@@ -78,7 +91,13 @@ public final class RoutingInstrumentation extends Instrumentation {
             fixture = new JSONObject(new String(fixtureBytes.toByteArray(), StandardCharsets.UTF_8));
             replies = new Messenger(new Handler(Looper.getMainLooper(), message -> {
                 synchronized (lock) {
-                    if (message.what == 0 || message.what == 1) state = message.getData().getInt("state", -1);
+                    if (message.what == 0 || message.what == 1) {
+                        state = message.getData().getInt("state", -1);
+                        if (retainedCheck && state != CONNECTED) retainedStateChanged = true;
+                        String raw = message.getData().getString("CONNECTION_DIAGNOSTICS");
+                        if (raw != null) try { diagnostics = new JSONObject(raw); }
+                        catch (Exception bad) { serviceError = true; serviceErrorText = "invalid connection diagnostics"; }
+                    }
                     if (message.what == 3) { serviceError = true; serviceErrorText = message.getData().getString("ERROR", ""); }
                     lock.notifyAll();
                 }
@@ -89,6 +108,11 @@ public final class RoutingInstrumentation extends Instrumentation {
             require(didBind && bound.await(15, TimeUnit.SECONDS), "AwgService binding failed");
             Bundle registration = new Bundle(); registration.putString("CLIENT_NAME", "routing-acceptance");
             send(REGISTER, registration);
+            if (primaryOnly) {
+                retainedPrimarySession();
+                result.putString("retained_result", retainedResult.toString());
+                result.putString("routing_result", "PASS_PRIMARY_ONLY");code = 0;return;
+            }
             connect(false);
             progress("CHECK: service CONNECTED; requesting DIRECT FakeIP");
             InetAddress direct = dns("direct.ru", 1);
@@ -118,7 +142,7 @@ public final class RoutingInstrumentation extends Instrumentation {
             JSONObject before = control("/stats", false);
             control("/peer?state=off", true);
             boolean tcpFailed = false, udpFailed = false;
-            try { tcp(vpn); } catch (Exception expected) { tcpFailed = true; }
+            try { tcpFailed = tcp(vpn) == null; } catch (Exception expected) { tcpFailed = true; }
             try { udp(vpn); } catch (Exception expected) { udpFailed = true; }
             require(tcpFailed && udpFailed, "VPN traffic succeeded with the AWG peer down");
             JSONObject after = control("/stats", false);
@@ -159,13 +183,16 @@ public final class RoutingInstrumentation extends Instrumentation {
             // then back to routed AWG. Use an inner literal IPv4 observer:
             // legacy profiles deliberately have no FakeIP/domain guarantee.
             JSONObject legacy = configuration(false);
-            legacy.remove("sing_box_routing");
+            legacy.remove("sing_box_routing"); legacy.remove("sing_box_dns");
+            legacy.put("android_legacy_awg_backend", true);
             startService(legacy); awaitState(CONNECTED, false);
             requireRoute(InetAddress.getByName("10.77.0.2"), "VPN");
             quic(InetAddress.getByName("10.77.0.2"), "VPN");
             disconnect(); connect(false);
             requireRoute(dns("vpn.test", 1), "VPN"); disconnect();
             pass("legacy AWG TCP/UDP/QUIC and routed-to-legacy-to-routed service transition");
+            retainedPrimarySession();
+            restrictedProfiles();
             // The driver owns a real DevicePolicyManager admin on this AVD.
             // Always-on may start the saved profile itself; await that event.
             state = -1; serviceError = false;
@@ -180,6 +207,8 @@ public final class RoutingInstrumentation extends Instrumentation {
             policy("off");
             connect(false); requireRoute(dns("vpn.test", 1), "VPN"); disconnect();
             pass("OS always-on, active lockdown shutdown, lockdown startup rejection and recovery");
+            allVpnLockdown();
+            result.putString("retained_result", retainedResult.toString());
             result.putString("routing_result", "PASS"); code = 0;
         } catch (Throwable error) {
             // Avoid dumping fixture/keys in an exception or Android log.
@@ -198,6 +227,209 @@ public final class RoutingInstrumentation extends Instrumentation {
             result.putString("passed", new JSONArray(passed).toString());
             finish(code, result);
         }
+    }
+
+    private JSONObject connectionDiagnostics() throws Exception {
+        diagnostics = null; send(REQUEST_STATUS, new Bundle());
+        long until = SystemClock.elapsedRealtime() + 5000;
+        synchronized (lock) {
+            while (diagnostics == null && !serviceError && SystemClock.elapsedRealtime() < until) lock.wait(50);
+            require(diagnostics != null && !serviceError, "backend diagnostics unavailable");
+            return new JSONObject(diagnostics.toString());
+        }
+    }
+
+    private JSONObject retainedCheckpoint(String name) throws Exception {
+        File ready = new File(getTargetContext().getFilesDir(), "routing-retain-" + name + ".ready");
+        ready.delete(); progress("RETAIN_CHECKPOINT " + name);
+        long until = SystemClock.elapsedRealtime() + 20000;
+        while (!ready.exists() && SystemClock.elapsedRealtime() < until) SystemClock.sleep(50);
+        require(ready.exists(), "retained-session host checkpoint timed out: " + name); ready.delete();
+        File stats = new File(getTargetContext().getFilesDir(), "routing-stats-" + name + ".json");
+        try (InputStream input = new java.io.FileInputStream(stats)) {
+            java.io.ByteArrayOutputStream bytes = new java.io.ByteArrayOutputStream();
+            byte[] data = new byte[4096]; int count;
+            while ((count = input.read(data)) >= 0) bytes.write(data, 0, count);
+            return new JSONObject(new String(bytes.toByteArray(), StandardCharsets.UTF_8));
+        }
+    }
+
+    private JSONObject primaryConfiguration() throws Exception {
+        JSONObject config = new JSONObject(fixture.toString());
+        config.remove("sing_box_routing"); config.remove("sing_box_dns");
+        config.remove("sing_box_dns_path");
+        config.put("splitTunnelType", 0).put("splitTunnelSites", new JSONArray());
+        config.put("appSplitTunnelType", 1).put("splitTunnelApps", new JSONArray().put("org.amnezia.vpn"));
+        return config;
+    }
+
+    private Socket retainedSocket(InetAddress address) throws Exception {
+        Socket socket = new Socket(); socket.setSoTimeout(30000);
+        socket.connect(new InetSocketAddress(address, 18081), 10000);
+        byte[] banner = new byte[4]; new DataInputStream(socket.getInputStream()).readFully(banner);
+        require("VPN\n".equals(new String(banner, StandardCharsets.US_ASCII)), "retained socket reached non-VPN observer");
+        return socket;
+    }
+
+    private void exchange(ExecutorService executor, Socket socket, byte[] payload) throws Exception {
+        Future<?> work = executor.submit(() -> {
+            try {
+                socket.getOutputStream().write(payload);socket.getOutputStream().flush();
+                byte[] reply = new byte[payload.length];new DataInputStream(socket.getInputStream()).readFully(reply);
+                if (!java.util.Arrays.equals(payload, reply)) throw new AssertionError("corrupt original TCP payload");
+            } catch (Exception error) { throw new RuntimeException(error); }
+        });
+        try { work.get(35, TimeUnit.SECONDS); }
+        catch (Exception error) { socket.close();work.cancel(true);throw error; }
+        require(!serviceError && !retainedStateChanged, "network recovery changed the service connection state");
+    }
+
+    private void verifyLargeDownlink() throws Exception {
+        byte[] payload = new byte[1190];
+        new java.security.SecureRandom().nextBytes(payload);
+        try (DatagramSocket socket = new DatagramSocket()) {
+            socket.setSoTimeout(2000);
+            socket.connect(InetAddress.getByName("fd77::2"), 18082);
+            socket.send(new DatagramPacket(payload, payload.length));
+            byte[] buffer = new byte[1280];
+            DatagramPacket reply = new DatagramPacket(buffer, buffer.length);
+            socket.receive(reply);
+            require(reply.getLength() == 4 + payload.length &&
+                    "VPN:".equals(new String(buffer, 0, 4, StandardCharsets.US_ASCII)) &&
+                    java.util.Arrays.equals(payload, java.util.Arrays.copyOfRange(buffer, 4, reply.getLength())),
+                    "large downlink witness mismatch");
+        }
+    }
+
+    private boolean cellularAvailable() {
+        ConnectivityManager manager = getTargetContext().getSystemService(ConnectivityManager.class);
+        for (Network network : manager.getAllNetworks()) {
+            NetworkCapabilities caps = manager.getNetworkCapabilities(network);
+            if (caps != null && caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) &&
+                caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+                caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)) return true;
+        }
+        return false;
+    }
+
+    private void retainedPrimarySession() throws Exception {
+        state = -1; serviceError = false; startService(primaryConfiguration());awaitState(CONNECTED, false);
+        JSONObject owner = connectionDiagnostics();
+        require("shared".equals(owner.getString("backend")) && owner.getBoolean("preserves_connections"),
+                "ordinary app-only AWG/WG did not select the shared core");
+        long session = owner.getLong("session_id");
+        requireRoute(InetAddress.getByName("fd77::2"), "VPN");
+        requireRoute(InetAddress.getByName("64:ff9b::c000:201"), "VPN");
+        JSONObject before = retainedCheckpoint("before");
+        ExecutorService io = Executors.newSingleThreadExecutor(r -> { Thread t = new Thread(r, "retained-tcp");t.setDaemon(true);return t; });
+        Socket interactive = null, media = null;
+        long start = SystemClock.elapsedRealtime(); boolean cellular = false;
+        try {
+            retainedStateChanged = false; retainedCheck = true;
+            interactive = retainedSocket(dns("vpn.test", 1));
+            exchange(io, interactive, "before-fault".getBytes(StandardCharsets.US_ASCII));
+            retainedCheckpoint("drop_before_media");SystemClock.sleep(3000);retainedCheckpoint("restore_before_media");
+            exchange(io, interactive, "after-first-loss".getBytes(StandardCharsets.US_ASCII));
+            media = retainedSocket(dns("ipv6.test", 28));
+            byte[] payload = new byte[256 * 1024];for (int i = 0; i < payload.length; ++i) payload[i] = (byte)(i * 31 + 7);
+            exchange(io, media, payload);
+            // Age both streams through a normal WireGuard rekey interval.
+            long warmUntil = SystemClock.elapsedRealtime() + 125000;
+            while (SystemClock.elapsedRealtime() < warmUntil) {
+                exchange(io, interactive, new byte[]{42});
+                SystemClock.sleep(1000);
+            }
+            ExecutorService download = Executors.newSingleThreadExecutor();
+            java.util.concurrent.atomic.AtomicInteger chunks = new java.util.concurrent.atomic.AtomicInteger();
+            java.util.concurrent.atomic.AtomicBoolean running = new java.util.concurrent.atomic.AtomicBoolean(true);
+            final Socket mediaSocket = media;
+            Future<?> transfer = download.submit(() -> {
+                do {
+                    mediaSocket.getOutputStream().write(payload);
+                    byte[] reply = new byte[payload.length];
+                    new DataInputStream(mediaSocket.getInputStream()).readFully(reply);
+                    require(java.util.Arrays.equals(payload, reply), "damaged media chunk");
+                    chunks.incrementAndGet();
+                    SystemClock.sleep(50);
+                } while (running.get());
+                return null;
+            });
+            try {
+                long deadline = SystemClock.elapsedRealtime() + 10000;
+                while (chunks.get() < 2 && SystemClock.elapsedRealtime() < deadline) SystemClock.sleep(50);
+                require(chunks.get() >= 2, "media never started");
+                retainedCheckpoint("drop_mtu");
+                int baseline = chunks.get();
+                int completedDuringLimit;
+                try {
+                    for (int pulse = 0; pulse < 10; pulse++) {
+                        exchange(io, interactive, new byte[]{42});
+                        SystemClock.sleep(1000);
+                    }
+                    completedDuringLimit = chunks.get() - baseline;
+                    progress("MTU_RESULT short_echoes=10 media_chunks=" + completedDuringLimit);
+                } finally { retainedCheckpoint("restore_mtu"); }
+                long restored = SystemClock.elapsedRealtime();
+                verifyLargeDownlink();
+                progress("MTU_RESULT verified_large_downlink_ms=" + (SystemClock.elapsedRealtime() - restored));
+                running.set(false);
+                transfer.get(35, TimeUnit.SECONDS);
+                progress("MTU_RESULT media_resumed_after_restore_ms=" + (SystemClock.elapsedRealtime() - restored));
+                exchange(io, media, payload);
+            } finally { running.set(false); download.shutdownNow(); }
+            retainedCheckpoint("wifi_off");
+            try {
+                SystemClock.sleep(3000); cellular = cellularAvailable();
+                if (cellular) exchange(io, interactive, "over-cellular".getBytes(StandardCharsets.US_ASCII));
+            } finally { retainedCheckpoint("wifi_on"); }
+            exchange(io, interactive, "after-radio-return".getBytes(StandardCharsets.US_ASCII));exchange(io, media, payload);
+            retainedCheckpoint("drop_with_media");SystemClock.sleep(3000);retainedCheckpoint("restore_with_media");
+            exchange(io, interactive, "same-interactive-tcp".getBytes(StandardCharsets.US_ASCII));exchange(io, media, payload);
+            JSONObject current = connectionDiagnostics();
+            require(current.getLong("session_id") == session && "shared".equals(current.getString("backend")), "network recovery replaced native TCP owner");
+            JSONObject after = retainedCheckpoint("after");
+            require(after.getLong("vpn_tcp") == before.getLong("vpn_tcp") + 2, "replacement TCP accept concealed interruption");
+            retainedResult = new JSONObject().put("same_session", true).put("original_tcp_accepts", 2)
+                .put("media_after_old_interactive_session", "PASS").put("ipv6_ula_nat64_capture", "PASS")
+                .put("emulated_cellular_handover", cellular ? "PASS" : "NOT_AVAILABLE")
+                .put("elapsed_ms", SystemClock.elapsedRealtime() - start);
+            pass("ordinary app-only core: original interactive/late-media TCP survive UDP blackholes and Wi-Fi return; IPv6 ULA/NAT64 use VPN");
+        } finally {
+            retainedCheck = false;if (interactive != null) interactive.close();if (media != null) media.close();
+            io.shutdownNow();disconnect();
+        }
+    }
+
+    private void restrictedProfiles() throws Exception {
+        String key = fixture.getString("protocol") + "_config_data";
+        JSONObject four = primaryConfiguration();
+        four.getJSONObject(key).put("client_ip", "10.77.0.1/32")
+            .put("allowed_ips", new JSONArray().put("10.77.0.0/24")).put("mtu", "1200");
+        state = -1;serviceError = false;startService(four);awaitState(CONNECTED, false);
+        require("shared".equals(connectionDiagnostics().getString("backend")), "restricted IPv4 profile fell back to legacy");
+        requireRoute(InetAddress.getByName("10.77.0.2"), "VPN");
+        requireRoute(InetAddress.getByName("10.0.2.2"), "DIRECT");
+        disconnect();
+        JSONObject six = primaryConfiguration().put("dns1", "fd77::2");
+        six.getJSONObject(key).put("client_ip", "fd77::1/128")
+            .put("allowed_ips", new JSONArray().put("fd77::/64"));
+        state = -1;serviceError = false;startService(six);awaitState(CONNECTED, false);
+        requireRoute(dns("ipv6.test", 28), "VPN");
+        boolean blocked = false;try { blocked = tcp(InetAddress.getByName("10.0.2.2")) == null; } catch (Exception expected) { blocked = true; }
+        require(blocked, "IPv6-only profile gained an implicit native IPv4 bypass");disconnect();
+        pass("restricted IPv4 MTU1200 and IPv6-only profiles preserve scope; IPv6 DNS over VPN");
+    }
+
+    private void allVpnLockdown() throws Exception {
+        state = -1; serviceError = false;startService(primaryConfiguration());awaitState(CONNECTED, false);
+        long owner = connectionDiagnostics().getLong("session_id");
+        retainedCheckpoint("safe_policy_before");
+        policy("alwayson");policy("lockdown");SystemClock.sleep(1500);
+        require(state == CONNECTED && !serviceError, "all-VPN shared core was rejected under lockdown");
+        require(connectionDiagnostics().getLong("session_id") == owner, "safe lockdown replaced active core");
+        requireRoute(dns("vpn.test", 1), "VPN");
+        retainedCheckpoint("safe_policy_after");disconnect();policy("off");
+        pass("all-VPN app-only shared core remains active under OS always-on/lockdown");
     }
 
     private void policy(String mode) throws Exception {

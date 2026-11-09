@@ -34,13 +34,17 @@ import (
 	"github.com/StannisMod/amnezia-client/native/routing/internal/fixturequic"
 	"github.com/amnezia-vpn/amneziawg-go/v3/conn"
 	"github.com/amnezia-vpn/amneziawg-go/v3/device"
+	"github.com/amnezia-vpn/amneziawg-go/v3/tun"
 	"github.com/miekg/dns"
 )
 
+var wrapSenderTrace func(tun.Device, *awg.FlowStack) tun.Device
 var bulkEnabled bool
 var persistentEnabled bool
 var transportKind string
 var recordDNS bool
+var nativeDNSPort int
+var dropEndpointDNS atomic.Bool
 
 var sharedIP = "10.0.2.2" // Android emulator host alias; Windows uses its native local IP.
 const tcpPort = 18081
@@ -179,11 +183,14 @@ func (f *fixture) start() error {
 			return err
 		}
 	}
-	t, stack, err := awg.NewFlowTUN([]netip.Addr{netip.MustParseAddr("10.77.0.2"), netip.MustParseAddr("fd77::2"), netip.MustParseAddr(sharedIP)}, 1280)
+	t, stack, err := awg.NewFlowTUN([]netip.Addr{netip.MustParseAddr("10.77.0.2"), netip.MustParseAddr("fd77::2"), netip.MustParseAddr("64:ff9b::c000:201"), netip.MustParseAddr(sharedIP)}, 1280)
 	if err != nil {
 		return err
 	}
 
+	if wrapSenderTrace != nil {
+		t = wrapSenderTrace(t, stack)
+	}
 	cleanup := true
 	defer func() {
 		if cleanup {
@@ -220,7 +227,7 @@ func (f *fixture) start() error {
 	if f.listenPort == 0 {
 		return fmt.Errorf("fixture peer did not bind a UDP port")
 	}
-	for _, ip := range []string{sharedIP, "10.77.0.2", "fd77::2"} {
+	for _, ip := range []string{sharedIP, "10.77.0.2", "fd77::2", "64:ff9b::c000:201"} {
 		if bulkEnabled {
 			listener, e := stack.ListenTCPAddrPort(netip.AddrPortFrom(netip.MustParseAddr(ip), 18444))
 			if e != nil {
@@ -252,41 +259,43 @@ func (f *fixture) start() error {
 		f.closePeer = append(f.closePeer, pc)
 		go observeUDP(pc, "VPN", &f.vpnUDP)
 	}
-	pc, err := stack.ListenUDPAddrPort(netip.MustParseAddrPort("10.77.0.2:53"))
-	if err != nil {
-		return err
-	}
-	f.closePeer = append(f.closePeer, pc)
-	server := &dns.Server{PacketConn: pc, Handler: dns.HandlerFunc(func(w dns.ResponseWriter, q *dns.Msg) {
-		f.dnsQueries.Add(1)
-		a := new(dns.Msg)
-		a.SetReply(q)
-		for _, question := range q.Question {
-			name := strings.ToLower(question.Name)
-			if recordDNS {
-				f.dnsNamesMu.Lock()
-				if len(f.dnsNames) < 4096 {
-					f.dnsNames = append(f.dnsNames, name)
-				}
-				f.dnsNamesMu.Unlock()
-			}
-			if name == "cname.test." {
-				a.Answer = append(a.Answer, &dns.CNAME{Hdr: dns.RR_Header{Name: name, Rrtype: dns.TypeCNAME, Class: dns.ClassINET, Ttl: 30}, Target: "vpn.test."})
-				name = "vpn.test."
-			}
-			hdr := dns.RR_Header{Name: name, Rrtype: question.Qtype, Class: dns.ClassINET, Ttl: 30}
-			switch question.Qtype {
-			case dns.TypeA:
-				if name != "ipv6.test." {
-					a.Answer = append(a.Answer, &dns.A{Hdr: hdr, A: net.ParseIP(sharedIP)})
-				}
-			case dns.TypeAAAA:
-				a.Answer = append(a.Answer, &dns.AAAA{Hdr: hdr, AAAA: net.ParseIP("fd77::2")})
-			}
+	for _, dnsAddress := range []string{"10.77.0.2:53", "[fd77::2]:53"} {
+		pc, err := stack.ListenUDPAddrPort(netip.MustParseAddrPort(dnsAddress))
+		if err != nil {
+			return err
 		}
-		w.WriteMsg(a)
-	})}
-	go server.ActivateAndServe()
+		f.closePeer = append(f.closePeer, pc)
+		server := &dns.Server{PacketConn: pc, Handler: dns.HandlerFunc(func(w dns.ResponseWriter, q *dns.Msg) {
+			f.dnsQueries.Add(1)
+			a := new(dns.Msg)
+			a.SetReply(q)
+			for _, question := range q.Question {
+				name := strings.ToLower(question.Name)
+				if recordDNS {
+					f.dnsNamesMu.Lock()
+					if len(f.dnsNames) < 4096 {
+						f.dnsNames = append(f.dnsNames, name)
+					}
+					f.dnsNamesMu.Unlock()
+				}
+				if name == "cname.test." {
+					a.Answer = append(a.Answer, &dns.CNAME{Hdr: dns.RR_Header{Name: name, Rrtype: dns.TypeCNAME, Class: dns.ClassINET, Ttl: 30}, Target: "vpn.test."})
+					name = "vpn.test."
+				}
+				hdr := dns.RR_Header{Name: name, Rrtype: question.Qtype, Class: dns.ClassINET, Ttl: 30}
+				switch question.Qtype {
+				case dns.TypeA:
+					if name != "ipv6.test." {
+						a.Answer = append(a.Answer, &dns.A{Hdr: hdr, A: net.ParseIP(sharedIP)})
+					}
+				case dns.TypeAAAA:
+					a.Answer = append(a.Answer, &dns.AAAA{Hdr: hdr, AAAA: net.ParseIP("fd77::2")})
+				}
+			}
+			w.WriteMsg(a)
+		})}
+		go server.ActivateAndServe()
+	}
 	cleanup = false
 	return nil
 }
@@ -295,6 +304,7 @@ func main() {
 	flag.StringVar(&transportKind, "transport", "awg", "disposable peer protocol: awg or wireguard")
 	flag.BoolVar(&persistentEnabled, "persistent", false, "keep the disposable TCP echo connection open for recovery acceptance")
 	flag.BoolVar(&bulkEnabled, "bulk", false, "enable bounded performance-test stream observers")
+	flag.IntVar(&nativeDNSPort, "native-dns-port", 0, "optional loopback UDP DNS fixture (ephemeral test host only)")
 	flag.BoolVar(&recordDNS, "record-dns", false, "record bounded synthetic DNS observations for split DNS acceptance")
 	flag.StringVar(&sharedIP, "shared-ip", sharedIP, "native host address used by both controlled observers")
 	path := flag.String("config", "", "private output fixture JSON (never upload)")
@@ -382,6 +392,29 @@ func main() {
 	defer u.Close()
 	go observeTCP(l, "DIRECT", &f.directTCP)
 	go observeUDP(u, "DIRECT", &f.directUDP)
+	if nativeDNSPort != 0 {
+		pc, e := net.ListenPacket("udp4", fmt.Sprintf("127.0.0.1:%d", nativeDNSPort))
+		if e != nil {
+			panic(e)
+		}
+		defer pc.Close()
+		server := &dns.Server{PacketConn: pc, Handler: dns.HandlerFunc(func(w dns.ResponseWriter, q *dns.Msg) {
+			var reply dns.Msg
+			reply.SetReply(q)
+			for _, question := range q.Question {
+				if strings.EqualFold(question.Name, "endpoint.fixture.test.") && dropEndpointDNS.Load() {
+					reply.Rcode = dns.RcodeNameError
+					continue
+				}
+				if question.Qtype == dns.TypeA {
+					reply.Answer = append(reply.Answer, &dns.A{Hdr: dns.RR_Header{Name: question.Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 1}, A: net.ParseIP(sharedIP).To4()})
+				}
+			}
+			w.WriteMsg(&reply)
+		})}
+		go server.ActivateAndServe()
+		defer server.Shutdown()
+	}
 	control := http.NewServeMux()
 	control.HandleFunc("/dns-observations", func(w http.ResponseWriter, _ *http.Request) {
 		f.dnsNamesMu.Lock()
@@ -392,6 +425,14 @@ func main() {
 		// Datagram counts identify delivery/peer response failures without
 		// persisting handshake payloads, keys or private UAPI configuration.
 		json.NewEncoder(w).Encode(map[string]int64{"direct_tcp": f.directTCP.Load(), "direct_udp": f.directUDP.Load(), "vpn_tcp": f.vpnTCP.Load(), "bulk_tcp": f.bulkTCP.Load(), "vpn_udp": f.vpnUDP.Load(), "dns_queries": f.dnsQueries.Load(), "outer_received": f.outerRX.Load(), "outer_sent": f.outerTX.Load()})
+	})
+	control.HandleFunc("/endpoint-dns", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(405)
+			return
+		}
+		dropEndpointDNS.Store(r.URL.Query().Get("state") == "off")
+		w.Write([]byte("OK"))
 	})
 	control.HandleFunc("/peer", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
