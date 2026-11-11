@@ -246,7 +246,7 @@ def main():
                             print(f"RESTORED_NS={report['mtu_restored_wall_ns']}", flush=True)
                     elif name == 'wifi_off': adb('shell', 'svc', 'wifi', 'disable')
                     elif name == 'wifi_on': adb('shell', 'svc', 'wifi', 'enable')
-                    if name in ('before', 'after', 'safe_policy_before', 'safe_policy_after', 'perf_legacy_before', 'perf_legacy_after', 'perf_shared_before', 'perf_shared_after'):
+                    if name in ('before', 'after', 'safe_policy_before', 'safe_policy_after', 'perf_legacy_before', 'perf_legacy_after', 'perf_shared_before', 'perf_shared_after', 'upload_mtu_before', 'upload_mtu_after'):
                         report['retained_resources'][name] = snapshot()
                     with urllib.request.urlopen('http://127.0.0.1:18080/stats', timeout=5) as response:
                         stats = json.load(response)

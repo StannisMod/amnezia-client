@@ -14,6 +14,7 @@ on:
       - .gitmodules
       - scripts/routing/android_host_sources.py
       - scripts/routing/test_android_host_sources.py
+      - scripts/routing/test_android_upload_mtu_metrics.py
       - native/routing/androidbridge/**
       - scripts/routing/android/**
       - .github/workflows/routing-android-acceptance.yml
@@ -72,7 +73,9 @@ jobs:
         with:
           packages: 'platform-tools platforms;android-36 build-tools;36.0.0'
       - name: Verify packaged-host compatibility boundary
-        run: python3 scripts/routing/test_android_host_sources.py
+        run: |
+          python3 scripts/routing/test_android_host_sources.py
+          python3 scripts/routing/test_android_upload_mtu_metrics.py
       - name: Select an APK with compatible production Android host sources
         env:
           GH_TOKEN: ${{ github.token }}
