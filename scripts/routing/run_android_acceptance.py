@@ -302,6 +302,14 @@ def main():
         if not args.primary_only: report['all_vpn_lockdown'] = 'PASS'
     finally:
         if timer is not None: timer.cancel()
+        # Fault injection can abort before instrumentation switches the peer
+        # back on. Leave the persistent disposable fixture ready for a rerun.
+        try:
+            request = urllib.request.Request('http://127.0.0.1:18080/peer?state=on', data=b'', method='POST')
+            with urllib.request.urlopen(request, timeout=5) as response:
+                assert response.status == 200
+        except (OSError, AssertionError) as error:
+            report['fixture_peer_cleanup'] = type(error).__name__
         nft_command('delete', 'table', 'inet', fault_table, check=False)
         try: adb('shell', 'svc', 'wifi', 'enable')
         except subprocess.CalledProcessError: pass

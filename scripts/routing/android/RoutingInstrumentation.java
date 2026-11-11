@@ -600,7 +600,7 @@ public final class RoutingInstrumentation extends Instrumentation {
     private static JSONObject control(String path, boolean post) throws Exception {
         try (Socket socket = new Socket()) {
             socket.connect(new InetSocketAddress("10.0.2.2", 18080), 4000); socket.setSoTimeout(4000);
-            socket.getOutputStream().write(((post ? "POST " : "GET ") + path + " HTTP/1.0\r\nHost: fixture\r\nContent-Length: 0\r\n\r\n").getBytes(StandardCharsets.US_ASCII));
+            socket.getOutputStream().write(((post ? "POST " : "GET ") + path + " HTTP/1.0\r\nHost: 10.0.2.2\r\nContent-Length: 0\r\n\r\n").getBytes(StandardCharsets.US_ASCII));
             BufferedReader reader = new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.US_ASCII));
             require(reader.readLine().contains("200"), "fixture control failed");
             String line; while ((line = reader.readLine()) != null && !line.isEmpty()) {}
