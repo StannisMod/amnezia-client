@@ -1,5 +1,6 @@
 package org.amnezia.vpn
 
+import org.amnezia.vpn.util.net.ApplicationPackageRefreshQueue
 import android.annotation.SuppressLint
 import android.app.ActivityManager
 import android.app.ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND_SERVICE
@@ -114,8 +115,7 @@ open class AmneziaVpnService : VpnService() {
     private lateinit var trafficStats: TrafficStats
     private var packageReceiver: BroadcastReceiver? = null
     private var packageRefreshJob: Job? = null
-    private var packageRefreshSession = -1L
-    private val pendingPackageRefresh = linkedMapOf<String, Boolean>()
+    private val pendingPackageRefresh = ApplicationPackageRefreshQueue()
     private var controlReceiver: BroadcastReceiver? = null
     private var notificationStateReceiver: BroadcastReceiver? = null
     private var screenOnReceiver: BroadcastReceiver? = null
@@ -359,38 +359,32 @@ open class AmneziaVpnService : VpnService() {
         val active=vpnProto?.existingProtocol ?: return
         val session=active.connectionDiagnostics()?.optLong("session_id", -1) ?: return
         if (!isConnected || session<=0) return
-        if (packageRefreshSession != session) {
-            packageRefreshSession=session
+        if (pendingPackageRefresh.offer(session, packageName, refreshCapture)) {
             packageRefreshJob?.cancel()
-            pendingPackageRefresh.clear()
         }
-        pendingPackageRefresh[packageName]=refreshCapture || pendingPackageRefresh[packageName]==true
         if (packageRefreshJob?.isActive==true) return
+        val worker=pendingPackageRefresh.start(session)
         packageRefreshJob=mainScope.launch {
             var attempt=0
             try {
-                while (pendingPackageRefresh.isNotEmpty() && isConnected && vpnProto?.existingProtocol===active && active.connectionDiagnostics()?.optLong("session_id", -1)==session) {
-                    val name=pendingPackageRefresh.keys.first()
-                    val capture=pendingPackageRefresh.remove(name)==true
+                while (isConnected && vpnProto?.existingProtocol===active && active.connectionDiagnostics()?.optLong("session_id", -1)==session) {
+                    val request=pendingPackageRefresh.take(worker) ?: break
                     try {
                         applicationPolicyMutex.withLock {
                             if (!isConnected || vpnProto?.existingProtocol!==active || active.connectionDiagnostics()?.optLong("session_id", -1)!=session) return@launch
-                            withContext(Dispatchers.IO) { active.refreshApplicationPackages(name, capture, Builder(), session) }
+                            withContext(Dispatchers.IO) { active.refreshApplicationPackages(request.packageName, request.refreshCapture, Builder(), session) }
                         }
                         attempt=0
                     } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
                       catch (error: Exception) {
-                        pendingPackageRefresh[name]=capture || pendingPackageRefresh[name]==true
+                        if (!pendingPackageRefresh.retry(request)) return@launch
                         Log.w(TAG, "Application package refresh deferred: ${error.message}")
                         ++attempt
                         delay((attempt.coerceAtMost(6)*5000).toLong())
                     }
                 }
             } finally {
-                if (packageRefreshSession==session) {
-                    pendingPackageRefresh.clear()
-                    packageRefreshJob=null
-                }
+                if (pendingPackageRefresh.finish(worker)) packageRefreshJob=null
             }
         }
     }
@@ -472,7 +466,7 @@ open class AmneziaVpnService : VpnService() {
     private fun unregisterBroadcastReceivers() {
         Log.d(TAG, "Unregister broadcast receivers")
         packageRefreshJob?.cancel();packageRefreshJob=null
-        pendingPackageRefresh.clear();packageRefreshSession=-1L
+        pendingPackageRefresh.clear()
         unregisterBroadcastReceiver(packageReceiver);packageReceiver=null
         unregisterBroadcastReceiver(controlReceiver)
         unregisterBroadcastReceiver(notificationStateReceiver)
