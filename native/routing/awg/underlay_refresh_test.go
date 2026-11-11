@@ -183,15 +183,18 @@ func recoveryIdentity(t *testing.T, c *Transport) [32]byte {
 }
 
 func TestRefreshUnderlayPreservesTCPThroughNATAndEndpointMove(t *testing.T) {
-	testEncryptedTCPRecovery(t, false, false)
+	testEncryptedTCPRecovery(t, false, false, false)
 }
 func TestAutomaticTCPRecoveryThroughEncryptedPath(t *testing.T) {
-	testEncryptedTCPRecovery(t, true, false)
+	testEncryptedTCPRecovery(t, true, false, false)
 }
 func TestTCPWorkerStopsDuringEncryptedBlackhole(t *testing.T) {
-	testEncryptedTCPRecovery(t, true, true)
+	testEncryptedTCPRecovery(t, true, true, false)
 }
-func testEncryptedTCPRecovery(t *testing.T, automatic, stopDuringLoss bool) {
+func TestEncryptedTCPRecoveryAggregateBudget(t *testing.T) {
+	testEncryptedTCPRecovery(t, true, false, true)
+}
+func testEncryptedTCPRecovery(t *testing.T, automatic, stopDuringLoss, aggregate bool) {
 	for _, standard := range []bool{false, true} {
 		for _, innerV6 := range []bool{false, true} {
 			t.Run(fmt.Sprintf("standard=%t/innerIPv6=%t", standard, innerV6), func(t *testing.T) {
@@ -293,6 +296,10 @@ func testEncryptedTCPRecovery(t *testing.T, automatic, stopDuringLoss bool) {
 					}
 				}
 				exchange("initial")
+				if aggregate {
+					testEncryptedAggregateRecovery(t, ctx, client, first, stream, serverIP, &accepts)
+					return
+				}
 				// This challenge traverses both real devices and the UDP relay,
 				// rather than connecting the two inner stacks directly.
 				verifyPath := func() tcpPathProof {
