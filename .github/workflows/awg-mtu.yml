@@ -47,6 +47,10 @@ jobs:
             mkdir -p "mtu-results/$mtu"
             docker run --rm --init --network none --privileged --pids-limit 512 --memory 3g --cpus 4 -e MTU_LAB_SERVER_MTU="$mtu" -v "$PWD/mtu-results/$mtu:/results" awg-mtu-regression
           done
+      - name: Measure the server-only upstream limitation
+        run: |
+          mkdir -p mtu-results/upload
+          docker run --rm --init --network none --privileged --pids-limit 512 --memory 3g --cpus 4 -e AMNEZIA_STABILITY_UPLOAD=1 -v "$PWD/mtu-results/upload:/results" awg-mtu-regression
       - uses: actions/upload-artifact@v4
         if: always()
         with:

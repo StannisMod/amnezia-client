@@ -36,7 +36,11 @@ command=['ip','netns','exec','stability-peer','python3','/controller/supervisor.
          '--interface','stb-peer','--command','/lab/status','--interval','1']
 process=None
 try:
-    subprocess.run(['nft','-f','-'],input='add table inet mtu_lab\nadd chain inet mtu_lab input { type filter hook input priority -10; }\nadd rule inet mtu_lab input ip saddr 203.0.113.2 meta l4proto udp ip length > 1200 counter drop\n',text=True,check=True)
+    upload=os.environ.get('AMNEZIA_STABILITY_UPLOAD')=='1'
+    chain='output' if upload else 'input'
+    match='daddr' if upload else 'saddr'
+    rules=f'add table inet mtu_lab\nadd chain inet mtu_lab {chain} {{ type filter hook {chain} priority -10; }}\nadd rule inet mtu_lab {chain} ip {match} 203.0.113.2 meta l4proto udp ip length > 1200 counter drop\n'
+    subprocess.run(['nft','-f','-'],input=rules,text=True,check=True)
     time.sleep(2)
     frozen=flows()
     time.sleep(2)
@@ -47,6 +51,13 @@ try:
     with (out/'supervisor.jsonl').open('w') as log:
         process=subprocess.Popen(command,stdout=log,stderr=log)
         wait_for(lambda:'mtu 1104' in routes())
+        if upload:
+            time.sleep(3)
+            upload_recovered=flows()['chunks']>frozen['chunks']
+            subprocess.run(['nft','delete','table','inet','mtu_lab'],check=True)
+            process.terminate();process.wait(timeout=12);process=None
+            (out/'mtu-result.json').write_text(json.dumps({'upload_server_only_recovery':upload_recovered,'old_tcp':'checked by engine after path restore'}))
+            raise SystemExit(0)
         wait_for(lambda:flows()['chunks']>frozen['chunks']+3)
         reduced=routes()
         assert '10.77.0.3 dev stb-peer scope link mtu' not in reduced

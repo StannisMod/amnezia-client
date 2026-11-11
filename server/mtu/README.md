@@ -61,3 +61,9 @@ Installer updates upload both scripts into a content-addressed release
 folder, validate Python syntax, then atomically switch the current symlink.
 Only after successful activation is the new startup script uploaded. Running
 supervisors resolve their own release path before spawning workers.
+
+The upload variant sets AMNEZIA_STABILITY_UPLOAD=1. It measures whether a
+server-only route adjustment repairs upstream size loss and then verifies the
+original upload resumes after the synthetic fault is removed. Current evidence
+shows no upstream recovery from the server-only adjustment. This measurement
+must not be reported as an upload MTU fix.
