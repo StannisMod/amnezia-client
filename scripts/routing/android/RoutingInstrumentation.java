@@ -586,6 +586,9 @@ public final class RoutingInstrumentation extends Instrumentation {
                 long refreshDeadline=SystemClock.elapsedRealtime()+20000;
                 while(connectionDiagnostics().optLong("capture_refresh_count",0)<=captureGeneration && !serviceError && SystemClock.elapsedRealtime()<refreshDeadline)SystemClock.sleep(100);
                 require(connectionDiagnostics().optLong("capture_refresh_count",0)>captureGeneration,"package capture handover was not acknowledged");
+                retainedCheckpoint("package_refreshed");
+                JSONObject capture=connectionDiagnostics();
+                progress("PACKAGE_LIFECYCLE_CAPTURE "+new JSONObject().put("session_id",capture.optLong("session_id",-1)).put("capture_refresh_count",capture.optLong("capture_refresh_count",-1)));
                 JSONObject kept=appProbe(0,"echo","old");
                 require(kept.getInt("local_port")==a.getInt("local_port") && kept.getString("route").equals("VPN"),"reinstall broke unaffected app TCP");
                 JSONObject reinstalled=appProbe(1,"open","reinstalled");

@@ -293,7 +293,12 @@ def main():
                     if request_id in control_timers: control_timers[request_id].cancel()
                 if "RETAIN_CHECKPOINT " in line:
                     name = line.strip().split("RETAIN_CHECKPOINT ", 1)[1]
-                    assert name in ('before', 'after', 'restore_mtu', 'drop_mtu', 'drop_before_media', 'restore_before_media', 'drop_with_media', 'restore_with_media', 'wifi_off', 'wifi_on', 'safe_policy_before', 'safe_policy_after', 'perf_legacy_before', 'perf_legacy_after', 'perf_shared_before', 'perf_shared_after', 'upload_mtu_before', 'drop_upload_mtu', 'upload_mtu_after', 'restore_upload_mtu', 'app_policy_before', 'app_policy_after')
+                    assert name in ('before', 'after', 'restore_mtu', 'drop_mtu', 'drop_before_media', 'restore_before_media', 'drop_with_media', 'restore_with_media', 'wifi_off', 'wifi_on', 'safe_policy_before', 'safe_policy_after', 'perf_legacy_before', 'perf_legacy_after', 'perf_shared_before', 'perf_shared_after', 'upload_mtu_before', 'drop_upload_mtu', 'upload_mtu_after', 'restore_upload_mtu', 'app_policy_before', 'app_policy_after', 'package_refreshed')
+                    if name == 'package_refreshed':
+                        assert args.package_lifecycle, 'unexpected package refresh checkpoint'
+                        (work/'package-refreshed-connectivity.log').write_text(adb('shell','dumpsys','connectivity'))
+                        (work/'package-refreshed-rules.log').write_text(adb('shell','ip','rule','show'))
+                        (work/'package-refreshed-routes.log').write_text(adb('shell','ip','route','show','table','all'))
                     if name == 'before' and os.environ.get('AWG_ECHO_LAB') == '1':
                         observations=[]
                         for size in (128,576,1104,1280):
