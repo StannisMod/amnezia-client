@@ -61,6 +61,9 @@ public:
     QVector<InstalledAppInfo> vpnApps(AppsRouteMode mode) const;
     bool isAppsSplitTunnelingEnabled() const;
     void setAppsSplitTunnelingEnabled(bool enabled);
+    QJsonObject androidAppRoutingPolicy() const;
+    void setAndroidAppRoutingPolicy(const QJsonObject &policy);
+    static bool validateAndroidAppRoutingPolicy(const QJsonObject &policy, bool supported = true);
 
     QString getGatewayEndpoint(bool isTestPurchase = false) const;
     void setGatewayEndpoint(const QString &endpoint);

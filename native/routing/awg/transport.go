@@ -27,11 +27,12 @@ type Config struct {
 	PublicKey    string       `json:"public_key"`
 	PreSharedKey string       `json:"pre_shared_key,omitempty"`
 	// Endpoint is resolved through the host's underlay bootstrap before start.
-	Endpoint   netip.AddrPort    `json:"endpoint"`
-	AllowedIPs []netip.Prefix    `json:"allowed_ips"`
-	Keepalive  Keepalive         `json:"keepalive,omitempty"`
-	ListenPort uint16            `json:"listen_port,omitempty"`
-	Parameters map[string]string `json:"parameters,omitempty"`
+	Endpoint     netip.AddrPort    `json:"endpoint"`
+	AllowedIPs   []netip.Prefix    `json:"allowed_ips"`
+	Keepalive    Keepalive         `json:"keepalive,omitempty"`
+	ListenPort   uint16            `json:"listen_port,omitempty"`
+	Parameters   map[string]string `json:"parameters,omitempty"`
+	PathMTUProbe netip.Addr        `json:"path_mtu_probe,omitempty"`
 }
 
 var parameters = strings.Fields("jc jmin jmax s1 s2 s3 s4 h1 h2 h3 h4 i1 i2 i3 i4 i5 header_protection_key content_padding_addition rekey_after_time rekey_timeout reject_after_time keepalive_timeout max_handshake_attempts random_trailers disable_cookies")
@@ -45,6 +46,22 @@ func keyHex(s string) (string, error) {
 }
 
 func (c Config) uapi() (string, error) {
+	if c.PathMTUProbe.IsValid() {
+		peer := c.PathMTUProbe.Unmap()
+		allowed, source := false, false
+		for _, prefix := range c.AllowedIPs {
+			allowed = allowed || prefix.Contains(peer)
+		}
+		for _, address := range c.Address {
+			source = source || address.Unmap().BitLen() == peer.BitLen()
+			if address.Unmap() == peer {
+				return "", errors.New("MTU probe cannot target local address")
+			}
+		}
+		if !peer.IsValid() || peer.Zone() != "" || !peer.IsGlobalUnicast() || !allowed || !source {
+			return "", errors.New("MTU probe must be an allowed remote peer with a local address in the same family")
+		}
+	}
 	if len(c.Address) == 0 || !c.Endpoint.IsValid() || c.Endpoint.Port() == 0 || len(c.AllowedIPs) == 0 {
 		return "", errors.New("AWG address, numeric endpoint and allowed IPs are required")
 	}
@@ -105,15 +122,16 @@ func (c Config) uapi() (string, error) {
 }
 
 type Transport struct {
-	Net      *FlowStack
-	device   *device.Device
-	bind     *packetBind
-	peerKey  device.NoisePublicKey
-	endpoint netip.AddrPort
-	mu       sync.RWMutex
-	closed   bool
-	address4 netip.Addr
-	address6 netip.Addr
+	Net       *FlowStack
+	device    *device.Device
+	bind      *packetBind
+	peerKey   device.NoisePublicKey
+	endpoint  netip.AddrPort
+	mu        sync.RWMutex
+	closed    bool
+	address4  netip.Addr
+	address6  netip.Addr
+	mtuWorker *pathMTUWorker
 }
 
 type Stats = tunnel.Stats
@@ -123,7 +141,7 @@ func (c Config) Validate() error {
 	if _, err := c.uapi(); err != nil {
 		return err
 	}
-	if c.MTU != 0 && (c.MTU < 1280 || c.MTU > 65535) {
+	if c.MTU != 0 && !validFlowMTU(c.Address, c.MTU) {
 		return errors.New("AWG MTU outside supported range")
 	}
 	return nil
@@ -184,7 +202,7 @@ func New(ctx context.Context, c Config, listen ListenUnderlay) (*Transport, erro
 	if c.MTU == 0 {
 		c.MTU = 1280
 	}
-	if c.MTU < 1280 || c.MTU > 65535 {
+	if !validFlowMTU(c.Address, c.MTU) {
 		return nil, errors.New("AWG MTU outside supported range")
 	}
 	tun, n, e := NewFlowTUN(c.Address, c.MTU)
@@ -208,6 +226,9 @@ func New(ctx context.Context, c Config, listen ListenUnderlay) (*Transport, erro
 			t.address6 = a
 		}
 	}
+	if c.PathMTUProbe.IsValid() {
+		t.mtuWorker = startPathMTUWorker(ctx, n, c.PathMTUProbe)
+	}
 	return t, nil
 }
 
@@ -230,6 +251,7 @@ func (t *Transport) RefreshUnderlay(remote netip.AddrPort) error {
 		return errors.New("invalid VPN recovery endpoint")
 	}
 	remote = netip.AddrPortFrom(remote.Addr().Unmap(), remote.Port())
+	t.mtuWorker.invalidate()
 	peer := t.device.LookupPeer(t.peerKey)
 	if peer == nil {
 		return errors.New("VPN recovery peer unavailable")
@@ -274,6 +296,7 @@ func (t *Transport) Close() error {
 		return nil
 	}
 	t.closed = true
+	t.mtuWorker.stop()
 	t.device.Close()
 	return nil
 }

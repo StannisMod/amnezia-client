@@ -283,6 +283,12 @@ bool ServersUiController::isDefaultServerDefaultContainerHasSplitTunneling() con
     return false;
 }
 
+bool ServersUiController::defaultServerSupportsPerAppSiteRules() const
+{
+    const auto container = m_serversController->getDefaultContainer(m_serversController->getDefaultServerId());
+    return container == DockerContainer::Awg || container == DockerContainer::WireGuard;
+}
+
 bool ServersUiController::isDefaultServerFromApi() const
 {
     return isServerFromApi(getDefaultServerId());

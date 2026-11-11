@@ -1,0 +1,12 @@
+#!/usr/bin/python3
+import os
+import sys
+import time
+
+if sys.argv[-1] == "latest-handshakes":
+    print("peer1", int(time.time()))
+    print("peer2", int(time.time()))
+else:
+    if not os.path.exists("/results/remove-peer1"):
+        print("peer1 10.77.0.1/32")
+    print("peer2 10.77.0.3/32")

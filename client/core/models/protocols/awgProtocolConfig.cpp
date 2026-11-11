@@ -84,6 +84,7 @@ QJsonObject AwgServerConfig::toJson() const
     if (!subnetCidr.isEmpty()) {
         obj[configKey::subnetCidr] = subnetCidr;
     }
+    if (!ipv6Address.isEmpty()) obj["ipv6_address"] = ipv6Address;
     
     if (!junkPacketCount.isEmpty()) {
         obj[configKey::junkPacketCount] = junkPacketCount;
@@ -170,6 +171,7 @@ AwgServerConfig AwgServerConfig::fromJson(const QJsonObject& json)
     config.protocolVersion = json.value(configKey::protocolVersion).toString();
     config.subnetAddress = json.value(configKey::subnetAddress).toString();
     config.subnetCidr = json.value(configKey::subnetCidr).toString();
+    config.ipv6Address = json.value("ipv6_address").toString();
     
     config.junkPacketCount = json.value(configKey::junkPacketCount).toString();
     config.junkPacketMinSize = json.value(configKey::junkPacketMinSize).toString();
@@ -221,6 +223,7 @@ QJsonObject AwgClientConfig::toJson() const
     if (!clientIp.isEmpty()) {
         obj[configKey::clientIp] = clientIp;
     }
+    if (!pathMtuProbe.isEmpty()) obj["path_mtu_probe"] = pathMtuProbe;
     if (!clientPrivateKey.isEmpty()) {
         obj[configKey::clientPrivKey] = clientPrivateKey;
     }
@@ -341,6 +344,7 @@ AwgClientConfig AwgClientConfig::fromJson(const QJsonObject& json)
     config.hostName = json.value(configKey::hostName).toString();
     config.port = json.value(configKey::port).toInt(0);
     config.clientIp = json.value(configKey::clientIp).toString();
+    config.pathMtuProbe = json.value("path_mtu_probe").toString();
     config.clientPrivateKey = json.value(configKey::clientPrivKey).toString();
     config.clientPublicKey = json.value(configKey::clientPubKey).toString();
     config.serverPublicKey = json.value(configKey::serverPubKey).toString();
@@ -456,7 +460,7 @@ void AwgProtocolConfig::clearClientConfig()
 
 bool AwgServerConfig::hasEqualServerSettings(const AwgServerConfig& other) const
 {
-    if (subnetAddress != other.subnetAddress || port != other.port || 
+    if (subnetAddress != other.subnetAddress || ipv6Address != other.ipv6Address || port != other.port ||
         junkPacketCount != other.junkPacketCount ||
         junkPacketMinSize != other.junkPacketMinSize || junkPacketMaxSize != other.junkPacketMaxSize ||
         initPacketJunkSize != other.initPacketJunkSize || responsePacketJunkSize != other.responsePacketJunkSize ||

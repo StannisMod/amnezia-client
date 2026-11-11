@@ -15,6 +15,11 @@ internal class ValidatedNetworkState<T> {
         return !initial && nowValidated && (changed || !wasValidated)
     }
 
+    // A retained tunnel can probe private/captive networks before Android's
+    // public Internet validation succeeds. Legacy hosts keep their old policy.
+    fun available(network: T, preserving: Boolean): Boolean =
+        preserving && current != null && (current != network || !validated)
+
     fun lost(network: T) {
         if (current == network) validated = false
     }

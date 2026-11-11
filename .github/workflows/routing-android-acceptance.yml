@@ -2,10 +2,25 @@ name: Android routed VPN acceptance
 
 on:
   push:
-    branches: [dev, feature/sing-box-routing]
+    branches: [dev, feature/sing-box-routing, feature/android-primary-awg-core]
     paths:
+      - client/**
+      - common/**
+      - third_party/**
+      - cmake/**
+      - deploy/**
+      - CMakeLists.txt
+      - CMakePresets.json
+      - .gitmodules
+      - scripts/routing/android_host_sources.py
+      - scripts/routing/test_android_host_sources.py
+      - scripts/routing/test_android_upload_mtu_metrics.py
+      - scripts/routing/test_android_app_policy_metrics.py
+      - native/routing/androidbridge/**
+      - scripts/routing/android/**
+      - scripts/routing/android-app-probe/**
       - .github/workflows/routing-android-acceptance.yml
-      - recipes/libagw/**
+      - recipes/**
       - scripts/routing/android/**
       - scripts/routing/run_android_acceptance.py
       - native/routing/cmd/android-fixture/**
@@ -14,6 +29,7 @@ on:
       - native/routing/awg/**
       - native/routing/engine/**
       - native/routing/mobile/**
+      - scripts/routing/ci_apt_mirrors.py
       - scripts/routing/build_android_native.sh
       - scripts/routing/replace_android_native.py
       - scripts/routing/verify_android_payload.py
@@ -37,10 +53,23 @@ concurrency:
 
 jobs:
   actual-apk-service:
+    name: ${{ matrix.check_name }}
     runs-on: ubuntu-22.04
     timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {transport: awg, api: 35, focus: '', check_name: 'actual-apk-service (awg)'}
+          - {transport: wireguard, api: 35, focus: '', check_name: 'actual-apk-service (wireguard)'}
+          - {transport: awg, api: 29, focus: '--app-policy-only', check_name: 'actual-apk-service (awg, API29 app policy)'}
+          - {transport: wireguard, api: 29, focus: '--app-policy-only', check_name: 'actual-apk-service (wireguard, API29 app policy)'}
     steps:
       - uses: actions/checkout@v4
+      - name: Select direct Ubuntu mirrors and bound package network retries
+        run: sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT python3 scripts/routing/ci_apt_mirrors.py
+      - name: Install isolated fault-test tools
+        run: sudo apt-get update && sudo apt-get install -y nftables
       - uses: actions/setup-go@v5
         with:
           go-version-file: native/routing/go.mod
@@ -50,13 +79,20 @@ jobs:
       - uses: android-actions/setup-android@v4
         with:
           packages: 'platform-tools platforms;android-36 build-tools;36.0.0'
+      - name: Verify packaged-host compatibility boundary
+        run: |
+          python3 scripts/routing/test_android_host_sources.py
+          python3 scripts/routing/test_android_upload_mtu_metrics.py
+          python3 scripts/routing/test_android_app_policy_metrics.py
       - name: Select an APK with compatible production Android host sources
         env:
           GH_TOKEN: ${{ github.token }}
           APK_OVERRIDE: ${{ inputs.apk_run_id }}
         run: |
           python3 - <<'PYSELECT'
-          import json, os, pathlib, subprocess, time, urllib.error, urllib.parse, urllib.request
+          import json, os, pathlib, subprocess, sys, time, urllib.error, urllib.parse, urllib.request
+          sys.path.insert(0, 'scripts/routing')
+          from android_host_sources import changed_host_sources
           repo = os.environ['GITHUB_REPOSITORY']
           branch = urllib.parse.quote(os.environ['GITHUB_REF_NAME'], safe='')
           def api(path):
@@ -74,9 +110,7 @@ jobs:
           def compatible(sha):
               if sha not in compatibility:
                   subprocess.run(['git', 'fetch', '--depth', '1', 'origin', sha], check=True)
-                  code = subprocess.run(['git', 'diff', '--quiet', sha, 'HEAD', '--', 'client/android', 'client/platforms/android', 'recipes', 'cmake', 'deploy/build.sh', 'CMakeLists.txt']).returncode
-                  assert code in (0, 1), 'Android host comparison failed'
-                  compatibility[sha] = code == 0
+                  compatibility[sha] = not changed_host_sources(sha)
               return compatibility[sha]
           selected = None
           deadline = time.monotonic() + 125 * 60
@@ -173,7 +207,7 @@ jobs:
       - name: Actual APK, VpnService capture, protected sockets and 100-cycle acceptance
         uses: reactivecircus/android-emulator-runner@v2
         with:
-          api-level: 35
+          api-level: ${{ matrix.api }}
           target: google_apis
           arch: x86_64
           cores: 2
@@ -182,9 +216,10 @@ jobs:
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           script: |
-            "$RUNNER_TEMP/android-fixture" --config "$RUNNER_TEMP/fixture.json" --quic-ca "$RUNNER_TEMP/quic.der" > fixture-server.log 2>&1 & echo $! > "$RUNNER_TEMP/fixture.pid"
+            sudo ip addr add 198.51.100.2/32 dev lo
+            "$RUNNER_TEMP/android-fixture" --shared-ip 198.51.100.2 --endpoint-host 10.0.2.2 --transport "${{ matrix.transport }}" --persistent --bulk --native-dns-port 1053 --config "$RUNNER_TEMP/fixture.json" --quic-ca "$RUNNER_TEMP/quic.der" > fixture-server.log 2>&1 & echo $! > "$RUNNER_TEMP/fixture.pid"
             for i in $(seq 1 30); do test -s "$RUNNER_TEMP/fixture.json" && break; sleep 1; done
-            python3 scripts/routing/run_android_acceptance.py --apk "$FEATURE_APK" --fixture "$RUNNER_TEMP/fixture.json" --quic-probe "$RUNNER_TEMP/android-traffic-probe" --quic-ca "$RUNNER_TEMP/quic.der" --work "$RUNNER_TEMP/android-acceptance" --cycles "${{ inputs.cycles || '100' }}"
+            python3 scripts/routing/run_android_acceptance.py --apk "$FEATURE_APK" --fixture "$RUNNER_TEMP/fixture.json" --quic-probe "$RUNNER_TEMP/android-traffic-probe" --quic-ca "$RUNNER_TEMP/quic.der" --work "$RUNNER_TEMP/android-acceptance" --cycles "${{ inputs.cycles || '100' }}" ${{ matrix.focus }} --apk-source-sha "$(python3 -c 'import json;print(json.load(open("tested-apk-source.json"))["head_sha"])')"
       - name: Stop the local peer and remove ephemeral private configuration
         if: always()
         run: |
@@ -193,7 +228,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: android-actual-apk-acceptance
+          name: android-actual-apk-acceptance-${{ matrix.transport }}-api${{ matrix.api }}
           if-no-files-found: error
           path: |
             tested-apk-source.json

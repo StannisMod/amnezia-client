@@ -1,0 +1,90 @@
+name: AWG MTU controller
+on:
+  push:
+    paths:
+      - server/mtu/**
+      - server/ipv6/**
+      - client/server_scripts/enable_ipv6_forwarding.sh
+      - client/server_scripts/prepare_ipv6_network.sh
+      - client/tests/test_ipv6_network_prepare.py
+      - native/routing/**
+      - client/server_scripts/awg/**
+      - client/server_scripts/awg_legacy/**
+      - client/server_scripts/serverScripts.qrc
+      - .github/workflows/awg-mtu.yml
+  pull_request:
+    paths:
+      - server/mtu/**
+      - server/ipv6/**
+      - client/server_scripts/enable_ipv6_forwarding.sh
+      - client/server_scripts/prepare_ipv6_network.sh
+      - client/tests/test_ipv6_network_prepare.py
+      - native/routing/**
+      - client/server_scripts/awg/**
+      - client/server_scripts/awg_legacy/**
+      - .github/workflows/awg-mtu.yml
+permissions:
+  contents: read
+jobs:
+  ipv6-forwarding:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build isolated IPv6 forwarding fixture
+        run: docker build -f server/ipv6/lab/Dockerfile -t ipv6-egress-regression .
+      - name: Verify kernel IPv6 TCP forwarding and scoped NAT
+        run: docker run --rm --network none --privileged --pids-limit 128 --memory 256m ipv6-egress-regression | tee ipv6-egress-result.log
+      - name: Verify encrypted AWG and WG through Linux TUN and NAT66
+        run: docker run --rm --network none --privileged --pids-limit 256 --memory 1g --entrypoint sh ipv6-egress-regression /app/run_encrypted.sh | tee ipv6-encrypted-egress.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ipv6-egress-result
+          path: |
+            ipv6-egress-result.log
+            ipv6-encrypted-egress.log
+  ownership:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Check route ownership regressions
+        run: python3 -m unittest discover -s server/mtu -p 'test_*.py'
+      - name: Check non-destructive IPv6 bridge preparation
+        run: |
+          sh -n client/server_scripts/prepare_ipv6_network.sh
+          python3 client/tests/test_ipv6_network_prepare.py
+      - name: Check transactional script activation
+        run: bash server/mtu/lab/test_activation.sh
+      - name: Check installed startup scripts
+        run: |
+          bash -n client/server_scripts/awg/start.sh
+          bash -n client/server_scripts/awg_legacy/start.sh
+          python3 -m py_compile server/mtu/controller.py server/mtu/supervisor.py
+  encrypted-integration:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build isolated AWG test fixture
+        run: docker build -f server/mtu/lab/Dockerfile -t awg-mtu-regression .
+      - name: Test original TCP flows, peer isolation and crash recovery
+        run: |
+          for mtu in 1280 1420; do
+            mkdir -p "mtu-results/$mtu"
+            docker run --rm --init --network none --privileged --pids-limit 512 --memory 3g --cpus 4 -e MTU_LAB_SERVER_MTU="$mtu" -v "$PWD/mtu-results/$mtu:/results" awg-mtu-regression
+          done
+      - name: Measure the server-only upstream limitation
+        run: |
+          mkdir -p mtu-results/upload
+          docker run --rm --init --network none --privileged --pids-limit 512 --memory 3g --cpus 4 -e AMNEZIA_STABILITY_UPLOAD=1 -v "$PWD/mtu-results/upload:/results" awg-mtu-regression
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: awg-mtu-results
+          path: |
+            mtu-results/**/mtu-result.json
+            mtu-results/**/supervisor.jsonl

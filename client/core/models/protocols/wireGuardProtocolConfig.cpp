@@ -32,6 +32,7 @@ QJsonObject WireGuardServerConfig::toJson() const
     if (!subnetCidr.isEmpty()) {
         obj[configKey::subnetCidr] = subnetCidr;
     }
+    if (!ipv6Address.isEmpty()) obj["ipv6_address"] = ipv6Address;
     
     if (isThirdPartyConfig) {
         obj[configKey::isThirdPartyConfig] = isThirdPartyConfig;
@@ -49,6 +50,7 @@ WireGuardServerConfig WireGuardServerConfig::fromJson(const QJsonObject& json)
     config.subnetAddress = json.value(configKey::subnetAddress).toString();
     config.subnetMask = json.value(configKey::subnetMask).toString();
     config.subnetCidr = json.value(configKey::subnetCidr).toString();
+    config.ipv6Address = json.value("ipv6_address").toString();
     
     config.isThirdPartyConfig = json.value(configKey::isThirdPartyConfig).toBool(false);
     
@@ -57,7 +59,7 @@ WireGuardServerConfig WireGuardServerConfig::fromJson(const QJsonObject& json)
 
 bool WireGuardServerConfig::hasEqualServerSettings(const WireGuardServerConfig& other) const
 {
-    return subnetAddress == other.subnetAddress && port == other.port;
+    return subnetAddress == other.subnetAddress && ipv6Address == other.ipv6Address && port == other.port;
 }
 
 QJsonObject WireGuardClientConfig::toJson() const
@@ -76,6 +78,7 @@ QJsonObject WireGuardClientConfig::toJson() const
     if (!clientIp.isEmpty()) {
         obj[configKey::clientIp] = clientIp;
     }
+    if (!pathMtuProbe.isEmpty()) obj["path_mtu_probe"] = pathMtuProbe;
     if (!clientPrivateKey.isEmpty()) {
         obj[configKey::clientPrivKey] = clientPrivateKey;
     }
@@ -127,6 +130,7 @@ WireGuardClientConfig WireGuardClientConfig::fromJson(const QJsonObject& json)
     config.hostName = json.value(configKey::hostName).toString();
     config.port = json.value(configKey::port).toInt(0);
     config.clientIp = json.value(configKey::clientIp).toString();
+    config.pathMtuProbe = json.value("path_mtu_probe").toString();
     config.clientPrivateKey = json.value(configKey::clientPrivKey).toString();
     config.clientPublicKey = json.value(configKey::clientPubKey).toString();
     config.serverPublicKey = json.value(configKey::serverPubKey).toString();

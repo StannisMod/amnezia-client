@@ -14,6 +14,8 @@
         <file>awg/Dockerfile</file>
         <file>awg/run_container.sh</file>
         <file>awg/start.sh</file>
+        <file alias="mtu/controller.py">../../server/mtu/controller.py</file>
+        <file alias="mtu/supervisor.py">../../server/mtu/supervisor.py</file>
         <file>awg/template.conf</file>
         <file>awg_legacy/configure_container.sh</file>
         <file>awg_legacy/Dockerfile</file>
@@ -53,6 +55,8 @@
         <file>openvpn/start.sh</file>
         <file>openvpn/template.ovpn</file>
         <file>prepare_host.sh</file>
+        <file>prepare_ipv6_network.sh</file>
+        <file>enable_ipv6_forwarding.sh</file>
         <file>remove_all_containers.sh</file>
         <file>remove_container.sh</file>
         <file>setup_host_firewall.sh</file>

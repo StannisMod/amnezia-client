@@ -61,6 +61,14 @@ func New(ctx context.Context, raw []byte) (*box.Box, error) {
 // process death. Hosts choose an absolute path in their private app storage.
 // Real DNS answers are deliberately not persisted across network changes.
 func NewWithCache(ctx context.Context, raw []byte, cachePath string) (*box.Box, error) {
+	stripped, live, err := splitLiveAndroidPolicy(raw)
+	if err != nil {
+		return nil, errors.New("invalid live Android policy")
+	}
+	if live != nil && service.FromContext[*networkDNSProxy](ctx) == nil {
+		return nil, errors.New("live application rules require replaceable DNS")
+	}
+	raw = stripped
 	var options option.Options
 	if e := json.UnmarshalContext(ctx, raw, &options); e != nil {
 		return nil, errors.New("invalid routing engine configuration")
@@ -89,5 +97,24 @@ func NewWithCache(ctx context.Context, raw []byte, cachePath string) (*box.Box, 
 		}
 		options.Experimental.CacheFile = &option.CacheFileOptions{Enabled: true, Path: cachePath, CacheID: "amnezia-domain-routing-v1", StoreFakeIP: true}
 	}
-	return box.New(box.Options{Context: ctx, Options: options})
+	guard, err := preparePacketPreMatchGuard(ctx, &options)
+	if err != nil {
+		return nil, err
+	}
+	instance, err := box.New(box.Options{Context: ctx, Options: options})
+	if err != nil {
+		return nil, err
+	}
+	parsedRules := instance.Router().Rules()
+	if guard {
+		parsedRules[0] = &packetPreMatchGuard{Rule: parsedRules[0]}
+		parsedRules = parsedRules[1:]
+	}
+	if live != nil {
+		if err = installLiveAndroidRules(parsedRules, live); err != nil {
+			instance.Close()
+			return nil, err
+		}
+	}
+	return instance, nil
 }

@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"os"
 	"sync"
+	"sync/atomic"
 
 	"github.com/amnezia-vpn/amneziawg-go/v3/tun"
 	"gvisor.dev/gvisor/pkg/buffer"
@@ -29,25 +30,49 @@ import (
 // while a notifier can send. Shutdown cancels producers, waits for admitted I/O,
 // stops the stack and releases queued views before returning.
 type FlowStack struct {
-	stack    *stack.Stack
-	endpoint *channel.Endpoint
-	notify   *channel.NotificationHandle
-	mtu      int
-	events   chan tun.Event
-	packets  chan *buffer.View
-	done     chan struct{}
-	state    sync.Mutex
-	closed   bool
-	active   sync.WaitGroup
-	once     sync.Once
-	ctx      context.Context
-	cancel   context.CancelFunc
+	stack      *stack.Stack
+	endpoint   *channel.Endpoint
+	notify     *channel.NotificationHandle
+	mtu        int
+	link       *flowMTULink
+	minimumMTU int
+	maximumMTU int
+	events     chan tun.Event
+	packets    chan *buffer.View
+	done       chan struct{}
+	state      sync.Mutex
+	closed     bool
+	active     sync.WaitGroup
+	once       sync.Once
+	ctx        context.Context
+	cancel     context.CancelFunc
+}
+
+// Keep MTU changes independent of the gVisor channel API version. Routes
+// query the owned link; no Android TUN or host interface is recreated.
+type flowMTULink struct {
+	*channel.Endpoint
+	value atomic.Uint32
+}
+
+func (l *flowMTULink) MTU() uint32 { return l.value.Load() }
+
+func validFlowMTU(addresses []netip.Addr, mtu int) bool {
+	if mtu < 576 || mtu > 65535 {
+		return false
+	}
+	for _, address := range addresses {
+		if address.Is6() && mtu < 1280 {
+			return false
+		}
+	}
+	return true
 }
 
 // NewFlowTUN creates an owned private packet interface; both returned values
 // share the same idempotent shutdown. It never installs a native OS interface.
 func NewFlowTUN(addresses []netip.Addr, mtu int) (tun.Device, *FlowStack, error) {
-	if len(addresses) == 0 || mtu < 1280 || mtu > 65535 {
+	if len(addresses) == 0 || !validFlowMTU(addresses, mtu) {
 		return nil, nil, errors.New("invalid AWG flow interface")
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -61,7 +86,15 @@ func NewFlowTUN(addresses []netip.Addr, mtu int) (tun.Device, *FlowStack, error)
 			s.Close()
 		}
 	}()
-	if err := s.stack.CreateNIC(1, s.endpoint); err != nil {
+	s.minimumMTU, s.maximumMTU = 576, mtu
+	for _, address := range addresses {
+		if address.Is6() {
+			s.minimumMTU = 1280
+		}
+	}
+	s.link = &flowMTULink{Endpoint: s.endpoint}
+	s.link.value.Store(uint32(mtu))
+	if err := s.stack.CreateNIC(1, s.link); err != nil {
 		return nil, nil, errors.New(err.String())
 	}
 	sack := tcpip.TCPSACKEnabled(true)
@@ -106,9 +139,38 @@ func (s *FlowStack) begin() bool {
 	s.active.Add(1)
 	return true
 }
-func (s *FlowStack) File() *os.File           { return nil }
-func (s *FlowStack) Name() (string, error)    { return "amnezia-awg-flow", nil }
-func (s *FlowStack) MTU() (int, error)        { return s.mtu, nil }
+func (s *FlowStack) File() *os.File        { return nil }
+func (s *FlowStack) Name() (string, error) { return "amnezia-awg-flow", nil }
+func (s *FlowStack) MTU() (int, error) {
+	s.state.Lock()
+	defer s.state.Unlock()
+	return s.mtu, nil
+}
+
+// SetPathMTU changes only this peer's private flow interface, within the
+// original profile ceiling and the inner IP family's minimum. It does not
+// claim that existing TCP has learned a smaller PMTU; regression tests must
+// establish that separately before a controller enables this automatically.
+func (s *FlowStack) SetPathMTU(mtu int) error {
+	s.state.Lock()
+	defer s.state.Unlock()
+	if s.closed {
+		return net.ErrClosed
+	}
+	if mtu < s.minimumMTU || mtu > s.maximumMTU {
+		return errors.New("path MTU outside profile or IP family limits")
+	}
+	if mtu == s.mtu {
+		return nil
+	}
+	s.link.value.Store(uint32(mtu))
+	s.mtu = mtu
+	select {
+	case s.events <- tun.EventMTUUpdate:
+	default:
+	}
+	return nil
+}
 func (s *FlowStack) Events() <-chan tun.Event { return s.events }
 func (s *FlowStack) BatchSize() int           { return 1 }
 func (s *FlowStack) Read(packets [][]byte, sizes []int, offset int) (int, error) {

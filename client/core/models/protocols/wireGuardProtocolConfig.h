@@ -16,6 +16,7 @@ struct WireGuardServerConfig {
     QString subnetAddress;
     QString subnetMask;
     QString subnetCidr;
+    QString ipv6Address;
     bool isThirdPartyConfig = false;
     
     QJsonObject toJson() const;
@@ -29,6 +30,7 @@ struct WireGuardClientConfig {
     QString hostName;
     int port;
     QString clientIp;
+    QString pathMtuProbe;
     QString clientPrivateKey;
     QString clientPublicKey;
     QString serverPublicKey;

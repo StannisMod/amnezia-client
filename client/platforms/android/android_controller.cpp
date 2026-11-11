@@ -92,6 +92,7 @@ bool AndroidController::initialize()
         {"onStatus", "(I)V", reinterpret_cast<void *>(onStatus)},
         {"onServiceDisconnected", "()V", reinterpret_cast<void *>(onServiceDisconnected)},
         {"onServiceError", "()V", reinterpret_cast<void *>(onServiceError)},
+        {"onApplicationPolicyResult", "(JZLjava/lang/String;)V", reinterpret_cast<void *>(onApplicationPolicyResult)},
         {"onVpnPermissionRejected", "()V", reinterpret_cast<void *>(onVpnPermissionRejected)},
         {"onNotificationStateChanged", "()V", reinterpret_cast<void *>(onNotificationStateChanged)},
         {"onVpnStateChanged", "(I)V", reinterpret_cast<void *>(onVpnStateChanged)},
@@ -265,6 +266,12 @@ int AndroidController::getNavigationBarHeight()
 void AndroidController::startQrReaderActivity()
 {
     callActivityMethod("startQrCodeReader", "()V");
+}
+
+void AndroidController::updateApplicationPolicy(qint64 requestId, const QString &policy)
+{
+    const auto text = QJniObject::fromString(policy);
+    callActivityMethod("updateApplicationPolicy", "(JLjava/lang/String;)V", static_cast<jlong>(requestId), text.object<jstring>());
 }
 
 void AndroidController::setSaveLogs(bool enabled)
@@ -578,6 +585,14 @@ void AndroidController::onServiceDisconnected(JNIEnv *env, jobject thiz)
     Q_UNUSED(thiz);
 
     emit AndroidController::instance()->serviceDisconnected();
+}
+
+// static
+void AndroidController::onApplicationPolicyResult(JNIEnv *env, jobject thiz, jlong requestId, jboolean success, jstring reason)
+{
+    Q_UNUSED(env);
+    Q_UNUSED(thiz);
+    emit AndroidController::instance()->applicationPolicyResult(requestId, success, QJniObject(reason).toString());
 }
 
 // static

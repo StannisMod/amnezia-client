@@ -130,6 +130,13 @@ class AmneziaActivity : QtActivity() {
                         }
                     }
 
+                    ServiceEvent.APPLICATION_POLICY_RESULT -> {
+                        QtAndroidController.onApplicationPolicyResult(
+                            msg.data.getLong(MSG_APPLICATION_POLICY_REQUEST_ID),
+                            msg.data.getBoolean(MSG_APPLICATION_POLICY_SUCCESS),
+                            msg.data.getString(MSG_APPLICATION_POLICY_ERROR, "").orEmpty())
+                    }
+
                     ServiceEvent.ERROR -> {
                         msg.data?.getString(MSG_ERROR)?.let { error ->
                             Log.e(TAG, "From VpnService: $error")
@@ -999,6 +1006,23 @@ class AmneziaActivity : QtActivity() {
         Log.v(TAG, "Start camera")
         Intent(this, CameraActivity::class.java).also {
             startActivity(it)
+        }
+    }
+
+    @Suppress("unused")
+    fun updateApplicationPolicy(requestId: Long, policy: String) {
+        mainScope.launch {
+            if (!isServiceConnected) {
+                QtAndroidController.onApplicationPolicyResult(requestId, false, "VPN service is not connected")
+                return@launch
+            }
+            vpnServiceMessenger.send(
+                Action.UPDATE_APPLICATION_POLICY.packToMessage {
+                    putLong(MSG_APPLICATION_POLICY_REQUEST_ID, requestId)
+                    putString(MSG_APPLICATION_POLICY, policy)
+                },
+                replyTo = activityMessenger
+            )
         }
     }
 

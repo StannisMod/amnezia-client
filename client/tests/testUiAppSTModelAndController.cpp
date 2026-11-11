@@ -3,6 +3,7 @@
 #include <QFile>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QJsonArray>
 #include <QProcessEnvironment>
 #include <QSignalSpy>
 #include <QTemporaryDir>
@@ -15,6 +16,13 @@
 #include "vpnConnection.h"
 
 using namespace amnezia;
+
+class SupportedAppRoutingUi final : public AppSplitTunnelingUiController
+{
+public:
+    using AppSplitTunnelingUiController::AppSplitTunnelingUiController;
+    bool perAppSiteRulesSupported() const override { return true; }
+};
 
 class TestUiAppSTModelAndController : public QObject
 {
@@ -70,6 +78,109 @@ private slots:
         QCOMPARE(repo->vpnApps(AppsRouteMode::VpnOnlyForwardApps).first().appPath, executable);
         QVERIFY(repo->vpnApps(AppsRouteMode::VpnAllExceptApps).isEmpty());
         core->clearAppsList();
+    }
+
+    void testAndroidApplicationPolicyPreservesLegacyUntilExplicitChoice()
+    {
+        auto core = m_coreController->m_appSplitTunnelingController;
+        auto repo = m_coreController->m_appSettingsRepository;
+        core->setRouteMode(AppsRouteMode::VpnOnlyForwardApps);
+        core->clearAppsList();
+        QVERIFY(core->addApp({"One", "app.one", ""}));
+        QVERIFY(core->addApp({"Two", "app.two", ""}));
+        QVERIFY(repo->androidAppRoutingPolicy().isEmpty());
+        QVERIFY(core->appliesSiteRules(0));
+        QVERIFY(core->appliesSiteRules(1));
+        const auto proposed = core->siteRulesPolicy(0, false);
+        QVERIFY(!proposed.isEmpty());
+        QVERIFY(repo->androidAppRoutingPolicy().isEmpty());
+        QVERIFY(core->appliesSiteRules(0));
+        QVERIFY(core->setAppliesSiteRules(0, false));
+        QVERIFY(!core->appliesSiteRules(0));
+        QVERIFY(core->appliesSiteRules(1));
+        QCOMPARE(repo->androidAppRoutingPolicy().value("version").toInt(), 1);
+        QVERIFY(core->addApp({"Three", "app.three", ""}));
+        QVERIFY(!core->appliesSiteRules(2));
+        core->removeApp(1);
+        QVERIFY(repo->androidAppRoutingPolicy().value("site_rule_packages").toArray().isEmpty());
+        QVERIFY(core->setAppliesSiteRules(0, true));
+        core->setRouteMode(AppsRouteMode::VpnAllExceptApps);
+        QVERIFY(!core->setAppliesSiteRules(0, false));
+        core->setRouteMode(AppsRouteMode::VpnOnlyForwardApps);
+        QVERIFY(core->appliesSiteRules(0));
+        core->clearAppsList();
+        QVERIFY(repo->androidAppRoutingPolicy().value("site_rule_packages").toArray().isEmpty());
+    }
+
+    void testLiveApplicationPolicyCommitsOnlyAcknowledgedRequest()
+    {
+        auto core = m_coreController->m_appSplitTunnelingController;
+        auto repo = m_coreController->m_appSettingsRepository;
+        core->setRouteMode(AppsRouteMode::VpnOnlyForwardApps);
+        core->clearAppsList();
+        repo->setAndroidAppRoutingPolicy({});
+        QVERIFY(core->addApp({"One", "app.one", ""}));
+        QVERIFY(core->addApp({"Two", "app.two", ""}));
+        SupportedAppRoutingUi ui(core, m_coreController->m_appSplitTunnelingModel);
+        qint64 request = 0;
+        int calls = 0;
+        ui.configureLivePolicy([] { return true; }, [&](qint64 id, const QJsonObject &) { request = id; ++calls; });
+        QSignalSpy errors(&ui, &AppSplitTunnelingUiController::errorOccurred);
+        ui.setAppliesSiteRules(0, false);
+        QVERIFY(ui.applicationPolicyPending());
+        QVERIFY(core->appliesSiteRules(0));
+        QVERIFY(repo->androidAppRoutingPolicy().isEmpty());
+        ui.setAppliesSiteRules(1, false);
+        QCOMPARE(calls, 1);
+        ui.completeApplicationPolicy(request + 1, true, {});
+        QVERIFY(ui.applicationPolicyPending());
+        ui.completeApplicationPolicy(request, false, "Rejected");
+        QVERIFY(!ui.applicationPolicyPending());
+        QCOMPARE(errors.count(), 1);
+        QVERIFY(core->appliesSiteRules(0));
+        ui.setAppliesSiteRules(0, false);
+        ui.completeApplicationPolicy(request, true, {});
+        QVERIFY(!core->appliesSiteRules(0));
+        QVERIFY(core->appliesSiteRules(1));
+        ui.setAppliesSiteRules(0, true);
+        const auto stale = request;
+        ui.connectionClosed();
+        ui.completeApplicationPolicy(stale, true, {});
+        QVERIFY(!core->appliesSiteRules(0));
+        ui.setAppliesSiteRules(0, true);
+        QTRY_VERIFY_WITH_TIMEOUT(ui.applicationPolicyUnconfirmed(), 16000);
+        QVERIFY(!ui.applicationPolicyPending());
+        QVERIFY(!core->appliesSiteRules(0));
+        const int before = calls;
+        ui.setAppliesSiteRules(1, false);
+        QCOMPARE(calls, before);
+        ui.completeApplicationPolicy(request, true, {});
+        QVERIFY(!ui.applicationPolicyUnconfirmed());
+        QVERIFY(core->appliesSiteRules(0));
+        core->clearAppsList();
+    }
+
+    void testAndroidApplicationPolicyBackupAndValidation()
+    {
+        auto repo = m_coreController->m_appSettingsRepository;
+        const QJsonObject policy{{"version", 1}, {"site_rule_packages", QJsonArray{"app.one"}}};
+        QVERIFY(SecureAppSettingsRepository::validateAndroidAppRoutingPolicy(policy));
+        QVERIFY(!SecureAppSettingsRepository::validateAndroidAppRoutingPolicy(policy, false));
+        QVERIFY(!SecureAppSettingsRepository::validateAndroidAppRoutingPolicy(QJsonObject{{"version", 2}, {"site_rule_packages", QJsonArray()}}));
+        QVERIFY(!SecureAppSettingsRepository::validateAndroidAppRoutingPolicy(QJsonObject{{"version", 1}, {"site_rule_packages", QJsonArray{"app.one", "app.one"}}}));
+        repo->setAndroidAppRoutingPolicy(policy);
+        const auto backup = repo->backupAppConfig();
+        repo->setAndroidAppRoutingPolicy({});
+        QVERIFY(repo->restoreAppConfig(backup));
+        QCOMPARE(repo->androidAppRoutingPolicy(), policy);
+        auto invalid = QJsonDocument::fromJson(backup).object();
+        invalid.insert("Conf/androidAppRoutingV1", QJsonObject{{"version", 99}});
+        QVERIFY(!repo->restoreAppConfig(QJsonDocument(invalid).toJson()));
+        QCOMPARE(repo->androidAppRoutingPolicy(), policy);
+        invalid.remove("Conf/androidAppRoutingV1");
+        invalid.insert("Conf/appsRouteMode", static_cast<int>(AppsRouteMode::VpnOnlyForwardApps));
+        QVERIFY(repo->restoreAppConfig(QJsonDocument(invalid).toJson()));
+        QVERIFY(repo->androidAppRoutingPolicy().isEmpty());
     }
 
     void testRestoreApplicationScope()

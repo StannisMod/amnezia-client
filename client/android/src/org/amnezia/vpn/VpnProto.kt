@@ -51,11 +51,11 @@ enum class VpnProto(
         override fun createProtocol(): Protocol = Xray.instance
     };
 
-    private var _protocol: Protocol? = null
+    @Volatile private var _protocol: Protocol? = null
+    val existingProtocol: Protocol? get() = _protocol
     val protocol: Protocol
-        get() {
-            if (_protocol == null) _protocol = createProtocol()
-            return _protocol ?: throw AssertionError("Set to null by another thread")
+        get() = _protocol ?: synchronized(this) {
+            _protocol ?: createProtocol().also { _protocol = it }
         }
 
     protected abstract fun createProtocol(): Protocol

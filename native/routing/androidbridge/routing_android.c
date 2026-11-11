@@ -3,6 +3,7 @@
 #include <jni.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <stddef.h>
 #include <string.h>
 #include <unistd.h>
 #include "_cgo_export.h"
@@ -14,7 +15,12 @@ struct routing_host {
     jmethodID protect;
     jmethodID protect_interface;
     jmethodID interfaces;
+    jmethodID owner;
 };
+
+int amnezia_routing_has_owner(uintptr_t token) {
+    return ((struct routing_host *)token)->owner != NULL;
+}
 
 static JNIEnv *host_env(struct routing_host *host, int *attached) {
     JNIEnv *env = NULL;
@@ -36,6 +42,23 @@ int amnezia_routing_protect(uintptr_t token, int fd) {
     if ((*env)->ExceptionCheck(env)) { (*env)->ExceptionClear(env); ok = JNI_FALSE; }
     if (attached) (*host->vm)->DetachCurrentThread(host->vm);
     return ok == JNI_TRUE;
+}
+
+int amnezia_routing_owner(uintptr_t token, int protocol, const char *source, int source_port, const char *destination, int destination_port) {
+    struct routing_host *host = (struct routing_host *)token;
+    if (!host->owner) return -1;
+    int attached;
+    JNIEnv *env = host_env(host, &attached);
+    if (!env) return -1;
+    jstring src = (*env)->NewStringUTF(env, source);
+    jstring dst = src ? (*env)->NewStringUTF(env, destination) : NULL;
+    jint uid = -1;
+    if (src && dst) uid = (*env)->CallIntMethod(env, host->callback, host->owner, protocol, src, source_port, dst, destination_port);
+    if ((*env)->ExceptionCheck(env)) { (*env)->ExceptionClear(env); uid = -1; }
+    if (src) (*env)->DeleteLocalRef(env, src);
+    if (dst) (*env)->DeleteLocalRef(env, dst);
+    if (attached) (*host->vm)->DetachCurrentThread(host->vm);
+    return uid;
 }
 
 char *amnezia_routing_interfaces(uintptr_t token) {
@@ -109,6 +132,11 @@ JNIEXPORT jlong JNICALL Java_org_amnezia_awg_RoutingBackend_start(JNIEnv *env, j
         host->protect_interface=(*env)->GetMethodID(env,cls,"protectSocketOnInterface","(ILjava/lang/String;)Z");
     if (!(*env)->ExceptionCheck(env))
         host->interfaces = (*env)->GetMethodID(env, cls, "interfacesJson", "()[B");
+    // Optional for compatibility with packaged hosts predating per-app policy.
+    if (!(*env)->ExceptionCheck(env)) {
+        host->owner = (*env)->GetMethodID(env, cls, "connectionOwnerUid", "(ILjava/lang/String;ILjava/lang/String;I)I");
+        if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+    }
     (*env)->DeleteLocalRef(env, cls);
     if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
     if (!host->callback || !host->protect || !host->protect_interface || !host->interfaces) {
@@ -151,4 +179,37 @@ JNIEXPORT jbyteArray JNICALL Java_org_amnezia_awg_RoutingBackend_buildInfo(JNIEn
     size_t size=strlen(raw);jbyteArray bytes=(*env)->NewByteArray(env,(jsize)size);
     if(bytes)(*env)->SetByteArrayRegion(env,bytes,0,(jsize)size,(const jbyte*)raw);
     free(raw);return bytes;
+}
+
+JNIEXPORT jboolean JNICALL Java_org_amnezia_awg_RoutingBackend_refresh(JNIEnv *env,jobject self,jlong handle,jstring endpoint,jboolean reopen) {
+ const char *text=endpoint?(*env)->GetStringUTFChars(env,endpoint,NULL):NULL;
+ if(endpoint&&!text)return JNI_FALSE;
+ GoString target={text?text:"",text?(ptrdiff_t)strlen(text):0};
+ int ok=RoutingRefresh(handle,target,reopen?1:0);
+ if(text)(*env)->ReleaseStringUTFChars(env,endpoint,text);
+ return ok?JNI_TRUE:JNI_FALSE;
+}
+JNIEXPORT jboolean JNICALL Java_org_amnezia_awg_RoutingBackend_reloadNetworkDns(JNIEnv *env,jobject self,jlong handle,jbyteArray snapshot) {
+ if(!snapshot)return JNI_FALSE;
+ jsize len=(*env)->GetArrayLength(env,snapshot);
+ jbyte *bytes=(*env)->GetByteArrayElements(env,snapshot,NULL);if(!bytes)return JNI_FALSE;
+ int ok=RoutingReloadDNS(handle,(GoString){(const char*)bytes,len});
+ (*env)->ReleaseByteArrayElements(env,snapshot,bytes,JNI_ABORT);
+ return ok?JNI_TRUE:JNI_FALSE;
+}
+JNIEXPORT jboolean JNICALL Java_org_amnezia_awg_RoutingBackend_updateAndroidApplications(JNIEnv *env,jobject self,jlong handle,jbyteArray policy) {
+ if(!policy)return JNI_FALSE;
+ jsize len=(*env)->GetArrayLength(env,policy);
+ if(len>65536)return JNI_FALSE;
+ jbyte *bytes=(*env)->GetByteArrayElements(env,policy,NULL);if(!bytes)return JNI_FALSE;
+ int ok=RoutingUpdateAndroidApplications(handle,(GoString){(const char*)bytes,len});
+ (*env)->ReleaseByteArrayElements(env,policy,bytes,JNI_ABORT);
+ return ok?JNI_TRUE:JNI_FALSE;
+}
+JNIEXPORT void JNICALL Java_org_amnezia_awg_RoutingBackend_suspendNetworkDns(JNIEnv *env,jobject self,jlong handle) {
+ RoutingSuspendDNS(handle);
+}
+
+JNIEXPORT jboolean JNICALL Java_org_amnezia_awg_RoutingBackend_replaceCapture(JNIEnv *env,jobject self,jlong handle,jint fd) {
+ return RoutingReplaceCapture(handle,fd)?JNI_TRUE:JNI_FALSE;
 }

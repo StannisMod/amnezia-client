@@ -9,9 +9,14 @@ echo $WIREGUARD_SERVER_PUBLIC_KEY > /opt/amnezia/wireguard/wireguard_server_publ
 WIREGUARD_PSK=$(wg genpsk)
 echo $WIREGUARD_PSK > /opt/amnezia/wireguard/wireguard_psk.key
 
+AMNEZIA_TUN_IPV6_SUFFIX=''
+if [ -f /opt/amnezia/ipv6-bridge-attached ] && [ -n "$WIREGUARD_IPV6_ADDRESS" ]; then
+    AMNEZIA_TUN_IPV6_SUFFIX=", $WIREGUARD_IPV6_ADDRESS"
+fi
+
 cat > /opt/amnezia/wireguard/wg0.conf <<EOF
 [Interface]
 PrivateKey = $WIREGUARD_SERVER_PRIVATE_KEY
-Address = $WIREGUARD_SUBNET_IP/$WIREGUARD_SUBNET_CIDR
+Address = $WIREGUARD_SUBNET_IP/$WIREGUARD_SUBNET_CIDR$AMNEZIA_TUN_IPV6_SUFFIX
 ListenPort = $WIREGUARD_SERVER_PORT
 EOF

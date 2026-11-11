@@ -17,6 +17,7 @@ import (
 const Type = "amnezia-wireguard"
 
 type Config struct {
+	PathMTUProbe netip.Addr     `json:"path_mtu_probe,omitempty"`
 	Address      []netip.Addr   `json:"address"`
 	MTU          int            `json:"mtu,omitempty"`
 	PrivateKey   string         `json:"private_key"`
@@ -29,7 +30,7 @@ type Config struct {
 }
 
 func (c Config) Native() awg.Config {
-	return awg.Config{Address: c.Address, MTU: c.MTU, PrivateKey: c.PrivateKey, PublicKey: c.PublicKey, PreSharedKey: c.PreSharedKey, Endpoint: c.Endpoint, AllowedIPs: c.AllowedIPs, Keepalive: awg.Keepalive(strconv.Itoa(int(c.Keepalive))), ListenPort: c.ListenPort}
+	return awg.Config{Address: c.Address, MTU: c.MTU, PrivateKey: c.PrivateKey, PublicKey: c.PublicKey, PreSharedKey: c.PreSharedKey, Endpoint: c.Endpoint, AllowedIPs: c.AllowedIPs, Keepalive: awg.Keepalive(strconv.Itoa(int(c.Keepalive))), ListenPort: c.ListenPort, PathMTUProbe: c.PathMTUProbe}
 }
 func (c Config) Validate() error { return c.Native().Validate() }
 func Register(r *outbound.Registry, listen awg.ListenUnderlay) {

@@ -16,6 +16,8 @@ import (
 	"net/http/httptest"
 	"net/netip"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -401,6 +403,13 @@ func reproduceStability(t *testing.T, protocol, family string, pauses []time.Dur
 					return
 				case at := <-ticker.C:
 					t.Logf("progress at=%s WS=%d bulk=%d dropped=%d", at.Format(time.RFC3339Nano), messages.Load(), chunks.Load(), link.dropped.Load())
+					if os.Getenv("AMNEZIA_MTU_LAB") == "1" {
+						directory := os.Getenv("AMNEZIA_STABILITY_TRACE")
+						raw, _ := json.Marshal(map[string]uint64{"messages": messages.Load(), "chunks": chunks.Load()})
+						path := filepath.Join(directory, "flows.json")
+						os.WriteFile(path+".tmp", raw, 0600)
+						os.Rename(path+".tmp", path)
+					}
 				}
 			}
 		}()
@@ -469,6 +478,21 @@ func reproduceStability(t *testing.T, protocol, family string, pauses []time.Dur
 		}
 	}
 	waitProgress(3, 3)
+	if os.Getenv("AMNEZIA_MTU_LAB") == "1" {
+		command := exec.Command("python3", "/lab/scenario.py")
+		output, err := command.CombinedOutput()
+		t.Logf("MTU scenario: %s", output)
+		if err != nil {
+			t.Fatal(err)
+		}
+		w, c := messages.Load(), chunks.Load()
+		waitProgress(w+3, c+3)
+		if counted.accepts.Load() != 2 || wsAccepts.Load() != 1 || bulkAccepts.Load() != 1 {
+			t.Fatal("MTU adaptation replaced TCP")
+		}
+		return
+	}
+
 	refresh := func() {
 		t.Helper()
 		var err error

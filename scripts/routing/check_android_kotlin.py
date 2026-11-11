@@ -46,6 +46,11 @@ configure<SettingsExtension> { compileSdk=36; minSdk=28; buildToolsVersion="36.0
             "Could not resolve all artifacts", "Could not resolve all files",
             "Could not GET", "Could not HEAD",
         ))
+        wrapper_transport_failure = "org.gradle.wrapper." in result.stdout and any(marker in result.stdout for marker in (
+            "SocketTimeoutException", "HTTP response code: 500", "HTTP response code: 502",
+            "HTTP response code: 503", "HTTP response code: 504",
+        ))
+        dependency_failure = dependency_failure or wrapper_transport_failure
         if not dependency_failure or attempt == 2:
             raise subprocess.CalledProcessError(result.returncode, command)
         print("Retrying Gradle dependency resolution with refreshed metadata", flush=True)
