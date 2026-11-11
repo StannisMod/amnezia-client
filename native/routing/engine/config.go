@@ -14,11 +14,12 @@ const TUNTag = "amnezia-tun"
 // RoutingConfig is independent of the VPN transport. Native hosts still own
 // capture/protection and supply a separately validated transport adapter.
 type RoutingConfig struct {
-	Rules          rules.Config
-	Resolver       netip.AddrPort
-	ResolverAction rules.Action
-	Applications   *ApplicationScope
-	DNS            *dnspolicy.Config
+	Rules               rules.Config
+	Resolver            netip.AddrPort
+	ResolverAction      rules.Action
+	Applications        *ApplicationScope
+	AndroidApplications *AndroidApplications
+	DNS                 *dnspolicy.Config
 }
 
 // compile is internal: hosts cannot inject an arbitrary raw sing-box outbound.
@@ -62,6 +63,14 @@ func (c RoutingConfig) compile(vpn map[string]any) ([]byte, error) {
 		return nil, e
 	}
 	preRules := append([]any{map[string]any{"inbound": []string{TUNTag}, "port": 53, "action": "hijack-dns"}}, scopeRules...)
+	if c.Applications != nil && c.AndroidApplications != nil {
+		return nil, errors.New("desktop and Android application policies cannot be combined")
+	}
+	appRules, e := c.AndroidApplications.compile()
+	if e != nil {
+		return nil, e
+	}
+	preRules = append(preRules, appRules...)
 	// Optional domain policies need visible Host/SNI for IP-literal flows.
 	// Ordinary all-VPN/application-only sessions must not pay the inspection
 	// delay (notably for server-first protocols) when no name rule can use it.
