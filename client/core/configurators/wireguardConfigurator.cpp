@@ -98,6 +98,23 @@ QList<QHostAddress> WireguardConfigurator::getIpsFromConf(const QString &input)
     return ips;
 }
 
+QString WireguardConfigurator::pathMtuProbeFromInterfaceConfig(const QString &configuration)
+{
+    const QRegularExpression interfaceAddress(QStringLiteral("(?:^|\\n)\\s*Address\\s*=\\s*([^\\r\\n]+)"));
+    const auto addressMatch = interfaceAddress.match(configuration);
+    if (addressMatch.hasMatch()) {
+        for (const auto &entry : addressMatch.captured(1).split(',')) {
+            QHostAddress address(entry.trimmed().section('/', 0, 0));
+            if (address.protocol() == QAbstractSocket::IPv4Protocol && !address.isNull()
+                && !address.isLoopback() && !address.isMulticast()) {
+                return address.toString();
+            }
+        }
+    }
+
+    return {};
+}
+
 WireguardConfigurator::ConnectionData WireguardConfigurator::prepareWireguardConfig(const ServerCredentials &credentials,
                                                                                     DockerContainer container,
                                                                                     const WireGuardServerConfig* serverConfig,
@@ -125,7 +142,7 @@ WireguardConfigurator::ConnectionData WireguardConfigurator::prepareWireguardCon
     if (container == DockerContainer::Awg) {
         configPath = amnezia::protocols::awg::serverLegacyConfigPath;
     }
-    QString getIpsScript = QString("cat %1 | grep AllowedIPs").arg(configPath);
+    QString getIpsScript = QString("cat %1 | grep -E '^[[:space:]]*(Address|AllowedIPs)[[:space:]]*='").arg(configPath);
     QString stdOut;
     auto cbReadStdOut = [&](const QString &data, libssh::Client &) {
         stdOut += data + "\n";
@@ -137,6 +154,7 @@ WireguardConfigurator::ConnectionData WireguardConfigurator::prepareWireguardCon
         return connData;
     }
     auto ips = getIpsFromConf(stdOut);
+    connData.pathMtuProbe = pathMtuProbeFromInterfaceConfig(stdOut);
 
     QHostAddress nextIp = [&] {
         QHostAddress result;
@@ -267,6 +285,7 @@ ProtocolConfig WireguardConfigurator::createConfig(const ServerCredentials &cred
     clientConfig.hostName = connData.host;
     clientConfig.port = connData.port.toInt();
     clientConfig.clientIp = connData.clientIP;
+    clientConfig.pathMtuProbe = connData.pathMtuProbe;
     clientConfig.clientPrivateKey = connData.clientPrivKey;
     clientConfig.clientPublicKey = connData.clientPubKey;
     clientConfig.serverPublicKey = connData.serverPubKey;

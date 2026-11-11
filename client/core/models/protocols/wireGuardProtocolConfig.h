@@ -29,6 +29,7 @@ struct WireGuardClientConfig {
     QString hostName;
     int port;
     QString clientIp;
+    QString pathMtuProbe;
     QString clientPrivateKey;
     QString clientPublicKey;
     QString serverPublicKey;

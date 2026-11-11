@@ -76,6 +76,7 @@ QJsonObject WireGuardClientConfig::toJson() const
     if (!clientIp.isEmpty()) {
         obj[configKey::clientIp] = clientIp;
     }
+    if (!pathMtuProbe.isEmpty()) obj["path_mtu_probe"] = pathMtuProbe;
     if (!clientPrivateKey.isEmpty()) {
         obj[configKey::clientPrivKey] = clientPrivateKey;
     }
@@ -127,6 +128,7 @@ WireGuardClientConfig WireGuardClientConfig::fromJson(const QJsonObject& json)
     config.hostName = json.value(configKey::hostName).toString();
     config.port = json.value(configKey::port).toInt(0);
     config.clientIp = json.value(configKey::clientIp).toString();
+    config.pathMtuProbe = json.value("path_mtu_probe").toString();
     config.clientPrivateKey = json.value(configKey::clientPrivKey).toString();
     config.clientPublicKey = json.value(configKey::clientPubKey).toString();
     config.serverPublicKey = json.value(configKey::serverPubKey).toString();

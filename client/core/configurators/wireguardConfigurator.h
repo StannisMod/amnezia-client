@@ -23,6 +23,7 @@ public:
         QString clientPrivKey; // client private key
         QString clientPubKey;  // client public key
         QString clientIP;      // internal client IP address
+        QString pathMtuProbe; // actual server tunnel address read over SSH
         QString serverPubKey;  // tls-auth key
         QString pskKey;        // preshared key
         QString host;          // host ip
@@ -40,6 +41,7 @@ public:
                                                             amnezia::ProtocolConfig protocolConfig) override;
 
     static ConnectionData genClientKeys();
+    static QString pathMtuProbeFromInterfaceConfig(const QString &configuration);
 
 private:
     QList<QHostAddress> getIpsFromConf(const QString &input);

@@ -14,6 +14,9 @@
 #include "core/utils/serverConfigUtils.h"
 #include "secureQSettings.h"
 #include "vpnConnection.h"
+#include "core/configurators/wireguardConfigurator.h"
+#include "core/models/protocols/wireGuardProtocolConfig.h"
+#include "core/models/protocols/awgProtocolConfig.h"
 
 using namespace amnezia;
 
@@ -52,6 +55,20 @@ private:
     SecureQSettings *m_settings = nullptr;
 
 private slots:
+    void testPathMtuProbeUsesExplicitServerAddress()
+    {
+        QCOMPARE(WireguardConfigurator::pathMtuProbeFromInterfaceConfig("Address = 10.8.1.0/24\nAllowedIPs = 10.8.1.2/32"), QString("10.8.1.0"));
+        QCOMPARE(WireguardConfigurator::pathMtuProbeFromInterfaceConfig("Address = fd77::1/64, 10.77.0.9/24\n"), QString("10.77.0.9"));
+        QVERIFY(WireguardConfigurator::pathMtuProbeFromInterfaceConfig("AllowedIPs = 10.77.0.2/32\n").isEmpty());
+        QVERIFY(WireguardConfigurator::pathMtuProbeFromInterfaceConfig("Address = fd77::1/64\n").isEmpty());
+        QVERIFY(WireguardConfigurator::pathMtuProbeFromInterfaceConfig("Address = 127.0.0.1/8\n").isEmpty());
+        WireGuardClientConfig wg; wg.pathMtuProbe = "10.77.0.9";
+        QCOMPARE(WireGuardClientConfig::fromJson(wg.toJson()).pathMtuProbe, wg.pathMtuProbe);
+        AwgClientConfig awg; awg.pathMtuProbe = wg.pathMtuProbe;
+        QCOMPARE(AwgClientConfig::fromJson(awg.toJson()).pathMtuProbe, awg.pathMtuProbe);
+        QVERIFY(WireGuardClientConfig::fromJson({}).pathMtuProbe.isEmpty());
+        QVERIFY(AwgClientConfig::fromJson({}).pathMtuProbe.isEmpty());
+    }
     void initTestCase()
     {
         const QString testOrg = "AmneziaVPN-Test-" + QUuid::createUuid().toString();

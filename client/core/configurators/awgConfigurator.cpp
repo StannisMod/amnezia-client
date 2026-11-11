@@ -67,6 +67,7 @@ ProtocolConfig AwgConfigurator::createConfig(const ServerCredentials &credential
     newClientConfig.hostName = wgConfig->clientConfig->hostName;
     newClientConfig.port = wgConfig->clientConfig->port;
     newClientConfig.clientIp = wgConfig->clientConfig->clientIp;
+    newClientConfig.pathMtuProbe = wgConfig->clientConfig->pathMtuProbe;
     newClientConfig.clientPrivateKey = wgConfig->clientConfig->clientPrivateKey;
     newClientConfig.clientPublicKey = wgConfig->clientConfig->clientPublicKey;
     newClientConfig.serverPublicKey = wgConfig->clientConfig->serverPublicKey;
