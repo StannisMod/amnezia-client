@@ -33,6 +33,8 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+type recoveryPacketLink struct{ net.Conn }
+
 // The actual mobile Session, native packet FD and encrypted transport stay alive
 // while the protected UDP endpoint, DNS generation and source port are replaced.
 // This is not an Android radio/battery test; the APK host is tested separately.
@@ -182,6 +184,8 @@ func TestMobileRecoveryKeepsInteractiveAndDelayedMediaTCP(t *testing.T) {
 						t.Fatal(e)
 					}
 					defer packets.Close()
+					var appLink atomic.Pointer[recoveryPacketLink]
+					appLink.Store(&recoveryPacketLink{packets})
 					var deny atomic.Bool
 					var released, protected atomic.Int32
 					platform, e := New(pair[0], Hooks{Protect: func(fd int) error {
@@ -222,23 +226,26 @@ func TestMobileRecoveryKeepsInteractiveAndDelayedMediaTCP(t *testing.T) {
 							if e != nil {
 								return
 							}
-							if _, e = packets.Write(buf[:sizes[0]]); e != nil {
+							if _, e = appLink.Load().Write(buf[:sizes[0]]); e != nil {
 								return
 							}
 						}
 					}()
-					go func() {
-						buf := make([]byte, 65535)
-						for {
-							n, e := packets.Read(buf)
-							if e != nil {
-								return
+					pumpInput := func(link net.Conn) {
+						go func() {
+							buf := make([]byte, 65535)
+							for {
+								n, e := link.Read(buf)
+								if e != nil {
+									return
+								}
+								if _, e = appTun.Write([][]byte{buf[:n]}, 0); e != nil {
+									return
+								}
 							}
-							if _, e = appTun.Write([][]byte{buf[:n]}, 0); e != nil {
-								return
-							}
-						}
-					}()
+						}()
+					}
+					pumpInput(packets)
 					// The virtual application family is independent of the real
 					// origin and inner VPN family. Both directions must work.
 					query, e := appStack.DialContext(ctx, "udp", "172.19.0.2:53")
@@ -315,26 +322,53 @@ func TestMobileRecoveryKeepsInteractiveAndDelayedMediaTCP(t *testing.T) {
 							t.Fatal(e)
 						}
 					}
-                    if !vpnIPv6 {
-                        // A real IPv6 destination is different from a virtual
-                        // IPv6 FakeIP with an IPv4 origin. Report it promptly
-                        // without leaking to native egress or killing the old
-                        // interactive TCP connection.
-                        nativeBefore:=protected.Load()
-                        unavailable,err:=appStack.DialContext(ctx,"tcp","[2001:db8:dead::2]:18443")
-                        if err==nil {
-                            unavailable.SetReadDeadline(time.Now().Add(2*time.Second))
-                            var one [1]byte
-                            _,err=unavailable.Read(one[:]);unavailable.Close()
-                        }
-                        if err==nil {t.Fatal("IPv4-only VPN accepted an unavailable real IPv6 origin")}
-                        if timeout,ok:=err.(net.Error);ok&&timeout.Timeout(){t.Fatal("unavailable IPv6 stalled instead of failing promptly")}
-                        if protected.Load()!=nativeBefore{t.Fatal("unavailable IPv6 attempted native bypass")}
-                        exchange(interactive,[]byte("interactive-still-alive-after-ipv6-failure"))
-                    }
+					if !vpnIPv6 {
+						// A real IPv6 destination is different from a virtual
+						// IPv6 FakeIP with an IPv4 origin. Report it promptly
+						// without leaking to native egress or killing the old
+						// interactive TCP connection.
+						nativeBefore := protected.Load()
+						unavailable, err := appStack.DialContext(ctx, "tcp", "[2001:db8:dead::2]:18443")
+						if err == nil {
+							unavailable.SetReadDeadline(time.Now().Add(2 * time.Second))
+							var one [1]byte
+							_, err = unavailable.Read(one[:])
+							unavailable.Close()
+						}
+						if err == nil {
+							t.Fatal("IPv4-only VPN accepted an unavailable real IPv6 origin")
+						}
+						if timeout, ok := err.(net.Error); ok && timeout.Timeout() {
+							t.Fatal("unavailable IPv6 stalled instead of failing promptly")
+						}
+						if protected.Load() != nativeBefore {
+							t.Fatal("unavailable IPv6 attempted native bypass")
+						}
+						exchange(interactive, []byte("interactive-still-alive-after-ipv6-failure"))
+					}
 					// Start a distinct large media flow after an established interactive session.
 					media := dial()
 					defer media.Close()
+					// Replace the native capture while both original TCP
+					// connections remain in the same application/core stacks.
+					beforeCore := session.core
+					descriptor := platform.capture.(*packetDescriptor)
+					for i := 0; i < 2; i++ {
+						next, newApp := capturePair(t)
+						old := appLink.Load()
+						appLink.Store(&recoveryPacketLink{newApp})
+						if err := descriptor.replaceDescriptor(next); err != nil {
+							t.Fatal(err)
+						}
+						pumpInput(newApp)
+						old.Close()
+						exchange(interactive, []byte("interactive-after-capture-handover"))
+						exchange(media, []byte("media-after-capture-handover"))
+						if session.core != beforeCore || platform.capture != descriptor || released.Load() != 0 {
+							t.Fatal("capture handover replaced the TCP core")
+						}
+					}
+
 					payload := make([]byte, 256<<10)
 					rand.Read(payload)
 					exchange(media, payload)
