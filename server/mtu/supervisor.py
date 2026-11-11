@@ -82,7 +82,7 @@ def main():
                         subprocess.run(['ip','-4','route','add',peer+'/32','dev',args.interface,'proto','186'],check=True)
                         owned=True
                     original=saved_original or run('ip','-o','-4','route','show','exact',peer+'/32').strip()
-                    process=subprocess.Popen([sys.executable,str(Path(__file__).with_name('controller.py')),'--interface',args.interface,'--source',source,'--peer',peer,'--interval',str(args.interval)],preexec_fn=child_lifetime)
+                    process=subprocess.Popen([sys.executable,str(Path(__file__).resolve().with_name('controller.py')),'--interface',args.interface,'--source',source,'--peer',peer,'--interval',str(args.interval)],preexec_fn=child_lifetime)
                     workers[peer]=(process,owned,original)
             except (subprocess.SubprocessError,ValueError,IndexError,StopIteration,OSError) as error:
                 print(json.dumps({'event':'mtu-supervisor-error','error':str(error)}),flush=True)

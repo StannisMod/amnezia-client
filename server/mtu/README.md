@@ -55,3 +55,8 @@ inventory command supplies allowed-ips/latest-handshakes to the supervisor.
 Assertions cover stalled download with live messages, recovery while the size
 filter remains active, healthy peer progress, supervisor SIGKILL, restart,
 automatic increase and preservation of original accepted TCP connections.
+
+Installer updates upload both scripts into a content-addressed release
+folder, validate Python syntax, then atomically switch the current symlink.
+Only after successful activation is the new startup script uploaded. Running
+supervisors resolve their own release path before spawning workers.

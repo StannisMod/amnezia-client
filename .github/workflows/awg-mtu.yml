@@ -27,6 +27,8 @@ jobs:
           python-version: '3.12'
       - name: Check route ownership regressions
         run: python3 -m unittest discover -s server/mtu -p 'test_*.py'
+      - name: Check transactional script activation
+        run: bash server/mtu/lab/test_activation.sh
       - name: Check installed startup scripts
         run: |
           bash -n client/server_scripts/awg/start.sh

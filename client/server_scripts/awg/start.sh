@@ -8,7 +8,7 @@ echo "Container startup"
 # Stop the route owner before restarting the tunnel.
 if [ -f /run/amnezia-mtu.pid ]; then
     mtu_old=$(cat /run/amnezia-mtu.pid)
-    if [ -r "/proc/$mtu_old/cmdline" ] && grep -aq '/opt/amnezia/supervisor.py' "/proc/$mtu_old/cmdline"; then
+    if [ -r "/proc/$mtu_old/cmdline" ] && grep -aq 'supervisor.py' "/proc/$mtu_old/cmdline"; then
         kill -TERM "$mtu_old"
         for attempt in $(seq 1 50); do
             kill -0 "$mtu_old" 2>/dev/null || break
@@ -38,7 +38,7 @@ iptables -t nat -A POSTROUTING -s $AWG_SUBNET_IP/$WIREGUARD_SUBNET_CIDR -o eth0 
 iptables -t nat -A POSTROUTING -s $AWG_SUBNET_IP/$WIREGUARD_SUBNET_CIDR -o eth1 -j MASQUERADE
 
 # The supervisor restores its owned peer route metrics on termination.
-python3 /opt/amnezia/supervisor.py --interface awg0 --command awg &
+python3 /opt/amnezia/mtu/current/supervisor.py --interface awg0 --command awg &
 mtu_pid=$!
 echo "$mtu_pid" > /run/amnezia-mtu.pid
 trap 'kill -TERM "$mtu_pid" 2>/dev/null; wait "$mtu_pid"' TERM INT EXIT

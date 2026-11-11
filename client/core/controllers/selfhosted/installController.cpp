@@ -3,6 +3,7 @@
 #include "core/models/protocolConfig.h"
 
 #include <QCoreApplication>
+#include <QCryptographicHash>
 #include <QDebug>
 #include <QEventLoop>
 #include <QFutureWatcher>
@@ -806,27 +807,41 @@ ErrorCode InstallController::startupContainerWorker(const ServerCredentials &cre
     amnezia::ScriptVars baseVars = amnezia::genBaseVars(credentials, container, QString(), QString());
     amnezia::ScriptVars protocolVars = amnezia::genProtocolVarsForContainer(container, config);
     baseVars.append(protocolVars);
-    ErrorCode e = sshSession.uploadTextFileToContainer(container, credentials, sshSession.replaceVars(script, baseVars),
-                                                                "/opt/amnezia/start.sh");
-    if (e)
-        return e;
-
+    ErrorCode e = ErrorCode::NoError;
     if (ContainerUtils::isAwgContainer(container)) {
-        e = sshSession.runScript(credentials, sshSession.replaceVars(
-                "sudo docker exec $CONTAINER_NAME apk add --no-cache python3 iproute2", baseVars));
-        if (e)
-            return e;
+        QMap<QString, QByteArray> files;
+        QByteArray contents;
         for (const auto &name : { "controller.py", "supervisor.py" }) {
             QFile resource(QStringLiteral(":/server_scripts/mtu/") + QLatin1String(name));
             if (!resource.open(QIODevice::ReadOnly))
                 return ErrorCode::InternalError;
-            e = sshSession.uploadTextFileToContainer(container, credentials,
-                    QString::fromUtf8(resource.readAll()),
-                    QStringLiteral("/opt/amnezia/") + QLatin1String(name));
+            const QByteArray data = resource.readAll();
+            files.insert(QLatin1String(name), data);
+            contents.append(data);
+        }
+        const QString release = QStringLiteral("/opt/amnezia/mtu/")
+                + QString::fromLatin1(QCryptographicHash::hash(contents, QCryptographicHash::Sha256).toHex());
+        e = sshSession.runScript(credentials, sshSession.replaceVars(
+                "sudo docker exec $CONTAINER_NAME apk add --no-cache python3 iproute2", baseVars));
+        if (e)
+            return e;
+        for (auto it = files.cbegin(); it != files.cend(); ++it) {
+            e = sshSession.uploadTextFileToContainer(container, credentials, QString::fromUtf8(it.value()),
+                                                     release + QLatin1Char('/') + it.key());
             if (e)
                 return e;
         }
+        const QString activate = QStringLiteral(
+                "sudo docker exec $CONTAINER_NAME sh -ec 'python3 -m py_compile %1/controller.py %1/supervisor.py; "
+                "ln -sfn %1 /opt/amnezia/mtu/current.next; mv -Tf /opt/amnezia/mtu/current.next /opt/amnezia/mtu/current'").arg(release);
+        e = sshSession.runScript(credentials, sshSession.replaceVars(activate, baseVars));
+        if (e)
+            return e;
     }
+    e = sshSession.uploadTextFileToContainer(container, credentials, sshSession.replaceVars(script, baseVars),
+                                             "/opt/amnezia/start.sh");
+    if (e)
+        return e;
 
     return sshSession.runScript(
             credentials,
