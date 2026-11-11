@@ -40,3 +40,18 @@ awg/wg, never private key dumps. It selects recently active IPv4 /32 peers.
 Missing per-peer routes are created with protocol 186 and removed on shutdown
 only when still matching their original owned state. Existing routes are retained.
 IPv6 adaptation and global traffic-based stall detection remain unsupported.
+
+Reproduce the encrypted integration test from repository root:
+
+    docker build -f server/mtu/lab/Dockerfile -t awg-mtu-regression .
+    mkdir -p mtu-results
+    docker run --rm --init --network none --privileged --pids-limit 512 --memory 3g --cpus 4 -v "$PWD/mtu-results:/results" awg-mtu-regression
+
+The container accepts only loopback on entry and creates its own fresh mount
+and network namespaces. No Docker socket or host networking is mounted. Its two
+real encrypted AWG peers use the production shared core. The independent Linux
+origin supplies the original TLS download and websocket streams. A fixture
+inventory command supplies allowed-ips/latest-handshakes to the supervisor.
+Assertions cover stalled download with live messages, recovery while the size
+filter remains active, healthy peer progress, supervisor SIGKILL, restart,
+automatic increase and preservation of original accepted TCP connections.

@@ -1,0 +1,6 @@
+#!/usr/bin/python3
+import sys,time
+if sys.argv[-1]=="latest-handshakes":
+ print("peer1",int(time.time()));print("peer2",int(time.time()))
+else:
+ print("peer1 10.77.0.1/32");print("peer2 10.77.0.3/32")

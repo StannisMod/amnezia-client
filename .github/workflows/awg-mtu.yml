@@ -3,6 +3,7 @@ on:
   push:
     paths:
       - server/mtu/**
+      - native/routing/**
       - client/server_scripts/awg/**
       - client/server_scripts/awg_legacy/**
       - client/server_scripts/serverScripts.qrc
@@ -10,6 +11,7 @@ on:
   pull_request:
     paths:
       - server/mtu/**
+      - native/routing/**
       - client/server_scripts/awg/**
       - client/server_scripts/awg_legacy/**
       - .github/workflows/awg-mtu.yml
@@ -30,3 +32,21 @@ jobs:
           bash -n client/server_scripts/awg/start.sh
           bash -n client/server_scripts/awg_legacy/start.sh
           python3 -m py_compile server/mtu/controller.py server/mtu/supervisor.py
+  encrypted-integration:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build isolated AWG test fixture
+        run: docker build -f server/mtu/lab/Dockerfile -t awg-mtu-regression .
+      - name: Test original TCP flows, peer isolation and crash recovery
+        run: |
+          mkdir -p mtu-results
+          docker run --rm --init --network none --privileged --pids-limit 512 --memory 3g --cpus 4 -v "$PWD/mtu-results:/results" awg-mtu-regression
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: awg-mtu-results
+          path: |
+            mtu-results/mtu-result.json
+            mtu-results/supervisor.jsonl
