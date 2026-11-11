@@ -201,6 +201,11 @@ public final class RoutingInstrumentation extends Instrumentation {
             pass("legacy AWG TCP/UDP/QUIC and routed-to-legacy-to-routed service transition");
             retainedPrimarySession();
             restrictedProfiles();
+            // restrictedProfiles leaves an IPv6-only profile in the service's
+            // saved configuration. Always-on restores that exact profile;
+            // seed the intended mixed-routing profile before checking IPv4
+            // reachability and subsequent lockdown rejection.
+            connect(false); disconnect();
             // The driver owns a real DevicePolicyManager admin on this AVD.
             // Always-on may start the saved profile itself; await that event.
             state = -1; serviceError = false;
