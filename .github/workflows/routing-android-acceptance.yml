@@ -53,12 +53,17 @@ concurrency:
 
 jobs:
   actual-apk-service:
+    name: ${{ matrix.check_name }}
     runs-on: ubuntu-22.04
     timeout-minutes: 150
     strategy:
       fail-fast: false
       matrix:
-        transport: [awg, wireguard]
+        include:
+          - {transport: awg, api: 35, focus: '', check_name: 'actual-apk-service (awg)'}
+          - {transport: wireguard, api: 35, focus: '', check_name: 'actual-apk-service (wireguard)'}
+          - {transport: awg, api: 29, focus: '--app-policy-only', check_name: 'actual-apk-service (awg, API29 app policy)'}
+          - {transport: wireguard, api: 29, focus: '--app-policy-only', check_name: 'actual-apk-service (wireguard, API29 app policy)'}
     steps:
       - uses: actions/checkout@v4
       - name: Select direct Ubuntu mirrors and bound package network retries
@@ -202,7 +207,7 @@ jobs:
       - name: Actual APK, VpnService capture, protected sockets and 100-cycle acceptance
         uses: reactivecircus/android-emulator-runner@v2
         with:
-          api-level: 35
+          api-level: ${{ matrix.api }}
           target: google_apis
           arch: x86_64
           cores: 2
@@ -214,7 +219,7 @@ jobs:
             sudo ip addr add 198.51.100.2/32 dev lo
             "$RUNNER_TEMP/android-fixture" --shared-ip 198.51.100.2 --endpoint-host 10.0.2.2 --transport "${{ matrix.transport }}" --persistent --bulk --native-dns-port 1053 --config "$RUNNER_TEMP/fixture.json" --quic-ca "$RUNNER_TEMP/quic.der" > fixture-server.log 2>&1 & echo $! > "$RUNNER_TEMP/fixture.pid"
             for i in $(seq 1 30); do test -s "$RUNNER_TEMP/fixture.json" && break; sleep 1; done
-            python3 scripts/routing/run_android_acceptance.py --apk "$FEATURE_APK" --fixture "$RUNNER_TEMP/fixture.json" --quic-probe "$RUNNER_TEMP/android-traffic-probe" --quic-ca "$RUNNER_TEMP/quic.der" --work "$RUNNER_TEMP/android-acceptance" --cycles "${{ inputs.cycles || '100' }}" --apk-source-sha "$(python3 -c 'import json;print(json.load(open("tested-apk-source.json"))["head_sha"])')"
+            python3 scripts/routing/run_android_acceptance.py --apk "$FEATURE_APK" --fixture "$RUNNER_TEMP/fixture.json" --quic-probe "$RUNNER_TEMP/android-traffic-probe" --quic-ca "$RUNNER_TEMP/quic.der" --work "$RUNNER_TEMP/android-acceptance" --cycles "${{ inputs.cycles || '100' }}" ${{ matrix.focus }} --apk-source-sha "$(python3 -c 'import json;print(json.load(open("tested-apk-source.json"))["head_sha"])')"
       - name: Stop the local peer and remove ephemeral private configuration
         if: always()
         run: |
@@ -223,7 +228,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: android-actual-apk-acceptance-${{ matrix.transport }}
+          name: android-actual-apk-acceptance-${{ matrix.transport }}-api${{ matrix.api }}
           if-no-files-found: error
           path: |
             tested-apk-source.json
