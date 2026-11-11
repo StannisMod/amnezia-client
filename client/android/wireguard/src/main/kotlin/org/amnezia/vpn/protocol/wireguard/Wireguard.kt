@@ -10,6 +10,8 @@ import kotlinx.coroutines.ensureActive
 import org.amnezia.vpn.util.net.DomainEndpointRefresh
 import org.amnezia.vpn.util.net.EndpointHealthPolicy
 import org.amnezia.vpn.util.net.AwgCorePolicy
+import org.amnezia.vpn.util.net.AndroidAppRoutingPolicy
+import android.content.pm.PackageManager
 import org.amnezia.vpn.util.net.UnderlayRecoveryState
 import android.os.SystemClock
 import android.os.Build
@@ -104,6 +106,12 @@ open class Wireguard : Protocol() {
         }
         val adapterType = AwgCorePolicy.transportAdapter(transportType, parameters.length() != 0 || wg.persistentKeepalive?.contains('-') == true)
         val session = JSONObject().apply {
+            AndroidAppRoutingPolicy.resolve(config, Build.VERSION.SDK_INT, { name ->
+                try { context.packageManager.getApplicationInfo(name, 0).uid }
+                catch (_: PackageManager.NameNotFoundException) { null }
+            }, { uid -> context.packageManager.getPackagesForUid(uid)?.toList() ?: emptyList() })?.let {
+                put("android_applications", it)
+            }
             put("cache_path", java.io.File(context.filesDir, "routing-fakeip-v1.db").absolutePath)
             put("rules", config.getJSONObject("sing_box_routing"))
             if (splitDNS != null) {

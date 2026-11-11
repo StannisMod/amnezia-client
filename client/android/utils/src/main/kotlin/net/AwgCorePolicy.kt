@@ -10,7 +10,7 @@ object AwgCorePolicy {
         if (result.optString("protocol") !in setOf("awg", "wireguard")) return result
         // Explicit diagnostic override, never an automatic failed-start fallback.
         if (result.optBoolean("android_legacy_awg_backend", false)) {
-            require(!result.has("sing_box_routing") && !result.has("sing_box_dns")) { "Legacy AWG cannot enforce shared routing or DNS policies" }
+            require(!result.has("sing_box_routing") && !result.has("sing_box_dns") && !result.has("android_app_routing")) { "Legacy AWG cannot enforce shared routing or DNS policies" }
             return result
         }
         if (!result.has("sing_box_routing")) {
