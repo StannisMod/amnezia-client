@@ -59,6 +59,7 @@ public final class RoutingInstrumentation extends Instrumentation {
     private Messenger service, replies;
     private JSONObject fixture;
     private int cycles = 100;
+    private boolean performanceOnly;
     private boolean primaryOnly;
     private final CountDownLatch bound = new CountDownLatch(1);
     private final ServiceConnection connection = new ServiceConnection() {
@@ -72,6 +73,7 @@ public final class RoutingInstrumentation extends Instrumentation {
 
     @Override public void onCreate(Bundle args) {
         super.onCreate(args);
+        performanceOnly=Boolean.parseBoolean(args.getString("performance_only","false"));
         cycles = Integer.parseInt(args.getString("cycles", "100"));
         primaryOnly = Boolean.parseBoolean(args.getString("primary_only", "false"));
         start();
@@ -108,6 +110,10 @@ public final class RoutingInstrumentation extends Instrumentation {
             require(didBind && bound.await(15, TimeUnit.SECONDS), "AwgService binding failed");
             Bundle registration = new Bundle(); registration.putString("CLIENT_NAME", "routing-acceptance");
             send(REGISTER, registration);
+            if (performanceOnly) {
+                performanceComparison();
+                result.putString("routing_result","PASS_PERFORMANCE_ONLY");code=0;return;
+            }
             if (primaryOnly) {
                 retainedPrimarySession();
                 result.putString("retained_result", retainedResult.toString());

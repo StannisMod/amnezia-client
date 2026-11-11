@@ -80,6 +80,17 @@ def nft_command(*args, text=None, check=True):
     return subprocess.run(prefix + ['nft', *args], input=text, text=True, capture_output=True, check=check, timeout=10)
 
 
+def performance_metrics(output, report):
+    measurements=[json.loads(row) for row in re.findall(r'PERFORMANCE (\{[^\n]*\})',output)]
+    assert {r['backend'] for r in measurements}=={'legacy','shared'}, 'performance comparison missing'
+    for row in measurements:
+        before=report['retained_resources']['perf_'+row['backend']+'_before']
+        after=report['retained_resources']['perf_'+row['backend']+'_after']
+        assert before['pid']==after['pid'], 'performance process replaced'
+        row.update(cpu_ticks=after['cpu_ticks']-before['cpu_ticks'],rss_before_kib=before['rss_kib'],rss_after_kib=after['rss_kib'])
+    report['performance_emulator']=measurements
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--apk", type=Path, required=True)
@@ -91,6 +102,7 @@ def main():
     parser.add_argument("--source-sha", help="test-harness commit when a read-only worktree has no mounted Git metadata")
     parser.add_argument("--apk-source-sha", help="record the actual packaged client source independently of the harness")
     parser.add_argument("--primary-only", action="store_true", help="focused retained-TCP debug run; not full acceptance")
+    parser.add_argument("--performance-only",action="store_true",help="benchmark only; does not run full acceptance")
     args = parser.parse_args()
     check_ipc_contract()
     for value in (args.source_sha, args.apk_source_sha):
@@ -169,6 +181,7 @@ def main():
         # Require the explicit PASS result and successful resource assertions.
         command = ["adb", "shell", "am", "instrument", "-w", "-r", "-e", "cycles", str(args.cycles),
                    "-e", "primary_only", str(args.primary_only).lower(),
+                   "-e", "performance_only", str(args.performance_only).lower(),
                    "org.amnezia.routingtest/org.amnezia.routingtest.RoutingInstrumentation"]
         with (work / "instrumentation.log").open("w") as log:
             process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
@@ -250,6 +263,11 @@ def main():
             assert process.wait(timeout=15) == 0
             timer.cancel()
         output = "".join(output)
+        if args.performance_only:
+            assert 'INSTRUMENTATION_RESULT: routing_result=PASS_PERFORMANCE_ONLY' in output
+            performance_metrics(output,report)
+            report['native_vpn_acceptance']='NOT_RUN_PERFORMANCE_ONLY'
+            return
         if args.primary_only:
             assert "INSTRUMENTATION_RESULT: routing_result=PASS_PRIMARY_ONLY" in output, 'focused TCP acceptance failed'
             report['native_vpn_acceptance'] = 'PASS_PRIMARY_ONLY'
@@ -277,14 +295,7 @@ def main():
             assert a['pid'] == b['pid'] and a['capture_links'] and a['capture_links'] == b['capture_links'], 'network/policy change recreated service or TUN'
             assert a['capture_fds'] == 1 and b['capture_fds'] == 1, 'capture ownership changed'
         if not args.primary_only:
-            measurements=[json.loads(row) for row in re.findall(r'PERFORMANCE (\{[^\n]*\})',output)]
-            assert {r['backend'] for r in measurements}=={'legacy','shared'}, 'performance comparison missing'
-            for row in measurements:
-                before=report['retained_resources']['perf_'+row['backend']+'_before']
-                after=report['retained_resources']['perf_'+row['backend']+'_after']
-                assert before['pid']==after['pid'], 'performance process replaced'
-                row.update(cpu_ticks=after['cpu_ticks']-before['cpu_ticks'],rss_before_kib=before['rss_kib'],rss_after_kib=after['rss_kib'])
-            report['performance_emulator']=measurements
+            performance_metrics(output,report)
         report['ordinary_app_only_preserving_recovery'] = 'PASS'
         if not args.primary_only: report['all_vpn_lockdown'] = 'PASS'
     finally:
