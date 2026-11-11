@@ -34,11 +34,19 @@ def dns_observer(log):
     tcp.bind(("10.88.0.53", 18081))
     tcp.listen()
 
+    def serve_client(client):
+        with client:
+            client.sendall(b"DIRECT\n")
+            while True:
+                payload = client.recv(4096)
+                if not payload:
+                    break
+                client.sendall(payload)
+
     def serve_tcp():
         while True:
             client, _ = tcp.accept()
-            with client:
-                client.sendall(b"DIRECT\n")
+            threading.Thread(target=serve_client, args=(client,), daemon=True).start()
 
     threading.Thread(target=serve_tcp, daemon=True).start()
     print("READY", flush=True)
@@ -267,16 +275,40 @@ def main():
         report["cached_fakeip_reconnect_new_policy"] = "PASS"
         if automatic:
             report["qt_default_policy_and_native_domains_do_not_override_site_routes"] = "PASS"
-        # DNS-only network changes must invalidate the prepared snapshot and
-        # stop the core without querying a DNS policy on another interface.
-        run("resolvectl", "dns", "corp0", "10.88.0.54")
-        message("error", timeout=10)
-        assert child.wait(timeout=10) == 0
-        child = None
-        run(args.helper, "--cache-dir", temporary / "cache", "--recover")
-        run("resolvectl", "dns", "corp0", "10.88.0.53")
-        start(profile)
-        connect("reconnected.corp.example", "DIRECT")
+        # DNS changes retire resolver work while retaining the TCP owner.
+        retained_address = connect("retained.corp.example", "DIRECT")
+        with socket.create_connection((retained_address, 18081), timeout=8) as retained:
+            assert retained.recv(64) == b"DIRECT\n"
+            run("resolvectl", "dns", "corp0", "10.88.0.54")
+            # The inventory watcher reconciles once per second in addition to
+            # D-Bus signals. Allow it to observe the deliberately dead resolver.
+            time.sleep(2)
+            assert child.poll() is None, "DNS change stopped the TCP owner"
+            retained.sendall(b"during-dns-outage")
+            assert retained.recv(64) == b"during-dns-outage"
+            from run_linux_acceptance import resolve
+            unavailable = "unavailable-after-change.corp.example"
+            try:
+                connect(unavailable, "DIRECT", resolve(unavailable))
+            except OSError:
+                pass
+            else:
+                raise AssertionError("unavailable network DNS unexpectedly resolved")
+            assert unavailable + "." not in direct_names(), "retired resolver was reused"
+            assert unavailable + "." not in vpn_names(), "network DNS leaked to VPN resolver"
+            run("resolvectl", "dns", "corp0", "10.88.0.53")
+            deadline = time.monotonic() + 20
+            while True:
+                try:
+                    connect("recovered.corp.example", "DIRECT")
+                    break
+                except OSError:
+                    assert time.monotonic() < deadline, "network DNS did not recover"
+                    time.sleep(0.2)
+            assert child.poll() is None
+            retained.sendall(b"after-dns-recovery")
+            assert retained.recv(64) == b"after-dns-recovery"
+        report["dns_change_retains_original_tcp"] = "PASS"
         stop()
         assert dns_state() == before
         # Native encrypted DNS must never reach the plaintext observer, even
