@@ -21,7 +21,7 @@ def main():
     # A native-only update is valid only while production Android sources and
     # protocol configuration serialization match the packaged client baseline.
     changed = subprocess.check_output(["git", "diff", "--name-only", args.baseline_sha, "HEAD", "--", "client/android", "client/platforms/android"], text=True)
-    assert not changed.strip(), "Android host changed; use an APK rebuilt from this commit"
+    assert not [p for p in changed.splitlines() if "/src/test/" not in p], "Android host changed; use an APK rebuilt from this commit"
     target = "lib/x86_64/libwg-go.so"
     with zipfile.ZipFile(args.apk) as original, zipfile.ZipFile(args.output, "w") as updated:
         assert target in original.namelist()

@@ -178,6 +178,13 @@ def main():
                 if "RETAIN_CHECKPOINT " in line:
                     name = line.strip().split("RETAIN_CHECKPOINT ", 1)[1]
                     assert name in ('before', 'after', 'restore_mtu', 'drop_mtu', 'drop_before_media', 'restore_before_media', 'drop_with_media', 'restore_with_media', 'wifi_off', 'wifi_on', 'safe_policy_before', 'safe_policy_after')
+                    if name == 'before' and os.environ.get('AWG_ECHO_LAB') == '1':
+                        observations=[]
+                        for size in (128,576,1104,1280):
+                            with urllib.request.urlopen('http://127.0.0.1:18080/lab-echo?size='+str(size),timeout=3) as response:
+                                observations.append(json.load(response))
+                        report['android_echo_lab']=observations
+                        print('ANDROID_ECHO_LAB '+json.dumps(observations),flush=True)
                     if name.startswith('drop_'):
                         nft_command('delete', 'table', 'inet', fault_table, check=False)
                         rules = (f'add table inet {fault_table}\n'

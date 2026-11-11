@@ -4,6 +4,9 @@ package main
 
 import (
 	"encoding/binary"
+"context"
+"net/http"
+"strconv"
 	"encoding/hex"
 	"encoding/json"
 	"github.com/StannisMod/amnezia-client/native/routing/awg"
@@ -16,7 +19,16 @@ import (
 
 func init() {
 	wrapSenderTrace = func(t tun.Device, s *awg.FlowStack) tun.Device {
-		s.StabilityProbe(func(p *stack.TCPEndpointState) {
+		previous:=labControl
+        labControl=func(m *http.ServeMux){
+          if previous!=nil{previous(m)}
+          m.HandleFunc("/lab-echo",func(w http.ResponseWriter,r *http.Request){
+            size,_:=strconv.Atoi(r.URL.Query().Get("size"))
+            ctx,cancel:=context.WithTimeout(r.Context(),time.Second);defer cancel()
+            json.NewEncoder(w).Encode(map[string]any{"size":size,"echo":s.LabEcho(ctx,size)})
+          })
+        }
+        s.StabilityProbe(func(p *stack.TCPEndpointState) {
 			if p.ID.LocalPort == 18081 {
 				json.NewEncoder(os.Stdout).Encode(map[string]any{"at": time.Now(), "port": p.ID.RemotePort, "rto_ms": p.Sender.RTO.Milliseconds(), "una": p.Sender.SndUna})
 			}

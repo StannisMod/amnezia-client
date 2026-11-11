@@ -38,6 +38,7 @@ import (
 	"github.com/miekg/dns"
 )
 
+var labControl func(*http.ServeMux)
 var wrapSenderTrace func(tun.Device, *awg.FlowStack) tun.Device
 var bulkEnabled bool
 var persistentEnabled bool
@@ -289,7 +290,7 @@ func (f *fixture) start() error {
 						a.Answer = append(a.Answer, &dns.A{Hdr: hdr, A: net.ParseIP(sharedIP)})
 					}
 				case dns.TypeAAAA:
-					a.Answer = append(a.Answer, &dns.AAAA{Hdr: hdr, AAAA: net.ParseIP("fd77::2")})
+					if name == "ipv6.test." { a.Answer = append(a.Answer, &dns.AAAA{Hdr: hdr, AAAA: net.ParseIP("fd77::2")}) }
 				}
 			}
 			w.WriteMsg(a)
@@ -416,6 +417,9 @@ func main() {
 		defer server.Shutdown()
 	}
 	control := http.NewServeMux()
+	if labControl != nil {
+		labControl(control)
+	}
 	control.HandleFunc("/dns-observations", func(w http.ResponseWriter, _ *http.Request) {
 		f.dnsNamesMu.Lock()
 		defer f.dnsNamesMu.Unlock()
