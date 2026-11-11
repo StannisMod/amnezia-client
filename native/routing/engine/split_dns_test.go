@@ -101,6 +101,14 @@ func TestSplitDNSNamedUpstreamUsesOnlyExplicitBootstrap(t *testing.T) {
 // reachable via protected DIRECT sockets, the other only inside a real AWG
 // peer. This tests the production compiler and DNS router, not mocked routing.
 func TestSplitDNSSimultaneousPolicies(t *testing.T) {
+	testSplitDNSSimultaneousPolicies(t, false)
+}
+
+func TestAndroidApplicationDNSContexts(t *testing.T) {
+	testSplitDNSSimultaneousPolicies(t, true)
+}
+
+func testSplitDNSSimultaneousPolicies(t *testing.T, androidApps bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 	aPriv, aPub := keys(t)
@@ -168,6 +176,9 @@ func TestSplitDNSSimultaneousPolicies(t *testing.T) {
 		Rules: []dnspolicy.Rule{{Kind: rules.Suffix, Value: "*.corp.example", Policy: "lan"}, {Kind: rules.Domain, Value: "public.corp.example", Policy: "vpn"}}}
 	session := SessionConfig{Rules: rules.Config{Version: 1, Default: rules.VPN, Rules: []rules.Rule{{Kind: rules.Suffix, Value: "*.direct.test", Action: rules.Direct}, {Kind: rules.Suffix, Value: "*.corp.example", Action: rules.Direct}}},
 		AWG: awg.Config{Address: []netip.Addr{netip.MustParseAddr("10.77.0.1")}, PrivateKey: aPriv, PublicKey: bPub, Endpoint: netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), bPort), ListenPort: aPort, AllowedIPs: []netip.Prefix{netip.MustParsePrefix("0.0.0.0/0")}}, DNS: policy}
+	if androidApps {
+		session.AndroidApplications = &AndroidApplications{SiteRulesUIDs: []uint32{10282}}
+	}
 	raw, err := session.Compile()
 	if err != nil {
 		t.Fatal(err)
@@ -187,6 +198,87 @@ func TestSplitDNSSimultaneousPolicies(t *testing.T) {
 	}
 	defer instance.Close()
 	router := service.FromContext[adapter.DNSRouter](ctx)
+	if androidApps {
+		// Resolve the identical name alternately for both application modes.
+		// A warm DIRECT cache must never answer the always-VPN lookup.
+		for _, kind := range []uint16{dns.TypeA, dns.TypeTXT} {
+			for _, uid := range []int32{10282, 10281, 10282, 10281, -1} {
+				metadata := &adapter.InboundContext{}
+				if uid >= 0 {
+					metadata.ProcessInfo = &adapter.ConnectionOwner{UserId: uid}
+				}
+				q := new(dns.Msg)
+				q.SetQuestion("same.corp.example.", kind)
+				answer, err := router.Exchange(adapter.WithContext(ctx, metadata), q, adapter.DNSQueryOptions{})
+				if err != nil || len(answer.Answer) != 1 {
+					t.Fatal(uid, kind, answer, err)
+				}
+				want := "10.77.0.2"
+				if uid == 10282 {
+					want = "127.0.0.1"
+				}
+				var got string
+				if kind == dns.TypeA {
+					got = answer.Answer[0].(*dns.A).A.String()
+				} else {
+					got = answer.Answer[0].(*dns.TXT).Txt[0]
+				}
+				if got != want {
+					t.Fatalf("UID %d query %d: got %s want %s", uid, kind, got, want)
+				}
+			}
+		}
+		directListener, err := net.Listen("tcp4", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer directListener.Close()
+		port := netip.MustParseAddrPort(directListener.Addr().String()).Port()
+		vpnListener, err := b.Net.ListenTCPAddrPort(netip.AddrPortFrom(netip.MustParseAddr("10.77.0.2"), port))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer vpnListener.Close()
+		for label, listener := range map[string]net.Listener{"DIRECT": directListener, "TUNNEL": vpnListener} {
+			go func(l net.Listener, marker string) {
+				for {
+					c, err := l.Accept()
+					if err != nil {
+						return
+					}
+					io.WriteString(c, marker)
+					c.Close()
+				}
+			}(listener, label)
+		}
+		q := new(dns.Msg)
+		q.SetQuestion("flow.corp.example.", dns.TypeA)
+		fakeAnswer, err := router.Exchange(adapter.WithContext(ctx, &adapter.InboundContext{Inbound: TUNTag}), q, adapter.DNSQueryOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ip := netip.MustParseAddr(fakeAnswer.Answer[0].(*dns.A).A.String())
+		for _, uid := range []int32{10282, 10281, 10282, 10281, -1} {
+			metadata := adapter.InboundContext{Inbound: TUNTag, Network: "tcp", Destination: M.Socksaddr{Addr: ip, Port: port}}
+			if uid >= 0 {
+				metadata.ProcessInfo = &adapter.ConnectionOwner{UserId: uid}
+			}
+			app, capture := net.Pipe()
+			app.SetDeadline(time.Now().Add(5 * time.Second))
+			go instance.Router().RouteConnectionEx(ctx, capture, metadata, nil)
+			want := "TUNNEL"
+			if uid == 10282 {
+				want = "DIRECT"
+			}
+			label := make([]byte, len(want))
+			_, err := io.ReadFull(app, label)
+			app.Close()
+			if err != nil || string(label) != want {
+				t.Fatalf("shared FakeIP UID %d: got %q want %s: %v", uid, label, want, err)
+			}
+		}
+		return
+	}
 	exchange := func(name string, kind uint16, captured bool) *dns.Msg {
 		t.Helper()
 		q := new(dns.Msg)

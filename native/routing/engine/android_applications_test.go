@@ -2,6 +2,8 @@ package engine
 
 import (
 	"context"
+	"github.com/StannisMod/amnezia-client/native/routing/dnspolicy"
+	"github.com/StannisMod/amnezia-client/native/routing/rules"
 	"testing"
 
 	"github.com/sagernet/sing-box/adapter"
@@ -10,6 +12,22 @@ import (
 	R "github.com/sagernet/sing-box/route/rule"
 	"github.com/sagernet/sing/common/json"
 )
+
+func TestAndroidApplicationDNSRejectsUnsafeResolver(t *testing.T) {
+	apps := &AndroidApplications{SiteRulesUIDs: []uint32{10282}}
+	settings := func() map[string]any { return map[string]any{"rules": []any{map[string]any{"server": "fake"}}} }
+	if err := apps.applyDNS(settings(), nil, rules.Direct); err == nil {
+		t.Fatal("accepted DIRECT resolver for always-VPN apps")
+	}
+	for _, config := range []*dnspolicy.Config{
+		{VPN: "missing", Policies: map[string]dnspolicy.Resolver{}},
+		{VPN: "lan", Policies: map[string]dnspolicy.Resolver{"lan": {Path: rules.Direct}}},
+	} {
+		if err := apps.applyDNS(settings(), config, rules.VPN); err == nil {
+			t.Fatal("accepted missing or DIRECT VPN DNS policy")
+		}
+	}
+}
 
 func TestAndroidApplicationVPNPriority(t *testing.T) {
 	for _, uids := range [][]uint32{nil, {10281, 10282}} {

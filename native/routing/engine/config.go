@@ -113,5 +113,8 @@ func (c RoutingConfig) compile(vpn map[string]any) ([]byte, error) {
 		// sing-box dialers. Our outbounds use DNSRouter.Lookup without pinning.
 		delete(route, "default_domain_resolver")
 	}
+	if err := c.AndroidApplications.applyDNS(config["dns"].(map[string]any), c.DNS, c.ResolverAction); err != nil {
+		return nil, err
+	}
 	return json.Marshal(config)
 }
