@@ -60,6 +60,7 @@ public final class RoutingInstrumentation extends Instrumentation {
     private JSONObject fixture;
     private int cycles = 100;
     private boolean performanceOnly;
+    private boolean sharedFirst;
     private boolean primaryOnly;
     private final CountDownLatch bound = new CountDownLatch(1);
     private final ServiceConnection connection = new ServiceConnection() {
@@ -73,6 +74,7 @@ public final class RoutingInstrumentation extends Instrumentation {
 
     @Override public void onCreate(Bundle args) {
         super.onCreate(args);
+        sharedFirst="shared-first".equals(args.getString("performance_order","legacy-first"));
         performanceOnly=Boolean.parseBoolean(args.getString("performance_only","false"));
         cycles = Integer.parseInt(args.getString("cycles", "100"));
         primaryOnly = Boolean.parseBoolean(args.getString("primary_only", "false"));
@@ -237,7 +239,7 @@ public final class RoutingInstrumentation extends Instrumentation {
     }
 
     private void performanceComparison() throws Exception {
-        for (boolean legacy : new boolean[]{true, false}) {
+        for (boolean legacy : new boolean[]{!sharedFirst, sharedFirst}) {
             String mode = legacy ? "legacy" : "shared";
             JSONObject config = primaryConfiguration();
             if (legacy) {

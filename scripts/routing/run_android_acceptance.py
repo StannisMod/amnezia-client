@@ -103,6 +103,7 @@ def main():
     parser.add_argument("--apk-source-sha", help="record the actual packaged client source independently of the harness")
     parser.add_argument("--primary-only", action="store_true", help="focused retained-TCP debug run; not full acceptance")
     parser.add_argument("--performance-only",action="store_true",help="benchmark only; does not run full acceptance")
+    parser.add_argument("--performance-order",choices=("legacy-first","shared-first"),default="legacy-first")
     args = parser.parse_args()
     check_ipc_contract()
     for value in (args.source_sha, args.apk_source_sha):
@@ -182,6 +183,7 @@ def main():
         command = ["adb", "shell", "am", "instrument", "-w", "-r", "-e", "cycles", str(args.cycles),
                    "-e", "primary_only", str(args.primary_only).lower(),
                    "-e", "performance_only", str(args.performance_only).lower(),
+                   "-e", "performance_order", args.performance_order,
                    "org.amnezia.routingtest/org.amnezia.routingtest.RoutingInstrumentation"]
         with (work / "instrumentation.log").open("w") as log:
             process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
