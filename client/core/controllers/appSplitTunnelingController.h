@@ -23,6 +23,8 @@ public:
     QVector<amnezia::InstalledAppInfo> getApps() const;
     bool appliesSiteRules(int index) const;
     bool setAppliesSiteRules(int index, bool enabled);
+    QJsonObject siteRulesPolicy(int index, bool enabled) const;
+    bool commitSiteRulesPolicy(const QJsonObject &policy);
 
 private:
     SecureAppSettingsRepository* m_appSettingsRepository;

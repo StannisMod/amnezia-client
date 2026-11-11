@@ -42,6 +42,8 @@ abstract class Protocol {
         underlayIdentity = identity
         underlayProtect = protect
     }
+    open fun updateApplicationPolicy(policy: JSONObject, expectedSession: Long): JSONObject =
+        throw VpnException("Live application routing is unsupported by this protocol")
     open fun connectionDiagnostics(): JSONObject? = null
     open val preservesConnections: Boolean get() = false
     open fun refreshVpn(vpnBuilder: Builder, protect: (Int) -> Boolean, force: Boolean) = reconnectVpn(vpnBuilder, protect)

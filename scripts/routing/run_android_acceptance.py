@@ -40,8 +40,8 @@ def check_ipc_contract():
     """Fail instead of silently using wrong ordinal messages after refactors."""
     source = (ROOT / "client/android/src/org/amnezia/vpn/IpcMessage.kt").read_text()
     for name, entries in {
-        "Action": ["REGISTER_CLIENT", "UNREGISTER_CLIENT", "CONNECT", "DISCONNECT", "REQUEST_STATUS", "NOTIFICATION_PERMISSION_GRANTED", "SET_SAVE_LOGS"],
-        "ServiceEvent": ["STATUS_CHANGED", "STATUS", "STATISTICS_UPDATE", "ERROR"],
+        "Action": ["REGISTER_CLIENT", "UNREGISTER_CLIENT", "CONNECT", "DISCONNECT", "REQUEST_STATUS", "NOTIFICATION_PERMISSION_GRANTED", "SET_SAVE_LOGS", "UPDATE_APPLICATION_POLICY"],
+        "ServiceEvent": ["STATUS_CHANGED", "STATUS", "STATISTICS_UPDATE", "ERROR", "APPLICATION_POLICY_RESULT"],
     }.items():
         match = re.search(r"enum class " + name + r"\s*:\s*IpcMessage\s*\{([^}]+)\}", source)
         assert match and re.findall(r"\b[A-Z_]+\b", match[1]) == entries, name + " IPC contract changed"

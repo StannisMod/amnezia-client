@@ -45,4 +45,25 @@ class AndroidAppRoutingPolicyTest {
             assertThrows(IllegalArgumentException::class.java) {AndroidAppRoutingPolicy.resolve(input,35,{10281},{listOf("app.one")})}
         }
     }
+    @Test fun legacyIncludeListPreparesLivePolicyWithoutChangingSavedSettings() {
+        val input=JSONObject("""{"appSplitTunnelType":1,"splitTunnelApps":["app.one","app.two","app.missing"]}""")
+        val original=input.toString()
+        val output=AndroidAppRoutingPolicy.resolveForSession(input,29,{if(it=="app.missing")null else 10281},{error("all legacy siblings already share the same choice")})!!
+        assertTrue(output.getBoolean("live"))
+        assertEquals(1,output.getJSONArray("site_rules_uids").length())
+        assertEquals(10281,output.getJSONArray("site_rules_uids").getInt(0))
+        assertEquals(original,input.toString())
+        assertNull(AndroidAppRoutingPolicy.resolveForSession(input,28,{error("no mixed routing on Android9")},{emptyList()}))
+    }
+    @Test fun explicitIncludePolicyIsLiveAndResolvesFreshUid() {
+        val input=profile().put("appSplitTunnelType",1).put("splitTunnelApps",org.json.JSONArray().put("app.one"))
+        for(uid in listOf(10281,110281)) {
+            val output=AndroidAppRoutingPolicy.resolveForSession(input,35,{uid},{listOf("app.one")})!!
+            assertTrue(output.getBoolean("live"))
+            assertEquals(uid,output.getJSONArray("site_rules_uids").getInt(0))
+        }
+        input.put("appSplitTunnelType",0)
+        assertFalse(AndroidAppRoutingPolicy.resolveForSession(input,35,{10281},{listOf("app.one")})!!.has("live"))
+    }
+
 }

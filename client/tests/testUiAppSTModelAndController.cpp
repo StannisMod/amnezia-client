@@ -17,6 +17,13 @@
 
 using namespace amnezia;
 
+class SupportedAppRoutingUi final : public AppSplitTunnelingUiController
+{
+public:
+    using AppSplitTunnelingUiController::AppSplitTunnelingUiController;
+    bool perAppSiteRulesSupported() const override { return true; }
+};
+
 class TestUiAppSTModelAndController : public QObject
 {
     Q_OBJECT
@@ -84,6 +91,10 @@ private slots:
         QVERIFY(repo->androidAppRoutingPolicy().isEmpty());
         QVERIFY(core->appliesSiteRules(0));
         QVERIFY(core->appliesSiteRules(1));
+        const auto proposed = core->siteRulesPolicy(0, false);
+        QVERIFY(!proposed.isEmpty());
+        QVERIFY(repo->androidAppRoutingPolicy().isEmpty());
+        QVERIFY(core->appliesSiteRules(0));
         QVERIFY(core->setAppliesSiteRules(0, false));
         QVERIFY(!core->appliesSiteRules(0));
         QVERIFY(core->appliesSiteRules(1));
@@ -99,6 +110,54 @@ private slots:
         QVERIFY(core->appliesSiteRules(0));
         core->clearAppsList();
         QVERIFY(repo->androidAppRoutingPolicy().value("site_rule_packages").toArray().isEmpty());
+    }
+
+    void testLiveApplicationPolicyCommitsOnlyAcknowledgedRequest()
+    {
+        auto core = m_coreController->m_appSplitTunnelingController;
+        auto repo = m_coreController->m_appSettingsRepository;
+        core->setRouteMode(AppsRouteMode::VpnOnlyForwardApps);
+        core->clearAppsList();
+        repo->setAndroidAppRoutingPolicy({});
+        QVERIFY(core->addApp({"One", "app.one", ""}));
+        QVERIFY(core->addApp({"Two", "app.two", ""}));
+        SupportedAppRoutingUi ui(core, m_coreController->m_appSplitTunnelingModel);
+        qint64 request = 0;
+        int calls = 0;
+        ui.configureLivePolicy([] { return true; }, [&](qint64 id, const QJsonObject &) { request = id; ++calls; });
+        QSignalSpy errors(&ui, &AppSplitTunnelingUiController::errorOccurred);
+        ui.setAppliesSiteRules(0, false);
+        QVERIFY(ui.applicationPolicyPending());
+        QVERIFY(core->appliesSiteRules(0));
+        QVERIFY(repo->androidAppRoutingPolicy().isEmpty());
+        ui.setAppliesSiteRules(1, false);
+        QCOMPARE(calls, 1);
+        ui.completeApplicationPolicy(request + 1, true, {});
+        QVERIFY(ui.applicationPolicyPending());
+        ui.completeApplicationPolicy(request, false, "Rejected");
+        QVERIFY(!ui.applicationPolicyPending());
+        QCOMPARE(errors.count(), 1);
+        QVERIFY(core->appliesSiteRules(0));
+        ui.setAppliesSiteRules(0, false);
+        ui.completeApplicationPolicy(request, true, {});
+        QVERIFY(!core->appliesSiteRules(0));
+        QVERIFY(core->appliesSiteRules(1));
+        ui.setAppliesSiteRules(0, true);
+        const auto stale = request;
+        ui.connectionClosed();
+        ui.completeApplicationPolicy(stale, true, {});
+        QVERIFY(!core->appliesSiteRules(0));
+        ui.setAppliesSiteRules(0, true);
+        QTRY_VERIFY_WITH_TIMEOUT(ui.applicationPolicyUnconfirmed(), 16000);
+        QVERIFY(!ui.applicationPolicyPending());
+        QVERIFY(!core->appliesSiteRules(0));
+        const int before = calls;
+        ui.setAppliesSiteRules(1, false);
+        QCOMPARE(calls, before);
+        ui.completeApplicationPolicy(request, true, {});
+        QVERIFY(!ui.applicationPolicyUnconfirmed());
+        QVERIFY(core->appliesSiteRules(0));
+        core->clearAppsList();
     }
 
     void testAndroidApplicationPolicyBackupAndValidation()

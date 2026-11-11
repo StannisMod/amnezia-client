@@ -95,8 +95,13 @@ bool AppSplitTunnelingController::appliesSiteRules(int index) const
 
 bool AppSplitTunnelingController::setAppliesSiteRules(int index, bool enabled)
 {
+    return commitSiteRulesPolicy(siteRulesPolicy(index, enabled));
+}
+
+QJsonObject AppSplitTunnelingController::siteRulesPolicy(int index, bool enabled) const
+{
     if (m_currentRouteMode != AppsRouteMode::VpnOnlyForwardApps || index < 0 || index >= m_apps.size()
-        || m_apps.at(index).packageName.isEmpty()) return false;
+        || m_apps.at(index).packageName.isEmpty()) return {};
     auto policy = m_appSettingsRepository->androidAppRoutingPolicy();
     QJsonArray packages;
     for (int i = 0; i < m_apps.size(); ++i) {
@@ -105,6 +110,12 @@ bool AppSplitTunnelingController::setAppliesSiteRules(int index, bool enabled)
     }
     policy.insert("version", 1);
     policy.insert("site_rule_packages", packages);
+    return policy;
+}
+
+bool AppSplitTunnelingController::commitSiteRulesPolicy(const QJsonObject &policy)
+{
+    if (policy.isEmpty() || !SecureAppSettingsRepository::validateAndroidAppRoutingPolicy(policy)) return false;
     m_appSettingsRepository->setAndroidAppRoutingPolicy(policy);
     return true;
 }

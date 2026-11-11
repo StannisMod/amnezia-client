@@ -20,14 +20,11 @@ import "../Components"
 PageType {
     id: root
 
-    property bool pageEnabled
+    property bool pageEnabled: !ConnectionController.isConnected && !ConnectionController.isConnectionInProgress
 
     Component.onCompleted: {
         if (ConnectionController.isConnected) {
-            PageController.showNotificationMessage(qsTr("Cannot change split tunneling settings during active connection"))
-            root.pageEnabled = false
-        } else {
-            root.pageEnabled = true
+            PageController.showNotificationMessage(qsTr("Application selection cannot be changed during an active connection"))
         }
     }
 
@@ -175,6 +172,7 @@ PageType {
 
             ListItemType {
                 id: appItem
+                enabled: root.pageEnabled
 
                 anchors.top: parent.top
                 anchors.left: parent.left
@@ -210,9 +208,15 @@ PageType {
                 visible: AppSplitTunnelingController.perAppSiteRulesSupported
                          && ServersUiController.defaultServerSupportsPerAppSiteRules
                          && AppSplitTunnelingController.routeMode === routeMode.onlyForwardApps
-                enabled: root.pageEnabled
+                enabled: !ConnectionController.isConnectionInProgress
+                         && !AppSplitTunnelingController.applicationPolicyPending
+                         && !AppSplitTunnelingController.applicationPolicyUnconfirmed
                 text: qsTr("Apply site rules")
-                descriptionText: qsTr("Off: all traffic and DNS from this app use VPN. On: site routing and DNS rules apply. Changes apply on the next connection.")
+                descriptionText: AppSplitTunnelingController.applicationPolicyPending
+                                 ? qsTr("Updating application rules…")
+                                 : AppSplitTunnelingController.applicationPolicyUnconfirmed
+                                   ? qsTr("The active rules could not be confirmed. Reconnect before changing them again.")
+                                   : qsTr("Off: all traffic and DNS from this app use VPN. On: site routing and DNS rules apply. Changes affect new connections; existing connections keep their current route.")
                 checked: {
                     var revision = AppSplitTunnelingController.applicationPolicyRevision
                     return AppSplitTunnelingController.appliesSiteRules(proxyAppSplitTunnelingModel.mapToSource(index))

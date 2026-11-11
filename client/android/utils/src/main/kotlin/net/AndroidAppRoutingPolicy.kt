@@ -3,8 +3,28 @@ package org.amnezia.vpn.util.net
 import org.json.JSONArray
 import org.json.JSONObject
 
-/** Resolve persistent package choices at connection time; never persist UIDs. */
+/** Resolve persistent package choices for each session/update; never persist UIDs. */
 object AndroidAppRoutingPolicy {
+    /** Include-list sessions prepare mutable rules before the first UI change. */
+    fun resolveForSession(profile: JSONObject, api: Int, uidForPackage: (String) -> Int?, packagesForUid: (Int) -> List<String>): JSONObject? {
+        if (api < 29 || profile.optInt("appSplitTunnelType", 0) != 1) {
+            return resolve(profile, api, uidForPackage, packagesForUid)
+        }
+        val explicit = resolve(profile, api, uidForPackage, packagesForUid)
+        if (explicit != null) return explicit.put("live", true)
+        // Before an explicit choice all captured UIDs retain the old site-rule
+        // behaviour, including shared-UID siblings captured by Android itself.
+        val packages = profile.optJSONArray("splitTunnelApps") ?: JSONArray()
+        require(packages.length() <= 4096) { "Too many captured applications" }
+        val uids = sortedSetOf<Int>()
+        for (i in 0 until packages.length()) {
+            val uid = uidForPackage(packages.getString(i)) ?: continue
+            require(uid > 0) { "Invalid Android application UID" }
+            uids.add(uid)
+        }
+        return JSONObject().put("live", true).put("site_rules_uids", JSONArray(uids.toList()))
+    }
+
     fun resolve(profile: JSONObject, api: Int, uidForPackage: (String) -> Int?, packagesForUid: (Int) -> List<String>): JSONObject? {
         val policy = profile.optJSONObject("android_app_routing") ?: return null
         require(api >= 29) { "Per-application site rules require Android 10 or newer" }

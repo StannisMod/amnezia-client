@@ -39,6 +39,9 @@ import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import org.amnezia.vpn.protocol.BadConfigException
 import org.amnezia.vpn.protocol.ProtocolState.CONNECTED
@@ -66,6 +69,10 @@ const val ACTION_CONNECT = "org.amnezia.vpn.action.connect"
 const val MSG_VPN_CONFIG = "VPN_CONFIG"
 const val MSG_CONNECTION_DIAGNOSTICS = "CONNECTION_DIAGNOSTICS"
 const val MSG_ERROR = "ERROR"
+const val MSG_APPLICATION_POLICY = "APPLICATION_POLICY"
+const val MSG_APPLICATION_POLICY_REQUEST_ID = "APPLICATION_POLICY_REQUEST_ID"
+const val MSG_APPLICATION_POLICY_SUCCESS = "APPLICATION_POLICY_SUCCESS"
+const val MSG_APPLICATION_POLICY_ERROR = "APPLICATION_POLICY_ERROR"
 const val MSG_SAVE_LOGS = "SAVE_LOGS"
 const val MSG_CLIENT_NAME = "CLIENT_NAME"
 
@@ -135,6 +142,8 @@ open class AmneziaVpnService : VpnService() {
         }
     }
 
+    private val applicationPolicyMutex = Mutex()
+
     private val actionMessageHandler: Handler by lazy(NONE) {
         object : Handler(Looper.getMainLooper()) {
             override fun handleMessage(msg: Message) {
@@ -181,6 +190,39 @@ open class AmneziaVpnService : VpnService() {
 
                     Action.SET_SAVE_LOGS -> {
                         Log.saveLogs = msg.data.getBoolean(MSG_SAVE_LOGS)
+                    }
+                    Action.UPDATE_APPLICATION_POLICY -> {
+                        val target = clientMessengers[msg.replyTo]
+                        val requestId = msg.data.getLong(MSG_APPLICATION_POLICY_REQUEST_ID)
+                        val encoded = msg.data.getString(MSG_APPLICATION_POLICY)
+                        val active = vpnProto?.existingProtocol
+                        val session = active?.connectionDiagnostics()?.optLong("session_id", -1) ?: -1
+                        if (target != null) mainScope.launch {
+                            applicationPolicyMutex.withLock {
+                                var success = false
+                                var reason = "Application routing update failed"
+                                try {
+                                    require(isConnected && active != null && session > 0) { "No active compatible VPN session" }
+                                    require(encoded != null && encoded.length <= 65536) { "Invalid application routing policy" }
+                                    val policy = JSONObject(encoded)
+                                    val next = withContext(Dispatchers.IO) { active.updateApplicationPolicy(policy, session) }
+                                    require(isConnected && vpnProto?.existingProtocol === active && active.connectionDiagnostics()?.optLong("session_id", -1) == session) { "VPN session changed" }
+                                    Prefs.save(PREFS_CONFIG_KEY, next.toString())
+                                    success = true
+                                } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                                    throw cancelled
+                                } catch (error: Exception) {
+                                    reason = error.message ?: reason
+                                }
+                                target.send {
+                                    ServiceEvent.APPLICATION_POLICY_RESULT.packToMessage {
+                                        putLong(MSG_APPLICATION_POLICY_REQUEST_ID, requestId)
+                                        putBoolean(MSG_APPLICATION_POLICY_SUCCESS, success)
+                                        if (!success) putString(MSG_APPLICATION_POLICY_ERROR, reason)
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }

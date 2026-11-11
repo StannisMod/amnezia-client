@@ -79,6 +79,23 @@ open class Wireguard : Protocol() {
             .put("session_id", if (shared > 0) shared else legacy.toLong())
             .put("preserves_connections", shared > 0)
     }
+    override fun updateApplicationPolicy(policy: JSONObject, expectedSession: Long): JSONObject = synchronized(endpointLock) {
+        require(Build.VERSION.SDK_INT >= 29 && routedHandle > 0 && expectedSession > 0) { "Live application routing is unavailable" }
+        require(connectionDiagnostics()?.optLong("session_id", -1) == expectedSession) { "VPN session changed" }
+        val next = routedConfig?.let { JSONObject(it.toString()) } ?: error("No routed profile")
+        require(next.optInt("appSplitTunnelType", 0) == 1) { "Live rules require an application include list" }
+        next.put("android_app_routing", JSONObject(policy.toString()))
+        require(AwgCorePolicy.platformSafe(Build.VERSION.SDK_INT, lockdownEnabled(), next)) { "Application policy is incompatible with Android VPN lockdown" }
+        val resolved = AndroidAppRoutingPolicy.resolveForSession(next, Build.VERSION.SDK_INT, { name ->
+            try { context.packageManager.getApplicationInfo(name, 0).uid }
+            catch (_: PackageManager.NameNotFoundException) { null }
+        }, { uid -> context.packageManager.getPackagesForUid(uid)?.toList() ?: emptyList() }) ?: error("No application policy")
+        require(RoutingBackend.updateAndroidApplications(routedHandle, resolved.toString().toByteArray(Charsets.UTF_8))) { "Application routing update failed" }
+        routedConfig = next
+        originalProfile = originalProfile?.let { JSONObject(it.toString()).put("android_app_routing", JSONObject(policy.toString())) }
+        originalProfile?.let { JSONObject(it.toString()) } ?: next
+    }
+
     override val preservesConnections: Boolean get() = routedHandle > 0
     private val routedScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -106,7 +123,7 @@ open class Wireguard : Protocol() {
         }
         val adapterType = AwgCorePolicy.transportAdapter(transportType, parameters.length() != 0 || wg.persistentKeepalive?.contains('-') == true)
         val session = JSONObject().apply {
-            AndroidAppRoutingPolicy.resolve(config, Build.VERSION.SDK_INT, { name ->
+            AndroidAppRoutingPolicy.resolveForSession(config, Build.VERSION.SDK_INT, { name ->
                 try { context.packageManager.getApplicationInfo(name, 0).uid }
                 catch (_: PackageManager.NameNotFoundException) { null }
             }, { uid -> context.packageManager.getPackagesForUid(uid)?.toList() ?: emptyList() })?.let {
