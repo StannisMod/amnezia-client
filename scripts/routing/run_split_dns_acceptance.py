@@ -227,7 +227,7 @@ def main():
         before = dns_state()
         fixture = temporary / "fixture.json"
         peer = subprocess.Popen(["ip", "netns", "exec", "split-vpn", str(args.peer), "--transport", args.transport,
-                                 "--shared-ip", "198.51.100.2", "--bind-ip", "198.51.100.2", "--record-dns", "--config", str(fixture)],
+                                 "--shared-ip", "198.51.100.2", "--bind-ip", "198.51.100.2", "--record-dns", "--persistent", "--config", str(fixture)],
                                 stdout=subprocess.PIPE, text=True)
         processes.append(peer)
         assert peer.stdout.readline().startswith("READY")
@@ -277,15 +277,18 @@ def main():
             report["qt_default_policy_and_native_domains_do_not_override_site_routes"] = "PASS"
         # DNS changes retire resolver work while retaining the TCP owner.
         retained_address = connect("retained.corp.example", "DIRECT")
-        with socket.create_connection((retained_address, 18081), timeout=8) as retained:
+        with socket.create_connection((retained_address, 18081), timeout=8) as retained, \
+                socket.create_connection((cached, 18081), timeout=8) as retained_vpn:
             assert retained.recv(64) == b"DIRECT\n"
+            assert retained_vpn.recv(64) == b"VPN\n"
             run("resolvectl", "dns", "corp0", "10.88.0.54")
             # The inventory watcher reconciles once per second in addition to
             # D-Bus signals. Allow it to observe the deliberately dead resolver.
             time.sleep(2)
             assert child.poll() is None, "DNS change stopped the TCP owner"
-            retained.sendall(b"during-dns-outage")
-            assert retained.recv(64) == b"during-dns-outage"
+            for connection in (retained, retained_vpn):
+                connection.sendall(b"during-dns-outage")
+                assert connection.recv(64) == b"during-dns-outage"
             from run_linux_acceptance import resolve
             unavailable = "unavailable-after-change.corp.example"
             try:
@@ -306,9 +309,10 @@ def main():
                     assert time.monotonic() < deadline, "network DNS did not recover"
                     time.sleep(0.2)
             assert child.poll() is None
-            retained.sendall(b"after-dns-recovery")
-            assert retained.recv(64) == b"after-dns-recovery"
-        report["dns_change_retains_original_tcp"] = "PASS"
+            for connection in (retained, retained_vpn):
+                connection.sendall(b"after-dns-recovery")
+                assert connection.recv(64) == b"after-dns-recovery"
+        report["dns_change_retains_original_tcp"] = {"direct": "PASS", "vpn": "PASS"}
         stop()
         assert dns_state() == before
         # Native encrypted DNS must never reach the plaintext observer, even
