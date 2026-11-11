@@ -64,6 +64,7 @@ public final class RoutingInstrumentation extends Instrumentation {
     private boolean primaryOnly;
     private boolean uploadMtuOnly;
     private boolean appPolicyOnly;
+    private boolean packageLifecycle;
     private boolean diagnoseControl;
     private long applicationPolicyReply = -1;
     private boolean applicationPolicyAccepted;
@@ -86,6 +87,7 @@ public final class RoutingInstrumentation extends Instrumentation {
         primaryOnly = Boolean.parseBoolean(args.getString("primary_only", "false"));
         uploadMtuOnly = Boolean.parseBoolean(args.getString("upload_mtu_only", "false"));
         appPolicyOnly = Boolean.parseBoolean(args.getString("app_policy_only", "false"));
+        packageLifecycle = Boolean.parseBoolean(args.getString("package_lifecycle", "false"));
         diagnoseControl = Boolean.parseBoolean(args.getString("diagnose_control", "false"));
         start();
     }
@@ -570,6 +572,25 @@ public final class RoutingInstrumentation extends Instrumentation {
             require(connectionDiagnostics().getLong("session_id")==session && !retainedStateChanged,"application update replaced/disconnected the core");
             progress("APP_POLICY_RESULT "+new JSONObject().put("uids",new JSONArray().put(a.getInt("uid")).put(b.getInt("uid")))
                 .put("same_session",true).put("same_old_ports",true).put("dns_contexts_switched",true));
+            if (packageLifecycle) {
+                File ready=new File(getTargetContext().getFilesDir(),"routing-package-reinstalled.ready");
+                ready.delete();progress("PACKAGE_LIFECYCLE_REINSTALL_B");
+                long deadline=SystemClock.elapsedRealtime()+60000;
+                while(!ready.exists() && SystemClock.elapsedRealtime()<deadline)SystemClock.sleep(100);
+                require(ready.exists(),"package reinstall driver did not acknowledge");ready.delete();
+                awaitAppProbe(1);
+                JSONObject identity=appProbe(1,"ready","reinstalled");
+                progress("PACKAGE_LIFECYCLE_UIDS "+new JSONObject().put("before",b.getInt("uid")).put("after",identity.getInt("uid")));
+                require(identity.getInt("uid")!=b.getInt("uid"),"reinstall did not exercise UID change");
+                JSONObject kept=appProbe(0,"echo","old");
+                require(kept.getInt("local_port")==a.getInt("local_port") && kept.getString("route").equals("VPN"),"reinstall broke unaffected app TCP");
+                JSONObject reinstalled=appProbe(1,"open","reinstalled");
+                require(reinstalled.getString("route").equals("VPN"),"reinstalled always-VPN app escaped its policy");
+                require(appProbe(1,"txt","reinstalled").getString("answer").equals("VPN"),"reinstalled app lost VPN DNS context");
+                require(connectionDiagnostics().getLong("session_id")==session && !retainedStateChanged,"package refresh replaced/disconnected the core");
+                progress("PACKAGE_LIFECYCLE_RESULT "+new JSONObject().put("uid_changed",true).put("unaffected_tcp_preserved",true).put("vpn_tcp_dns",true).put("same_session",true));
+                pass("package reinstall with a new UID retains VPN capture and unaffected app TCP");
+            }
         } finally {
             retainedCheck=false;
             for(int i=0;i<2;i++)try{appProbe(i,"stop","old");}catch(Exception ignored){}

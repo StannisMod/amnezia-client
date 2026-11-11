@@ -146,12 +146,14 @@ def main():
     parser.add_argument("--source-sha", help="test-harness commit when a read-only worktree has no mounted Git metadata")
     parser.add_argument("--apk-source-sha", help="record the actual packaged client source independently of the harness")
     parser.add_argument("--diagnose-control", action="store_true", help="capture slow control-path stacks before timeout; diagnostic result only")
+    parser.add_argument("--package-lifecycle", action="store_true", help="with --app-policy-only, reinstall a captured app and require fresh-UID VPN capture")
     parser.add_argument("--app-policy-only", action="store_true", help="focused two-app live policy regression; not full acceptance")
     parser.add_argument("--upload-mtu-only", action="store_true", help="focused aged-TCP MTU regression; not full acceptance")
     parser.add_argument("--primary-only", action="store_true", help="focused retained-TCP debug run; not full acceptance")
     parser.add_argument("--performance-only",action="store_true",help="benchmark only; does not run full acceptance")
     parser.add_argument("--performance-order",choices=("legacy-first","shared-first"),default="legacy-first")
     args = parser.parse_args()
+    assert not args.package_lifecycle or args.app_policy_only, '--package-lifecycle requires --app-policy-only'
     if sum((args.app_policy_only, args.upload_mtu_only, args.primary_only, args.performance_only)) > 1:
         parser.error("focused acceptance modes are mutually exclusive")
     check_ipc_contract()
@@ -245,6 +247,7 @@ def main():
                    "-e", "primary_only", str(args.primary_only).lower(),
                    "-e", "upload_mtu_only", str(args.upload_mtu_only).lower(),
                    "-e", "app_policy_only", str(args.app_policy_only).lower(),
+                   "-e", "package_lifecycle", str(args.package_lifecycle).lower(),
                    "-e", "diagnose_control", str(args.diagnose_control).lower(),
                    "-e", "performance_only", str(args.performance_only).lower(),
                    "-e", "performance_order", args.performance_order,
@@ -255,6 +258,21 @@ def main():
             started = time.monotonic(); output = []
             for line in process.stdout:
                 print(line, end="", flush=True); log.write(line); log.flush(); output.append(line)
+                if 'PACKAGE_LIFECYCLE_REINSTALL_B' in line:
+                    assert args.package_lifecycle and args.app_policy_only, 'unexpected package mutation request'
+                    (work/'package-before-connectivity.log').write_text(adb('shell','dumpsys','connectivity'))
+                    package='org.amnezia.routingprobe.b'
+                    assert 'Success' in adb('uninstall',package)
+                    probe_processes[1].wait(timeout=15)
+                    assert 'Success' in adb('install','-t',str(probe_apks[1]))
+                    lifecycle_log=(work/'app-probe-b-reinstalled.log').open('w');probe_logs.append(lifecycle_log)
+                    probe_processes.append(subprocess.Popen(['adb','shell','am','instrument','-w','-r','-e','port','19092',package+'/org.amnezia.appprobe.Probe'],stdout=lifecycle_log,stderr=subprocess.STDOUT))
+                    (work/'package-after-connectivity.log').write_text(adb('shell','dumpsys','connectivity'))
+                    adb('shell','touch',f'/data/user/0/{PACKAGE}/files/routing-package-reinstalled.ready')
+                if 'PACKAGE_LIFECYCLE_UIDS ' in line:
+                    report['package_lifecycle_uids']=json.loads(line.strip().split('PACKAGE_LIFECYCLE_UIDS ',1)[1])
+                if 'PACKAGE_LIFECYCLE_RESULT ' in line:
+                    report['package_lifecycle']=json.loads(line.strip().split('PACKAGE_LIFECYCLE_RESULT ',1)[1])
                 if args.diagnose_control and 'CONTROL_PENDING ' in line:
                     request_id = int(line.strip().split('CONTROL_PENDING ',1)[1])
                     def capture_slow_control(request_id=request_id):
@@ -361,7 +379,9 @@ def main():
         if args.app_policy_only:
             assert 'INSTRUMENTATION_RESULT: routing_result=PASS_APP_POLICY_ONLY' in output
             app_policy_metrics(output,report)
-            report['native_vpn_acceptance']='NOT_RUN_APP_POLICY_ONLY'
+            if args.package_lifecycle:
+                assert report.get('package_lifecycle') == {'uid_changed':True,'unaffected_tcp_preserved':True,'vpn_tcp_dns':True,'same_session':True}
+            report['native_vpn_acceptance']='NOT_RUN_PACKAGE_LIFECYCLE_ONLY' if args.package_lifecycle else 'NOT_RUN_APP_POLICY_ONLY'
             return
         if args.upload_mtu_only:
             assert 'INSTRUMENTATION_RESULT: routing_result=PASS_UPLOAD_MTU_ONLY' in output
