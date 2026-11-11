@@ -84,7 +84,7 @@ def main():
     if '/' in args.interface or not args.interface:
         parser.error('invalid interface name')
     socket.if_nametoindex(args.interface)
-    lock=open('/run/awg-mtu-'+args.interface+'.lock','w')
+    lock=open('/run/awg-mtu-'+args.interface+'-'+ '-'.join(args.peer)+'.lock','w')
     fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
     baseline={}
     expected={}

@@ -30,3 +30,13 @@ before applying to a real server.
 
 Validated in Docker with two peers on one AWG interface and an independent
 Linux origin. MTU 1280 -> 1104 -> 1280, old TCP retained, healthy peer unchanged.
+
+Production integration in this branch
+
+The AWG startup script starts supervisor.py and stops it before tunnel restart.
+The installer uploads both scripts and ensures Python/iproute2 on new or updated
+containers. The supervisor reads only allowed-ips and latest-handshakes from
+awg/wg, never private key dumps. It selects recently active IPv4 /32 peers.
+Missing per-peer routes are created with protocol 186 and removed on shutdown
+only when still matching their original owned state. Existing routes are retained.
+IPv6 adaptation and global traffic-based stall detection remain unsupported.

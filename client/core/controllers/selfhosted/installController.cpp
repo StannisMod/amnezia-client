@@ -811,6 +811,23 @@ ErrorCode InstallController::startupContainerWorker(const ServerCredentials &cre
     if (e)
         return e;
 
+    if (ContainerUtils::isAwgContainer(container)) {
+        e = sshSession.runScript(credentials, sshSession.replaceVars(
+                "sudo docker exec $CONTAINER_NAME apk add --no-cache python3 iproute2", baseVars));
+        if (e)
+            return e;
+        for (const auto &name : { "controller.py", "supervisor.py" }) {
+            QFile resource(QStringLiteral(":/server_scripts/mtu/") + QLatin1String(name));
+            if (!resource.open(QIODevice::ReadOnly))
+                return ErrorCode::InternalError;
+            e = sshSession.uploadTextFileToContainer(container, credentials,
+                    QString::fromUtf8(resource.readAll()),
+                    QStringLiteral("/opt/amnezia/") + QLatin1String(name));
+            if (e)
+                return e;
+        }
+    }
+
     return sshSession.runScript(
             credentials,
             sshSession.replaceVars("sudo docker exec -d $CONTAINER_NAME sh -c \"chmod a+x /opt/amnezia/start.sh && "
