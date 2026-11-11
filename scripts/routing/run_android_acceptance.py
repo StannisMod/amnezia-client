@@ -193,7 +193,7 @@ def main():
                 print(line, end="", flush=True); log.write(line); log.flush(); output.append(line)
                 if "RETAIN_CHECKPOINT " in line:
                     name = line.strip().split("RETAIN_CHECKPOINT ", 1)[1]
-                    assert name in ('before', 'after', 'restore_mtu', 'drop_mtu', 'drop_before_media', 'restore_before_media', 'drop_with_media', 'restore_with_media', 'wifi_off', 'wifi_on', 'safe_policy_before', 'safe_policy_after', 'perf_legacy_before', 'perf_legacy_after', 'perf_shared_before', 'perf_shared_after')
+                    assert name in ('before', 'after', 'restore_mtu', 'drop_mtu', 'drop_before_media', 'restore_before_media', 'drop_with_media', 'restore_with_media', 'wifi_off', 'wifi_on', 'safe_policy_before', 'safe_policy_after', 'perf_legacy_before', 'perf_legacy_after', 'perf_shared_before', 'perf_shared_after', 'upload_mtu_before', 'drop_upload_mtu', 'upload_mtu_after', 'restore_upload_mtu')
                     if name == 'before' and os.environ.get('AWG_ECHO_LAB') == '1':
                         observations=[]
                         for size in (128,576,1104,1280):
@@ -212,6 +212,10 @@ def main():
                             rules = (f'add table inet {fault_table}\n'
                                      f'add chain inet {fault_table} output {{ type filter hook output priority -10; policy accept; }}\n'
                                      f'add rule inet {fault_table} output ip saddr 127.0.0.1 udp sport {peer_port} ip length > 1200 counter drop\n')
+                        if name == 'drop_upload_mtu':
+                            rules = (f'add table inet {fault_table}\n'
+                                     f'add chain inet {fault_table} input {{ type filter hook input priority -10; policy accept; }}\n'
+                                     f'add rule inet {fault_table} input ip saddr 127.0.0.1 udp dport {peer_port} ip length > 1200 counter drop\n')
                         nft_command('-f', '-', text=rules)
                     elif name.startswith('restore_'):
                         witness = json.loads(nft_command('-j', 'list', 'table', 'inet', fault_table).stdout)
@@ -297,6 +301,10 @@ def main():
             assert a['pid'] == b['pid'] and a['capture_links'] and a['capture_links'] == b['capture_links'], 'network/policy change recreated service or TUN'
             assert a['capture_fds'] == 1 and b['capture_fds'] == 1, 'capture ownership changed'
         if not args.primary_only:
+            upload = re.search(r'MTU_UPLOAD_RESULT (\{[^\n]*\})', output)
+            assert upload, 'automatic upload MTU result missing'
+            report['automatic_upload_mtu'] = json.loads(upload[1])
+            assert report['automatic_upload_mtu']['same_session'] and report['automatic_upload_mtu']['filter_still_active']
             performance_metrics(output,report)
         report['ordinary_app_only_preserving_recovery'] = 'PASS'
         if not args.primary_only: report['all_vpn_lockdown'] = 'PASS'

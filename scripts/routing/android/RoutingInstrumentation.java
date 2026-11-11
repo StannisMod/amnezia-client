@@ -200,6 +200,7 @@ public final class RoutingInstrumentation extends Instrumentation {
             requireRoute(dns("vpn.test", 1), "VPN"); disconnect();
             pass("legacy AWG TCP/UDP/QUIC and routed-to-legacy-to-routed service transition");
             retainedPrimarySession();
+            automaticUploadMtu();
             restrictedProfiles();
             // restrictedProfiles leaves an IPv6-only profile in the service's
             // saved configuration. Always-on restores that exact profile;
@@ -459,6 +460,52 @@ public final class RoutingInstrumentation extends Instrumentation {
         boolean blocked = false;try { blocked = tcp(InetAddress.getByName("10.0.2.2")) == null; } catch (Exception expected) { blocked = true; }
         require(blocked, "IPv6-only profile gained an implicit native IPv4 bypass");disconnect();
         pass("restricted IPv4 MTU1200 and IPv6-only profiles preserve scope; IPv6 DNS over VPN");
+    }
+
+    private void automaticUploadMtu() throws Exception {
+        JSONObject config = primaryConfiguration();
+        config.getJSONObject(config.getString("protocol") + "_config_data").put("client_ip", "10.77.0.1/32")
+            .put("allowed_ips", new JSONArray().put("0.0.0.0/0")).put("mtu", "1420")
+            .put("path_mtu_probe", "10.77.0.2");
+        state = -1; serviceError = false; startService(config); awaitState(CONNECTED, false);
+        long session = connectionDiagnostics().getLong("session_id");
+        JSONObject before = retainedCheckpoint("upload_mtu_before");
+        ExecutorService interactiveIo = Executors.newSingleThreadExecutor();
+        ExecutorService uploadIo = Executors.newSingleThreadExecutor();
+        Socket interactive = null, media = null;
+        boolean fault = false;
+        try {
+            interactive = retainedSocket(dns("vpn.test", 1));
+            media = retainedSocket(dns("vpn.test", 1)); media.setSoTimeout(60000);
+            exchange(interactiveIo, interactive, new byte[]{42});
+            retainedCheckpoint("drop_upload_mtu"); fault = true;
+            final Socket originalMedia = media;
+            byte[] payload = new byte[256 * 1024]; new java.security.SecureRandom().nextBytes(payload);
+            long started = SystemClock.elapsedRealtime();
+            Future<?> transfer = uploadIo.submit(() -> {
+                originalMedia.getOutputStream().write(payload);
+                byte[] response = new byte[payload.length];
+                new DataInputStream(originalMedia.getInputStream()).readFully(response);
+                require(java.util.Arrays.equals(payload, response), "automatic MTU upload payload corrupted");
+                return null;
+            });
+            while (!transfer.isDone() && SystemClock.elapsedRealtime() - started < 55000) {
+                exchange(interactiveIo, interactive, new byte[]{42}); SystemClock.sleep(250);
+            }
+            transfer.get(1, TimeUnit.SECONDS);
+            // The packet-size filter is still active here. No reconnect or
+            // clearing the impairment may stand in for actual adaptation.
+            JSONObject after = retainedCheckpoint("upload_mtu_after");
+            require(connectionDiagnostics().getLong("session_id") == session, "MTU adaptation replaced the core");
+            require(after.getLong("vpn_tcp") == before.getLong("vpn_tcp") + 2, "MTU adaptation redialled TCP");
+            progress("MTU_UPLOAD_RESULT " + new JSONObject().put("elapsed_ms", SystemClock.elapsedRealtime() - started)
+                .put("original_tcp_accepts", 2).put("same_session", true).put("filter_still_active", true));
+        } finally {
+            if (fault) retainedCheckpoint("restore_upload_mtu");
+            if (media != null) media.close(); if (interactive != null) interactive.close();
+            uploadIo.shutdownNow(); interactiveIo.shutdownNow(); disconnect();
+        }
+        pass("automatic client MTU restores original upload TCP while large encrypted packets remain blocked");
     }
 
     private void allVpnLockdown() throws Exception {
