@@ -210,7 +210,16 @@ func TestLiveAndroidPolicyKeepsNativePacketOwner(t *testing.T) {
 	}
 }
 
+// Exercise the single real packet descriptor: a DNS-dependent UDP flow to a
+// fresh FakeIP must not hold up the following locally answered DNS packet.
+func TestPendingVPNDNSDoesNotBlockPacketReader(t *testing.T) {
+	for _, transport := range []string{"awg", "wireguard"} {
+		t.Run(transport, func(t *testing.T) { testOwnedPacketFDManagedDNSAndCleanup(t, transport, true, false, true) })
+	}
+}
+
 func testOwnedPacketFDManagedDNSAndCleanup(t *testing.T, transport string, networkDNS bool, liveMode ...bool) {
+	blockedDNS := len(liveMode) > 1 && liveMode[1]
 	live := len(liveMode) != 0 && liveMode[0]
 	pair, e := unix.Socketpair(unix.AF_UNIX, unix.SOCK_DGRAM, 0)
 	if e != nil {
@@ -246,6 +255,14 @@ func testOwnedPacketFDManagedDNSAndCleanup(t *testing.T, transport string, netwo
 		start = StartWithNetworkDNS
 	}
 	raw := sampleConfig(t, transport)
+	if blockedDNS {
+		var config engine.SessionConfig
+		if err := json.Unmarshal(raw, &config); err != nil {
+			t.Fatal(err)
+		}
+		config.Rules = rules.Config{Version: 2, Default: rules.VPN, Rules: []rules.Rule{{Kind: rules.CIDR, Value: "127.0.0.1/32", Action: rules.Direct}}}
+		raw, _ = json.Marshal(config)
+	}
 	if live {
 		var config map[string]any
 		json.Unmarshal(raw, &config)
@@ -283,6 +300,48 @@ func testOwnedPacketFDManagedDNSAndCleanup(t *testing.T, transport string, netwo
 	fake := answer.Answer[0].(*dns.A).A.String()
 	if !netip.MustParsePrefix("198.18.0.0/15").Contains(netip.MustParseAddr(fake)) {
 		t.Fatal("DNS response was not a FakeIP")
+	}
+	if blockedDNS {
+		pending := append([]byte(nil), packet...)
+		copy(pending[16:20], net.ParseIP(fake).To4())
+		binary.BigEndian.PutUint16(pending[22:24], 123)
+		pending[10], pending[11] = 0, 0
+		var sum uint32
+		for i := 0; i < 20; i += 2 {
+			sum += uint32(binary.BigEndian.Uint16(pending[i : i+2]))
+		}
+		for sum > 65535 {
+			sum = (sum & 65535) + (sum >> 16)
+		}
+		binary.BigEndian.PutUint16(pending[10:12], ^uint16(sum))
+		beforeCore, beforeCapture := session.core, platform.capture
+		if _, err := app.Write(pending); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := app.Write(packet); err != nil {
+			t.Fatal(err)
+		}
+		app.SetDeadline(time.Now().Add(500 * time.Millisecond))
+		for {
+			n, e = app.Read(reply)
+			if e != nil {
+				t.Fatal("pending VPN DNS blocked independent packet processing", e)
+			}
+			// The failed UDP flow may independently return an ICMP error.
+			if n >= 28 && reply[9] == 17 && binary.BigEndian.Uint16(reply[20:22]) == 53 {
+				break
+			}
+		}
+		if err := answer.Unpack(reply[28:n]); err != nil {
+			t.Fatal(err)
+		}
+		if len(answer.Answer) != 1 || answer.Answer[0].(*dns.A).A.String() != fake {
+			t.Fatal("managed DNS identity changed")
+		}
+		if session.core != beforeCore || platform.capture != beforeCapture || released.Load() != 0 {
+			t.Fatal("reader recovery replaced the core")
+		}
+		app.SetDeadline(time.Now().Add(2 * time.Second))
 	}
 	if live {
 		beforeCore, beforeCapture := session.core, platform.capture
