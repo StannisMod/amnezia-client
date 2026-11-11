@@ -1012,12 +1012,17 @@ class AmneziaActivity : QtActivity() {
     @Suppress("unused")
     fun updateApplicationPolicy(requestId: Long, policy: String) {
         mainScope.launch {
-            vpnServiceMessenger.send {
+            if (!isServiceConnected) {
+                QtAndroidController.onApplicationPolicyResult(requestId, false, "VPN service is not connected")
+                return@launch
+            }
+            vpnServiceMessenger.send(
                 Action.UPDATE_APPLICATION_POLICY.packToMessage {
                     putLong(MSG_APPLICATION_POLICY_REQUEST_ID, requestId)
                     putString(MSG_APPLICATION_POLICY, policy)
-                }
-            }
+                },
+                replyTo = activityMessenger
+            )
         }
     }
 
