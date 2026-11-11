@@ -181,10 +181,14 @@ func (c *mtuLossConn) WriteTo(p []byte, to net.Addr) (int, error) {
 }
 
 func TestEncryptedAWGRetainedUploadMTU(t *testing.T) {
-	for _, obfuscated := range []bool{false, true} {
+	for _, scenario := range []struct{ obfuscated, automatic bool }{{false, false}, {true, false}, {false, true}, {true, true}} {
+		obfuscated, automatic := scenario.obfuscated, scenario.automatic
 		name := "plain"
 		if obfuscated {
 			name = "AWG31"
+		}
+		if automatic {
+			name += "/transport-worker"
 		}
 		t.Run(name, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -208,7 +212,11 @@ func TestEncryptedAWGRetainedUploadMTU(t *testing.T) {
 				b.Close()
 				t.Fatal(err)
 			}
-			a, err := New(ctx, Config{Address: []netip.Addr{netip.MustParseAddr("10.77.0.1")}, PrivateKey: aPriv, PublicKey: bPub, Endpoint: netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), serverPort), AllowedIPs: []netip.Prefix{netip.MustParsePrefix("10.77.0.2/32")}, MTU: 1420, Parameters: params}, func(ctx context.Context, n, address string) (net.PacketConn, error) {
+			clientConfig := Config{Address: []netip.Addr{netip.MustParseAddr("10.77.0.1")}, PrivateKey: aPriv, PublicKey: bPub, Endpoint: netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), serverPort), AllowedIPs: []netip.Prefix{netip.MustParsePrefix("10.77.0.2/32")}, MTU: 1420, Parameters: params}
+			if automatic {
+				clientConfig.PathMTUProbe = netip.MustParseAddr("10.77.0.2")
+			}
+			a, err := New(ctx, clientConfig, func(ctx context.Context, n, address string) (net.PacketConn, error) {
 				pc, err := lc.ListenPacket(ctx, n, address)
 				if err != nil {
 					return nil, err
@@ -233,6 +241,20 @@ func TestEncryptedAWGRetainedUploadMTU(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer b.Close()
+			if automatic {
+				testRetainedUploadMTU(t, a.Net, b.Net, &filter, &dropped, func() error {
+					until := time.Now().Add(9 * time.Second)
+					for time.Now().Before(until) {
+						mtu, _ := a.Net.MTU()
+						if mtu < 1200 {
+							return nil
+						}
+						time.Sleep(10 * time.Millisecond)
+					}
+					return fmt.Errorf("transport MTU worker did not adapt")
+				})
+				return
+			}
 			probe := func(size int, success bool) {
 				t.Helper()
 				probeCtx, stop := context.WithTimeout(ctx, 300*time.Millisecond)
