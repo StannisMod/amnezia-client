@@ -115,6 +115,41 @@ QString WireguardConfigurator::pathMtuProbeFromInterfaceConfig(const QString &co
     return {};
 }
 
+QString WireguardConfigurator::clientIPv6FromInterfaceConfig(const QString &configuration, const QString &clientIPv4)
+{
+    const QHostAddress client(clientIPv4);
+    if (client.protocol() != QAbstractSocket::IPv4Protocol || client.isNull()) return {};
+    const QRegularExpression addressLine(QStringLiteral("(?:^|\\n)\\s*Address\\s*=\\s*([^\\r\\n]+)"));
+    const auto match = addressLine.match(configuration);
+    if (!match.hasMatch()) return {};
+    for (const auto &entry : match.captured(1).split(',')) {
+        const auto subnet = QHostAddress::parseSubnet(entry.trimmed());
+        const QHostAddress server(entry.trimmed().section('/', 0, 0));
+        if (subnet.first.protocol() != QAbstractSocket::IPv6Protocol || subnet.second != 64
+            || server.isLoopback() || server.isMulticast() || server.isLinkLocal()
+            || server == QHostAddress::AnyIPv6 || !server.scopeId().isEmpty()) continue;
+        auto address = subnet.first.toIPv6Address();
+        // The existing unique IPv4 allocation maps injectively into this /64.
+        // Keep the server's usual ::1 and low host addresses separate.
+        address[10] = 0; address[11] = 1;
+        const auto ipv4 = client.toIPv4Address();
+        for (int i = 0; i < 4; ++i) address[12 + i] = (ipv4 >> (24 - i * 8)) & 255;
+        const QHostAddress result(address);
+        if (result == server) continue;
+        const QRegularExpression allowedLine(QStringLiteral("(?:^|\\n)\\s*AllowedIPs\\s*=\\s*([^\\r\\n]+)"));
+        auto peers = allowedLine.globalMatch(configuration);
+        bool occupied = false;
+        while (peers.hasNext()) {
+            for (const auto &entry : peers.next().captured(1).split(',')) {
+                const auto existing = QHostAddress::parseSubnet(entry.trimmed());
+                if (existing.first.protocol() == QAbstractSocket::IPv6Protocol && result.isInSubnet(existing)) occupied = true;
+            }
+        }
+        if (!occupied) return result.toString();
+    }
+    return {};
+}
+
 WireguardConfigurator::ConnectionData WireguardConfigurator::prepareWireguardConfig(const ServerCredentials &credentials,
                                                                                     DockerContainer container,
                                                                                     const WireGuardServerConfig* serverConfig,
@@ -181,6 +216,7 @@ WireguardConfigurator::ConnectionData WireguardConfigurator::prepareWireguardCon
     }();
 
     connData.clientIP = nextIp.toString();
+    connData.clientIPv6 = clientIPv6FromInterfaceConfig(stdOut, connData.clientIP);
 
     // Get keys
     connData.serverPubKey =
@@ -198,11 +234,13 @@ WireguardConfigurator::ConnectionData WireguardConfigurator::prepareWireguardCon
     }
 
     // Add client to config
+    QString peerAddresses = connData.clientIP + "/32";
+    if (!connData.clientIPv6.isEmpty()) peerAddresses += ", " + connData.clientIPv6 + "/128";
     QString configPart = QString("[Peer]\n"
                                  "PublicKey = %1\n"
                                  "PresharedKey = %2\n"
-                                 "AllowedIPs = %3/32\n\n")
-                                 .arg(connData.clientPubKey, connData.pskKey, connData.clientIP);
+                                 "AllowedIPs = %3\n\n")
+                                 .arg(connData.clientPubKey, connData.pskKey, peerAddresses);
 
     errorCode = m_sshSession->uploadTextFileToContainer(container, credentials, configPart, configPath,
                                                               libssh::ScpOverwriteMode::ScpAppendToExisting);
@@ -264,7 +302,9 @@ ProtocolConfig WireguardConfigurator::createConfig(const ServerCredentials &cred
     }
 
     config.replace("$WIREGUARD_CLIENT_PRIVATE_KEY", connData.clientPrivKey);
-    config.replace("$WIREGUARD_CLIENT_IP", connData.clientIP);
+    if (!connData.clientIPv6.isEmpty())
+        config.replace("$WIREGUARD_CLIENT_IP/32", connData.clientIP + "/32, " + connData.clientIPv6 + "/128");
+    else config.replace("$WIREGUARD_CLIENT_IP", connData.clientIP);
     config.replace("$WIREGUARD_SERVER_PUBLIC_KEY", connData.serverPubKey);
     config.replace("$WIREGUARD_PSK", connData.pskKey);
 
@@ -285,6 +325,7 @@ ProtocolConfig WireguardConfigurator::createConfig(const ServerCredentials &cred
     clientConfig.hostName = connData.host;
     clientConfig.port = connData.port.toInt();
     clientConfig.clientIp = connData.clientIP;
+    if (!connData.clientIPv6.isEmpty()) clientConfig.clientIp += "/32, " + connData.clientIPv6 + "/128";
     clientConfig.pathMtuProbe = connData.pathMtuProbe;
     clientConfig.clientPrivateKey = connData.clientPrivKey;
     clientConfig.clientPublicKey = connData.clientPubKey;

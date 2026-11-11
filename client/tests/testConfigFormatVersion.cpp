@@ -55,6 +55,20 @@ private:
     SecureQSettings *m_settings = nullptr;
 
 private slots:
+    void testClientIPv6AllocationUsesExplicitServerPrefix()
+    {
+        const auto configuration = QString("Address = 10.8.1.0/24, fd77:1234:5678:9::1/64\n");
+        const auto first = WireguardConfigurator::clientIPv6FromInterfaceConfig(configuration, "10.8.1.2");
+        const auto second = WireguardConfigurator::clientIPv6FromInterfaceConfig(configuration, "10.8.1.3");
+        QCOMPARE(QHostAddress(first), QHostAddress("fd77:1234:5678:9:0:1:a08:102"));
+        QVERIFY(first != second);
+        QVERIFY(WireguardConfigurator::clientIPv6FromInterfaceConfig(configuration + "AllowedIPs = " + first + "/128\n", "10.8.1.2").isEmpty());
+        QCOMPARE(first, WireguardConfigurator::clientIPv6FromInterfaceConfig(configuration, "10.8.1.2"));
+        QVERIFY(WireguardConfigurator::clientIPv6FromInterfaceConfig("Address = 10.8.1.0/24", "10.8.1.2").isEmpty());
+        QVERIFY(WireguardConfigurator::clientIPv6FromInterfaceConfig("Address = fd77::1/128", "10.8.1.2").isEmpty());
+        QVERIFY(WireguardConfigurator::clientIPv6FromInterfaceConfig("Address = fe80::1/64", "10.8.1.2").isEmpty());
+        QVERIFY(WireguardConfigurator::clientIPv6FromInterfaceConfig(configuration, "fd77::2").isEmpty());
+    }
     void testPathMtuProbeUsesExplicitServerAddress()
     {
         QCOMPARE(WireguardConfigurator::pathMtuProbeFromInterfaceConfig("Address = 10.8.1.0/24\nAllowedIPs = 10.8.1.2/32"), QString("10.8.1.0"));

@@ -24,6 +24,7 @@ public:
         QString clientPubKey;  // client public key
         QString clientIP;      // internal client IP address
         QString pathMtuProbe; // actual server tunnel address read over SSH
+        QString clientIPv6;
         QString serverPubKey;  // tls-auth key
         QString pskKey;        // preshared key
         QString host;          // host ip
@@ -42,6 +43,7 @@ public:
 
     static ConnectionData genClientKeys();
     static QString pathMtuProbeFromInterfaceConfig(const QString &configuration);
+    static QString clientIPv6FromInterfaceConfig(const QString &configuration, const QString &clientIPv4);
 
 private:
     QList<QHostAddress> getIpsFromConf(const QString &input);
