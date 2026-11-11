@@ -28,18 +28,22 @@ permissions:
 jobs:
   ipv6-forwarding:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - name: Build isolated IPv6 forwarding fixture
         run: docker build -f server/ipv6/lab/Dockerfile -t ipv6-egress-regression .
       - name: Verify kernel IPv6 TCP forwarding and scoped NAT
         run: docker run --rm --network none --privileged --pids-limit 128 --memory 256m ipv6-egress-regression | tee ipv6-egress-result.log
+      - name: Verify encrypted AWG and WG through Linux TUN and NAT66
+        run: docker run --rm --network none --privileged --pids-limit 256 --memory 1g --entrypoint sh ipv6-egress-regression /app/run_encrypted.sh | tee ipv6-encrypted-egress.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: ipv6-egress-result
-          path: ipv6-egress-result.log
+          path: |
+            ipv6-egress-result.log
+            ipv6-encrypted-egress.log
   ownership:
     runs-on: ubuntu-latest
     steps:
