@@ -1,4 +1,5 @@
 """Discover recently active AWG IPv4 host peers and supervise MTU workers."""
+import ctypes
 import argparse
 import ipaddress
 import json
@@ -29,6 +30,13 @@ def main():
     if not args.interface or "/" in args.interface:
         parser.error("invalid interface")
     workers = {}
+    parent_pid=os.getpid()
+    def child_lifetime():
+        libc=ctypes.CDLL(None,use_errno=True)
+        if libc.prctl(1,signal.SIGTERM,0,0,0)!=0:
+            os._exit(127)
+        if os.getppid()!=parent_pid:
+            os._exit(127)
     stopped = False
     def stop(*_):
         nonlocal stopped
@@ -65,11 +73,16 @@ def main():
                 for peer in sorted(peers-set(workers)):
                     existing=run('ip','-o','-4','route','show','exact',peer+'/32').strip()
                     owned=False
+                    recovery=Path('/run/awg-mtu')/(args.interface+'-'+peer+'.json')
+                    saved_original=None
+                    if 'proto 186' in existing and recovery.exists():
+                        saved_original=json.loads(recovery.read_text())['original']
+                        owned=True
                     if not existing:
                         subprocess.run(['ip','-4','route','add',peer+'/32','dev',args.interface,'proto','186'],check=True)
                         owned=True
-                    original=run('ip','-o','-4','route','show','exact',peer+'/32').strip()
-                    process=subprocess.Popen([sys.executable,str(Path(__file__).with_name('controller.py')),'--interface',args.interface,'--source',source,'--peer',peer,'--interval',str(args.interval)])
+                    original=saved_original or run('ip','-o','-4','route','show','exact',peer+'/32').strip()
+                    process=subprocess.Popen([sys.executable,str(Path(__file__).with_name('controller.py')),'--interface',args.interface,'--source',source,'--peer',peer,'--interval',str(args.interval)],preexec_fn=child_lifetime)
                     workers[peer]=(process,owned,original)
             except (subprocess.SubprocessError,ValueError,IndexError,StopIteration,OSError) as error:
                 print(json.dumps({'event':'mtu-supervisor-error','error':str(error)}),flush=True)

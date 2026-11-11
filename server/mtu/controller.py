@@ -59,6 +59,7 @@ def discover(peer, source, maximum=1280):
     finally: sock.close()
 
 
+from pathlib import Path
 import argparse
 import fcntl
 import signal
@@ -74,6 +75,7 @@ def main():
     parser.add_argument('--peer',action='append',required=True)
     parser.add_argument('--maximum',type=int,default=1280)
     parser.add_argument('--interval',type=float,default=30)
+    parser.add_argument('--state-dir',type=Path,default=Path('/run/awg-mtu'))
     parser.add_argument('--once',action='store_true')
     args=parser.parse_args()
     import ipaddress
@@ -86,6 +88,32 @@ def main():
     socket.if_nametoindex(args.interface)
     lock=open('/run/awg-mtu-'+args.interface+'-'+ '-'.join(args.peer)+'.lock','w')
     fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+    args.state_dir.mkdir(mode=0o700,parents=True,exist_ok=True)
+    journals={peer:args.state_dir/(args.interface+'-'+peer+'.json') for peer in args.peer}
+    def without_mtu(text):
+        tokens=shlex.split(text)
+        if 'mtu' in tokens:
+            idx=tokens.index('mtu')
+            del tokens[idx:idx+2]
+        return tokens
+    def record(peer, original, mtu):
+        path=journals[peer]
+        temporary=path.with_suffix('.tmp')
+        temporary.write_text(json.dumps({'original':original,'mtu':mtu}))
+        os.replace(temporary,path)
+    for peer,path in journals.items():
+        if path.exists():
+            saved=json.loads(path.read_text())
+            current=route(peer)
+            tokens=shlex.split(current)
+            mtu=int(tokens[tokens.index('mtu')+1]) if 'mtu' in tokens else args.maximum
+            if current==saved['original']:
+                path.unlink()
+            elif without_mtu(current)==without_mtu(saved['original']) and mtu==saved['mtu']:
+                subprocess.run(['ip','-4','route','replace',*shlex.split(saved['original'])],check=True)
+                path.unlink()
+            else:
+                raise RuntimeError('unreconciled external route change: '+peer)
     baseline={}
     expected={}
     candidates={}
@@ -128,6 +156,7 @@ def main():
                         idx=tokens.index('mtu')
                         del tokens[idx:idx+2]
                     if target!=args.maximum: tokens+=['mtu',str(target)]
+                    record(peer,baseline[peer],target)
                     subprocess.run(['ip','-4','route','replace',*tokens],check=True)
                     expected[peer]=route(peer)
                 print(json.dumps(dict(at=time.time(),peer=peer,applied_mtu=target,**result)),flush=True)
@@ -138,5 +167,7 @@ def main():
         for peer,original in baseline.items():
             if route(peer)==expected[peer] and route(peer)!=original:
                 subprocess.run(['ip','-4','route','replace',*shlex.split(original)],check=True)
+            if route(peer)==original and journals[peer].exists():
+                journals[peer].unlink()
 
 if __name__=='__main__': main()

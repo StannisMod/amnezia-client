@@ -1,3 +1,4 @@
+import json
 import importlib.util
 from pathlib import Path
 import sys
@@ -11,10 +12,14 @@ spec.loader.exec_module(controller)
 
 
 class RouteOwnershipTest(unittest.TestCase):
-    def exercise(self, result, external_change=False):
+    def exercise(self, result, external_change=False, crashed=False):
         original = '10.77.0.1 dev awg0 scope link'
         state = [original]
         commands = []
+        state_dir=Path(tempfile.mkdtemp(prefix='awg-mtu-test-'))
+        if crashed:
+            state[0]=original+' mtu 1104'
+            (state_dir/'awg0-10.77.0.1.json').write_text(json.dumps({'original':original,'mtu':1104}))
 
         def execute(command, **kwargs):
             commands.append(command)
@@ -26,7 +31,7 @@ class RouteOwnershipTest(unittest.TestCase):
             return result
 
         argv = ['controller.py', '--interface', 'awg0', '--source', '10.77.0.254',
-                '--peer', '10.77.0.1', '--once']
+                '--peer', '10.77.0.1', '--state-dir', str(state_dir), '--once']
         with tempfile.TemporaryFile(mode='w+') as lock:
             with patch.object(sys, 'argv', argv), patch.object(controller, 'open', return_value=lock, create=True), \
                  patch.object(controller.socket, 'if_nametoindex', return_value=1), \
@@ -45,6 +50,11 @@ class RouteOwnershipTest(unittest.TestCase):
         self.assertEqual(final, original)
         self.assertEqual(len(commands), 2)
         self.assertEqual(commands[0][-2:], ['mtu', '1104'])
+
+    def test_restart_recovers_a_route_left_by_killed_worker(self):
+        original, final, commands = self.exercise({'state': 'inconclusive'}, crashed=True)
+        self.assertEqual(final, original)
+        self.assertEqual(len(commands), 1)
 
     def test_outage_does_not_change_route(self):
         original, final, commands = self.exercise({'state': 'inconclusive'})
