@@ -145,6 +145,7 @@ def main():
     parser.add_argument("--cycles", type=int, default=100)
     parser.add_argument("--source-sha", help="test-harness commit when a read-only worktree has no mounted Git metadata")
     parser.add_argument("--apk-source-sha", help="record the actual packaged client source independently of the harness")
+    parser.add_argument("--diagnose-control", action="store_true", help="capture slow control-path stacks before timeout; diagnostic result only")
     parser.add_argument("--app-policy-only", action="store_true", help="focused two-app live policy regression; not full acceptance")
     parser.add_argument("--upload-mtu-only", action="store_true", help="focused aged-TCP MTU regression; not full acceptance")
     parser.add_argument("--primary-only", action="store_true", help="focused retained-TCP debug run; not full acceptance")
@@ -164,6 +165,8 @@ def main():
     assert 1 <= peer_port <= 65535
     fault_table = 'aap_' + str(os.getpid())
     timer = None
+    control_timers = {}
+    diagnostic_taken = threading.Event()
     work = args.work.resolve(); work.mkdir(parents=True, exist_ok=True)
     sdk = Path(os.environ["ANDROID_HOME"])
     tools = sdk / "build-tools/36.0.0"
@@ -242,6 +245,7 @@ def main():
                    "-e", "primary_only", str(args.primary_only).lower(),
                    "-e", "upload_mtu_only", str(args.upload_mtu_only).lower(),
                    "-e", "app_policy_only", str(args.app_policy_only).lower(),
+                   "-e", "diagnose_control", str(args.diagnose_control).lower(),
                    "-e", "performance_only", str(args.performance_only).lower(),
                    "-e", "performance_order", args.performance_order,
                    "org.amnezia.routingtest/org.amnezia.routingtest.RoutingInstrumentation"]
@@ -251,6 +255,24 @@ def main():
             started = time.monotonic(); output = []
             for line in process.stdout:
                 print(line, end="", flush=True); log.write(line); log.flush(); output.append(line)
+                if args.diagnose_control and 'CONTROL_PENDING ' in line:
+                    request_id = int(line.strip().split('CONTROL_PENDING ',1)[1])
+                    def capture_slow_control(request_id=request_id):
+                        if diagnostic_taken.is_set(): return
+                        diagnostic_taken.set()
+                        try:
+                            pid = snapshot()['pid']
+                            trace = subprocess.run(['adb','shell','debuggerd','-b',str(pid)],capture_output=True,text=True,timeout=6)
+                            (work/f'slow-control-{request_id}.log').write_text(trace.stdout+trace.stderr)
+                            sockets = subprocess.run(['adb','shell','ss','-nto'],capture_output=True,text=True,timeout=3)
+                            (work/f'slow-control-{request_id}-sockets.log').write_text(sockets.stdout+sockets.stderr)
+                        except (AssertionError,subprocess.SubprocessError) as error:
+                            (work/f'slow-control-{request_id}.log').write_text(type(error).__name__)
+                    watch = threading.Timer(2, capture_slow_control);watch.daemon=True
+                    control_timers[request_id]=watch;watch.start()
+                if args.diagnose_control and 'CONTROL_FINISHED ' in line:
+                    request_id = int(line.strip().split('CONTROL_FINISHED ',1)[1])
+                    if request_id in control_timers: control_timers[request_id].cancel()
                 if "RETAIN_CHECKPOINT " in line:
                     name = line.strip().split("RETAIN_CHECKPOINT ", 1)[1]
                     assert name in ('before', 'after', 'restore_mtu', 'drop_mtu', 'drop_before_media', 'restore_before_media', 'drop_with_media', 'restore_with_media', 'wifi_off', 'wifi_on', 'safe_policy_before', 'safe_policy_after', 'perf_legacy_before', 'perf_legacy_after', 'perf_shared_before', 'perf_shared_after', 'upload_mtu_before', 'drop_upload_mtu', 'upload_mtu_after', 'restore_upload_mtu', 'app_policy_before', 'app_policy_after')
@@ -361,7 +383,7 @@ def main():
             assert after["fd_count"] <= before["fd_count"] + 8, "descriptor growth across reconnects"
             assert after["threads"] <= before["threads"] + 24, "thread growth across reconnects"
             report["resource_limits"] = {"fd_growth": 8, "thread_growth": 24, "rss": "measured only; Go heap retention varies"}
-            report["native_vpn_acceptance"] = "PASS"
+            report["native_vpn_acceptance"] = "PASS_WITH_CONTROL_DIAGNOSTICS" if args.diagnose_control else "PASS"
             report["android_os_always_on_lockdown"] = "PASS"
             report["legacy_awg_transition"] = "PASS"
         match = re.search(r'INSTRUMENTATION_RESULT: retained_result=(\{[^\n]*\})', output)
@@ -385,6 +407,10 @@ def main():
         if not args.primary_only: report['all_vpn_lockdown'] = 'PASS'
     finally:
         if timer is not None: timer.cancel()
+        for watch in control_timers.values(): watch.cancel()
+        for watch in control_timers.values():
+            if watch.is_alive(): watch.join(timeout=10)
+        report['control_diagnostics'] = {'enabled':args.diagnose_control,'captures':[p.name for p in work.glob('slow-control-*.log')]}
         # Fault injection can abort before instrumentation switches the peer
         # back on. Leave the persistent disposable fixture ready for a rerun.
         try:

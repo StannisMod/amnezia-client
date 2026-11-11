@@ -64,6 +64,7 @@ public final class RoutingInstrumentation extends Instrumentation {
     private boolean primaryOnly;
     private boolean uploadMtuOnly;
     private boolean appPolicyOnly;
+    private boolean diagnoseControl;
     private long applicationPolicyReply = -1;
     private boolean applicationPolicyAccepted;
     private String applicationPolicyError = "";
@@ -85,6 +86,7 @@ public final class RoutingInstrumentation extends Instrumentation {
         primaryOnly = Boolean.parseBoolean(args.getString("primary_only", "false"));
         uploadMtuOnly = Boolean.parseBoolean(args.getString("upload_mtu_only", "false"));
         appPolicyOnly = Boolean.parseBoolean(args.getString("app_policy_only", "false"));
+        diagnoseControl = Boolean.parseBoolean(args.getString("diagnose_control", "false"));
         start();
     }
     @Override public void onStart() {
@@ -761,7 +763,9 @@ public final class RoutingInstrumentation extends Instrumentation {
             throw new AssertionError("missing DNS address");
         }
     }
-    private static JSONObject control(String path, boolean post) throws Exception {
+    private JSONObject control(String path, boolean post) throws Exception {
+        long request = System.nanoTime();
+        if (diagnoseControl) progress("CONTROL_PENDING " + request);
         try (Socket socket = new Socket()) {
             socket.connect(new InetSocketAddress("10.0.2.2", 18080), 4000); socket.setSoTimeout(4000);
             socket.getOutputStream().write(((post ? "POST " : "GET ") + path + " HTTP/1.0\r\nHost: 10.0.2.2\r\nContent-Length: 0\r\n\r\n").getBytes(StandardCharsets.US_ASCII));
@@ -769,6 +773,8 @@ public final class RoutingInstrumentation extends Instrumentation {
             require(reader.readLine().contains("200"), "fixture control failed");
             String line; while ((line = reader.readLine()) != null && !line.isEmpty()) {}
             return post ? new JSONObject() : new JSONObject(reader.readLine());
+        } finally {
+            if (diagnoseControl) progress("CONTROL_FINISHED " + request);
         }
     }
     private static void loopback(String ip) throws Exception {
