@@ -89,6 +89,13 @@ open class Wireguard : Protocol() {
             .put("session_id", if (shared > 0) shared else legacy.toLong())
             .put("preserves_connections", shared > 0)
             .put("capture_refresh_count", captureRefreshCount)
+            .also { result ->
+                if (shared > 0) {
+                    RoutingBackend.diagnostics(shared)?.let { raw ->
+                        runCatching { result.put("routing", JSONObject(String(raw, Charsets.UTF_8))) }
+                    }
+                }
+            }
     }
     override fun updateApplicationPolicy(policy: JSONObject, expectedSession: Long): JSONObject = synchronized(endpointLock) {
         require(Build.VERSION.SDK_INT >= 29 && routedHandle > 0 && expectedSession > 0) { "Live application routing is unavailable" }

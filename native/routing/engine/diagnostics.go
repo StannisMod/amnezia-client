@@ -13,6 +13,8 @@ import (
 // Diagnostics reports routing choices rather than transport success. Counters
 // and the last reason stay in memory; no destination names or addresses are kept.
 type DiagnosticSnapshot struct {
+	UnknownOwner     uint64 `json:"unknown_owner"`
+	LastOwnerKnown   bool   `json:"last_owner_known"`
 	Direct           uint64 `json:"direct"`
 	VPN              uint64 `json:"vpn"`
 	ManagedDNS       uint64 `json:"managed_dns"`
@@ -42,6 +44,10 @@ func (d *Diagnostics) record(m adapter.InboundContext, rule adapter.Rule, out ad
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	s := &d.snapshot
+	s.LastOwnerKnown = m.ProcessInfo != nil && m.ProcessInfo.UserId >= 0
+	if !s.LastOwnerKnown {
+		s.UnknownOwner++
+	}
 	s.LastOutbound = out.Tag()
 	s.LastNetwork = m.Network
 	s.LastRule = ""
