@@ -23,6 +23,8 @@ wg-quick down /opt/amnezia/awg/wg0.conf
 # start daemons if configured
 if [ -f /opt/amnezia/awg/wg0.conf ]; then (wg-quick up /opt/amnezia/awg/wg0.conf); fi
 
+amnezia_enable_ipv6 wg0 || exit 1
+
 # Allow traffic on the TUN interface.
 iptables -A INPUT -i wg0 -j ACCEPT
 iptables -A FORWARD -i wg0 -j ACCEPT

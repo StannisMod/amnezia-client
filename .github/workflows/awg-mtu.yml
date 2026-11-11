@@ -3,6 +3,8 @@ on:
   push:
     paths:
       - server/mtu/**
+      - server/ipv6/**
+      - client/server_scripts/enable_ipv6_forwarding.sh
       - client/server_scripts/prepare_ipv6_network.sh
       - client/tests/test_ipv6_network_prepare.py
       - native/routing/**
@@ -13,6 +15,8 @@ on:
   pull_request:
     paths:
       - server/mtu/**
+      - server/ipv6/**
+      - client/server_scripts/enable_ipv6_forwarding.sh
       - client/server_scripts/prepare_ipv6_network.sh
       - client/tests/test_ipv6_network_prepare.py
       - native/routing/**
@@ -22,6 +26,20 @@ on:
 permissions:
   contents: read
 jobs:
+  ipv6-forwarding:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build isolated IPv6 forwarding fixture
+        run: docker build -f server/ipv6/lab/Dockerfile -t ipv6-egress-regression .
+      - name: Verify kernel IPv6 TCP forwarding and scoped NAT
+        run: docker run --rm --network none --privileged --pids-limit 128 --memory 256m ipv6-egress-regression | tee ipv6-egress-result.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ipv6-egress-result
+          path: ipv6-egress-result.log
   ownership:
     runs-on: ubuntu-latest
     steps:

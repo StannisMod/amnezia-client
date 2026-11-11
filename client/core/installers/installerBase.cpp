@@ -1,4 +1,5 @@
 #include "installerBase.h"
+#include "core/configurators/wireguardConfigurator.h"
 
 #include "core/utils/containerEnum.h"
 #include "core/utils/containers/containerUtils.h"
@@ -58,6 +59,7 @@ ContainerConfig InstallerBase::createBaseConfig(DockerContainer container, int p
             awgConfig.serverConfig.port = portStr;
             awgConfig.serverConfig.transportProto = transportProtoStr;
             awgConfig.serverConfig.subnetAddress = protocols::wireguard::defaultSubnetAddress;
+            awgConfig.serverConfig.ipv6Address = WireguardConfigurator::newServerIPv6Address();
             config.protocolConfig = awgConfig;
             break;
         }
@@ -66,6 +68,7 @@ ContainerConfig InstallerBase::createBaseConfig(DockerContainer container, int p
             wgConfig.serverConfig.port = portStr;
             wgConfig.serverConfig.transportProto = transportProtoStr;
             wgConfig.serverConfig.subnetAddress = protocols::wireguard::defaultSubnetAddress;
+            wgConfig.serverConfig.ipv6Address = WireguardConfigurator::newServerIPv6Address();
             config.protocolConfig = wgConfig;
             break;
         }

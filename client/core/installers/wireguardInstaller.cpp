@@ -33,6 +33,7 @@ ErrorCode WireguardInstaller::extractConfigFromContainer(DockerContainer contain
         const auto prefix = WireguardConfigurator::serverIPv4CidrFromInterfaceConfig(serverConfig);
         wgConfig->serverConfig.subnetAddress = prefix.section('/', 0, 0);
         wgConfig->serverConfig.subnetCidr = prefix.section('/', 1, 1);
+        wgConfig->serverConfig.ipv6Address = WireguardConfigurator::serverIPv6CidrFromInterfaceConfig(serverConfig);
     }
     
     return ErrorCode::NoError;

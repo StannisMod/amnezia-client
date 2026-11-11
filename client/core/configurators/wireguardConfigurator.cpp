@@ -4,6 +4,7 @@
 #include <QJsonDocument>
 #include <QProcess>
 #include <QRegularExpression>
+#include <QRandomGenerator>
 #include <QString>
 #include <QTemporaryDir>
 #include <QTemporaryFile>
@@ -155,6 +156,30 @@ QString WireguardConfigurator::clientIPv6FromInterfaceConfig(const QString &conf
         if (!occupied) return result.toString();
     }
     return {};
+}
+
+QString WireguardConfigurator::serverIPv6CidrFromInterfaceConfig(const QString &configuration)
+{
+    const QRegularExpression addressLine(QStringLiteral("(?:^|\\n)\\s*Address\\s*=\\s*([^\\r\\n]+)"));
+    const auto match = addressLine.match(configuration);
+    if (!match.hasMatch()) return {};
+    for (const auto &entry : match.captured(1).split(',')) {
+        const QHostAddress address(entry.trimmed().section('/', 0, 0));
+        const auto subnet = QHostAddress::parseSubnet(entry.trimmed());
+        if (address.protocol() == QAbstractSocket::IPv6Protocol && subnet.second == 64
+            && address != QHostAddress::AnyIPv6 && !address.isLoopback() && !address.isMulticast()
+            && !address.isLinkLocal() && address.scopeId().isEmpty()) return address.toString() + "/64";
+    }
+    return {};
+}
+
+QString WireguardConfigurator::newServerIPv6Address()
+{
+    const auto random = QRandomGenerator::system()->generate64();
+    return QStringLiteral("fd%1:%2:%3::1/64")
+        .arg((random >> 32) & 0xff, 2, 16, QLatin1Char('0'))
+        .arg((random >> 16) & 0xffff, 4, 16, QLatin1Char('0'))
+        .arg(random & 0xffff, 4, 16, QLatin1Char('0'));
 }
 
 WireguardConfigurator::ConnectionData WireguardConfigurator::prepareWireguardConfig(const ServerCredentials &credentials,

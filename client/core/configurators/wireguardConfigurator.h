@@ -44,6 +44,8 @@ public:
     static ConnectionData genClientKeys();
     static QString pathMtuProbeFromInterfaceConfig(const QString &configuration);
     static QString serverIPv4CidrFromInterfaceConfig(const QString &configuration);
+    static QString serverIPv6CidrFromInterfaceConfig(const QString &configuration);
+    static QString newServerIPv6Address();
     static QString clientIPv6FromInterfaceConfig(const QString &configuration, const QString &clientIPv4);
 
 private:

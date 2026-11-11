@@ -2,6 +2,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QSignalSpy>
+#include <QSet>
 #include <QTest>
 #include <QUuid>
 
@@ -56,6 +57,29 @@ private:
     SecureQSettings *m_settings = nullptr;
 
 private slots:
+    void testServerIPv6PrefixPersistsWithoutInventingLegacyAddresses()
+    {
+        QSet<QString> prefixes;
+        for (int i = 0; i < 32; ++i) {
+            const auto address = WireguardConfigurator::newServerIPv6Address();
+            const auto subnet = QHostAddress::parseSubnet(address);
+            QCOMPARE(subnet.second, 64);
+            QVERIFY((subnet.first.toIPv6Address()[0] & 0xfe) == 0xfc);
+            QVERIFY(!prefixes.contains(address)); prefixes.insert(address);
+        }
+        const auto address = *prefixes.begin();
+        WireGuardServerConfig wg; wg.ipv6Address = address;
+        const auto restoredWg = WireGuardServerConfig::fromJson(wg.toJson());
+        QCOMPARE(restoredWg.ipv6Address, address); QVERIFY(wg.hasEqualServerSettings(restoredWg));
+        auto changedWg = restoredWg; changedWg.ipv6Address.clear(); QVERIFY(!wg.hasEqualServerSettings(changedWg));
+        AwgServerConfig awg; awg.ipv6Address = address;
+        const auto restoredAwg = AwgServerConfig::fromJson(awg.toJson());
+        QCOMPARE(restoredAwg.ipv6Address, address); QVERIFY(awg.hasEqualServerSettings(restoredAwg));
+        QVERIFY(WireGuardServerConfig::fromJson({}).ipv6Address.isEmpty());
+        QVERIFY(AwgServerConfig::fromJson({}).ipv6Address.isEmpty());
+        QCOMPARE(WireguardConfigurator::serverIPv6CidrFromInterfaceConfig("Address = 10.77.0.1/24, fd77::1/64\n"), QString("fd77::1/64"));
+        QVERIFY(WireguardConfigurator::serverIPv6CidrFromInterfaceConfig("Address = 10.77.0.1/24\n").isEmpty());
+    }
     void testIPv6PreparationIsPackagedForAWGAndWG()
     {
         for (const auto container : {DockerContainer::Awg, DockerContainer::Awg2, DockerContainer::WireGuard}) {
@@ -63,8 +87,24 @@ private slots:
             QVERIFY(script.contains("AMNEZIA_IPV6_NETWORK_STATUS"));
             QVERIFY(script.contains("--ipv4=false"));
             QVERIFY(script.contains("sudo docker network connect \"$AMNEZIA_IPV6_NETWORK\""));
+            const auto startup = scriptData(ProtocolScriptType::container_startup, container);
+            QVERIFY(startup.startsWith("#!/bin/bash\n"));
+            QVERIFY(startup.contains("amnezia_enable_ipv6()"));
+            QVERIFY(startup.contains("AMNEZIA_IPV6_FORWARDING_STATUS"));
         }
         QVERIFY(!scriptData(ProtocolScriptType::run_container, DockerContainer::OpenVpn).contains("AMNEZIA_IPV6_NETWORK_STATUS"));
+    }
+    void testIPv6ScriptAddressIsCanonical()
+    {
+        WireGuardProtocolConfig protocol;
+        protocol.serverConfig.ipv6Address = "fd77::1/64";
+        ContainerConfig container; container.protocolConfig = protocol;
+        auto variables = genWireGuardVars(container);
+        QVERIFY(variables.contains(qMakePair(QString("$WIREGUARD_IPV6_ADDRESS"), QString("fd77::1/64"))));
+        protocol.serverConfig.ipv6Address = "fd77::1/64\";$(untrusted)";
+        container.protocolConfig = protocol;
+        variables = genWireGuardVars(container);
+        QVERIFY(variables.contains(qMakePair(QString("$WIREGUARD_IPV6_ADDRESS"), QString())));
     }
     void testClientIPv6AllocationUsesExplicitServerPrefix()
     {

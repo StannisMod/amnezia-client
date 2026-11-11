@@ -23,6 +23,8 @@ awg-quick down /opt/amnezia/awg/awg0.conf
 # start daemons if configured
 if [ -f /opt/amnezia/awg/awg0.conf ]; then (awg-quick up /opt/amnezia/awg/awg0.conf); fi
 
+amnezia_enable_ipv6 awg0 || exit 1
+
 # Allow traffic on the TUN interface.
 iptables -A INPUT -i awg0 -j ACCEPT
 iptables -A FORWARD -i awg0 -j ACCEPT

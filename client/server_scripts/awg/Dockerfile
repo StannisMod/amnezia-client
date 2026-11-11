@@ -3,7 +3,7 @@ FROM amneziavpn/amneziawg-go:latest
 LABEL maintainer="AmneziaVPN"
 
 #Install required packages
-RUN apk add --no-cache bash curl dumb-init python3 iproute2
+RUN apk add --no-cache bash curl dumb-init python3 iproute2 ip6tables
 RUN apk --update upgrade --no-cache
 
 RUN mkdir -p /opt/amnezia
