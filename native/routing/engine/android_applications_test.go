@@ -4,6 +4,7 @@ import (
 	"context"
 	"github.com/StannisMod/amnezia-client/native/routing/dnspolicy"
 	"github.com/StannisMod/amnezia-client/native/routing/rules"
+	"net/netip"
 	"testing"
 
 	"github.com/sagernet/sing-box/adapter"
@@ -11,7 +12,72 @@ import (
 	"github.com/sagernet/sing-box/option"
 	R "github.com/sagernet/sing-box/route/rule"
 	"github.com/sagernet/sing/common/json"
+	M "github.com/sagernet/sing/common/metadata"
 )
+
+func TestAndroidApplicationOverridePreservesBlocks(t *testing.T) {
+	c := RoutingConfig{Rules: rules.Config{Version: 2, Default: rules.Direct, Rules: []rules.Rule{
+		{Kind: rules.Domain, Value: "blocked.test", Action: rules.Block},
+		{Kind: rules.Domain, Value: "direct.test", Action: rules.Direct},
+		{Kind: rules.CIDR, Value: "192.0.2.0/24", Action: rules.Block},
+	}}, Resolver: netip.MustParseAddrPort("10.77.0.2:53"), ResolverAction: rules.VPN, AndroidApplications: &AndroidApplications{SiteRulesUIDs: []uint32{10282}}}
+	raw, err := c.compile(map[string]any{"type": "direct", "tag": "vpn"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var options struct {
+		Route option.RouteOptions `json:"route"`
+	}
+	if err := json.UnmarshalContext(context.Background(), raw, &options); err != nil {
+		t.Fatal(err)
+	}
+	var parsed []adapter.Rule
+	for _, o := range options.Route.Rules {
+		r, err := R.NewRule(context.Background(), log.NewNOPFactory().NewLogger("test"), o, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		parsed = append(parsed, r)
+	}
+	for _, uid := range []int32{-1, 10281, 10282} {
+		for _, domain := range []string{"blocked.test", "direct.test", "ordinary.test", "ip-block.test"} {
+			address := "198.51.100.2"
+			if domain == "ip-block.test" {
+				address = "192.0.2.7"
+			}
+			metadata := &adapter.InboundContext{Inbound: TUNTag, Domain: domain, Destination: M.ParseSocksaddrHostPort(address, 443)}
+			if uid >= 0 {
+				metadata.ProcessInfo = &adapter.ConnectionOwner{UserId: uid}
+			}
+			got := options.Route.Final
+			for _, r := range parsed {
+				metadata.ResetRuleCache()
+				if !r.Match(metadata) {
+					continue
+				}
+				switch action := r.Action().(type) {
+				case *R.RuleActionRoute:
+					got = action.Outbound
+				case *R.RuleActionReject:
+					got = "reject"
+				default:
+					continue
+				}
+				break
+			}
+			want := "vpn"
+			if uid == 10282 {
+				want = "direct"
+			}
+			if domain == "blocked.test" || domain == "ip-block.test" {
+				want = "reject"
+			}
+			if got != want {
+				t.Fatalf("UID %d %s: got %s want %s", uid, domain, got, want)
+			}
+		}
+	}
+}
 
 func TestAndroidApplicationDNSRejectsUnsafeResolver(t *testing.T) {
 	apps := &AndroidApplications{SiteRulesUIDs: []uint32{10282}}

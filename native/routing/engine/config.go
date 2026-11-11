@@ -70,7 +70,30 @@ func (c RoutingConfig) compile(vpn map[string]any) ([]byte, error) {
 	if e != nil {
 		return nil, e
 	}
-	preRules = append(preRules, appRules...)
+	if len(appRules) != 0 {
+		// Preserve the destination rule order, including explicit rejects.
+		// For always-VPN UIDs only, replace each matching DIRECT decision
+		// with VPN. An early unconditional VPN rule would bypass blocks.
+		var scoped []any
+		for _, value := range userRules {
+			item := value.(map[string]any)
+			if item["action"] == "route" && item["outbound"] == "direct" {
+				condition := make(map[string]any)
+				for key, value := range item {
+					if key != "action" && key != "outbound" {
+						condition[key] = value
+					}
+				}
+				override := map[string]any{"type": "logical", "mode": "and", "rules": []any{condition}, "action": "route", "outbound": "vpn"}
+				if len(c.AndroidApplications.SiteRulesUIDs) != 0 {
+					override["rules"] = []any{condition, map[string]any{"user_id": c.AndroidApplications.SiteRulesUIDs, "invert": true}}
+				}
+				scoped = append(scoped, override)
+			}
+			scoped = append(scoped, item)
+		}
+		userRules = append(scoped, appRules...)
+	}
 	// Optional domain policies need visible Host/SNI for IP-literal flows.
 	// Ordinary all-VPN/application-only sessions must not pay the inspection
 	// delay (notably for server-first protocols) when no name rule can use it.
