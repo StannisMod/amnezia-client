@@ -9,17 +9,19 @@ import java.net.InetSocketAddress;
 import java.net.Socket;
 
 public class Probe extends Instrumentation {
-    @Override public void onCreate(Bundle args){super.onCreate(args);start();}
+    private String sharedName;
+    private volatile String systemResult="pending";
+    @Override public void onCreate(Bundle args){super.onCreate(args);sharedName=args.getString("shared_name");start();}
     @Override public void onStart(){
         String label=getTargetContext().getPackageName().endsWith(".a")?"a":"b";
         String unique=Long.toString(System.nanoTime());
         Thread dns=new Thread(()->{
             for(int attempt=0;attempt<10;attempt++) {
-                try {InetAddress.getAllByName("system-"+label+"-"+unique+"-"+attempt+".uid.test");return;}
+                try {systemResult=java.util.Arrays.toString(InetAddress.getAllByName(sharedName!=null?sharedName:"system-"+label+"-"+unique+"-"+attempt+".uid.test"));return;}
                 catch(Exception error){try{Thread.sleep(200);}catch(InterruptedException cancelled){return;}}
             }
         });
-        dns.setDaemon(true);dns.start();
+        dns.setDaemon(true);
         try(DatagramSocket udp=new DatagramSocket();DatagramSocket rawDns=new DatagramSocket();Socket tcp=new Socket()){
             udp.connect(InetAddress.getByName("198.51.100.10"),18082);
             boolean sent=false;
@@ -28,6 +30,7 @@ public class Probe extends Instrumentation {
                 catch(java.io.IOException error){if(attempt==9)throw error;Thread.sleep(200);}
             }
             if(!sent)throw new java.io.IOException("UDP probe was not sent");
+            Thread.sleep(200);dns.start();
             java.io.ByteArrayOutputStream bytes=new java.io.ByteArrayOutputStream();
             bytes.write(new byte[]{1,2,1,0,0,1,0,0,0,0,0,0});
             for(String part:("raw-"+label+"-"+unique+".uid.test").split("\\.")){
@@ -35,9 +38,17 @@ public class Probe extends Instrumentation {
             }
             bytes.write(new byte[]{0,0,1,0,1});byte[] query=bytes.toByteArray();
             rawDns.connect(InetAddress.getByName("172.31.255.2"),53);rawDns.send(new DatagramPacket(query,query.length));
-            try{tcp.connect(new InetSocketAddress("198.51.100.10",18081),8000);}catch(Exception ignored){}
-            Thread.sleep(3000);
+            try{tcp.connect(new InetSocketAddress("198.51.100.10",18081),sharedName!=null?2000:8000);}catch(Exception ignored){}
+            // Do not report an unfinished resolver as a cache observation.
+            // Shared-name probes need the actual result from both applications.
+            if(sharedName!=null)dns.join(12000);
+            else Thread.sleep(3000);
         }catch(Exception error){Bundle failure=new Bundle();failure.putString("failure",error.toString());finish(-1,failure);return;}
-        finish(0,new Bundle());
+        Bundle result=new Bundle();result.putString("system_result",systemResult);
+        if(sharedName!=null && dns.isAlive()) {
+            result.putString("failure","system resolver did not complete within 12 seconds");
+            finish(-1,result);return;
+        }
+        finish(0,result);
     }
 }

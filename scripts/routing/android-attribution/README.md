@@ -10,6 +10,12 @@ independent UIDs; the active VPN owner queries getConnectionOwnerUid for their
 original TUN tuples. Results include ordinary UDP DNS and Android's system resolver.
 
 This proves basic UID attribution, not complete per-application DNS semantics.
+Use `--shared-name --sequential` to observe cross-application system-cache reuse,
+or `--shared-name` for concurrent requests. The synthetic DNS responder returns
+different addresses for the two UIDs. Both child resolver calls must complete;
+an unfinished call is a failure, not evidence about caching. Reports preserve
+the observed request UIDs and returned addresses. Cache sharing is reported as
+an observation rather than a required behavior on every Android release.
 Resolver caching/coalescing, Private DNS, IPv6, network changes and API 29 need
 additional cases before making general platform claims. Transition failures are
 retried within a bounded interval; missing attribution remains an assertion failure.

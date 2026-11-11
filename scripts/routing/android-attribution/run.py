@@ -1,6 +1,6 @@
 from pathlib import Path
 import argparse,os,subprocess,zipfile,json,time,re
-parser=argparse.ArgumentParser();parser.add_argument('--work',type=Path,required=True);args=parser.parse_args()
+parser=argparse.ArgumentParser();parser.add_argument('--work',type=Path,required=True);parser.add_argument('--shared-name',action='store_true');parser.add_argument('--sequential',action='store_true');args=parser.parse_args()
 sdk=Path(os.environ['ANDROID_HOME']);tools=sdk/'build-tools/36.0.0';android=sdk/'platforms/android-36/android.jar'
 source=Path(__file__).resolve().parent;work=args.work.resolve();work.mkdir(parents=True,exist_ok=True)
 def run(*args): return subprocess.run(list(map(str,args)),check=True,capture_output=True,text=True).stdout
@@ -25,11 +25,18 @@ try:
   run(tools/'apksigner','sign','--ks',key,'--ks-pass','pass:android','--key-pass','pass:android','--out',apk,aligned)
   adb('install','-r','-t',apk)
  adb('shell','appops','set',packages[0],'ACTIVATE_VPN','allow')
- owner=subprocess.Popen([str(sdk/'platform-tools/adb'),'shell','am','instrument','-w',packages[0]+'/org.amnezia.uidprobe.Starter'],stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True)
+ owner=subprocess.Popen([str(sdk/'platform-tools/adb'),'shell','am','instrument','-w','-e','duration_ms','45000' if args.shared_name else '20000',packages[0]+'/org.amnezia.uidprobe.Starter'],stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True)
  time.sleep(3)
- children=[subprocess.Popen([str(sdk/'platform-tools/adb'),'shell','am','instrument','-w',p+'/org.amnezia.uidprobe.Probe'],stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True) for p in packages[1:]]
- for child in children: print(child.communicate(timeout=25)[0])
- print(owner.communicate(timeout=30)[0])
+ shared_args=['-e','shared_name','system-shared-'+str(time.time_ns())+'.uid.test'] if args.shared_name else []
+ def launch(package):
+  return subprocess.Popen([str(sdk/'platform-tools/adb'),'shell','am','instrument','-w',*shared_args,package+'/org.amnezia.uidprobe.Probe'],stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True)
+ if args.sequential:
+  child_outputs=[launch(package).communicate(timeout=25)[0] for package in packages[1:]]
+ else:
+  children=[launch(package) for package in packages[1:]]
+  child_outputs=[child.communicate(timeout=25)[0] for child in children]
+ for text in child_outputs: print(text)
+ print(owner.communicate(timeout=50)[0])
  uids=adb('shell','pm','list','packages','-U','org.amnezia.uidprobe');print('UIDS',uids)
  events=adb('shell','run-as','org.amnezia.uidprobe','cat','files/events.jsonl')
  (work/'events.jsonl').write_text(events+'\n')
@@ -40,12 +47,22 @@ try:
   uid=int(expected['org.amnezia.uidprobe.'+label])
   for kind in ('system','raw'):
    values=sorted({r['uid'] for r in rows if r['dns_name'].startswith(kind+'-'+label+'-')})
-   assert values==[uid], (label,kind,values,uid)
+   if kind=='raw' or not args.shared_name: assert values==[uid], (label,kind,values,uid)
    observed[kind+'-'+label]=values
   assert any(r['uid']==uid and r['protocol']==6 for r in rows), 'TCP owner missing'
   assert any(r['uid']==uid and r['destination_port']==18082 for r in rows), 'UDP owner missing'
- (work/'report.json').write_text(json.dumps({'api':int(adb('shell','getprop','ro.build.version.sdk')),'expected':expected,'observed':observed,'status':'PASS_BASIC_ATTRIBUTION'},indent=2))
+ shared={}
+ if args.shared_name:
+  shared['request_uids']=sorted({row['uid'] for row in rows if row['dns_name'].startswith('system-shared-')})
+  shared['results']=[re.search(r'INSTRUMENTATION_RESULT: system_result=(.*)',output).group(1) if 'INSTRUMENTATION_RESULT: system_result=' in output else None for output in child_outputs]
+  shared['sequential']=args.sequential
+  shared['cache_reuse_observed']=args.sequential and len(shared['request_uids'])==1 and shared['results'][0]==shared['results'][1] and shared['results'][0] is not None
+ (work/'report.json').write_text(json.dumps({'api':int(adb('shell','getprop','ro.build.version.sdk')),'expected':expected,'observed':observed,'shared_name':shared,'status':'OBSERVED_SHARED_NAME' if args.shared_name else 'PASS_BASIC_ATTRIBUTION','child_outputs':child_outputs},indent=2))
  print(json.dumps(observed))
+ assert all('INSTRUMENTATION_RESULT: failure=' not in output for output in child_outputs), 'child resolver experiment incomplete; see report.json'
+ if args.shared_name:
+  assert shared['request_uids'] and all(uid in [int(expected[package]) for package in packages[1:]] for uid in shared['request_uids']), 'shared query owner unavailable'
+  assert all(result and result!='pending' and '198.18.0.' in result for result in shared['results']), 'shared resolver answer missing'
 
 finally:
  for package in packages:

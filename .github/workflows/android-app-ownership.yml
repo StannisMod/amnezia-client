@@ -20,6 +20,7 @@ jobs:
       fail-fast: false
       matrix:
         api: [29, 35]
+        scenario: [basic, shared-sequential, shared-concurrent]
     steps:
       - uses: actions/checkout@v4
       - name: Select reachable Ubuntu mirror
@@ -42,11 +43,11 @@ jobs:
           ram-size: 3072M
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
-          script: python3 scripts/routing/android-attribution/run.py --work "$RUNNER_TEMP/attribution"
+          script: python3 scripts/routing/android-attribution/run.py --work "$RUNNER_TEMP/attribution" ${{ matrix.scenario == 'shared-sequential' && '--shared-name --sequential' || matrix.scenario == 'shared-concurrent' && '--shared-name' || '' }}
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: app-ownership-api-${{ matrix.api }}
+          name: app-ownership-api-${{ matrix.api }}-${{ matrix.scenario }}
           if-no-files-found: warn
           path: |
             ${{ runner.temp }}/attribution/report.json
