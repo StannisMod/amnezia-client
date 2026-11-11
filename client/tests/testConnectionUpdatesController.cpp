@@ -151,6 +151,35 @@ private slots:
         else if (scenario == "edited") { QCOMPARE(result.value("description").toString(), "user edit"); QVERIFY(!client(result, false).contains("path_mtu_probe")); }
         settings.clearSettings();
     }
+    void realAdminProbeAddressRead()
+    {
+        const auto host = qEnvironmentVariable("AMNEZIA_SSH_PROBE_HOST");
+        if (host.isEmpty()) QSKIP("Run scripts/local-tests/path-probe-ssh.sh with this test executable");
+        ServerCredentials credentials; credentials.hostName = host; credentials.port = qEnvironmentVariableIntValue("AMNEZIA_SSH_PROBE_PORT");
+        credentials.userName = "root"; credentials.secretData = "synthetic-probe-fixture";
+        QString target = "keep";
+        if (qEnvironmentVariable("AMNEZIA_SSH_PROBE_PHASE") == "missing") {
+            QVERIFY(ConnectionUpdatesController::fetchPathMtuProbeAddress(credentials, DockerContainer::WireGuard, target) != ErrorCode::NoError);
+            QCOMPARE(target, "keep"); return;
+        }
+        QCOMPARE(ConnectionUpdatesController::fetchPathMtuProbeAddress(credentials, DockerContainer::WireGuard, target), ErrorCode::NoError);
+        QCOMPARE(target, "10.77.0.9");
+        QCOMPARE(ConnectionUpdatesController::fetchPathMtuProbeAddress(credentials, DockerContainer::Awg2, target), ErrorCode::NoError);
+        QCOMPARE(target, "fd88::9");
+        SecureQSettings settings("Amnezia-Probe-SSH-" + QUuid::createUuid().toString(), "test", nullptr, false);
+        SecureServersRepository servers(&settings); SecureAppSettingsRepository app(&settings); VpnConnection vpn(&servers, &app); ConnectionController connection(&servers, &app, &vpn);
+        auto administrator = profile(); administrator.remove("connectionUpdates"); administrator["hostName"] = host;
+        administrator["userName"] = credentials.userName; administrator["password"] = credentials.secretData; administrator["port"] = credentials.port;
+        const auto id = servers.addServer({}, administrator, serverConfigUtils::SelfHostedAdmin);
+        const auto original = *servers.serverJsonById(id);
+        ConnectionUpdatesController updates(&servers, &connection); int continuations = 0;
+        updates.refreshBeforeConnect(id, [&] { ++continuations; }); QTRY_VERIFY_WITH_TIMEOUT(!updates.busy(), 5000);
+        QCOMPARE(continuations, 1); const auto migrated = *servers.serverJsonById(id);
+        QCOMPARE(client(migrated, false).value("path_mtu_probe").toString(), "10.77.0.9");
+        for (const auto *key : { "client_priv_key", "client_pub_key", "psk_key", "client_ip", "allowed_ips", "config" }) QCOMPARE(client(migrated, false).value(key), client(original, false).value(key));
+        QCOMPARE(migrated.value("password"), original.value("password"));
+        settings.clearSettings();
+    }
     void verifiedFetchAndPreservedStorage()
     {
         FeedServer feed; QVERIFY(feed.listen(QHostAddress::LocalHost)); auto p = feed.bootstrap(); feed.pathMtuProbe = "10.8.0.1"; feed.setUpdate(p);

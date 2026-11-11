@@ -214,6 +214,11 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
         run: ctest --test-dir deploy/build/client/tests -V --timeout 120 --output-junit qt-regression.xml
+      - name: Real SSH probe-address migration regression
+        shell: bash
+        run: |
+          set -o pipefail
+          bash scripts/local-tests/path-probe-ssh.sh deploy/build/client/tests/test_connection_updates_controller 2>&1 | tee path-probe-ssh.log
       - name: Build installed-service IPC probe and disposable peer
         run: |
           cmake -S scripts/routing/service-probe -B routing-service-probe-build -DCMAKE_PREFIX_PATH="${{ runner.temp }}/Qt/6.10.1/gcc_64"
@@ -249,6 +254,7 @@ jobs:
           name: routing-client-linux-baseline
           path: |
             client-build.log
+            path-probe-ssh.log
             routing-build-manifest.json
             deploy/build/client/tests/qt-regression.xml
             deploy/build/client/tests/Testing/Temporary/LastTest.log

@@ -86,3 +86,24 @@ path: old SSH is blocked to an administrator actor and reachable only from the
 new host, with no archive downloaded by the app. It also checks a detached copy,
 reviewed host keys before password auth, both authentication methods and direct
 rollback preserving the signed revision floor.
+
+### Existing-profile probe address over SSH
+
+After building the Linux Qt tests, run:
+
+```sh
+bash scripts/local-tests/path-probe-ssh.sh deploy/build/client/tests/test_connection_updates_controller
+```
+
+The test creates an internal Docker network and a disposable SSH server with its
+own Docker daemon. It preloads a local image, so the internal daemon does not pull
+from a registry. Named `wg0`/`awg0` interfaces carry controlled IPv4/IPv6 addresses;
+they are dummy interfaces for management-command testing, not encrypted VPN peers.
+The application uses its normal SSH reader and asynchronous profile migration.
+The second phase stops the WG container and verifies failed reads leave the output
+unchanged. Keys and credentials are synthetic; no host VPN or production server is
+used. Cleanup removes the daemon, its volumes and the internal network.
+
+This is required by the Linux routing build/package workflows. The same Qt test
+is skipped in a plain CTest run without the fixture environment; that skip does
+not substitute for the separate SSH integration step.
