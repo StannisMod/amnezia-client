@@ -25,7 +25,12 @@ for attempt in {1..60}; do
 done
 if [[ "$ready" != true ]]; then docker logs "$fixture"; exit 1; fi
 # No registry access from the internal network: preload this local tool image.
-docker image save "$tool_image" | docker exec -i "$fixture" docker image load >/dev/null
+# Export the named reference as well: containerd-backed Docker can omit the
+# reference when exporting by config ID, leaving that ID unavailable to run.
+docker image save amnezia-local-vpn-tests | docker exec -i "$fixture" docker image load >/dev/null
+loaded_image=$(docker exec "$fixture" docker image inspect -f '{{.Id}}' amnezia-local-vpn-tests)
+[[ "$loaded_image" == "$tool_image" ]] || { echo 'SSH fixture image identity changed during transfer' >&2; exit 1; }
+docker exec "$fixture" docker image inspect "$tool_image" >/dev/null
 for kind in wireguard awg2; do
     iface=wg0; addresses='ip address add 10.77.0.9/24 dev wg0; ip address add fd77::1/64 dev wg0'
     if [[ "$kind" == awg2 ]]; then iface=awg0; addresses='ip address add fd88::9/64 dev awg0'; fi
