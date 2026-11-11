@@ -78,6 +78,7 @@ func TestBindKeepsControlPlaneTargetAndReceiveFilter(t *testing.T) {
 // socket. A second relay lets the test move the endpoint/family too, while
 // retaining the very same remote device and TCP stack.
 type recoveryRelay struct {
+	drop   atomic.Bool
 	front  net.PacketConn
 	mu     sync.Mutex
 	back   net.PacketConn
@@ -108,7 +109,9 @@ func newRecoveryRelay(t *testing.T, network, address string, peer net.Addr) *rec
 			r.client = from
 			back := r.back
 			r.mu.Unlock()
-			back.WriteTo(buf[:n], r.peer)
+			if !r.drop.Load() {
+				back.WriteTo(buf[:n], r.peer)
+			}
 		}
 	}()
 	return r
@@ -142,7 +145,7 @@ func (r *recoveryRelay) rotateNAT(t *testing.T) {
 			r.mu.Lock()
 			current, client := r.back == back, r.client
 			r.mu.Unlock()
-			if current && client != nil {
+			if current && client != nil && !r.drop.Load() {
 				r.front.WriteTo(buf[:n], client)
 			}
 		}
@@ -296,6 +299,59 @@ func TestRefreshUnderlayPreservesTCPThroughNATAndEndpointMove(t *testing.T) {
 					return proof
 				}
 				proof := verifyPath()
+				// Lose actual encrypted packets until TCP has backed off. A
+				// verified return must recover the same socket before its
+				// next ordinary retransmission, without resetting that timer.
+				first.drop.Store(true)
+				timeouts := client.Net.stack.Stats().TCP.Timeouts.Value()
+				payload := "retained TCP after encrypted blackhole"
+				if _, e := io.WriteString(stream, payload); e != nil {
+					t.Fatal(e)
+				}
+				until := time.Now().Add(8 * time.Second)
+				for client.Net.stack.Stats().TCP.Timeouts.Value() < timeouts+3 {
+					if time.Now().After(until) {
+						t.Fatal("encrypted loss did not reach TCP backoff")
+					}
+					time.Sleep(5 * time.Millisecond)
+				}
+				time.Sleep(150 * time.Millisecond)
+				backedOff := client.Net.stack.Stats().TCP.Timeouts.Value()
+				first.drop.Store(false)
+				returnedAt := time.Now()
+				probeCtx, stopProbe := context.WithTimeout(ctx, time.Second)
+				returnedProof, e := client.Net.verifyTCPPath(probeCtx, netip.MustParseAddr(serverIP))
+				stopProbe()
+				if e != nil {
+					t.Fatal("returned encrypted path", e)
+				}
+				transmissions := client.Net.stack.Stats().TCP.Retransmits.Value()
+				if n := client.Net.dispatchTCPPathProof(returnedProof); n != 1 {
+					t.Fatal("eligible backed-off stream not probed", n)
+				}
+				if delta := client.Net.stack.Stats().TCP.Retransmits.Value() - transmissions; delta != 1 {
+					t.Fatal("unexpected extra retransmission count", delta)
+				}
+				if n := client.Net.dispatchTCPPathProof(returnedProof); n != 0 {
+					t.Fatal("proof replay retransmitted again", n)
+				}
+				if delta := client.Net.stack.Stats().TCP.Retransmits.Value() - transmissions; delta != 1 {
+					t.Fatal("proof replay changed wire counter", delta)
+				}
+				stream.SetReadDeadline(time.Now().Add(700 * time.Millisecond))
+				reply := make([]byte, len(payload))
+				if _, e := io.ReadFull(stream, reply); e != nil || string(reply) != payload {
+					t.Fatal("early encrypted recovery failed", e)
+				}
+				stream.SetDeadline(time.Now().Add(15 * time.Second))
+				if client.Net.stack.Stats().TCP.Timeouts.Value() != backedOff {
+					t.Fatal("ordinary timeout concealed probe recovery")
+				}
+				if accepts.Load() != 1 || client.Net != originalStack {
+					t.Fatal("early recovery replaced TCP")
+				}
+				t.Logf("encrypted early TCP recovery=%s without additional timeout", time.Since(returnedAt))
+				proof = verifyPath()
 				before, _ := client.Stats()
 				first.rotateNAT(t)
 				if err = client.RefreshUnderlay(netip.AddrPort{}); err != nil {
