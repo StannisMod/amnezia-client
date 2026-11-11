@@ -251,6 +251,7 @@ func (t *Transport) RefreshUnderlay(remote netip.AddrPort) error {
 		return errors.New("invalid VPN recovery endpoint")
 	}
 	remote = netip.AddrPortFrom(remote.Addr().Unmap(), remote.Port())
+	t.Net.invalidateTCPPath()
 	t.mtuWorker.invalidate()
 	peer := t.device.LookupPeer(t.peerKey)
 	if peer == nil {

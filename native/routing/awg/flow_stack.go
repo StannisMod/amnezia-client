@@ -30,23 +30,25 @@ import (
 // while a notifier can send. Shutdown cancels producers, waits for admitted I/O,
 // stops the stack and releases queued views before returning.
 type FlowStack struct {
-	tcpConnections map[*flowTCPConn]struct{}
-	stack          *stack.Stack
-	endpoint       *channel.Endpoint
-	notify         *channel.NotificationHandle
-	mtu            int
-	link           *flowMTULink
-	minimumMTU     int
-	maximumMTU     int
-	events         chan tun.Event
-	packets        chan *buffer.View
-	done           chan struct{}
-	state          sync.Mutex
-	closed         bool
-	active         sync.WaitGroup
-	once           sync.Once
-	ctx            context.Context
-	cancel         context.CancelFunc
+	tcpConnections    map[*flowTCPConn]struct{}
+	tcpPathGeneration uint64
+	tcpProofSerial    uint64
+	stack             *stack.Stack
+	endpoint          *channel.Endpoint
+	notify            *channel.NotificationHandle
+	mtu               int
+	link              *flowMTULink
+	minimumMTU        int
+	maximumMTU        int
+	events            chan tun.Event
+	packets           chan *buffer.View
+	done              chan struct{}
+	state             sync.Mutex
+	closed            bool
+	active            sync.WaitGroup
+	once              sync.Once
+	ctx               context.Context
+	cancel            context.CancelFunc
 }
 
 // Keep MTU changes independent of the gVisor channel API version. Routes
@@ -94,6 +96,7 @@ func NewFlowTUN(addresses []netip.Addr, mtu int) (tun.Device, *FlowStack, error)
 		}
 	}
 	s.link = &flowMTULink{Endpoint: s.endpoint}
+	s.tcpPathGeneration++
 	s.link.value.Store(uint32(mtu))
 	if err := s.stack.CreateNIC(1, s.link); err != nil {
 		return nil, nil, errors.New(err.String())
@@ -164,6 +167,7 @@ func (s *FlowStack) SetPathMTU(mtu int) error {
 	if mtu == s.mtu {
 		return nil
 	}
+	s.tcpPathGeneration++
 	s.link.value.Store(uint32(mtu))
 	s.mtu = mtu
 	select {
