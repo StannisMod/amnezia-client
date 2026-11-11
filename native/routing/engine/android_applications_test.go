@@ -136,3 +136,35 @@ func TestAndroidApplicationInvalidUIDs(t *testing.T) {
 		}
 	}
 }
+
+func TestAndroidApplicationDNSUsesFixedVPNDefault(t *testing.T) {
+	settings := func() map[string]any { return map[string]any{"rules": []any{map[string]any{"server": "fake"}}} }
+	apps := &AndroidApplications{Live: true, SiteRulesUIDs: []uint32{10282}}
+	config := &dnspolicy.Config{Default: "profile", Policies: map[string]dnspolicy.Resolver{"profile": {Path: rules.VPN}}}
+	dns := settings()
+	if err := apps.applyDNS(dns, config, rules.VPN); err != nil {
+		t.Fatal("ordinary fixed VPN DNS rejected", err)
+	}
+	if dns["rules"].([]any)[1].(map[string]any)["server"] != dnspolicy.Tag("profile") {
+		t.Fatal("wrong VPN DNS override")
+	}
+	for _, mutate := range []func(*dnspolicy.Config){
+		func(c *dnspolicy.Config) { c.VPN = "missing" },
+		func(c *dnspolicy.Config) { c.FollowRouting = true },
+		func(c *dnspolicy.Config) { c.Policies["profile"] = dnspolicy.Resolver{Path: rules.Direct} },
+		func(c *dnspolicy.Config) {
+			c.Policies["profile"] = dnspolicy.Resolver{Path: rules.VPN, Source: "network"}
+		},
+	} {
+		c := *config
+		c.Policies = map[string]dnspolicy.Resolver{"profile": {Path: rules.VPN}}
+		mutate(&c)
+		if err := apps.applyDNS(settings(), &c, rules.VPN); err == nil {
+			t.Fatal("unsafe/ambiguous default accepted")
+		}
+	}
+	apps.VPNDNSPolicy = "missing"
+	if err := apps.applyDNS(settings(), config, rules.VPN); err == nil {
+		t.Fatal("invalid explicit VPN DNS selector ignored")
+	}
+}

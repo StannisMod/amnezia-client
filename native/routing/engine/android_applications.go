@@ -36,6 +36,13 @@ func (a *AndroidApplications) applyDNS(settings map[string]any, config *dnspolic
 		id := a.VPNDNSPolicy
 		if id == "" {
 			id = config.VPN
+			// Ordinary profiles have one fixed DNS policy and do not need
+			// follow-routing's separate VPN selector. Its default is usable
+			// only after the same VPN-path/source validation below. Explicit
+			// selectors, including invalid ones, must never fall back.
+			if id == "" && !config.FollowRouting {
+				id = config.Default
+			}
 		}
 		policy, ok := config.Policies[id]
 		if !ok || policy.Path != rules.VPN || policy.Source != "" {
