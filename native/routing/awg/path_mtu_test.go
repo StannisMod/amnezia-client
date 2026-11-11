@@ -228,6 +228,31 @@ func TestEncryptedAWGRetainedUploadMTU(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer b.Close()
+			probe := func(size int, success bool) {
+				t.Helper()
+				probeCtx, stop := context.WithTimeout(ctx, 300*time.Millisecond)
+				defer stop()
+				err := a.Net.ProbeIPv4Path(probeCtx, netip.MustParseAddr("10.77.0.2"), size)
+				if (err == nil) != success {
+					t.Fatalf("probe size=%d success=%v: %v", size, success, err)
+				}
+			}
+			probe(1280, true)
+			filter.Store(true)
+			probe(64, true)
+			probe(1280, false)
+			if err := a.Net.SetPathMTU(1104); err != nil {
+				t.Fatal(err)
+			}
+			probe(1104, true)
+			// A restored path must be measurable above the currently lowered
+			// link ceiling; the original profile remains the upper bound.
+			filter.Store(false)
+			probe(1400, true)
+			if err := a.Net.SetPathMTU(1420); err != nil {
+				t.Fatal(err)
+			}
+			dropped.Store(0)
 			testRetainedUploadMTU(t, a.Net, b.Net, &filter, &dropped)
 		})
 	}
