@@ -39,6 +39,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: {submodules: recursive}
+      - name: Select direct Ubuntu mirrors and bound package network retries
+        run: sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT python3 scripts/routing/ci_apt_mirrors.py
       - uses: actions/setup-python@v6
         with: {python-version: '3.14'}
       - uses: actions/setup-java@v4

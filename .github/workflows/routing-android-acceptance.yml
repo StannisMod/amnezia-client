@@ -48,6 +48,8 @@ jobs:
         transport: [awg, wireguard]
     steps:
       - uses: actions/checkout@v4
+      - name: Select direct Ubuntu mirrors and bound package network retries
+        run: sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT python3 scripts/routing/ci_apt_mirrors.py
       - name: Install isolated fault-test tools
         run: sudo apt-get update && sudo apt-get install -y nftables
       - uses: actions/setup-go@v5
