@@ -36,6 +36,10 @@ type Hooks struct {
 	// Desktop hosts provide a static native inventory and no Go interface
 	// monitor. Seed the manager so it recognizes locally owned source sockets.
 	InitializeInterfaces bool
+	// FindConnectionOwner queries the original captured tuple, before a
+	// transport adapter creates replacement sockets. Android API 29+ supplies
+	// this through ConnectivityManager; unsupported hosts leave it unset.
+	FindConnectionOwner func(*adapter.FindConnectionOwnerRequest) (*adapter.ConnectionOwner, error)
 }
 
 type Platform struct {
@@ -200,9 +204,21 @@ func (p *Platform) NetworkExtensionIncludeAllNetworks() bool        { return fal
 func (p *Platform) ClearDNSCache()                                  {}
 func (p *Platform) RequestPermissionForWIFIState() error            { return unsupported }
 func (p *Platform) ReadWIFIState(context.Context) adapter.WIFIState { return adapter.WIFIState{} }
-func (p *Platform) UsePlatformConnectionOwnerFinder() bool          { return false }
-func (p *Platform) FindConnectionOwner(*adapter.FindConnectionOwnerRequest) (*adapter.ConnectionOwner, error) {
-	return nil, unsupported
+func (p *Platform) UsePlatformConnectionOwnerFinder() bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.hooks.FindConnectionOwner != nil
+}
+func (p *Platform) FindConnectionOwner(request *adapter.FindConnectionOwnerRequest) (*adapter.ConnectionOwner, error) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if p.closed {
+		return nil, net.ErrClosed
+	}
+	if p.hooks.FindConnectionOwner == nil {
+		return nil, unsupported
+	}
+	return p.hooks.FindConnectionOwner(request)
 }
 func (p *Platform) UsePlatformWIFIMonitor() bool                 { return false }
 func (p *Platform) UsePlatformNotification() bool                { return false }
