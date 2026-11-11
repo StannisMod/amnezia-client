@@ -40,6 +40,14 @@ func TestFlowPathMTULimits(t *testing.T) {
 }
 
 func TestOldTCPAfterClientLinkMTUReduction(t *testing.T) {
+	testLinkedUploadMTU(t, false)
+}
+
+func TestMaturePathMTUWorkerRetainsTCP(t *testing.T) {
+	testLinkedUploadMTU(t, true)
+}
+
+func testLinkedUploadMTU(t *testing.T, matureWorker bool) {
 	_, a, err := NewFlowTUN([]netip.Addr{netip.MustParseAddr("10.77.0.1")}, 1420)
 	if err != nil {
 		t.Fatal(err)
@@ -71,6 +79,32 @@ func TestOldTCPAfterClientLinkMTUReduction(t *testing.T) {
 	}
 	go pump(a, b, true)
 	go pump(b, a, false)
+	if matureWorker {
+		worker := startPathMTUWorker(context.Background(), a, netip.MustParseAddr("10.77.0.2"))
+		defer worker.stop()
+		// The healthy startup check must have finished before the path changes.
+		time.Sleep(3 * time.Second)
+		testRetainedUploadMTU(t, a, b, &filter, &dropped, func() error {
+			start := time.Now()
+			lastTimeouts := uint64(0)
+			until := start.Add(9 * time.Second)
+			for time.Now().Before(until) {
+				mtu, _ := a.MTU()
+				timeouts := a.stack.Stats().TCP.Timeouts.Value()
+				if timeouts != lastTimeouts {
+					t.Logf("TCP timeouts=%d at %s, link MTU=%d", timeouts, time.Since(start), mtu)
+					lastTimeouts = timeouts
+				}
+				if mtu < 1200 {
+					t.Logf("MTU adapted at %s, TCP timeouts=%d", time.Since(start), timeouts)
+					return nil
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			return fmt.Errorf("mature MTU worker did not react within 9s; TCP timeouts=%d", lastTimeouts)
+		})
+		return
+	}
 	testRetainedUploadMTU(t, a, b, &filter, &dropped)
 }
 
@@ -181,7 +215,7 @@ func (c *mtuLossConn) WriteTo(p []byte, to net.Addr) (int, error) {
 }
 
 func TestEncryptedAWGRetainedUploadMTU(t *testing.T) {
-	for _, scenario := range []struct{ obfuscated, automatic bool }{{false, false}, {true, false}, {false, true}, {true, true}} {
+	for _, scenario := range []struct{ obfuscated, automatic, mature bool }{{false, false, false}, {true, false, false}, {false, true, false}, {true, true, false}, {false, true, true}, {true, true, true}} {
 		obfuscated, automatic := scenario.obfuscated, scenario.automatic
 		name := "plain"
 		if obfuscated {
@@ -189,6 +223,9 @@ func TestEncryptedAWGRetainedUploadMTU(t *testing.T) {
 		}
 		if automatic {
 			name += "/transport-worker"
+		}
+		if scenario.mature {
+			name += "/mature-path"
 		}
 		t.Run(name, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -241,6 +278,9 @@ func TestEncryptedAWGRetainedUploadMTU(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer b.Close()
+			if scenario.mature {
+				time.Sleep(3 * time.Second)
+			}
 			if automatic {
 				testRetainedUploadMTU(t, a.Net, b.Net, &filter, &dropped, func() error {
 					until := time.Now().Add(9 * time.Second)

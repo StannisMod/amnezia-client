@@ -33,6 +33,15 @@ func startPathMTUWorker(parent context.Context, flow *FlowStack, peer netip.Addr
 		defer close(w.done)
 		timer := time.NewTimer(2 * time.Second)
 		defer timer.Stop()
+		// A mature path can deteriorate just after the periodic probe. TCP
+		// timeout growth is a reason to measure sooner, never MTU evidence by
+		// itself. The controller still requires live small probes and repeated
+		// size-dependent failures before changing the private link.
+		lossPoll := time.NewTicker(time.Second)
+		defer lossPoll.Stop()
+		lastTimeouts := flow.stack.Stats().TCP.Timeouts.Value()
+		var lastLossCheck time.Time
+		pendingLoss := false
 		var generation uint64
 		for {
 			select {
@@ -40,6 +49,17 @@ func startPathMTUWorker(parent context.Context, flow *FlowStack, peer netip.Addr
 				return
 			case <-timer.C:
 			case <-w.wake:
+			case now := <-lossPoll.C:
+				timeouts := flow.stack.Stats().TCP.Timeouts.Value()
+				if timeouts != lastTimeouts {
+					pendingLoss = true
+					lastTimeouts = timeouts
+				}
+				if !pendingLoss || (!lastLossCheck.IsZero() && now.Sub(lastLossCheck) < 5*time.Second) {
+					continue
+				}
+				pendingLoss = false
+				lastLossCheck = now
 			}
 			w.mu.Lock()
 			checkCtx, stop := context.WithTimeout(ctx, 12*time.Second)
