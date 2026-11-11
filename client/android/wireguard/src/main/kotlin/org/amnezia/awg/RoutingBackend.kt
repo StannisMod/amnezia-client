@@ -17,6 +17,8 @@ object RoutingBackend {
 
     // Native code consumes tunFd on success and on every failed-start path.
     external fun start(tunFd: Int, config: ByteArray, host: RoutingHost): Long
+    // Consumes tunFd on success and failure; caller must detach exactly once.
+    external fun replaceCapture(handle: Long, tunFd: Int): Boolean
     external fun stop(handle: Long)
     external fun stats(handle: Long): LongArray?
     external fun diagnostics(handle: Long): ByteArray?

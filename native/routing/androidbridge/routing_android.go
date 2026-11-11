@@ -18,6 +18,7 @@ import (
 	"net/netip"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"unsafe"
 
 	"github.com/StannisMod/amnezia-client/native/routing/dnspolicy"
@@ -233,4 +234,22 @@ func RoutingSuspendDNS(handle int64) {
 	if session != nil {
 		session.SuspendNetworkDNS()
 	}
+}
+
+//export RoutingReplaceCapture
+func RoutingReplaceCapture(handle int64, fd int32) int32 {
+	if fd <= 0 {
+		return 0
+	}
+	routedSessions.Lock()
+	session := routedSessions.sessions[handle]
+	routedSessions.Unlock()
+	if session == nil {
+		syscall.Close(int(fd))
+		return 0
+	}
+	if session.ReplaceCapture(int(fd)) != nil {
+		return 0
+	}
+	return 1
 }

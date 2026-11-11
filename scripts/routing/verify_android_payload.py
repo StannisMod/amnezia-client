@@ -34,7 +34,7 @@ def main():
                     binary.write_bytes(payload)
                     tcp_provenance = deps.verify_binary_file(binary, 'desktop_android')
                     symbols = subprocess.check_output([str(args.readelf), "--dyn-syms", "-W", str(binary)], text=True)
-                    expected = ["Java_org_amnezia_awg_GoBackend_awgTurnOn", "Java_org_amnezia_awg_RoutingBackend_validate", "Java_org_amnezia_awg_RoutingBackend_start", "Java_org_amnezia_awg_RoutingBackend_stop", "Java_org_amnezia_awg_RoutingBackend_stats", "Java_org_amnezia_awg_RoutingBackend_buildInfo", "Java_org_amnezia_awg_RoutingBackend_refresh", "Java_org_amnezia_awg_RoutingBackend_reloadNetworkDns", "Java_org_amnezia_awg_RoutingBackend_suspendNetworkDns", "Java_org_amnezia_awg_RoutingBackend_updateAndroidApplications"]
+                    expected = ["Java_org_amnezia_awg_GoBackend_awgTurnOn", "Java_org_amnezia_awg_RoutingBackend_validate", "Java_org_amnezia_awg_RoutingBackend_start", "Java_org_amnezia_awg_RoutingBackend_stop", "Java_org_amnezia_awg_RoutingBackend_stats", "Java_org_amnezia_awg_RoutingBackend_buildInfo", "Java_org_amnezia_awg_RoutingBackend_refresh", "Java_org_amnezia_awg_RoutingBackend_reloadNetworkDns", "Java_org_amnezia_awg_RoutingBackend_suspendNetworkDns", "Java_org_amnezia_awg_RoutingBackend_updateAndroidApplications", "Java_org_amnezia_awg_RoutingBackend_replaceCapture"]
                     for symbol in expected:
                         if not re.search(r"\b" + re.escape(symbol) + r"$", symbols, re.M):
                             raise SystemExit(f"Missing {symbol} in {apk}:{name}")

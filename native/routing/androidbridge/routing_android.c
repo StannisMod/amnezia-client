@@ -209,3 +209,7 @@ JNIEXPORT jboolean JNICALL Java_org_amnezia_awg_RoutingBackend_updateAndroidAppl
 JNIEXPORT void JNICALL Java_org_amnezia_awg_RoutingBackend_suspendNetworkDns(JNIEnv *env,jobject self,jlong handle) {
  RoutingSuspendDNS(handle);
 }
+
+JNIEXPORT jboolean JNICALL Java_org_amnezia_awg_RoutingBackend_replaceCapture(JNIEnv *env,jobject self,jlong handle,jint fd) {
+ return RoutingReplaceCapture(handle,fd)?JNI_TRUE:JNI_FALSE;
+}

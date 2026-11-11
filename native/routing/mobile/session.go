@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/netip"
 	"sync"
 
@@ -32,6 +33,28 @@ func (s *Session) Stats() (tunnel.Stats, error) {
 	}
 	return s.core.Stats()
 }
+
+// ReplaceCapture consumes a newly established capture descriptor, including
+// when the session is stopped or its capture implementation cannot hand over.
+// It changes no addresses, transport, DNS generation or routing policy.
+func (s *Session) ReplaceCapture(fd int) error {
+	if fd <= 0 {
+		return errors.New("invalid replacement capture descriptor")
+	}
+	p := s.platform
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if p.closed {
+		closeDescriptor(fd)
+		return net.ErrClosed
+	}
+	if capture, ok := p.capture.(interface{ replaceDescriptor(int) error }); ok {
+		return capture.replaceDescriptor(fd)
+	}
+	closeDescriptor(fd)
+	return unsupported
+}
+
 func (s *Session) Diagnostics() engine.DiagnosticSnapshot      { return s.core.Diagnostics() }
 func (s *Session) RefreshUnderlay(remote netip.AddrPort) error { return s.core.RefreshUnderlay(remote) }
 func (s *Session) ProbeUnderlay() error                        { return s.core.ProbeUnderlay() }

@@ -4,6 +4,7 @@ package mobile
 
 import (
 	"context"
+	"errors"
 	"github.com/sagernet/sing-tun"
 	"net"
 	"os"
@@ -58,7 +59,7 @@ func TestCaptureDescriptorHandoverKeepsCoreAndFakeIP(t *testing.T) {
 				if generation > 0 {
 					next, newApp := capturePair(t)
 					old := capture.fd
-					if err = capture.replaceDescriptor(next); err != nil {
+					if err = session.ReplaceCapture(next); err != nil {
 						t.Fatal(err)
 					}
 					if _, err = unix.FcntlInt(uintptr(old), unix.F_GETFD, 0); err != unix.EBADF {
@@ -108,7 +109,7 @@ func TestCaptureDescriptorHandoverKeepsCoreAndFakeIP(t *testing.T) {
 				t.Fatal("native owner release count", releases)
 			}
 			rejected, _ := capturePair(t)
-			if err = capture.replaceDescriptor(rejected); err == nil {
+			if err = session.ReplaceCapture(rejected); err == nil {
 				t.Fatal("closed capture accepted replacement")
 			}
 			if _, err = unix.FcntlInt(uintptr(rejected), unix.F_GETFD, 0); err != unix.EBADF {
@@ -150,5 +151,19 @@ func TestCaptureHandoverRacesCloseWithoutLeakingDescriptors(t *testing.T) {
 		if capture.CaptureError() == nil {
 			t.Fatal("closed capture reports healthy")
 		}
+	}
+}
+
+func TestCaptureAPIConsumesUnsupportedReplacement(t *testing.T) {
+	fd, _ := capturePair(t)
+	session := &Session{platform: &Platform{}}
+	if err := session.ReplaceCapture(fd); !errors.Is(err, unsupported) {
+		t.Fatal("unsupported capture did not reject handover", err)
+	}
+	if _, err := unix.FcntlInt(uintptr(fd), unix.F_GETFD, 0); err != unix.EBADF {
+		t.Fatal("unsupported capture leaked replacement", err)
+	}
+	if err := session.ReplaceCapture(-1); err == nil {
+		t.Fatal("negative descriptor accepted")
 	}
 }

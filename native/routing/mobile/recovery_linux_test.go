@@ -357,7 +357,7 @@ func TestMobileRecoveryKeepsInteractiveAndDelayedMediaTCP(t *testing.T) {
 						next, newApp := capturePair(t)
 						old := appLink.Load()
 						appLink.Store(&recoveryPacketLink{newApp})
-						if err := descriptor.replaceDescriptor(next); err != nil {
+						if err := session.ReplaceCapture(next); err != nil {
 							t.Fatal(err)
 						}
 						pumpInput(newApp)
