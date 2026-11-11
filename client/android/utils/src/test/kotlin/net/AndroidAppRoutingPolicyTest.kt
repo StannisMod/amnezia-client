@@ -36,6 +36,10 @@ class AndroidAppRoutingPolicyTest {
         val input=profile().put("appSplitTunnelType",2).put("splitTunnelApps",org.json.JSONArray().put("app.one"))
         assertThrows(IllegalArgumentException::class.java) {AndroidAppRoutingPolicy.resolve(input,35,{10281},{listOf("app.one")})}
     }
+    @Test fun includedPackageCannotHideConflictingSharedUidSibling() {
+        val input=profile().put("appSplitTunnelType",1).put("splitTunnelApps",org.json.JSONArray().put("app.one"))
+        assertThrows(IllegalArgumentException::class.java) {AndroidAppRoutingPolicy.resolve(input,35,{10281},{listOf("app.one","app.two")})}
+    }
     @Test fun rejectsUnknownSchemaAndDuplicatePackages() {
         for(input in listOf(profile().apply{getJSONObject("android_app_routing").put("version",2)},profile("\"app.one\",\"app.one\""))) {
             assertThrows(IllegalArgumentException::class.java) {AndroidAppRoutingPolicy.resolve(input,35,{10281},{listOf("app.one")})}

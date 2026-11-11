@@ -30,7 +30,10 @@ object AndroidAppRoutingPolicy {
             val uid = uidForPackage(name) ?: continue
             require(uid > 0) { "Invalid Android application UID" }
             val siblings = packagesForUid(uid)
-            require(name in siblings && siblings.filter(::captured).all { it in names }) { "Applications sharing a UID must use the same routing mode" }
+            // VpnService application selection is UID-scoped as well. A
+            // sibling omitted from an include list cannot be treated as a
+            // genuinely excluded application with an independent mode.
+            require(name in siblings && siblings.all { captured(it) && it in names }) { "Applications sharing a UID must use the same routing mode" }
             uids.add(uid)
         }
         return JSONObject().put("site_rules_uids", JSONArray(uids.toList())).apply {
