@@ -97,12 +97,21 @@ func NewWithCache(ctx context.Context, raw []byte, cachePath string) (*box.Box, 
 		}
 		options.Experimental.CacheFile = &option.CacheFileOptions{Enabled: true, Path: cachePath, CacheID: "amnezia-domain-routing-v1", StoreFakeIP: true}
 	}
+	guard, err := preparePacketPreMatchGuard(ctx, &options)
+	if err != nil {
+		return nil, err
+	}
 	instance, err := box.New(box.Options{Context: ctx, Options: options})
 	if err != nil {
 		return nil, err
 	}
+	parsedRules := instance.Router().Rules()
+	if guard {
+		parsedRules[0] = &packetPreMatchGuard{Rule: parsedRules[0]}
+		parsedRules = parsedRules[1:]
+	}
 	if live != nil {
-		if err = installLiveAndroidRules(instance.Router().Rules(), live); err != nil {
+		if err = installLiveAndroidRules(parsedRules, live); err != nil {
 			instance.Close()
 			return nil, err
 		}

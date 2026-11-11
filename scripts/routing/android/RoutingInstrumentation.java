@@ -169,13 +169,25 @@ public final class RoutingInstrumentation extends Instrumentation {
             requireRoute(four, "DIRECT"); pass("Android system resolver uses the installed VPN DNS");
             loopback("127.0.0.1"); loopback("::1"); pass("native IPv4/IPv6 loopback stays local");
 
+            // Allocate fresh FakeIPs without warming their real-address lookup.
+            // During the outage these UDP flows must wait for VPN DNS without
+            // blocking the sole capture reader or unrelated literal DIRECT TCP.
+            InetAddress pendingFour = dns("outage-resolve.test", 1);
+            InetAddress pendingSix = dns("outage-resolve.test", 28);
             JSONObject before = control("/stats", false);
             control("/peer?state=off", true);
             boolean tcpFailed = false, udpFailed = false;
             try { tcpFailed = tcp(vpn) == null; } catch (Exception expected) { tcpFailed = true; }
             try { udp(vpn); } catch (Exception expected) { udpFailed = true; }
             require(tcpFailed && udpFailed, "VPN traffic succeeded with the AWG peer down");
-            JSONObject after = control("/stats", false);
+            JSONObject after;
+            try (DatagramSocket pending = new DatagramSocket()) {
+                byte[] unresolved = new byte[] {0, 1, 2, 3};
+                pending.send(new DatagramPacket(unresolved, unresolved.length, pendingFour, 123));
+                pending.send(new DatagramPacket(unresolved, unresolved.length, pendingSix, 123));
+                after = control("/stats", false);
+            }
+            pass("unresolved IPv4/IPv6 UDP during VPN DNS outage does not block DIRECT TCP");
             require(before.getLong("direct_tcp") == after.getLong("direct_tcp") && before.getLong("direct_udp") == after.getLong("direct_udp"), "VPN traffic fell back to the DIRECT observer");
             // Real upstream DNS may need VPN, so do not claim fresh uncached
             // names resolve during outage. A literal DIRECT destination works.
