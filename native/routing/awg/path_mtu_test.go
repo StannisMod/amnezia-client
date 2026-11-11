@@ -2,6 +2,7 @@ package awg
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net"
 	"net/netip"
@@ -73,7 +74,7 @@ func TestOldTCPAfterClientLinkMTUReduction(t *testing.T) {
 	testRetainedUploadMTU(t, a, b, &filter, &dropped)
 }
 
-func testRetainedUploadMTU(t *testing.T, a, b *FlowStack, filter *atomic.Bool, dropped *atomic.Int64) {
+func testRetainedUploadMTU(t *testing.T, a, b *FlowStack, filter *atomic.Bool, dropped *atomic.Int64, regulate ...func() error) {
 	t.Helper()
 	var received atomic.Int64
 	var corrupted atomic.Bool
@@ -145,7 +146,11 @@ func testRetainedUploadMTU(t *testing.T, a, b *FlowStack, filter *atomic.Bool, d
 		t.Fatalf("upload was not stalled before regulation: received=%d", received.Load())
 	}
 	repairStarted := time.Now()
-	if err := a.SetPathMTU(1104); err != nil {
+	apply := func() error { return a.SetPathMTU(1104) }
+	if len(regulate) > 0 {
+		apply = regulate[0]
+	}
+	if err := apply(); err != nil {
 		t.Fatal(err)
 	}
 	until = time.Now().Add(8 * time.Second)
@@ -253,7 +258,51 @@ func TestEncryptedAWGRetainedUploadMTU(t *testing.T) {
 				t.Fatal(err)
 			}
 			dropped.Store(0)
-			testRetainedUploadMTU(t, a.Net, b.Net, &filter, &dropped)
+			controller, err := NewPathMTUController(a.Net, netip.MustParseAddr("10.77.0.2"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			controller.timeout = 100 * time.Millisecond
+			testRetainedUploadMTU(t, a.Net, b.Net, &filter, &dropped, func() error {
+				checkCtx, stop := context.WithTimeout(ctx, 8*time.Second)
+				defer stop()
+				result, err := controller.Check(checkCtx)
+				if err == nil && (result.State != "reduced" || result.After >= 1200) {
+					return fmt.Errorf("automatic reduction failed: %+v", result)
+				}
+				t.Logf("automatic controller: %+v", result)
+				return err
+			})
+			filter.Store(false)
+			for i := 1; i <= 3; i++ {
+				checkCtx, stop := context.WithTimeout(ctx, 2*time.Second)
+				result, err := controller.Check(checkCtx)
+				stop()
+				if err != nil {
+					t.Fatal(err)
+				}
+				want := "increase_pending"
+				if i == 3 {
+					want = "increased"
+				}
+				if result.State != want {
+					t.Fatalf("increase check %d: %+v", i, result)
+				}
+			}
+			if mtu, _ := a.Net.MTU(); mtu != 1420 {
+				t.Fatal("profile MTU not restored", mtu)
+			}
+			unreachable, err := NewPathMTUController(a.Net, netip.MustParseAddr("10.77.0.99"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			unreachable.timeout = 50 * time.Millisecond
+			checkCtx, stop := context.WithTimeout(ctx, time.Second)
+			result, err := unreachable.Check(checkCtx)
+			stop()
+			if err != nil || result.State != "inconclusive" || result.After != 1420 {
+				t.Fatal("total loss changed MTU", result, err)
+			}
 		})
 	}
 }
