@@ -7,6 +7,7 @@ import android.app.NotificationManager
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MANIFEST
 import android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_SYSTEM_EXEMPTED
 import android.net.VpnService
@@ -111,6 +112,10 @@ open class AmneziaVpnService : VpnService() {
     // private var statisticsSendingJob: Job? = null
     private lateinit var networkState: NetworkState
     private lateinit var trafficStats: TrafficStats
+    private var packageReceiver: BroadcastReceiver? = null
+    private var packageRefreshJob: Job? = null
+    private var packageRefreshSession = -1L
+    private val pendingPackageRefresh = linkedMapOf<String, Boolean>()
     private var controlReceiver: BroadcastReceiver? = null
     private var notificationStateReceiver: BroadcastReceiver? = null
     private var screenOnReceiver: BroadcastReceiver? = null
@@ -350,8 +355,66 @@ open class AmneziaVpnService : VpnService() {
         stopSelf()
     }
 
+    private fun refreshApplicationPackage(packageName: String, refreshCapture: Boolean) {
+        val active=vpnProto?.existingProtocol ?: return
+        val session=active.connectionDiagnostics()?.optLong("session_id", -1) ?: return
+        if (!isConnected || session<=0) return
+        if (packageRefreshSession != session) {
+            packageRefreshSession=session
+            packageRefreshJob?.cancel()
+            pendingPackageRefresh.clear()
+        }
+        pendingPackageRefresh[packageName]=refreshCapture || pendingPackageRefresh[packageName]==true
+        if (packageRefreshJob?.isActive==true) return
+        packageRefreshJob=mainScope.launch {
+            var attempt=0
+            try {
+                while (pendingPackageRefresh.isNotEmpty() && isConnected && vpnProto?.existingProtocol===active && active.connectionDiagnostics()?.optLong("session_id", -1)==session) {
+                    val name=pendingPackageRefresh.keys.first()
+                    val capture=pendingPackageRefresh.remove(name)==true
+                    try {
+                        applicationPolicyMutex.withLock {
+                            if (!isConnected || vpnProto?.existingProtocol!==active || active.connectionDiagnostics()?.optLong("session_id", -1)!=session) return@launch
+                            withContext(Dispatchers.IO) { active.refreshApplicationPackages(name, capture, Builder(), session) }
+                        }
+                        attempt=0
+                    } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+                      catch (error: Exception) {
+                        pendingPackageRefresh[name]=capture || pendingPackageRefresh[name]==true
+                        Log.w(TAG, "Application package refresh deferred: ${error.message}")
+                        ++attempt
+                        delay((attempt.coerceAtMost(6)*5000).toLong())
+                    }
+                }
+            } finally {
+                if (packageRefreshSession==session) {
+                    pendingPackageRefresh.clear()
+                    packageRefreshJob=null
+                }
+            }
+        }
+    }
+
     private fun registerBroadcastReceivers() {
         Log.d(TAG, "Register broadcast receivers")
+        if (Build.VERSION.SDK_INT >= 29) {
+            packageReceiver=object:BroadcastReceiver() {
+                override fun onReceive(context: Context?, intent: Intent?) {
+                    val event=intent ?: return
+                    val name=event.data?.schemeSpecificPart ?: return
+                    val capture=event.action != Intent.ACTION_PACKAGE_REMOVED
+                    refreshApplicationPackage(name, capture)
+                }
+            }
+            ContextCompat.registerReceiver(this, packageReceiver, IntentFilter().apply {
+                addAction(Intent.ACTION_PACKAGE_ADDED)
+                addAction(Intent.ACTION_PACKAGE_REMOVED)
+                addAction(Intent.ACTION_PACKAGE_REPLACED)
+                addAction(Intent.ACTION_PACKAGE_CHANGED)
+                addDataScheme("package")
+            }, ContextCompat.RECEIVER_NOT_EXPORTED)
+        }
+
         controlReceiver = registerBroadcastReceiver(
             arrayOf(ACTION_CONNECT, ACTION_DISCONNECT), ContextCompat.RECEIVER_NOT_EXPORTED
         ) {
@@ -408,6 +471,9 @@ open class AmneziaVpnService : VpnService() {
 
     private fun unregisterBroadcastReceivers() {
         Log.d(TAG, "Unregister broadcast receivers")
+        packageRefreshJob?.cancel();packageRefreshJob=null
+        pendingPackageRefresh.clear();packageRefreshSession=-1L
+        unregisterBroadcastReceiver(packageReceiver);packageReceiver=null
         unregisterBroadcastReceiver(controlReceiver)
         unregisterBroadcastReceiver(notificationStateReceiver)
         unregisterScreenStateBroadcastReceivers()

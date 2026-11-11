@@ -573,6 +573,7 @@ public final class RoutingInstrumentation extends Instrumentation {
             progress("APP_POLICY_RESULT "+new JSONObject().put("uids",new JSONArray().put(a.getInt("uid")).put(b.getInt("uid")))
                 .put("same_session",true).put("same_old_ports",true).put("dns_contexts_switched",true));
             if (packageLifecycle) {
+                long captureGeneration=connectionDiagnostics().optLong("capture_refresh_count",0);
                 File ready=new File(getTargetContext().getFilesDir(),"routing-package-reinstalled.ready");
                 ready.delete();progress("PACKAGE_LIFECYCLE_REINSTALL_B");
                 long deadline=SystemClock.elapsedRealtime()+60000;
@@ -582,6 +583,9 @@ public final class RoutingInstrumentation extends Instrumentation {
                 JSONObject identity=appProbe(1,"ready","reinstalled");
                 progress("PACKAGE_LIFECYCLE_UIDS "+new JSONObject().put("before",b.getInt("uid")).put("after",identity.getInt("uid")));
                 require(identity.getInt("uid")!=b.getInt("uid"),"reinstall did not exercise UID change");
+                long refreshDeadline=SystemClock.elapsedRealtime()+20000;
+                while(connectionDiagnostics().optLong("capture_refresh_count",0)<=captureGeneration && !serviceError && SystemClock.elapsedRealtime()<refreshDeadline)SystemClock.sleep(100);
+                require(connectionDiagnostics().optLong("capture_refresh_count",0)>captureGeneration,"package capture handover was not acknowledged");
                 JSONObject kept=appProbe(0,"echo","old");
                 require(kept.getInt("local_port")==a.getInt("local_port") && kept.getString("route").equals("VPN"),"reinstall broke unaffected app TCP");
                 JSONObject reinstalled=appProbe(1,"open","reinstalled");

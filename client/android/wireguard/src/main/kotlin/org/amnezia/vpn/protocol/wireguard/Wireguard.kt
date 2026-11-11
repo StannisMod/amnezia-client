@@ -69,6 +69,16 @@ open class Wireguard : Protocol() {
 
     @Volatile private var routedHandle = -1L
     @Volatile private var routedConfig: JSONObject? = null
+    private var capturedApplicationUids: Set<Int> = emptySet()
+    @Volatile private var captureRefreshCount = 0L
+    private fun selectedApplicationUids(config: JSONObject): Set<Int> {
+        if (config.optInt("appSplitTunnelType", 0) != 1) return emptySet()
+        val selected=config.optJSONArray("splitTunnelApps") ?: return emptySet()
+        return (0 until selected.length()).mapNotNull { index ->
+            try { context.packageManager.getApplicationInfo(selected.getString(index), 0).uid }
+            catch (_: PackageManager.NameNotFoundException) { null }
+        }.toSet()
+    }
     private var routedStatusJob: Job? = null
     private var routedRecoveryJob: Job? = null
     private val recoveryState = UnderlayRecoveryState()
@@ -78,6 +88,7 @@ open class Wireguard : Protocol() {
         return JSONObject().put("backend", if (shared > 0) "shared" else if (legacy >= 0) "legacy" else "stopped")
             .put("session_id", if (shared > 0) shared else legacy.toLong())
             .put("preserves_connections", shared > 0)
+            .put("capture_refresh_count", captureRefreshCount)
     }
     override fun updateApplicationPolicy(policy: JSONObject, expectedSession: Long): JSONObject = synchronized(endpointLock) {
         require(Build.VERSION.SDK_INT >= 29 && routedHandle > 0 && expectedSession > 0) { "Live application routing is unavailable" }
@@ -96,8 +107,45 @@ open class Wireguard : Protocol() {
         originalProfile?.let { JSONObject(it.toString()) } ?: next
     }
 
+    override fun refreshApplicationPackages(packageName: String, refreshCapture: Boolean, vpnBuilder: Builder, expectedSession: Long): Boolean = synchronized(endpointLock) {
+        if (Build.VERSION.SDK_INT < 29 || routedHandle <= 0 || routedHandle != expectedSession) return@synchronized false
+        val config = routedConfig ?: return@synchronized false
+        if (config.optInt("appSplitTunnelType", 0) != 1) return@synchronized false
+        require(AwgCorePolicy.platformSafe(Build.VERSION.SDK_INT, lockdownEnabled(), config)) { "Application refresh is incompatible with VPN lockdown" }
+        val resolved = AndroidAppRoutingPolicy.resolveForSession(config, Build.VERSION.SDK_INT, { name ->
+            try { context.packageManager.getApplicationInfo(name, 0).uid }
+            catch (_: PackageManager.NameNotFoundException) { null }
+        }, { uid -> context.packageManager.getPackagesForUid(uid)?.toList() ?: emptyList() }) ?: return@synchronized false
+        require(RoutingBackend.updateAndroidApplications(routedHandle, resolved.toString().toByteArray(Charsets.UTF_8))) { "Application UID/DNS refresh is unavailable" }
+        val selected=config.optJSONArray("splitTunnelApps") ?: JSONArray()
+        val currentUids=selectedApplicationUids(config)
+        if (refreshCapture && currentUids!=capturedApplicationUids && (0 until selected.length()).any { selected.getString(it)==packageName }) {
+            buildVpnInterface(routedCapture(config), vpnBuilder)
+            vpnBuilder.establish().use { descriptor ->
+                require(descriptor != null) { "Cannot refresh Android application capture" }
+                require(RoutingBackend.replaceCapture(routedHandle, descriptor.detachFd())) { "Cannot hand over Android application capture" }
+            }
+            capturedApplicationUids=currentUids
+            ++captureRefreshCount
+        }
+        true
+    }
+
     override val preservesConnections: Boolean get() = routedHandle > 0
     private val routedScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    private fun routedCapture(config: JSONObject): ProtocolConfig = ProtocolConfig.build(blockingMode = false) {
+            addAddress(InetNetwork("172.19.0.1", 30))
+            addAddress(InetNetwork("fdfe:dcba:9876::1", 126))
+            addDnsServer(InetNetwork("172.19.0.2", 32).address)
+            addRoute(InetNetwork("0.0.0.0", 0))
+            // Capture ULA FakeIPs too, while leaving the legacy builder's
+            // ::/0-to-2000::/3 compatibility transformation unchanged.
+            addRoute(InetNetwork("::", 1))
+            addRoute(InetNetwork("8000::", 1))
+            setMtu(1280)
+            configAppSplitTunneling(config)
+        }
 
     private fun startRouted(config: JSONObject, vpnBuilder: Builder, protect: (Int) -> Boolean) {
         if (!AwgCorePolicy.platformSafe(Build.VERSION.SDK_INT, lockdownEnabled(), config)) {
@@ -173,18 +221,7 @@ open class Wireguard : Protocol() {
             throw VpnStartException("Domain routing rules or resolver configuration are invalid")
         }
 
-        val capture = ProtocolConfig.build(blockingMode = false) {
-            addAddress(InetNetwork("172.19.0.1", 30))
-            addAddress(InetNetwork("fdfe:dcba:9876::1", 126))
-            addDnsServer(InetNetwork("172.19.0.2", 32).address)
-            addRoute(InetNetwork("0.0.0.0", 0))
-            // Capture ULA FakeIPs too, while leaving the legacy builder's
-            // ::/0-to-2000::/3 compatibility transformation unchanged.
-            addRoute(InetNetwork("::", 1))
-            addRoute(InetNetwork("8000::", 1))
-            setMtu(1280)
-            configAppSplitTunneling(config)
-        }
+        val capture = routedCapture(config)
         stopRouted()
         val initialNetwork = underlayIdentity?.invoke()
         Log.i(TAG, "AWG backend: shared TCP/DNS core")
@@ -199,6 +236,7 @@ open class Wireguard : Protocol() {
             // Do not silently retry the legacy backend or expose VPN flows.
             throw VpnStartException("Domain routing startup failed; check the profile and routing rules")
         }
+        capturedApplicationUids=selectedApplicationUids(config)
         recoveryState.start(routedHandle, initialNetwork, wg.endpoint.toString())
         ++endpointBackendEpoch
         val statusHandle = routedHandle
@@ -238,6 +276,8 @@ open class Wireguard : Protocol() {
     }
 
     private fun stopRouted() {
+        capturedApplicationUids=emptySet()
+        captureRefreshCount=0L
         routedRecoveryJob?.cancel()
         routedRecoveryJob = null
         recoveryState.stop()

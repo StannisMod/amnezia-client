@@ -44,6 +44,7 @@ abstract class Protocol {
     }
     open fun updateApplicationPolicy(policy: JSONObject, expectedSession: Long): JSONObject =
         throw VpnException("Live application routing is unsupported by this protocol")
+    open fun refreshApplicationPackages(packageName: String, refreshCapture: Boolean, vpnBuilder: Builder, expectedSession: Long): Boolean = false
     open fun connectionDiagnostics(): JSONObject? = null
     open val preservesConnections: Boolean get() = false
     open fun refreshVpn(vpnBuilder: Builder, protect: (Int) -> Boolean, force: Boolean) = reconnectVpn(vpnBuilder, protect)
