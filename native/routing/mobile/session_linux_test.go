@@ -204,7 +204,14 @@ func TestNetworkDNSReloadKeepsNativePacketOwner(t *testing.T) {
 		t.Run(transport, func(t *testing.T) { testOwnedPacketFDManagedDNSAndCleanup(t, transport, true) })
 	}
 }
-func testOwnedPacketFDManagedDNSAndCleanup(t *testing.T, transport string, networkDNS bool) {
+func TestLiveAndroidPolicyKeepsNativePacketOwner(t *testing.T) {
+	for _, transport := range []string{"awg", "wireguard"} {
+		t.Run(transport, func(t *testing.T) { testOwnedPacketFDManagedDNSAndCleanup(t, transport, true, true) })
+	}
+}
+
+func testOwnedPacketFDManagedDNSAndCleanup(t *testing.T, transport string, networkDNS bool, liveMode ...bool) {
+	live := len(liveMode) != 0 && liveMode[0]
 	pair, e := unix.Socketpair(unix.AF_UNIX, unix.SOCK_DGRAM, 0)
 	if e != nil {
 		t.Fatal(e)
@@ -238,7 +245,14 @@ func testOwnedPacketFDManagedDNSAndCleanup(t *testing.T, transport string, netwo
 	if networkDNS {
 		start = StartWithNetworkDNS
 	}
-	session, e := start(ctx, platform, sampleConfig(t, transport))
+	raw := sampleConfig(t, transport)
+	if live {
+		var config map[string]any
+		json.Unmarshal(raw, &config)
+		config["android_applications"] = map[string]any{"live": true, "site_rules_uids": []uint32{10282}}
+		raw, _ = json.Marshal(config)
+	}
+	session, e := start(ctx, platform, raw)
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -269,6 +283,34 @@ func testOwnedPacketFDManagedDNSAndCleanup(t *testing.T, transport string, netwo
 	fake := answer.Answer[0].(*dns.A).A.String()
 	if !netip.MustParsePrefix("198.18.0.0/15").Contains(netip.MustParseAddr(fake)) {
 		t.Fatal("DNS response was not a FakeIP")
+	}
+	if live {
+		beforeCore, beforeCapture := session.core, platform.capture
+		if e = session.UpdateAndroidApplications([]byte(`{"live":true,"site_rules_uids":[10281]}`)); e != nil {
+			t.Fatal(e)
+		}
+		if session.core != beforeCore || platform.capture != beforeCapture || released.Load() != 0 {
+			t.Fatal("policy update replaced packet owner")
+		}
+		var saved struct {
+			Applications struct {
+				UIDs []uint32 `json:"site_rules_uids"`
+			} `json:"android_applications"`
+		}
+		json.Unmarshal(session.networkDNSConfig, &saved)
+		if len(saved.Applications.UIDs) != 1 || saved.Applications.UIDs[0] != 10281 {
+			t.Fatal("policy not retained for future network DNS reload")
+		}
+		session.SuspendNetworkDNS()
+		if e = session.UpdateAndroidApplications([]byte(`{"live":true,"site_rules_uids":[10282]}`)); e == nil {
+			t.Fatal("application update revived unavailable network DNS")
+		}
+		if e = session.ReloadNetworkDNS(dnspolicy.NetworkSnapshot{}); e != nil {
+			t.Fatal(e)
+		}
+		if e = session.UpdateAndroidApplications([]byte(`{"live":true,"site_rules_uids":[10282]}`)); e != nil {
+			t.Fatal(e)
+		}
 	}
 	if networkDNS {
 		for range 3 {

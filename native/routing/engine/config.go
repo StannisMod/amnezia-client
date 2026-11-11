@@ -70,6 +70,12 @@ func (c RoutingConfig) compile(vpn map[string]any) ([]byte, error) {
 	if e != nil {
 		return nil, e
 	}
+	var liveOffsets []int
+	liveApps := c.AndroidApplications != nil && c.AndroidApplications.Live
+	if liveApps {
+		route["find_process"] = true
+		appRules = []any{map[string]any{"action": "route", "outbound": "vpn"}}
+	}
 	if len(appRules) != 0 {
 		// Preserve the destination rule order, including explicit rejects.
 		// For always-VPN UIDs only, replace each matching DIRECT decision
@@ -85,12 +91,18 @@ func (c RoutingConfig) compile(vpn map[string]any) ([]byte, error) {
 					}
 				}
 				override := map[string]any{"type": "logical", "mode": "and", "rules": []any{condition}, "action": "route", "outbound": "vpn"}
-				if len(c.AndroidApplications.SiteRulesUIDs) != 0 {
+				if !liveApps && len(c.AndroidApplications.SiteRulesUIDs) != 0 {
 					override["rules"] = []any{condition, map[string]any{"user_id": c.AndroidApplications.SiteRulesUIDs, "invert": true}}
+				}
+				if liveApps {
+					liveOffsets = append(liveOffsets, len(scoped))
 				}
 				scoped = append(scoped, override)
 			}
 			scoped = append(scoped, item)
+		}
+		if liveApps {
+			liveOffsets = append(liveOffsets, len(scoped))
 		}
 		userRules = append(scoped, appRules...)
 	}
@@ -138,6 +150,12 @@ func (c RoutingConfig) compile(vpn map[string]any) ([]byte, error) {
 	}
 	if err := c.AndroidApplications.applyDNS(config["dns"].(map[string]any), c.DNS, c.ResolverAction); err != nil {
 		return nil, err
+	}
+	if liveApps {
+		for i := range liveOffsets {
+			liveOffsets[i] += len(preRules)
+		}
+		config[liveAndroidPolicyKey] = liveAndroidPolicyOptions{Applications: *c.AndroidApplications, Rules: liveOffsets}
 	}
 	return json.Marshal(config)
 }

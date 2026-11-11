@@ -11,6 +11,7 @@ import (
 // including unknown ownership, remains VPN-only. Native VpnService owns DIRECT
 // application exclusion; it must not be emulated with protected proxy sockets.
 type AndroidApplications struct {
+	Live          bool     `json:"live,omitempty"`
 	SiteRulesUIDs []uint32 `json:"site_rules_uids"`
 	VPNDNSPolicy  string   `json:"vpn_dns_policy,omitempty"`
 }

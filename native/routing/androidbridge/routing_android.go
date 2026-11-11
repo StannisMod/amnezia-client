@@ -211,6 +211,20 @@ func RoutingReloadDNS(handle int64, raw string) int32 {
 	return 1
 }
 
+//export RoutingUpdateAndroidApplications
+func RoutingUpdateAndroidApplications(handle int64, raw string) int32 {
+	if len(raw) > 65536 {
+		return 0
+	}
+	routedSessions.Lock()
+	session := routedSessions.sessions[handle]
+	routedSessions.Unlock()
+	if session == nil || session.UpdateAndroidApplications([]byte(raw)) != nil {
+		return 0
+	}
+	return 1
+}
+
 //export RoutingSuspendDNS
 func RoutingSuspendDNS(handle int64) {
 	routedSessions.Lock()

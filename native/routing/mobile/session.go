@@ -17,11 +17,13 @@ import (
 )
 
 type Session struct {
-	core             *engine.Runtime
-	platform         *Platform
-	once             sync.Once
-	closeErr         error
-	networkDNSConfig []byte
+	core                  *engine.Runtime
+	platform              *Platform
+	once                  sync.Once
+	closeErr              error
+	dnsMu                 sync.Mutex
+	networkDNSUnavailable bool
+	networkDNSConfig      []byte
 }
 
 func (s *Session) Stats() (tunnel.Stats, error) {
@@ -78,17 +80,86 @@ func start(ctx context.Context, p *Platform, raw []byte, networkDNS bool) (*Sess
 	return s, nil
 }
 
-func (s *Session) SuspendNetworkDNS() { s.core.SuspendNetworkDNS() }
+func (s *Session) SuspendNetworkDNS() {
+	s.dnsMu.Lock()
+	defer s.dnsMu.Unlock()
+	s.networkDNSUnavailable = true
+	s.core.SuspendNetworkDNS()
+}
 func (s *Session) ReloadNetworkDNS(snapshot dnspolicy.NetworkSnapshot) error {
-	// Retire before validating/preparing: an unavailable inventory must never
-	// revive the previous network's cached answers or interface-bound sockets.
-	return s.core.UpdateNetworkDNS(func() ([]byte, error) {
+	s.dnsMu.Lock()
+	defer s.dnsMu.Unlock()
+	s.networkDNSUnavailable = true
+	var next []byte
+	err := s.core.UpdateNetworkDNS(func() ([]byte, error) {
 		if s.networkDNSConfig == nil {
 			return nil, errors.New("native DNS reload unavailable")
 		}
-		compiled, _, err := compileSessionSnapshot(s.networkDNSConfig, &snapshot)
+		var config map[string]json.RawMessage
+		if err := json.Unmarshal(s.networkDNSConfig, &config); err != nil {
+			return nil, err
+		}
+		encoded, err := json.Marshal(snapshot)
+		if err != nil {
+			return nil, err
+		}
+		config["network_dns"] = encoded
+		next, err = json.Marshal(config)
+		if err != nil {
+			return nil, err
+		}
+		compiled, _, err := compileSession(next)
 		return compiled, err
 	})
+	if err == nil {
+		s.networkDNSConfig = next
+		s.networkDNSUnavailable = false
+	}
+	return err
+}
+
+// The native host resolves package names afresh and supplies only UID policy.
+// Capture/transport/destination settings cannot be changed through this entry.
+func (s *Session) UpdateAndroidApplications(raw []byte) error {
+	s.dnsMu.Lock()
+	defer s.dnsMu.Unlock()
+	if s.networkDNSConfig == nil || s.networkDNSUnavailable {
+		return errors.New("application update requires current DNS")
+	}
+	if len(raw) > 65536 {
+		return errors.New("application policy too large")
+	}
+	var apps engine.AndroidApplications
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&apps); err != nil {
+		return errors.New("invalid application policy")
+	}
+	if err := decoder.Decode(new(any)); err != io.EOF {
+		return errors.New("invalid trailing application policy")
+	}
+	var config map[string]json.RawMessage
+	if err := json.Unmarshal(s.networkDNSConfig, &config); err != nil {
+		return err
+	}
+	encoded, err := json.Marshal(apps)
+	if err != nil {
+		return err
+	}
+	config["android_applications"] = encoded
+	next, err := json.Marshal(config)
+	if err != nil {
+		return err
+	}
+	compiled, _, err := compileSession(next)
+	if err != nil {
+		return err
+	}
+	if err = s.core.UpdateAndroidApplications(compiled); err != nil {
+		return err
+	}
+	s.networkDNSConfig = next
+	return nil
 }
 func (s *Session) Close() error {
 	s.once.Do(func() {

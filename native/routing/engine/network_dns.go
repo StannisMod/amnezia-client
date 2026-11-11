@@ -111,6 +111,7 @@ func newDNSGeneration(parent context.Context, compiled []byte, host Underlay, pl
 		}
 	}
 	options["outbounds"] = rows
+	delete(options, liveAndroidPolicyKey)
 	delete(options, "inbounds")
 	delete(options, "experimental")
 	options["route"] = map[string]any{"final": "vpn"}
@@ -160,6 +161,9 @@ func (p *networkDNSProxy) freeze() uint64 {
 	return version
 }
 func (p *networkDNSProxy) replace(g *dnsGeneration, version uint64) bool {
+	return p.replaceWith(g, version, nil)
+}
+func (p *networkDNSProxy) replaceWith(g *dnsGeneration, version uint64, commit func()) bool {
 	p.mu.Lock()
 	if p.version != version {
 		p.mu.Unlock()
@@ -167,6 +171,9 @@ func (p *networkDNSProxy) replace(g *dnsGeneration, version uint64) bool {
 		return false
 	}
 	old := p.current
+	if commit != nil {
+		commit()
+	}
 	p.current = g
 	p.mu.Unlock()
 	if old != nil {

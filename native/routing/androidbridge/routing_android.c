@@ -197,6 +197,15 @@ JNIEXPORT jboolean JNICALL Java_org_amnezia_awg_RoutingBackend_reloadNetworkDns(
  (*env)->ReleaseByteArrayElements(env,snapshot,bytes,JNI_ABORT);
  return ok?JNI_TRUE:JNI_FALSE;
 }
+JNIEXPORT jboolean JNICALL Java_org_amnezia_awg_RoutingBackend_updateAndroidApplications(JNIEnv *env,jobject self,jlong handle,jbyteArray policy) {
+ if(!policy)return JNI_FALSE;
+ jsize len=(*env)->GetArrayLength(env,policy);
+ if(len>65536)return JNI_FALSE;
+ jbyte *bytes=(*env)->GetByteArrayElements(env,policy,NULL);if(!bytes)return JNI_FALSE;
+ int ok=RoutingUpdateAndroidApplications(handle,(GoString){(const char*)bytes,len});
+ (*env)->ReleaseByteArrayElements(env,policy,bytes,JNI_ABORT);
+ return ok?JNI_TRUE:JNI_FALSE;
+}
 JNIEXPORT void JNICALL Java_org_amnezia_awg_RoutingBackend_suspendNetworkDns(JNIEnv *env,jobject self,jlong handle) {
  RoutingSuspendDNS(handle);
 }

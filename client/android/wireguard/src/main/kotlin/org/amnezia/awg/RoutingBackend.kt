@@ -22,6 +22,7 @@ object RoutingBackend {
     external fun diagnostics(handle: Long): ByteArray?
     external fun refresh(handle: Long, endpoint: String?, reopen: Boolean): Boolean
     external fun reloadNetworkDns(handle: Long, snapshot: ByteArray): Boolean
+    external fun updateAndroidApplications(handle: Long, policy: ByteArray): Boolean
     external fun suspendNetworkDns(handle: Long)
 }
 
