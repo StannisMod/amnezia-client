@@ -11,7 +11,23 @@ import java.net.Socket;
 public class Probe extends Instrumentation {
     private String sharedName;
     private volatile String systemResult="pending";
-    @Override public void onCreate(Bundle args){super.onCreate(args);sharedName=args.getString("shared_name");start();}
+    private volatile String txtResult="not_requested";
+    private boolean systemTxt;
+    @Override public void onCreate(Bundle args){super.onCreate(args);sharedName=args.getString("shared_name");systemTxt="true".equals(args.getString("system_txt"));start();}
+    private void queryTxt(String name)throws Exception {
+        txtResult="pending";
+        java.util.concurrent.CountDownLatch finished=new java.util.concurrent.CountDownLatch(1);
+        android.os.CancellationSignal cancel=new android.os.CancellationSignal();
+        android.net.DnsResolver.getInstance().rawQuery(null,name,1,16,0,Runnable::run,cancel,
+            new android.net.DnsResolver.Callback<byte[]>() {
+                @Override public void onAnswer(byte[] answer,int rcode) {
+                    txtResult=rcode==0 && answer.length>=5 ? new String(answer,answer.length-5,5,java.nio.charset.StandardCharsets.US_ASCII) : "rcode="+rcode;
+                    finished.countDown();
+                }
+                @Override public void onError(android.net.DnsResolver.DnsException error) {txtResult=error.toString();finished.countDown();}
+            });
+        if(!finished.await(8,java.util.concurrent.TimeUnit.SECONDS)){cancel.cancel();throw new java.io.IOException("system TXT timeout");}
+    }
     @Override public void onStart(){
         String label=getTargetContext().getPackageName().endsWith(".a")?"a":"b";
         String unique=Long.toString(System.nanoTime());
@@ -25,6 +41,7 @@ public class Probe extends Instrumentation {
                     try(Socket resolved=new Socket()) {
                         resolved.connect(new InetSocketAddress(addresses[0],18083),2000);
                     } catch(java.io.IOException expectedPacketSink) {}
+                    if(systemTxt)queryTxt(sharedName!=null?"txt-"+sharedName:"txt-"+label+"-"+unique+".uid.test");
                     return;
                 }
                 catch(Exception error){try{Thread.sleep(200);}catch(InterruptedException cancelled){return;}}
@@ -53,7 +70,7 @@ public class Probe extends Instrumentation {
             if(sharedName!=null)dns.join(12000);
             else Thread.sleep(3000);
         }catch(Exception error){Bundle failure=new Bundle();failure.putString("failure",error.toString());finish(-1,failure);return;}
-        Bundle result=new Bundle();result.putString("system_result",systemResult);
+        Bundle result=new Bundle();result.putString("system_result",systemResult);result.putString("system_txt_result",txtResult);
         if(sharedName!=null && dns.isAlive()) {
             result.putString("failure","system resolver did not complete within 12 seconds");
             finish(-1,result);return;

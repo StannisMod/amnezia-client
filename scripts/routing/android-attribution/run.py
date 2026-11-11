@@ -1,6 +1,6 @@
 from pathlib import Path
 import argparse,os,subprocess,zipfile,json,time,re
-parser=argparse.ArgumentParser();parser.add_argument('--work',type=Path,required=True);parser.add_argument('--shared-name',action='store_true');parser.add_argument('--sequential',action='store_true');args=parser.parse_args()
+parser=argparse.ArgumentParser();parser.add_argument('--work',type=Path,required=True);parser.add_argument('--shared-name',action='store_true');parser.add_argument('--sequential',action='store_true');parser.add_argument('--system-txt',action='store_true');args=parser.parse_args()
 sdk=Path(os.environ['ANDROID_HOME']);tools=sdk/'build-tools/36.0.0';android=sdk/'platforms/android-36/android.jar'
 source=Path(__file__).resolve().parent;work=args.work.resolve();work.mkdir(parents=True,exist_ok=True)
 def run(*args): return subprocess.run(list(map(str,args)),check=True,capture_output=True,text=True).stdout
@@ -28,6 +28,7 @@ try:
  owner=subprocess.Popen([str(sdk/'platform-tools/adb'),'shell','am','instrument','-w','-e','duration_ms','45000' if args.shared_name else '20000',packages[0]+'/org.amnezia.uidprobe.Starter'],stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True)
  time.sleep(3)
  shared_args=['-e','shared_name','system-shared-'+str(time.time_ns())+'.uid.test'] if args.shared_name else []
+ if args.system_txt: shared_args+=['-e','system_txt','true']
  def launch(package):
   return subprocess.Popen([str(sdk/'platform-tools/adb'),'shell','am','instrument','-w',*shared_args,package+'/org.amnezia.uidprobe.Probe'],stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True)
  if args.sequential:
@@ -56,6 +57,10 @@ try:
   assert any(r['uid']==uid and r['protocol']==6 for r in rows), 'TCP owner missing'
   assert any(r['uid']==uid and r['destination_port']==18082 for r in rows), 'UDP owner missing'
   assert any(r['uid']==uid and r['destination_port']==18083 and r['destination_address'].startswith('198.18.') for r in rows), 'resolved FakeIP flow owner missing'
+ txt={}
+ if args.system_txt:
+  txt['request_uids']=sorted({r['uid'] for r in rows if r['dns_name'].startswith('txt-')})
+  txt['results']=[re.search(r'INSTRUMENTATION_RESULT: system_txt_result=(.*)',output).group(1) if 'INSTRUMENTATION_RESULT: system_txt_result=' in output else None for output in child_outputs]
  shared={}
  if args.shared_name:
   shared['request_uids']=sorted({row['uid'] for row in rows if row['dns_name'].startswith('system-shared-')})
@@ -63,9 +68,10 @@ try:
   shared['sequential']=args.sequential
   shared['cache_reuse_observed']=args.sequential and len(shared['request_uids'])==1 and shared['results'][0]==shared['results'][1] and shared['results'][0] is not None
   dns_owner_unavailable=-1 in shared['request_uids']
- (work/'report.json').write_text(json.dumps({'api':int(adb('shell','getprop','ro.build.version.sdk')),'expected':expected,'observed':observed,'shared_name':shared,'status':'PASS_FLOW_ATTRIBUTION_DNS_OWNER_UNAVAILABLE' if dns_owner_unavailable else 'PASS_FLOW_ATTRIBUTION','system_dns_owner_available':not dns_owner_unavailable,'resolved_fakeip_flow_owners':'PASS','child_outputs':child_outputs},indent=2))
+ (work/'report.json').write_text(json.dumps({'api':int(adb('shell','getprop','ro.build.version.sdk')),'expected':expected,'observed':observed,'shared_name':shared,'system_txt':txt,'status':'PASS_FLOW_ATTRIBUTION_DNS_OWNER_UNAVAILABLE' if dns_owner_unavailable else 'PASS_FLOW_ATTRIBUTION','system_dns_owner_available':not dns_owner_unavailable,'resolved_fakeip_flow_owners':'PASS','child_outputs':child_outputs},indent=2))
  print(json.dumps(observed))
  assert all('INSTRUMENTATION_RESULT: failure=' not in output for output in child_outputs), 'child resolver experiment incomplete; see report.json'
+ if args.system_txt: assert txt['request_uids'] and all(value in ('uid-a','uid-b') for value in txt['results']), 'system TXT experiment incomplete'
  if args.shared_name:
   assert shared['request_uids'] and all(uid in [-1]+[int(expected[package]) for package in packages[1:]] for uid in shared['request_uids']), 'unexpected shared query owner'
   assert all(result and result!='pending' and '198.18.0.' in result for result in shared['results']), 'shared resolver answer missing'

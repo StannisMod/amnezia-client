@@ -24,6 +24,12 @@ different addresses for the two UIDs. Both child resolver calls must complete;
 an unfinished call is a failure, not evidence about caching. Reports preserve
 the observed request UIDs and returned addresses. Cache sharing is reported as
 an observation rather than a required behavior on every Android release.
+Add `--system-txt` to query the same TXT name through `DnsResolver.rawQuery`,
+with UID-specific synthetic TXT responses and no subsequent connection for
+that TXT result. API 35 sequential observations produced separate requests
+and `uid-a`/`uid-b` answers even while A answers were shared from cache.
+The CI shared-name scenarios include TXT for API 29 and 35; do not generalize
+the API 35 result to Android 10 without inspecting that platform's report.
 Resolver caching/coalescing, Private DNS, IPv6, network changes and API 29 need
 additional cases before making general platform claims. Transition failures are
 retried within a bounded interval; missing attribution remains an assertion failure.

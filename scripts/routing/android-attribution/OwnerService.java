@@ -69,19 +69,25 @@ public class OwnerService extends VpnService {
         while(pos<length && request[pos]!=0){int count=request[pos]&255;if(count>63)return;pos+=count+1;}
         if(pos+5>length)return;
         int questionEnd=pos+5,type=u16(request,pos+1);
-        boolean address=type==1;
-        byte[] response=new byte[20+8+questionEnd-dns+(address?16:0)];
+        boolean address=type==1,txt=type==16;
+        int appA=getPackageManager().getApplicationInfo("org.amnezia.uidprobe.a",0).uid;
+        byte[] marker=(uid==appA?"uid-a":"uid-b").getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+        byte[] response=new byte[20+8+questionEnd-dns+(address?16:txt?13+marker.length:0)];
         response[0]=0x45;put16(response,2,response.length);response[8]=64;response[9]=17;
         System.arraycopy(request,16,response,12,4);System.arraycopy(request,12,response,16,4);
         put16(response,20,53);put16(response,22,u16(request,header));put16(response,24,response.length-20);
         System.arraycopy(request,dns,response,28,questionEnd-dns);
-        put16(response,30,0x8180);put16(response,32,1);put16(response,34,address?1:0);put16(response,36,0);put16(response,38,0);
+        put16(response,30,0x8180);put16(response,32,1);put16(response,34,address||txt?1:0);put16(response,36,0);put16(response,38,0);
         if(address){
             int start=28+questionEnd-dns;put16(response,start,0xc00c);put16(response,start+2,1);put16(response,start+4,1);
             put16(response,start+8,60);put16(response,start+10,4);
             response[start+12]=(byte)198;response[start+13]=18;
-            int appA=getPackageManager().getApplicationInfo("org.amnezia.uidprobe.a",0).uid;
             response[start+15]=(byte)(uid==appA?10:11);
+        }
+        if(txt){
+            int start=28+questionEnd-dns;put16(response,start,0xc00c);put16(response,start+2,16);put16(response,start+4,1);
+            put16(response,start+8,60);put16(response,start+10,1+marker.length);response[start+12]=(byte)marker.length;
+            System.arraycopy(marker,0,response,start+13,marker.length);
         }
         int checksum=0;for(int n=0;n<20;n+=2)checksum+=u16(response,n);
         while((checksum>>16)!=0)checksum=(checksum&65535)+(checksum>>16);

@@ -43,7 +43,7 @@ jobs:
           ram-size: 3072M
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
-          script: python3 scripts/routing/android-attribution/run.py --work "$RUNNER_TEMP/attribution" ${{ matrix.scenario == 'shared-sequential' && '--shared-name --sequential' || matrix.scenario == 'shared-concurrent' && '--shared-name' || '' }}
+          script: python3 scripts/routing/android-attribution/run.py --work "$RUNNER_TEMP/attribution" ${{ matrix.scenario == 'shared-sequential' && '--shared-name --sequential --system-txt' || matrix.scenario == 'shared-concurrent' && '--shared-name --system-txt' || '' }}
       - uses: actions/upload-artifact@v4
         if: always()
         with:
