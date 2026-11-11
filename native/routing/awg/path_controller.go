@@ -22,6 +22,7 @@ type PathMTUController struct {
 	peer                       netip.Addr
 	timeout                    time.Duration
 	raiseCandidate, raiseCount int
+	apply                      func(context.Context, int) error
 }
 
 func NewPathMTUController(flow *FlowStack, peer netip.Addr) (*PathMTUController, error) {
@@ -111,7 +112,11 @@ func (c *PathMTUController) Check(ctx context.Context) (PathMTUResult, error) {
 			return result, nil
 		}
 	}
-	if err := c.flow.SetPathMTU(candidate); err != nil {
+	apply := c.apply
+	if apply == nil {
+		apply = func(_ context.Context, mtu int) error { return c.flow.SetPathMTU(mtu) }
+	}
+	if err := apply(ctx, candidate); err != nil {
 		reset()
 		return result, err
 	}
