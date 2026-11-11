@@ -52,13 +52,13 @@ public class OwnerService extends VpnService {
                     }
                     name=label.toString();
                     if(!name.endsWith(".uid.test."))continue;
-                }else if(destination!=18081 && destination!=18082)continue;
+                }else if(destination!=18081 && destination!=18082 && destination!=18083)continue;
                 InetAddress local=InetAddress.getByAddress(java.util.Arrays.copyOfRange(packet,12,16));
                 InetAddress remote=InetAddress.getByAddress(java.util.Arrays.copyOfRange(packet,16,20));
                 int uid=getSystemService(ConnectivityManager.class).getConnectionOwnerUid(protocol,
                     new InetSocketAddress(local,u16(packet,header)),new InetSocketAddress(remote,destination));
                 JSONObject event=new JSONObject().put("uid",uid).put("protocol",protocol).put("source_port",u16(packet,header))
-                    .put("destination_port",destination).put("dns_name",name);
+                    .put("destination_port",destination).put("destination_address",remote.getHostAddress()).put("dns_name",name);
                 output.write((event.toString()+"\n").getBytes(java.nio.charset.StandardCharsets.UTF_8));output.flush();
                 if(destination==53) replyDns(packet,header,length,uid,replies);
             }

@@ -10,6 +10,14 @@ independent UIDs; the active VPN owner queries getConnectionOwnerUid for their
 original TUN tuples. Results include ordinary UDP DNS and Android's system resolver.
 
 This proves basic UID attribution, not complete per-application DNS semantics.
+The driver also opens TCP to the address returned by the system resolver and
+requires each original FakeIP tuple to retain the requesting application's UID.
+Android 10 CI observations returned `-1` for system-resolver DNS sockets while
+direct DNS sockets, TCP and UDP retained correct application UIDs. The report
+marks that platform limitation explicitly; it does not label DNS ownership as
+supported merely because subsequent flow ownership passes. This distinction
+is required for shared FakeIP lookup at connection time and does not solve
+attribution of arbitrary system TXT/SRV queries without a subsequent flow.
 Use `--shared-name --sequential` to observe cross-application system-cache reuse,
 or `--shared-name` for concurrent requests. The synthetic DNS responder returns
 different addresses for the two UIDs. Both child resolver calls must complete;

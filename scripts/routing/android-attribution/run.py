@@ -43,25 +43,31 @@ try:
  rows=[json.loads(line) for line in events.splitlines() if line.strip()]
  expected=dict(re.findall(r'package:(\S+) uid:(\d+)',uids))
  observed={}
+ dns_owner_unavailable=False
  for label in ('a','b'):
   uid=int(expected['org.amnezia.uidprobe.'+label])
   for kind in ('system','raw'):
    values=sorted({r['uid'] for r in rows if r['dns_name'].startswith(kind+'-'+label+'-')})
-   if kind=='raw' or not args.shared_name: assert values==[uid], (label,kind,values,uid)
+   if kind=='raw': assert values==[uid], (label,kind,values,uid)
+   elif not args.shared_name:
+    assert values in ([uid],[-1]), (label,kind,values,uid)
+    dns_owner_unavailable=dns_owner_unavailable or values==[-1]
    observed[kind+'-'+label]=values
   assert any(r['uid']==uid and r['protocol']==6 for r in rows), 'TCP owner missing'
   assert any(r['uid']==uid and r['destination_port']==18082 for r in rows), 'UDP owner missing'
+  assert any(r['uid']==uid and r['destination_port']==18083 and r['destination_address'].startswith('198.18.') for r in rows), 'resolved FakeIP flow owner missing'
  shared={}
  if args.shared_name:
   shared['request_uids']=sorted({row['uid'] for row in rows if row['dns_name'].startswith('system-shared-')})
   shared['results']=[re.search(r'INSTRUMENTATION_RESULT: system_result=(.*)',output).group(1) if 'INSTRUMENTATION_RESULT: system_result=' in output else None for output in child_outputs]
   shared['sequential']=args.sequential
   shared['cache_reuse_observed']=args.sequential and len(shared['request_uids'])==1 and shared['results'][0]==shared['results'][1] and shared['results'][0] is not None
- (work/'report.json').write_text(json.dumps({'api':int(adb('shell','getprop','ro.build.version.sdk')),'expected':expected,'observed':observed,'shared_name':shared,'status':'OBSERVED_SHARED_NAME' if args.shared_name else 'PASS_BASIC_ATTRIBUTION','child_outputs':child_outputs},indent=2))
+  dns_owner_unavailable=-1 in shared['request_uids']
+ (work/'report.json').write_text(json.dumps({'api':int(adb('shell','getprop','ro.build.version.sdk')),'expected':expected,'observed':observed,'shared_name':shared,'status':'PASS_FLOW_ATTRIBUTION_DNS_OWNER_UNAVAILABLE' if dns_owner_unavailable else 'PASS_FLOW_ATTRIBUTION','system_dns_owner_available':not dns_owner_unavailable,'resolved_fakeip_flow_owners':'PASS','child_outputs':child_outputs},indent=2))
  print(json.dumps(observed))
  assert all('INSTRUMENTATION_RESULT: failure=' not in output for output in child_outputs), 'child resolver experiment incomplete; see report.json'
  if args.shared_name:
-  assert shared['request_uids'] and all(uid in [int(expected[package]) for package in packages[1:]] for uid in shared['request_uids']), 'shared query owner unavailable'
+  assert shared['request_uids'] and all(uid in [-1]+[int(expected[package]) for package in packages[1:]] for uid in shared['request_uids']), 'unexpected shared query owner'
   assert all(result and result!='pending' and '198.18.0.' in result for result in shared['results']), 'shared resolver answer missing'
 
 finally:

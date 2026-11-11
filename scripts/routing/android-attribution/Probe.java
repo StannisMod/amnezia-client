@@ -17,7 +17,16 @@ public class Probe extends Instrumentation {
         String unique=Long.toString(System.nanoTime());
         Thread dns=new Thread(()->{
             for(int attempt=0;attempt<10;attempt++) {
-                try {systemResult=java.util.Arrays.toString(InetAddress.getAllByName(sharedName!=null?sharedName:"system-"+label+"-"+unique+"-"+attempt+".uid.test"));return;}
+                try {
+                    InetAddress[] addresses=InetAddress.getAllByName(sharedName!=null?sharedName:"system-"+label+"-"+unique+"-"+attempt+".uid.test");
+                    systemResult=java.util.Arrays.toString(addresses);
+                    // Attribute the original tuple of the subsequent flow,
+                    // even when netd hid the UID of the DNS request itself.
+                    try(Socket resolved=new Socket()) {
+                        resolved.connect(new InetSocketAddress(addresses[0],18083),2000);
+                    } catch(java.io.IOException expectedPacketSink) {}
+                    return;
+                }
                 catch(Exception error){try{Thread.sleep(200);}catch(InterruptedException cancelled){return;}}
             }
         });
