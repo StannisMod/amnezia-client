@@ -303,8 +303,13 @@ func (t *Transport) Close() error {
 	if t.tcpWorker != nil {
 		t.tcpWorker.cancel()
 	}
-	t.mtuWorker.stop()
+	if t.mtuWorker != nil {
+		t.mtuWorker.cancel()
+	}
+	// Closing the device releases admitted output before workers join. An MTU
+	// apply may be waiting for a TCP dispatch gate held by that output.
 	t.device.Close()
+	t.mtuWorker.stop()
 	t.tcpWorker.stop()
 	return nil
 }

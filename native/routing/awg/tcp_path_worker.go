@@ -30,6 +30,8 @@ func startTCPPathWorker(parent context.Context, flow *FlowStack, peer netip.Addr
 			case <-flow.done:
 				return
 			case <-ticker.C:
+			case <-flow.tcpPathWake:
+				pending = true
 			}
 			timeouts := flow.stack.Stats().TCP.Timeouts.Value()
 			if timeouts != lastTimeouts {

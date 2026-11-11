@@ -123,3 +123,60 @@ func TestTCPPathProofRejectsNetworkChangeDuringChallenge(t *testing.T) {
 		t.Fatal("failed challenge advanced proof serial")
 	}
 }
+
+func TestMTUChangeCancelsCurrentProofWithoutLosingNewerOperation(t *testing.T) {
+	_, flow, err := NewFlowTUN([]netip.Addr{netip.MustParseAddr("10.81.0.1")}, 1420)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer flow.Close()
+	firstCtx, stopFirst := context.WithTimeout(context.Background(), time.Second)
+	defer stopFirst()
+	secondCtx, stopSecond := context.WithTimeout(context.Background(), time.Second)
+	defer stopSecond()
+	firstResult, secondResult := make(chan error, 1), make(chan error, 1)
+	go func() { _, err := flow.verifyTCPPath(firstCtx, netip.MustParseAddr("10.81.0.2")); firstResult <- err }()
+	operation := func() *tcpPathOperation { flow.state.Lock(); defer flow.state.Unlock(); return flow.tcpPathProbe }
+	until := time.Now().Add(250 * time.Millisecond)
+	for operation() == nil {
+		if time.Now().After(until) {
+			t.Fatal("first proof did not start")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	first := operation()
+	go func() { _, err := flow.verifyTCPPath(secondCtx, netip.MustParseAddr("10.81.0.2")); secondResult <- err }()
+	until = time.Now().Add(250 * time.Millisecond)
+	for operation() == first {
+		if time.Now().After(until) {
+			t.Fatal("second proof did not start")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	stopFirst()
+	select {
+	case err := <-firstResult:
+		if err != context.Canceled {
+			t.Fatal("first proof", err)
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("first cancellation blocked")
+	}
+	if operation() == nil {
+		t.Fatal("old operation cleanup erased newer proof")
+	}
+	if err := flow.SetPathMTU(1280); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-secondResult:
+		if err != context.Canceled {
+			t.Fatal("current proof", err)
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("MTU update waited for old probe deadline")
+	}
+	if operation() != nil {
+		t.Fatal("completed proof retained cancellation state")
+	}
+}

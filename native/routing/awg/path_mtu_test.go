@@ -40,14 +40,18 @@ func TestFlowPathMTULimits(t *testing.T) {
 }
 
 func TestOldTCPAfterClientLinkMTUReduction(t *testing.T) {
-	testLinkedUploadMTU(t, false)
+	testLinkedUploadMTU(t, false, false)
 }
 
 func TestMaturePathMTUWorkerRetainsTCP(t *testing.T) {
-	testLinkedUploadMTU(t, true)
+	testLinkedUploadMTU(t, true, false)
 }
 
-func testLinkedUploadMTU(t *testing.T, matureWorker bool) {
+func TestMaturePathMTUAndTCPRecoveryWorkersRetainTCP(t *testing.T) {
+	testLinkedUploadMTU(t, true, true)
+}
+
+func testLinkedUploadMTU(t *testing.T, matureWorker, earlyRepair bool) {
 	_, a, err := NewFlowTUN([]netip.Addr{netip.MustParseAddr("10.77.0.1")}, 1420)
 	if err != nil {
 		t.Fatal(err)
@@ -82,9 +86,14 @@ func testLinkedUploadMTU(t *testing.T, matureWorker bool) {
 	if matureWorker {
 		worker := startPathMTUWorker(context.Background(), a, netip.MustParseAddr("10.77.0.2"))
 		defer worker.stop()
+		if earlyRepair {
+			recovery := startTCPPathWorker(context.Background(), a, netip.MustParseAddr("10.77.0.2"))
+			defer recovery.stop()
+		}
+		t.Logf("automatic TCP recovery worker enabled=%t", earlyRepair)
 		// The healthy startup check must have finished before the path changes.
 		time.Sleep(3 * time.Second)
-		testRetainedUploadMTU(t, a, b, &filter, &dropped, func() error {
+		afterMTU := testRetainedUploadMTU(t, a, b, &filter, &dropped, func() error {
 			start := time.Now()
 			lastTimeouts := uint64(0)
 			until := start.Add(9 * time.Second)
@@ -103,12 +112,15 @@ func testLinkedUploadMTU(t *testing.T, matureWorker bool) {
 			}
 			return fmt.Errorf("mature MTU worker did not react within 9s; TCP timeouts=%d", lastTimeouts)
 		})
+		if earlyRepair && afterMTU > 250*time.Millisecond {
+			t.Fatalf("verified MTU update waited too long for old TCP: %s", afterMTU)
+		}
 		return
 	}
 	testRetainedUploadMTU(t, a, b, &filter, &dropped)
 }
 
-func testRetainedUploadMTU(t *testing.T, a, b *FlowStack, filter *atomic.Bool, dropped *atomic.Int64, regulate ...func() error) {
+func testRetainedUploadMTU(t *testing.T, a, b *FlowStack, filter *atomic.Bool, dropped *atomic.Int64, regulate ...func() error) time.Duration {
 	t.Helper()
 	var received atomic.Int64
 	var corrupted atomic.Bool
@@ -187,6 +199,7 @@ func testRetainedUploadMTU(t *testing.T, a, b *FlowStack, filter *atomic.Bool, d
 	if err := apply(); err != nil {
 		t.Fatal(err)
 	}
+	afterRegulation := time.Now()
 	until = time.Now().Add(8 * time.Second)
 	for received.Load() < 256*1024+6 && time.Now().Before(until) {
 		time.Sleep(10 * time.Millisecond)
@@ -197,7 +210,8 @@ func testRetainedUploadMTU(t *testing.T, a, b *FlowStack, filter *atomic.Bool, d
 	if corrupted.Load() {
 		t.Fatal("retained upload payload corrupted")
 	}
-	t.Logf("same TCP transferred complete payload after client MTU reduction in %s; original oversized packets dropped=%d", time.Since(repairStarted), dropped.Load())
+	t.Logf("same TCP transferred complete payload after client MTU reduction in %s; from confirmed MTU=%s; original oversized packets dropped=%d", time.Since(repairStarted), time.Since(afterRegulation), dropped.Load())
+	return time.Since(afterRegulation)
 }
 
 type mtuLossConn struct {

@@ -33,6 +33,8 @@ type FlowStack struct {
 	pathProbeEvidence map[*pathProbeEvidence]struct{}
 	pathProbeCount    atomic.Int32
 	tcpPathGate       sync.Mutex
+	tcpPathWake       chan struct{}
+	tcpPathProbe      *tcpPathOperation
 	tcpNextID         uint64
 	tcpProbeCursor    uint64
 	tcpProbeBudget    tcpProbeBudget
@@ -85,7 +87,7 @@ func NewFlowTUN(addresses []netip.Addr, mtu int) (tun.Device, *FlowStack, error)
 		return nil, nil, errors.New("invalid AWG flow interface")
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	s := &FlowStack{ctx: ctx, cancel: cancel, mtu: mtu, events: make(chan tun.Event, 1), packets: make(chan *buffer.View), done: make(chan struct{}),
+	s := &FlowStack{tcpPathWake: make(chan struct{}, 1), ctx: ctx, cancel: cancel, mtu: mtu, events: make(chan tun.Event, 1), packets: make(chan *buffer.View), done: make(chan struct{}),
 		endpoint: channel.New(1024, uint32(mtu), ""), stack: stack.New(stack.Options{
 			NetworkProtocols:   []stack.NetworkProtocolFactory{ipv4.NewProtocol, ipv6.NewProtocol},
 			TransportProtocols: []stack.TransportProtocolFactory{tcp.NewProtocol, udp.NewProtocol, icmp.NewProtocol4, icmp.NewProtocol6}, HandleLocal: true})}
@@ -102,7 +104,7 @@ func NewFlowTUN(addresses []netip.Addr, mtu int) (tun.Device, *FlowStack, error)
 		}
 	}
 	s.link = &flowMTULink{Endpoint: s.endpoint}
-	s.tcpPathGeneration++
+	s.invalidateTCPPathLocked(false)
 	s.link.value.Store(uint32(mtu))
 	if err := s.stack.CreateNIC(1, s.link); err != nil {
 		return nil, nil, errors.New(err.String())
@@ -175,9 +177,15 @@ func (s *FlowStack) SetPathMTU(mtu int) error {
 	if mtu == s.mtu {
 		return nil
 	}
-	s.tcpPathGeneration++
+	s.invalidateTCPPathLocked(false)
 	s.link.value.Store(uint32(mtu))
 	s.mtu = mtu
+	// A verified MTU change is a reason to recheck recovering TCP promptly;
+	// it is never itself proof that a full-sized path has returned.
+	select {
+	case s.tcpPathWake <- struct{}{}:
+	default:
+	}
 	select {
 	case s.events <- tun.EventMTUUpdate:
 	default:

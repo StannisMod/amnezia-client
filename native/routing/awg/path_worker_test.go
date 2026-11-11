@@ -126,3 +126,51 @@ func TestPathMTUWorkerTimeoutStormIsBoundedAndInconclusive(t *testing.T) {
 		t.Fatal("packet reader survived closed stack")
 	}
 }
+
+func TestCloseReleasesBlockedFlowBeforeJoiningMTUWorker(t *testing.T) {
+	private, _ := keypair(t)
+	_, public := keypair(t)
+	config := Config{Address: []netip.Addr{netip.MustParseAddr("10.82.0.1")}, PrivateKey: private, PublicKey: public, Endpoint: netip.MustParseAddrPort("127.0.0.1:9"), AllowedIPs: []netip.Prefix{netip.MustParsePrefix("10.82.0.0/24")}, PathMTUProbe: netip.MustParseAddr("10.82.0.2")}
+	var listen net.ListenConfig
+	transport, err := New(context.Background(), config, listen.ListenPacket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer transport.Close()
+	transport.mtuWorker.stop()
+	flow := transport.Net
+	if !flow.begin() {
+		t.Fatal("flow closed before test")
+	}
+	flow.tcpPathGate.Lock()
+	release := make(chan struct{})
+	defer close(release)
+	// Model an admitted endpoint output holding the dispatch gate while waiting
+	// for flow close. A concurrent MTU update must not stop Close reaching done.
+	go func() {
+		defer flow.active.Done()
+		defer flow.tcpPathGate.Unlock()
+		select {
+		case <-flow.done:
+		case <-release:
+		}
+	}()
+	workerCtx, cancel := context.WithCancel(context.Background())
+	worker := &pathMTUWorker{ctx: workerCtx, cancel: cancel, done: make(chan struct{})}
+	result := make(chan error, 1)
+	go func() { defer close(worker.done); result <- flow.SetPathMTU(1100) }()
+	transport.mtuWorker = worker
+	closed := make(chan error, 1)
+	go func() { closed <- transport.Close() }()
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("close joined MTU worker before releasing blocked flow")
+	}
+	if err := <-result; err != net.ErrClosed {
+		t.Fatal("MTU update changed closing flow", err)
+	}
+}
