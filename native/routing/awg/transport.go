@@ -53,13 +53,13 @@ func (c Config) uapi() (string, error) {
 			allowed = allowed || prefix.Contains(peer)
 		}
 		for _, address := range c.Address {
-			source = source || address.Is4()
+			source = source || address.Unmap().BitLen() == peer.BitLen()
 			if address.Unmap() == peer {
 				return "", errors.New("MTU probe cannot target local address")
 			}
 		}
-		if !peer.Is4() || peer.IsUnspecified() || peer.IsMulticast() || peer.IsLoopback() || !allowed || !source {
-			return "", errors.New("MTU probe must be an allowed remote IPv4 peer")
+		if !peer.IsValid() || peer.Zone() != "" || !peer.IsGlobalUnicast() || !allowed || !source {
+			return "", errors.New("MTU probe must be an allowed remote peer with a local address in the same family")
 		}
 	}
 	if len(c.Address) == 0 || !c.Endpoint.IsValid() || c.Endpoint.Port() == 0 || len(c.AllowedIPs) == 0 {

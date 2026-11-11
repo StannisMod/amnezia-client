@@ -27,7 +27,7 @@ type PathMTUController struct {
 
 func NewPathMTUController(flow *FlowStack, peer netip.Addr) (*PathMTUController, error) {
 	peer = peer.Unmap()
-	if flow == nil || !peer.Is4() || peer.IsUnspecified() || peer.IsMulticast() {
+	if flow == nil || !peer.IsValid() || peer.Zone() != "" || !peer.IsGlobalUnicast() {
 		return nil, errors.New("invalid MTU peer")
 	}
 	return &PathMTUController{flow: flow, peer: peer, timeout: 250 * time.Millisecond}, nil
@@ -50,7 +50,7 @@ func (c *PathMTUController) Check(ctx context.Context) (PathMTUResult, error) {
 				return false
 			}
 			probeCtx, cancel := context.WithTimeout(ctx, c.timeout)
-			err := c.flow.ProbeIPv4Path(probeCtx, c.peer, size)
+			err := c.flow.ProbePath(probeCtx, c.peer, size)
 			cancel()
 			result.Probes++
 			if err == nil {
