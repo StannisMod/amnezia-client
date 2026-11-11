@@ -17,6 +17,7 @@ on:
       - native/routing/awg/**
       - native/routing/engine/**
       - native/routing/mobile/**
+      - scripts/routing/ci_apt_mirrors.py
       - scripts/routing/build_android_native.sh
       - scripts/routing/replace_android_native.py
       - scripts/routing/verify_android_payload.py

@@ -12,6 +12,7 @@ on:
       - '!native/routing/cmd/traffic-probe/**'
       - '!native/routing/internal/fixturequic/**'
       - '!native/routing/**/*_test.go'
+      - scripts/routing/ci_apt_mirrors.py
       - scripts/routing/build_android_native.sh
       - scripts/routing/verify_android_payload.py
       - .github/workflows/routing-android-package.yml
