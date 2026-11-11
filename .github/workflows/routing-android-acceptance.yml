@@ -4,11 +4,20 @@ on:
   push:
     branches: [dev, feature/sing-box-routing, feature/android-primary-awg-core]
     paths:
-      - client/android/**
+      - client/**
+      - common/**
+      - third_party/**
+      - cmake/**
+      - deploy/**
+      - CMakeLists.txt
+      - CMakePresets.json
+      - .gitmodules
+      - scripts/routing/android_host_sources.py
+      - scripts/routing/test_android_host_sources.py
       - native/routing/androidbridge/**
       - scripts/routing/android/**
       - .github/workflows/routing-android-acceptance.yml
-      - recipes/libagw/**
+      - recipes/**
       - scripts/routing/android/**
       - scripts/routing/run_android_acceptance.py
       - native/routing/cmd/android-fixture/**
@@ -62,13 +71,17 @@ jobs:
       - uses: android-actions/setup-android@v4
         with:
           packages: 'platform-tools platforms;android-36 build-tools;36.0.0'
+      - name: Verify packaged-host compatibility boundary
+        run: python3 scripts/routing/test_android_host_sources.py
       - name: Select an APK with compatible production Android host sources
         env:
           GH_TOKEN: ${{ github.token }}
           APK_OVERRIDE: ${{ inputs.apk_run_id }}
         run: |
           python3 - <<'PYSELECT'
-          import json, os, pathlib, subprocess, time, urllib.error, urllib.parse, urllib.request
+          import json, os, pathlib, subprocess, sys, time, urllib.error, urllib.parse, urllib.request
+          sys.path.insert(0, 'scripts/routing')
+          from android_host_sources import changed_host_sources
           repo = os.environ['GITHUB_REPOSITORY']
           branch = urllib.parse.quote(os.environ['GITHUB_REF_NAME'], safe='')
           def api(path):
@@ -86,9 +99,7 @@ jobs:
           def compatible(sha):
               if sha not in compatibility:
                   subprocess.run(['git', 'fetch', '--depth', '1', 'origin', sha], check=True)
-                  code = subprocess.run(['git', 'diff', '--quiet', sha, 'HEAD', '--', 'client/android', 'client/platforms/android', 'recipes', 'cmake', 'deploy/build.sh', 'CMakeLists.txt']).returncode
-                  assert code in (0, 1), 'Android host comparison failed'
-                  compatibility[sha] = code == 0
+                  compatibility[sha] = not changed_host_sources(sha)
               return compatibility[sha]
           selected = None
           deadline = time.monotonic() + 125 * 60

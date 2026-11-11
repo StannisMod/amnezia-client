@@ -5,8 +5,17 @@ on:
   push:
     branches: [dev, feature/sing-box-routing, feature/android-primary-awg-core]
     paths:
-      - client/android/**
-      - client/platforms/android/**
+      - client/**
+      - '!client/tests/**'
+      - '!client/**/src/test/**'
+      - common/**
+      - third_party/**
+      - recipes/**
+      - cmake/**
+      - deploy/**
+      - CMakeLists.txt
+      - CMakePresets.json
+      - .gitmodules
       - native/routing/**
       - '!native/routing/cmd/android-fixture/**'
       - '!native/routing/cmd/traffic-probe/**'
