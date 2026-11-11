@@ -94,10 +94,11 @@ def save(path, value):
         os.close(fd)
 
 
-def tar_hash(raw, dns=False):
-    """Ignore timestamps/order; reject links/devices and duplicate paths."""
+def tar_hash(raw, dns=False, vpn=False):
+    """Hash state; allow only the owned MTU release link in VPN snapshots."""
     import io
     result = {}
+    mtu_release = None
     with tarfile.open(fileobj=io.BytesIO(raw), mode='r:*') as archive:
         for member in archive:
             path = member.name.removeprefix('./').rstrip('/')
@@ -112,9 +113,20 @@ def tar_hash(raw, dns=False):
             if dns and member.ischr() and devices.get(path) == (member.devmajor, member.devminor):
                 result[path] = 'device:'+str(member.devmajor)+':'+str(member.devminor)
                 continue
+            if vpn and member.issym() and path == 'mtu/current':
+                target = member.linkname.removeprefix('/opt/amnezia/mtu/')
+                require(re.fullmatch(r'[a-f0-9]{64}', target) and path not in result, 'unsafe_archive')
+                mtu_release = target
+                result[path] = 'symlink:mtu/'+target
+                continue
+            require(not path.startswith('mtu/current/'), 'unsafe_archive')
             require(member.isfile() and path not in result and member.size <= MAX, 'unsafe_archive')
             f = archive.extractfile(member)
             result[path] = hashlib.sha256(f.read()).hexdigest()
+    if mtu_release is not None:
+        require(all('mtu/'+mtu_release+'/'+name in result
+                    and not result['mtu/'+mtu_release+'/'+name].startswith('symlink:')
+                    for name in ('controller.py', 'supervisor.py')), 'unsafe_archive')
     return result
 
 
@@ -140,7 +152,7 @@ def state(containers, details=False, live=True):
         name = c['Name'].lstrip('/')
         if SPECS[name]:
             raw = run('cp', c['Id']+':/opt/amnezia/.', '-')
-            h[name] = {'files': tar_hash(raw)}
+            h[name] = {'files': tar_hash(raw, vpn=True)}
             if live:
                 h[name]['live'] = hashlib.sha256(json.dumps(live_config(c)).encode()).hexdigest()
         elif name == 'amnezia-dns':
