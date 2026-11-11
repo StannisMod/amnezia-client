@@ -290,7 +290,9 @@ func (f *fixture) start() error {
 						a.Answer = append(a.Answer, &dns.A{Hdr: hdr, A: net.ParseIP(sharedIP)})
 					}
 				case dns.TypeAAAA:
-					if name == "ipv6.test." { a.Answer = append(a.Answer, &dns.AAAA{Hdr: hdr, AAAA: net.ParseIP("fd77::2")}) }
+					if name == "ipv6.test." {
+						a.Answer = append(a.Answer, &dns.AAAA{Hdr: hdr, AAAA: net.ParseIP("fd77::2")})
+					}
 				}
 			}
 			w.WriteMsg(a)
@@ -308,6 +310,7 @@ func main() {
 	flag.IntVar(&nativeDNSPort, "native-dns-port", 0, "optional loopback UDP DNS fixture (ephemeral test host only)")
 	flag.BoolVar(&recordDNS, "record-dns", false, "record bounded synthetic DNS observations for split DNS acceptance")
 	flag.StringVar(&sharedIP, "shared-ip", sharedIP, "native host address used by both controlled observers")
+	endpointHost := flag.String("endpoint-host", "", "emulator-visible outer peer address, default shared-ip")
 	path := flag.String("config", "", "private output fixture JSON (never upload)")
 	quicCA := flag.String("quic-ca", "", "public disposable QUIC certificate output")
 	probeTCP := flag.String("probe-tcp", "", "native application TCP observer probe")
@@ -315,6 +318,9 @@ func main() {
 	probeAWG := flag.String("probe-awg", "", "test-only private fixture profile: verify AWG before native capture")
 	bindIP := flag.String("bind-ip", "", "explicit native source address for a multihomed disposable peer")
 	flag.Parse()
+	if *endpointHost == "" {
+		*endpointHost = sharedIP
+	}
 	if transportKind != "awg" && transportKind != "wireguard" {
 		panic("unsupported fixture protocol")
 	}
@@ -462,7 +468,7 @@ func main() {
 		"protocol": "awg", "description": "Disposable routing fixture", "dns1": "10.77.0.2", "sing_box_dns_path": "vpn",
 		"awg_config_data": map[string]any{
 			"client_ip": "10.77.0.1/32, fd77::1/128", "client_priv_key": base64.StdEncoding.EncodeToString(clientKey.Bytes()),
-			"server_pub_key": base64.StdEncoding.EncodeToString(serverKey.PublicKey().Bytes()), "hostName": sharedIP, "port": f.listenPort,
+			"server_pub_key": base64.StdEncoding.EncodeToString(serverKey.PublicKey().Bytes()), "hostName": *endpointHost, "port": f.listenPort,
 			"allowed_ips": []string{"0.0.0.0/0", "::/0"}, "persistent_keep_alive": "1", "mtu": "1280",
 			"Jc": "3", "Jmin": "40", "Jmax": "80", "S1": "16", "S2": "24", "S3": "8", "S4": "8", "H1": "1001", "H2": "1002", "H3": "1003", "H4": "1004",
 		},

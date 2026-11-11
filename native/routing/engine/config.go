@@ -44,6 +44,19 @@ func (c RoutingConfig) compile(vpn map[string]any) ([]byte, error) {
 	}
 	route["default_domain_resolver"] = "upstream"
 	userRules := route["rules"].([]any)
+	// Domain rules run first. CIDR rules must see real DNS addresses rather
+	// than the synthetic address returned to a captured application.
+	evaluated := make([]any, 0, len(userRules)+1)
+	resolved := false
+	for _, value := range userRules {
+		item := value.(map[string]any)
+		if _, ok := item["ip_cidr"]; ok && !resolved {
+			evaluated = append(evaluated, map[string]any{"action": "resolve"})
+			resolved = true
+		}
+		evaluated = append(evaluated, item)
+	}
+	userRules = evaluated
 	scopeRules, e := c.Applications.compile()
 	if e != nil {
 		return nil, e
