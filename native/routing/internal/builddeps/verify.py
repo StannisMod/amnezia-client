@@ -19,12 +19,24 @@ SOURCE_FILES = {
     'pkg/tcpip/transport/tcp/segment.go', 'pkg/amnezia/recovery.go', 'NOTICE-AMNEZIA',
 }
 
+PROBE_SOURCE_FILES = {
+    'pkg/tcpip/transport/tcp/verified_path_probe.go',
+    'pkg/tcpip/transport/tcp/tcp_state_autogen.go',
+    'pkg/tcpip/adapters/gonet/verified_path_probe.go',
+}
+PROFILE_SOURCE_FILES = {
+    'desktop_android': SOURCE_FILES | PROBE_SOURCE_FILES,
+    'apple': SOURCE_FILES,
+}
+
 def load_lock():
     lock = json.loads(LOCK.read_text())
     if lock.get('schema_version') != 1 or lock.get('fix_id') != 'rack-flight-v1':
         raise ValueError('unsupported TCP dependency lock')
-    for pin in lock['profiles'].values():
-        if set(pin['source_sha256']) != SOURCE_FILES:
+    if set(lock['profiles']) != set(PROFILE_SOURCE_FILES):
+        raise ValueError('unsupported TCP source profiles')
+    for profile, pin in lock['profiles'].items():
+        if set(pin['source_sha256']) != PROFILE_SOURCE_FILES[profile]:
             raise ValueError('incomplete TCP source identity')
     return lock
 

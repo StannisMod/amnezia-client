@@ -8,6 +8,7 @@ from pathlib import Path
 import tempfile
 import struct
 import unittest
+from unittest import mock
 
 spec=importlib.util.spec_from_file_location('routing_builddeps',Path(__file__).with_name('verify.py'))
 deps=importlib.util.module_from_spec(spec);spec.loader.exec_module(deps)
@@ -18,7 +19,7 @@ class DependencyGuardTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.pin=copy.deepcopy(deps.load_lock()['profiles']['desktop_android'])
         self.source=Path(self.temporary.name)
-        for name in deps.SOURCE_FILES:
+        for name in deps.PROFILE_SOURCE_FILES["desktop_android"]:
             path=self.source/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(b'test fixture source')
             self.pin['source_sha256'][name]=hashlib.sha256(path.read_bytes()).hexdigest()
         self.resolved={'Path':'gvisor.dev/gvisor','Version':self.pin['upstream_version'],
@@ -46,6 +47,22 @@ class DependencyGuardTests(unittest.TestCase):
         with self.assertRaises(ValueError):deps.verify_resolution(self.resolved,self.downloaded,self.pin)
         path.unlink()
         with self.assertRaises(ValueError):deps.verify_resolution(self.resolved,self.downloaded,self.pin)
+    def test_probe_implementation_and_checkpoint_changes_rejected(self):
+        for relative in deps.PROBE_SOURCE_FILES:
+            with self.subTest(relative=relative):
+                path=self.source/relative
+                original=path.read_bytes()
+                path.write_bytes(b'changed probe or checkpoint implementation')
+                with self.assertRaises(ValueError):deps.verify_resolution(self.resolved,self.downloaded,self.pin)
+                path.write_bytes(original)
+    def test_probe_source_identity_cannot_be_removed_from_manifest(self):
+        for relative in deps.PROBE_SOURCE_FILES:
+            with self.subTest(relative=relative):
+                lock=deps.load_lock()
+                del lock['profiles']['desktop_android']['source_sha256'][relative]
+                path=self.source/'incomplete-lock.json';path.write_text(json.dumps(lock))
+                with mock.patch.object(deps,'LOCK',path):
+                    with self.assertRaises(ValueError):deps.load_lock()
     def test_release_runtime_identity_rejects_repro_and_wrong_scope(self):
         lock=deps.load_lock();pin=lock['profiles']['desktop_android']
         info={'mode':'fixed','fix_id':lock['fix_id'],'profile':'desktop_android',

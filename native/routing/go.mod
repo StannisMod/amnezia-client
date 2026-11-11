@@ -71,4 +71,4 @@ require (
 )
 
 // Immutable Amnezia RACK recovery backport; internal/builddeps/lock.json.
-replace gvisor.dev/gvisor => github.com/StannisMod/gvisor v0.0.0-20261106123450-8155b9498bd4
+replace gvisor.dev/gvisor => github.com/StannisMod/gvisor v0.0.0-20261111212446-f9f60ee97257

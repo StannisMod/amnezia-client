@@ -101,11 +101,14 @@ jobs:
           fi
           race_mod=$(python prepare_race.py --output "$RUNNER_TEMP")
           go test -mod=readonly -modfile="$race_mod" -tags with_gvisor,amnezia_race_dependency -race -count=3 "${package_args[@]}" -json ./... | tee test-results.jsonl
+          go test -mod=readonly -modfile="$race_mod" -tags with_gvisor,amnezia_race_dependency -race -count=3 "${package_args[@]}" -json gvisor.dev/gvisor/pkg/tcpip/transport/tcp gvisor.dev/gvisor/pkg/tcpip/adapters/gonet | tee dependency-test-results.jsonl
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: routing-tests-${{ matrix.os }}
-          path: native/routing/test-results.jsonl
+          path: |
+            native/routing/test-results.jsonl
+            native/routing/dependency-test-results.jsonl
           if-no-files-found: error
 
   core-cross-compile:
