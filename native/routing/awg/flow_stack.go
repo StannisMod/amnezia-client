@@ -30,22 +30,23 @@ import (
 // while a notifier can send. Shutdown cancels producers, waits for admitted I/O,
 // stops the stack and releases queued views before returning.
 type FlowStack struct {
-	stack      *stack.Stack
-	endpoint   *channel.Endpoint
-	notify     *channel.NotificationHandle
-	mtu        int
-	link       *flowMTULink
-	minimumMTU int
-	maximumMTU int
-	events     chan tun.Event
-	packets    chan *buffer.View
-	done       chan struct{}
-	state      sync.Mutex
-	closed     bool
-	active     sync.WaitGroup
-	once       sync.Once
-	ctx        context.Context
-	cancel     context.CancelFunc
+	tcpConnections map[*flowTCPConn]struct{}
+	stack          *stack.Stack
+	endpoint       *channel.Endpoint
+	notify         *channel.NotificationHandle
+	mtu            int
+	link           *flowMTULink
+	minimumMTU     int
+	maximumMTU     int
+	events         chan tun.Event
+	packets        chan *buffer.View
+	done           chan struct{}
+	state          sync.Mutex
+	closed         bool
+	active         sync.WaitGroup
+	once           sync.Once
+	ctx            context.Context
+	cancel         context.CancelFunc
 }
 
 // Keep MTU changes independent of the gVisor channel API version. Routes
@@ -243,6 +244,7 @@ func (s *FlowStack) Close() error {
 	s.once.Do(func() {
 		s.state.Lock()
 		s.closed = true
+		s.tcpConnections = nil
 		s.cancel()
 		close(s.done)
 		s.state.Unlock()
@@ -296,7 +298,7 @@ func (s *FlowStack) DialContext(ctx context.Context, network, address string) (n
 		if err != nil {
 			return nil, err
 		}
-		return conn, nil
+		return s.trackTCP(conn)
 	case "udp", "udp4", "udp6":
 		conn, err := gonet.DialUDP(s.stack, nil, &full, protocol)
 		if err != nil {
