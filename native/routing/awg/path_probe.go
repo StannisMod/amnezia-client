@@ -8,6 +8,7 @@ import (
 	"errors"
 	"net"
 	"net/netip"
+	"sync/atomic"
 	"time"
 
 	"gvisor.dev/gvisor/pkg/buffer"
@@ -113,6 +114,21 @@ func (s *FlowStack) ProbePath(ctx context.Context, destination netip.Addr, size 
 		copy(pseudo[40:], echo)
 		binary.BigEndian.PutUint16(echo[2:], probeChecksum(pseudo))
 	}
+	localIP, _ := netip.AddrFromSlice(local.Addr.AsSlice())
+	evidence := &pathProbeEvidence{peer: destination, local: localIP.Unmap(), size: size, echo: append([]byte(nil), echo[4:]...), replyType: replyType}
+	s.state.Lock()
+	if s.pathProbeEvidence == nil {
+		s.pathProbeEvidence = make(map[*pathProbeEvidence]struct{})
+	}
+	s.pathProbeEvidence[evidence] = struct{}{}
+	s.pathProbeCount.Add(1)
+	s.state.Unlock()
+	defer func() {
+		s.state.Lock()
+		delete(s.pathProbeEvidence, evidence)
+		s.pathProbeCount.Add(-1)
+		s.state.Unlock()
+	}()
 	view := buffer.NewViewWithData(packet)
 	select {
 	case s.packets <- view:
@@ -129,7 +145,7 @@ func (s *FlowStack) ProbePath(ctx context.Context, destination netip.Addr, size 
 		var response bytes.Buffer
 		if _, err := ep.Read(&response, tcpip.ReadOptions{}); err == nil {
 			reply := response.Bytes()
-			if len(reply) == len(echo) && reply[0] == replyType && reply[1] == 0 && bytes.Equal(reply[4:], echo[4:]) {
+			if evidence.seen.Load() && len(reply) == len(echo) && reply[0] == replyType && reply[1] == 0 && bytes.Equal(reply[4:], echo[4:]) {
 				return nil
 			}
 		}
@@ -139,6 +155,53 @@ func (s *FlowStack) ProbePath(ctx context.Context, destination netip.Addr, size 
 		case <-s.done:
 			return net.ErrClosed
 		case <-ticker.C:
+		}
+	}
+}
+
+// Only a complete, unfragmented reply proves the reverse packet size. Inspect
+// decrypted wire packets before the network stack can reassemble fragments.
+type pathProbeEvidence struct {
+	peer, local netip.Addr
+	size        int
+	echo        []byte
+	replyType   byte
+	seen        atomic.Bool
+}
+
+func (s *FlowStack) observePathProbe(packet []byte) {
+	if s.pathProbeCount.Load() == 0 {
+		return
+	}
+	var source, destination netip.Addr
+	var echo []byte
+	if len(packet) >= 28 && packet[0] == 0x45 && packet[9] == 1 && binary.BigEndian.Uint16(packet[6:8])&0x3fff == 0 && int(binary.BigEndian.Uint16(packet[2:4])) == len(packet) {
+		source = netip.AddrFrom4([4]byte(packet[12:16]))
+		destination = netip.AddrFrom4([4]byte(packet[16:20]))
+		echo = packet[20:]
+		if probeChecksum(packet[:20]) != 0 || probeChecksum(echo) != 0 {
+			return
+		}
+	} else if len(packet) >= 48 && packet[0]>>4 == 6 && packet[6] == 58 && int(binary.BigEndian.Uint16(packet[4:6]))+40 == len(packet) {
+		source = netip.AddrFrom16([16]byte(packet[8:24]))
+		destination = netip.AddrFrom16([16]byte(packet[24:40]))
+		echo = packet[40:]
+		pseudo := make([]byte, 40+len(echo))
+		copy(pseudo[:32], packet[8:40])
+		binary.BigEndian.PutUint32(pseudo[32:], uint32(len(echo)))
+		pseudo[39] = 58
+		copy(pseudo[40:], echo)
+		if probeChecksum(pseudo) != 0 {
+			return
+		}
+	} else {
+		return
+	}
+	s.state.Lock()
+	defer s.state.Unlock()
+	for evidence := range s.pathProbeEvidence {
+		if evidence.size == len(packet) && evidence.peer == source && evidence.local == destination && echo[0] == evidence.replyType && echo[1] == 0 && bytes.Equal(echo[4:], evidence.echo) {
+			evidence.seen.Store(true)
 		}
 	}
 }

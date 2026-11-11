@@ -30,6 +30,8 @@ import (
 // while a notifier can send. Shutdown cancels producers, waits for admitted I/O,
 // stops the stack and releases queued views before returning.
 type FlowStack struct {
+	pathProbeEvidence map[*pathProbeEvidence]struct{}
+	pathProbeCount    atomic.Int32
 	tcpPathGate       sync.Mutex
 	tcpNextID         uint64
 	tcpProbeCursor    uint64
@@ -224,6 +226,7 @@ func (s *FlowStack) Write(packets [][]byte, offset int) (int, error) {
 		default:
 			continue
 		}
+		s.observePathProbe(data)
 		pkt := stack.NewPacketBuffer(stack.PacketBufferOptions{Payload: buffer.MakeWithData(data)})
 		s.endpoint.InjectInbound(protocol, pkt)
 		pkt.DecRef()

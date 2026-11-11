@@ -89,3 +89,42 @@ func TestIPv6PathProbeExactSizeAndLoweredLink(t *testing.T) {
 		t.Fatal("IPv6 MTU dropped below 1280")
 	}
 }
+
+func TestPathProbeRejectsReassembledReply(t *testing.T) {
+	_, a, err := NewFlowTUN([]netip.Addr{netip.MustParseAddr("10.79.0.1")}, 1420)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	_, b, err := NewFlowTUN([]netip.Addr{netip.MustParseAddr("10.79.0.2")}, 576)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+	var fragments atomic.Int32
+	pump := func(from, to *FlowStack, response bool) {
+		data := make([]byte, 65535)
+		sizes := make([]int, 1)
+		for {
+			if _, err := from.Read([][]byte{data}, sizes, 0); err != nil {
+				return
+			}
+			if response && sizes[0] >= 20 && data[0]>>4 == 4 && (data[6]&0x3f != 0 || data[7] != 0) {
+				fragments.Add(1)
+			}
+			if _, err := to.Write([][]byte{data[:sizes[0]]}, 0); err != nil {
+				return
+			}
+		}
+	}
+	go pump(a, b, false)
+	go pump(b, a, true)
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	if err := a.ProbePath(ctx, netip.MustParseAddr("10.79.0.2"), 1420); err == nil {
+		t.Fatal("fragmented reverse path proved full-sized packet delivery")
+	}
+	if fragments.Load() < 2 {
+		t.Fatal("test did not produce fragmented ICMP reply", fragments.Load())
+	}
+}

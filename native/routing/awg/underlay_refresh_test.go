@@ -228,7 +228,7 @@ func TestRefreshUnderlayPreservesTCPThroughNATAndEndpointMove(t *testing.T) {
 				var lc net.ListenConfig
 				var failNext atomic.Bool
 				var opens atomic.Int32
-				client, err := New(ctx, Config{Address: []netip.Addr{netip.MustParseAddr(clientIP)}, PrivateKey: aPriv, PublicKey: bPub, Endpoint: first.endpoint(), AllowedIPs: []netip.Prefix{netip.MustParsePrefix(serverIP + mask)}, Parameters: params}, func(c context.Context, n, a string) (net.PacketConn, error) {
+				client, err := New(ctx, Config{MTU: 1280, Address: []netip.Addr{netip.MustParseAddr(clientIP)}, PrivateKey: aPriv, PublicKey: bPub, Endpoint: first.endpoint(), AllowedIPs: []netip.Prefix{netip.MustParsePrefix(serverIP + mask)}, Parameters: params}, func(c context.Context, n, a string) (net.PacketConn, error) {
 					opens.Add(1)
 					if failNext.Swap(false) {
 						return nil, errors.New("injected socket failure")
@@ -277,12 +277,35 @@ func TestRefreshUnderlayPreservesTCPThroughNATAndEndpointMove(t *testing.T) {
 					}
 				}
 				exchange("initial")
+				// This challenge traverses both real devices and the UDP relay,
+				// rather than connecting the two inner stacks directly.
+				verifyPath := func() tcpPathProof {
+					t.Helper()
+					probeCtx, stop := context.WithTimeout(ctx, time.Second)
+					defer stop()
+					proof, e := client.Net.verifyTCPPath(probeCtx, netip.MustParseAddr(serverIP))
+					if e != nil {
+						t.Fatal("encrypted path challenge", e)
+					}
+					if !client.Net.validTCPPathProof(proof, time.Now()) {
+						t.Fatal("fresh encrypted proof rejected")
+					}
+					if n := client.Net.dispatchTCPPathProof(proof); n != 0 {
+						t.Fatal("healthy encrypted TCP was probed", n)
+					}
+					return proof
+				}
+				proof := verifyPath()
 				before, _ := client.Stats()
 				first.rotateNAT(t)
 				if err = client.RefreshUnderlay(netip.AddrPort{}); err != nil {
 					t.Fatal(err)
 				}
+				if client.Net.validTCPPathProof(proof, time.Now()) {
+					t.Fatal("NAT refresh retained old proof")
+				}
 				exchange("new NAT source")
+				proof = verifyPath()
 				failNext.Store(true)
 				if err = client.RefreshUnderlay(netip.AddrPort{}); err == nil {
 					t.Fatal("missing injected failure")
@@ -295,7 +318,11 @@ func TestRefreshUnderlayPreservesTCPThroughNATAndEndpointMove(t *testing.T) {
 					t.Fatal(err)
 				}
 				first.front.Close() // The retired endpoint is no longer reachable.
+				if client.Net.validTCPPathProof(proof, time.Now()) {
+					t.Fatal("endpoint move retained old proof")
+				}
 				exchange("outer IPv6 endpoint")
+				verifyPath()
 				after, _ := client.Stats()
 				if after.TXBytes < before.TXBytes || after.RXBytes < before.RXBytes {
 					t.Fatal("recovery reset counters")
