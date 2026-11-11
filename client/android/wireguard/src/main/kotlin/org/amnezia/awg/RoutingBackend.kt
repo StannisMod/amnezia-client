@@ -1,6 +1,10 @@
 package org.amnezia.awg
 
 import androidx.annotation.Keep
+import android.content.Context
+import android.net.ConnectivityManager
+import android.os.Build
+import java.net.InetSocketAddress
 import java.net.NetworkInterface
 import org.json.JSONArray
 import org.json.JSONObject
@@ -22,7 +26,18 @@ object RoutingBackend {
 }
 
 @Keep
-class RoutingHost(private val protect: (Int) -> Boolean, private val bindDns: ((Int, String) -> Boolean)? = null) {
+class RoutingHost(private val protect: (Int) -> Boolean, private val bindDns: ((Int, String) -> Boolean)? = null, context: Context? = null) {
+    private val connectivity = context?.applicationContext?.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+
+    @Keep
+    fun connectionOwnerUid(protocol: Int, source: String, sourcePort: Int, destination: String, destinationPort: Int): Int {
+        if (Build.VERSION.SDK_INT < 29 || connectivity == null) return -1
+        if ((protocol != 6 && protocol != 17) || sourcePort !in 1..65535 || destinationPort !in 1..65535) return -1
+        return try {
+            connectivity.getConnectionOwnerUid(protocol, InetSocketAddress(source, sourcePort), InetSocketAddress(destination, destinationPort))
+        } catch (_: SecurityException) { -1 }
+          catch (_: IllegalArgumentException) { -1 }
+    }
     @Keep
     fun protectSocket(fd: Int): Boolean = protect(fd)
     @Keep

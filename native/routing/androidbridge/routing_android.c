@@ -15,7 +15,12 @@ struct routing_host {
     jmethodID protect;
     jmethodID protect_interface;
     jmethodID interfaces;
+    jmethodID owner;
 };
+
+int amnezia_routing_has_owner(uintptr_t token) {
+    return ((struct routing_host *)token)->owner != NULL;
+}
 
 static JNIEnv *host_env(struct routing_host *host, int *attached) {
     JNIEnv *env = NULL;
@@ -37,6 +42,23 @@ int amnezia_routing_protect(uintptr_t token, int fd) {
     if ((*env)->ExceptionCheck(env)) { (*env)->ExceptionClear(env); ok = JNI_FALSE; }
     if (attached) (*host->vm)->DetachCurrentThread(host->vm);
     return ok == JNI_TRUE;
+}
+
+int amnezia_routing_owner(uintptr_t token, int protocol, const char *source, int source_port, const char *destination, int destination_port) {
+    struct routing_host *host = (struct routing_host *)token;
+    if (!host->owner) return -1;
+    int attached;
+    JNIEnv *env = host_env(host, &attached);
+    if (!env) return -1;
+    jstring src = (*env)->NewStringUTF(env, source);
+    jstring dst = src ? (*env)->NewStringUTF(env, destination) : NULL;
+    jint uid = -1;
+    if (src && dst) uid = (*env)->CallIntMethod(env, host->callback, host->owner, protocol, src, source_port, dst, destination_port);
+    if ((*env)->ExceptionCheck(env)) { (*env)->ExceptionClear(env); uid = -1; }
+    if (src) (*env)->DeleteLocalRef(env, src);
+    if (dst) (*env)->DeleteLocalRef(env, dst);
+    if (attached) (*host->vm)->DetachCurrentThread(host->vm);
+    return uid;
 }
 
 char *amnezia_routing_interfaces(uintptr_t token) {
@@ -110,6 +132,11 @@ JNIEXPORT jlong JNICALL Java_org_amnezia_awg_RoutingBackend_start(JNIEnv *env, j
         host->protect_interface=(*env)->GetMethodID(env,cls,"protectSocketOnInterface","(ILjava/lang/String;)Z");
     if (!(*env)->ExceptionCheck(env))
         host->interfaces = (*env)->GetMethodID(env, cls, "interfacesJson", "()[B");
+    // Optional for compatibility with packaged hosts predating per-app policy.
+    if (!(*env)->ExceptionCheck(env)) {
+        host->owner = (*env)->GetMethodID(env, cls, "connectionOwnerUid", "(ILjava/lang/String;ILjava/lang/String;I)I");
+        if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+    }
     (*env)->DeleteLocalRef(env, cls);
     if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
     if (!host->callback || !host->protect || !host->protect_interface || !host->interfaces) {

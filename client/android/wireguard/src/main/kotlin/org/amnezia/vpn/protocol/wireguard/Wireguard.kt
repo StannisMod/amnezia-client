@@ -166,7 +166,7 @@ open class Wireguard : Protocol() {
         buildVpnInterface(capture, vpnBuilder)
         vpnBuilder.establish().use { descriptor ->
             if (descriptor == null) throw VpnStartException("Cannot establish the routed VPN interface")
-            routedHandle = RoutingBackend.start(descriptor.detachFd(), session, RoutingHost(underlayProtect ?: protect, networkDnsProtect))
+            routedHandle = RoutingBackend.start(descriptor.detachFd(), session, RoutingHost(underlayProtect ?: protect, networkDnsProtect, context))
         }
         if (routedHandle <= 0) {
             routedHandle = -1L

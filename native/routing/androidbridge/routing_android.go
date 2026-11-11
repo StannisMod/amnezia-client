@@ -83,6 +83,18 @@ func RoutingStart(fd int32, raw string, host C.uintptr_t) int64 {
 		},
 		Release: func() { C.amnezia_routing_release(host) },
 	}
+	if C.amnezia_routing_has_owner(host) != 0 {
+		hooks.FindConnectionOwner = func(request *adapter.FindConnectionOwnerRequest) (*adapter.ConnectionOwner, error) {
+			source, destination := C.CString(request.SourceAddress), C.CString(request.DestinationAddress)
+			defer C.free(unsafe.Pointer(source))
+			defer C.free(unsafe.Pointer(destination))
+			uid := int32(C.amnezia_routing_owner(host, C.int(request.IpProtocol), source, C.int(request.SourcePort), destination, C.int(request.DestinationPort)))
+			if uid < 0 {
+				return nil, errors.New("Android connection owner unavailable")
+			}
+			return &adapter.ConnectionOwner{UserId: uid}, nil
+		}
+	}
 	platform, err := mobile.New(int(fd), hooks)
 	if err != nil {
 		if fd >= 0 {
