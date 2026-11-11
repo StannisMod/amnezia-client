@@ -32,6 +32,48 @@ private slots:
         auto bad = payload(original, awg); auto s = bad["settings"].toObject(); s["hostName"] = "other.example.test"; bad["settings"] = s;
         QVERIFY(!connectionUpdates::apply(updated, sign(bad), 2000000002, renewed));
     }
+    void signedPathProbeMigratesExistingKeys_data() { keepsDeviceAndLocalSettings_data(); }
+    void signedPathProbeMigratesExistingKeys()
+    {
+        QFETCH(bool, awg); const auto original = profile(awg); auto update = payload(original, awg);
+        update["pathMtuProbe"] = "10.8.0.1";
+        QJsonObject migrated; QVERIFY(connectionUpdates::apply(original, sign(update), 2000000001, migrated));
+        const auto before = client(original, awg), after = client(migrated, awg);
+        QCOMPARE(after.value("path_mtu_probe").toString(), "10.8.0.1");
+        for (const auto *key : { "client_priv_key", "client_pub_key", "psk_key", "client_ip", "mtu", "allowed_ips" }) QCOMPARE(after.value(key), before.value(key));
+        QVERIFY(connectionUpdates::validateProfile(migrated));
+        QJsonObject renewed; QVERIFY(connectionUpdates::apply(migrated, sign(update), 2000000002, renewed));
+        auto changed = update; changed["pathMtuProbe"] = "10.8.0.9";
+        QJsonObject rejected { { "sentinel", true } };
+        QVERIFY(!connectionUpdates::apply(migrated, sign(changed), 2000000002, rejected)); QCOMPARE(rejected.size(), 1);
+        changed["revision"] = "2";
+        QVERIFY(connectionUpdates::apply(migrated, sign(changed), 2000000002, renewed));
+        QCOMPARE(client(renewed, awg).value("path_mtu_probe").toString(), "10.8.0.9");
+        for (const auto &bad : { "127.0.0.1", "0.0.0.0", "255.255.255.255", "224.0.0.1", "fe80::1", "vpn.example.test", "10.8.0.1\n" }) {
+            auto invalid = update; invalid["pathMtuProbe"] = bad; QJsonObject output { { "sentinel", true } };
+            QVERIFY2(!connectionUpdates::apply(original, sign(invalid), 2000000001, output), bad); QCOMPARE(output.size(), 1);
+        }
+        // Old delivery service omits the extension; valid cached target survives.
+        auto legacy = payload(original, awg); legacy["revision"] = "3";
+        QVERIFY(connectionUpdates::apply(renewed, sign(legacy), 2000000003, migrated));
+        QCOMPARE(client(migrated, awg).value("path_mtu_probe").toString(), "10.8.0.9");
+    }
+    void signedIPv6ProbeRequiresCapturedFamilyAndAllowedRoute()
+    {
+        auto original = profile(); auto containers = original["containers"].toArray(); auto container = containers[0].toObject();
+        auto proto = container["wireguard"].toObject(); auto c = client(original, false);
+        c["client_ip"] = "10.8.0.2/32, fd77::2/128"; c["allowed_ips"] = QJsonArray { "0.0.0.0/0", "fd77::/64" };
+        proto["last_config"] = QString::fromUtf8(QJsonDocument(c).toJson(QJsonDocument::Compact)); container["wireguard"] = proto; containers[0] = container; original["containers"] = containers;
+        auto update = payload(original); update["pathMtuProbe"] = "fd77::1";
+        QJsonObject migrated; QVERIFY(connectionUpdates::apply(original, sign(update), 2000000001, migrated));
+        QCOMPARE(client(migrated, false).value("path_mtu_probe").toString(), "fd77::1");
+        QCOMPARE(client(migrated, false).value("client_ip"), c.value("client_ip"));
+        update["pathMtuProbe"] = "fd78::1"; QJsonObject rejected { { "sentinel", true } };
+        QVERIFY(connectionUpdates::apply(original, sign(update), 2000000001, rejected));
+        QVERIFY(!client(rejected, false).contains("path_mtu_probe"));
+        QCOMPARE(client(rejected, false).value("allowed_ips"), c.value("allowed_ips"));
+        update["pathMtuProbe"] = 42; QVERIFY(!connectionUpdates::apply(original, sign(update), 2000000001, rejected));
+    }
     void rejectsInvalidUpdates()
     {
         const auto original = profile(); const auto good = payload(original);
@@ -113,6 +155,23 @@ private slots:
         QVERIFY(!connectionUpdates::parsePeerList("bad-key\n\namnezia_peers=ok\n", peers));
         QVERIFY(connectionUpdates::parsePeerList(pub + "\n\namnezia_peers=ok\n", peers)); QCOMPARE(peers, QStringList { pub });
         QVERIFY(connectionUpdates::parsePeerList("\namnezia_peers=ok\n", peers)); QVERIFY(peers.isEmpty());
+    }
+    void probeExtensionKeepsLegacyPublicSettings()
+    {
+        QFile file(":/connection-updates/path-probe-interop.json"); QVERIFY(file.open(QIODevice::ReadOnly));
+        const auto fixture = QJsonDocument::fromJson(file.readAll()).object(); const auto original = profile(); QJsonObject updated;
+        QVERIFY(connectionUpdates::apply(original, QJsonDocument(fixture.value("envelope").toObject()).toJson(), 2000000001, updated));
+        QCOMPARE(client(updated, false).value("hostName").toString(), "vpn2.example.test");
+        QCOMPARE(client(updated, false).value("client_priv_key"), client(original, false).value("client_priv_key"));
+        QCOMPARE(client(updated, false).value("allowed_ips"), client(original, false).value("allowed_ips"));
+    }
+    void goPathProbeInteroperability()
+    {
+        QFile file(":/connection-updates/path-probe-interop.json"); QVERIFY(file.open(QIODevice::ReadOnly));
+        const auto fixture = QJsonDocument::fromJson(file.readAll()).object(); const auto original = profile(); QJsonObject migrated;
+        QVERIFY(connectionUpdates::apply(original, QJsonDocument(fixture.value("envelope").toObject()).toJson(), 2000000001, migrated));
+        QCOMPARE(client(migrated, false).value("path_mtu_probe").toString(), "10.8.0.1");
+        QCOMPARE(client(migrated, false).value("client_priv_key"), client(original, false).value("client_priv_key"));
     }
     void goInteroperability()
     {

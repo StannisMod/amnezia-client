@@ -1,1 +1,1 @@
-<RCC><qresource prefix="/connection-updates"><file>interop.json</file><file>readiness-interop.json</file></qresource></RCC>
+<RCC><qresource prefix="/connection-updates"><file>interop.json</file><file>path-probe-interop.json</file><file>readiness-interop.json</file></qresource></RCC>

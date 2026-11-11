@@ -45,6 +45,7 @@ var hostLabel = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 var awgKeys = strings.Fields("Jc Jmin Jmax S1 S2 S3 S4 H1 H2 H3 H4 I1 I2 I3 I4 I5 HeaderProtectionKey ContentPaddingAddition RekeyAfterTime RekeyTimeout RejectAfterTime KeepaliveTimeout MaxHandshakeAttempts RandomTrailers DisableCookies")
 
 type record struct {
+	PathMTUProbe    string          `json:"pathMtuProbe,omitempty"`
 	ID              string          `json:"id"`
 	TokenHash       string          `json:"tokenHash"`
 	ClientPublicKey string          `json:"clientPublicKey"`
@@ -61,6 +62,7 @@ type state struct {
 	Records     map[string]record `json:"records"`
 }
 type request struct {
+	PathMTUProbe     string          `json:"pathMtuProbe,omitempty"`
 	ClientPublicKeys []string        `json:"clientPublicKeys"`
 	ExpectedState    string          `json:"expectedState"`
 	Host             string          `json:"host"`
@@ -152,6 +154,14 @@ func settingsOK(raw json.RawMessage, container string) error {
 	}
 	return nil
 }
+func pathMTUProbeOK(value string) bool {
+	if value == "" {
+		return true
+	}
+	ip := net.ParseIP(value)
+	return len(value) <= 64 && ip != nil && ip.String() == value && ip.IsGlobalUnicast() && !ip.IsLoopback() && !ip.IsLinkLocalUnicast()
+}
+
 func readState(dir string) (*state, error) {
 	f, e := os.Open(filepath.Join(dir, "state.json"))
 	if e != nil {
@@ -165,6 +175,11 @@ func readState(dir string) (*state, error) {
 	var s state
 	if json.Unmarshal(b, &s) != nil || len(s.SigningKey) != ed25519.PrivateKeySize || s.Records == nil {
 		return nil, errors.New("invalid state")
+	}
+	for _, rec := range s.Records {
+		if !pathMTUProbeOK(rec.PathMTUProbe) {
+			return nil, errors.New("invalid path probe address")
+		}
 	}
 	return &s, nil
 }
@@ -244,7 +259,7 @@ func stateTag(s *state) string {
 	return hex.EncodeToString(digest[:])
 }
 func info(s *state) map[string]any {
-	return map[string]any{"version": 1, "stateTag": stateTag(s), "features": []string{"coverage-v1", "conditional-publication-v1", "awg3-header-protection-v1", "rollout-readiness-v1", "live-publication-v1"}, "host": s.Host, "publicKey": []byte(ed25519.PrivateKey(s.SigningKey).Public().(ed25519.PublicKey)), "certificate": s.Certificate}
+	return map[string]any{"version": 1, "stateTag": stateTag(s), "features": []string{"coverage-v1", "conditional-publication-v1", "awg3-header-protection-v1", "rollout-readiness-v1", "live-publication-v1", "path-mtu-probe-v1"}, "host": s.Host, "publicKey": []byte(ed25519.PrivateKey(s.SigningKey).Public().(ed25519.PublicKey)), "certificate": s.Certificate}
 }
 func probe(s *state) error {
 	certificate, e := x509.ParseCertificate(s.Certificate)
@@ -311,6 +326,9 @@ func admin(dir, command string, req request) (map[string]any, error) {
 	case "init", "info":
 		return out, nil
 	case "issue":
+		if !pathMTUProbeOK(req.PathMTUProbe) {
+			return nil, errors.New("invalid path probe address")
+		}
 		if !keyOK(req.ClientPublicKey) {
 			return nil, errors.New("invalid client key")
 		}
@@ -327,7 +345,7 @@ func admin(dir, command string, req request) (map[string]any, error) {
 		}
 		token := base64.RawURLEncoding.EncodeToString(tokenBytes)
 		hash := sha256.Sum256([]byte(token))
-		s.Records[id] = record{ID: id, TokenHash: hex.EncodeToString(hash[:]), ClientPublicKey: req.ClientPublicKey, Container: req.Container, Revision: 1, Settings: req.Settings}
+		s.Records[id] = record{ID: id, TokenHash: hex.EncodeToString(hash[:]), ClientPublicKey: req.ClientPublicKey, Container: req.Container, Revision: 1, Settings: req.Settings, PathMTUProbe: req.PathMTUProbe}
 		out["id"] = id
 		out["token"] = token
 	case "coverage":
@@ -359,6 +377,9 @@ func admin(dir, command string, req request) (map[string]any, error) {
 		out["covered"] = len(seen) - missing
 		return out, nil
 	case "publish", "publish-if", "publish-live", "publish-if-live":
+		if !pathMTUProbeOK(req.PathMTUProbe) {
+			return nil, errors.New("invalid path probe address")
+		}
 		if strings.HasPrefix(command, "publish-if") && (req.ExpectedState == "" || req.ExpectedState != stateTag(s)) {
 			return nil, errors.New("subscription state changed")
 		}
@@ -390,6 +411,9 @@ func admin(dir, command string, req request) (map[string]any, error) {
 				}
 				r.Revision++
 				r.Settings = req.Settings
+				if req.PathMTUProbe != "" {
+					r.PathMTUProbe = req.PathMTUProbe
+				}
 				s.Records[id] = r
 			}
 		}
@@ -498,11 +522,16 @@ func handler(dir string, books ...*readinessBook) http.Handler {
 		now := time.Now().Unix()
 		p := payload{payloadType, 1, rec.ID, rec.ClientPublicKey, rec.Container, strconv.FormatUint(rec.Revision, 10), now, now + 600, rec.Settings}
 		b, e := json.Marshal(p)
-		if e == nil && book.challenge != nil {
+		if e == nil && (book.challenge != nil || rec.PathMTUProbe != "") {
 			var signed map[string]json.RawMessage
 			e = json.Unmarshal(b, &signed)
 			if e == nil {
-				signed["ackChallenge"], e = json.Marshal(book.publicChallenge())
+				if book.challenge != nil {
+					signed["ackChallenge"], e = json.Marshal(book.publicChallenge())
+				}
+				if e == nil && rec.PathMTUProbe != "" {
+					signed["pathMtuProbe"], e = json.Marshal(rec.PathMTUProbe)
+				}
 			}
 			if e == nil {
 				b, e = json.Marshal(signed)

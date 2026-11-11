@@ -2,6 +2,7 @@
 
 #include <QCryptographicHash>
 #include <QJsonArray>
+#include <QHostAddress>
 #include <QJsonDocument>
 #include <QRegularExpression>
 #include <QSslCertificate>
@@ -45,6 +46,32 @@ bool validSettings(const QJsonObject &s, bool awg)
     return !vpnEndpoint::normalizeHost(host).isEmpty() && host == vpnEndpoint::normalizeHost(host)
         && s.value("port").isDouble() && s.value("port").toInt() >= 1 && s.value("port").toInt() <= 65535
         && s.value("port").toDouble() == s.value("port").toInt() && !decode(s.value("server_pub_key"), 32).isEmpty();
+}
+bool validPathProbe(const QJsonValue &value)
+{
+    if (!value.isString() || value.toString().isEmpty() || value.toString().size() > 64) return false;
+    const auto text = value.toString(); const QHostAddress address(text);
+    bool mapped = false; address.toIPv4Address(&mapped);
+    if (address.isNull() || address == QHostAddress::AnyIPv4 || address == QHostAddress::AnyIPv6
+        || address == QHostAddress::Broadcast || address.isLoopback() || address.isMulticast()
+        || address.isLinkLocal() || !address.scopeId().isEmpty() || address.toString() != text
+        || (address.protocol() == QAbstractSocket::IPv6Protocol && mapped)) return false;
+    return true;
+}
+bool usablePathProbe(const QJsonValue &value, const QJsonObject &client)
+{
+    if (!validPathProbe(value)) return false;
+    const QHostAddress address(value.toString());
+    bool family = false, allowed = false;
+    for (const auto &entry : client.value(configKey::clientIp).toString().split(',')) {
+        const QHostAddress local(entry.trimmed().section('/', 0, 0));
+        if (!local.isNull() && local.protocol() == address.protocol()) family = true;
+    }
+    for (const auto &entry : client.value(configKey::allowedIps).toArray()) {
+        const auto subnet = QHostAddress::parseSubnet(entry.toString());
+        if (subnet.second >= 0 && subnet.first.protocol() == address.protocol() && address.isInSubnet(subnet)) allowed = true;
+    }
+    return family && allowed;
 }
 bool identityMatches(const QJsonObject &client)
 {
@@ -247,6 +274,23 @@ bool apply(const QJsonObject &profile, const QByteArray &envelope, qint64 now, Q
     QJsonObject result;
     if (!mergeServerSettings(profile, m.value("container").toString(), settings, false, result)) return false;
     auto metadata = m;
+    if (p.contains("pathMtuProbe")) {
+        const auto target = p.value("pathMtuProbe");
+        if (revisionText == m.value("revision").toString() && m.contains("pathMtuProbe") && target != m.value("pathMtuProbe")) return false;
+        auto containers = result.value(configKey::containers).toArray();
+        auto container = containers.first().toObject();
+        const auto protoName = protocol(m.value("container").toString());
+        auto proto = container.value(protoName).toObject();
+        auto client = QJsonDocument::fromJson(proto.value(configKey::lastConfig).toString().toUtf8()).object();
+        if (!validPathProbe(target)) return false;
+        // Optional control-plane metadata must not widen user routes or make
+        // an otherwise valid old profile unusable when this family is absent.
+        if (usablePathProbe(target, client)) client["path_mtu_probe"] = target;
+        else client.remove("path_mtu_probe");
+        proto[configKey::lastConfig] = QString::fromUtf8(QJsonDocument(client).toJson(QJsonDocument::Compact));
+        container[protoName] = proto; containers[0] = container; result[configKey::containers] = containers;
+        metadata["pathMtuProbe"] = target;
+    }
     metadata["revision"] = revisionText; metadata["issuedAt"] = issued; metadata["settingsHash"] = hash;
     result[metadataKey] = metadata;
     updated = result; return true;
