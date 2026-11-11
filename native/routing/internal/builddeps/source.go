@@ -67,11 +67,7 @@ func Source() Info {
 	if info, ok := debug.ReadBuildInfo(); ok {
 		result.GoVersion = info.GoVersion
 
-		expectedProfile := map[string]string{
-			"github.com/StannisMod/amnezia-client/native/routing": "desktop_android",
-			"github.com/amnezia-vpn/amneziawg-android":            "desktop_android",
-			"github.com/amnezia-vpn/amneziawg-apple":              "apple",
-		}[info.Main.Path]
+		expectedProfile := profileForMain(info.Main.Path)
 		if expectedProfile != "" && expectedProfile != result.Profile {
 			result.Mode = "invalid"
 			return result
@@ -115,4 +111,12 @@ func Validate() error {
 		return nil
 	}
 	return errors.New("routing TCP dependency provenance is not verified")
+}
+
+func profileForMain(path string) string {
+	return map[string]string{
+		"github.com/StannisMod/amnezia-client/native/routing": routingComponentProfile,
+		"github.com/amnezia-vpn/amneziawg-android":            "desktop_android",
+		"github.com/amnezia-vpn/amneziawg-apple":              "apple",
+	}[path]
 }

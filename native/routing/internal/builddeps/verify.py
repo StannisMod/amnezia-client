@@ -26,7 +26,7 @@ PROBE_SOURCE_FILES = {
 }
 PROFILE_SOURCE_FILES = {
     'desktop_android': SOURCE_FILES | PROBE_SOURCE_FILES,
-    'apple': SOURCE_FILES,
+    'apple': SOURCE_FILES | PROBE_SOURCE_FILES,
 }
 
 def load_lock():

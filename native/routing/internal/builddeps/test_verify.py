@@ -56,13 +56,14 @@ class DependencyGuardTests(unittest.TestCase):
                 with self.assertRaises(ValueError):deps.verify_resolution(self.resolved,self.downloaded,self.pin)
                 path.write_bytes(original)
     def test_probe_source_identity_cannot_be_removed_from_manifest(self):
-        for relative in deps.PROBE_SOURCE_FILES:
-            with self.subTest(relative=relative):
-                lock=deps.load_lock()
-                del lock['profiles']['desktop_android']['source_sha256'][relative]
-                path=self.source/'incomplete-lock.json';path.write_text(json.dumps(lock))
-                with mock.patch.object(deps,'LOCK',path):
-                    with self.assertRaises(ValueError):deps.load_lock()
+        for profile in deps.PROFILE_SOURCE_FILES:
+            for relative in deps.PROBE_SOURCE_FILES:
+                with self.subTest(profile=profile,relative=relative):
+                    lock=deps.load_lock()
+                    del lock['profiles'][profile]['source_sha256'][relative]
+                    path=self.source/'incomplete-lock.json';path.write_text(json.dumps(lock))
+                    with mock.patch.object(deps,'LOCK',path):
+                        with self.assertRaises(ValueError):deps.load_lock()
     def test_release_runtime_identity_rejects_repro_and_wrong_scope(self):
         lock=deps.load_lock();pin=lock['profiles']['desktop_android']
         info={'mode':'fixed','fix_id':lock['fix_id'],'profile':'desktop_android',

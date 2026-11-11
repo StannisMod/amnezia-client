@@ -546,7 +546,8 @@ jobs:
           test "$(git -C "$RUNNER_TEMP/routing-apple" rev-parse HEAD)" = 811f5c8213e6b257e9520fff713ec4d22086e9ac
           module="$RUNNER_TEMP/routing-apple/Sources/WireGuardKitGo"
           python3 native/routing/prepare_apple.py --module "$module"
-          (cd "$module" && go test -mod=readonly -tags with_gvisor,amnezia_gvisor_2026 -race -count=3 -run '^TestTCPTimeoutRecoveryDrainsThroughACKs$' github.com/StannisMod/amnezia-client/native/routing/awg)
+          (cd "$module" && go test -mod=readonly -tags with_gvisor,amnezia_gvisor_2026,amnezia_apple_bridge -race -count=3 -run '^TestTCPTimeoutRecoveryDrainsThroughACKs$' github.com/StannisMod/amnezia-client/native/routing/awg)
+          (cd "$module" && go test -mod=readonly -race -count=3 gvisor.dev/gvisor/pkg/tcpip/transport/tcp gvisor.dev/gvisor/pkg/tcpip/adapters/gonet)
           make -C "$module" ARCHS=arm64 PLATFORM_NAME=iphoneos
           nm -g "$module/out/libwg-go.a" > "$RUNNER_TEMP/routing-apple-symbols.txt"
           for symbol in _AmneziaRoutingStart _AmneziaRoutingFeed _AmneziaRoutingStop _AmneziaRoutingStats _AmneziaRoutingBuildInfo _wgTurnOn; do
@@ -604,6 +605,45 @@ jobs:
             deploy/build/client/tests/Testing/Temporary/LastTest.log
             deploy/build/client/Release-iphoneos/*.app
 
+  apple-tcp-recovery:
+    needs: cancel-superseded
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-26, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with: {submodules: recursive}
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: native/routing/go.mod
+          cache-dependency-path: native/routing/applebridge/module.sum
+      - name: Verify Apple dependency and TCP recovery on the native host
+        shell: bash
+        env:
+          GOTOOLCHAIN: local
+          GOTELEMETRY: 'off'
+        run: |
+          set -euo pipefail
+          module="$RUNNER_TEMP/apple-tcp-module"
+          mkdir -p "$module"
+          cp native/routing/applebridge/module.mod "$module/go.mod"
+          cp native/routing/applebridge/module.sum "$module/go.sum"
+          (cd "$module" && go mod edit "-replace=github.com/StannisMod/amnezia-client/native/routing=$GITHUB_WORKSPACE/native/routing")
+          python3 native/routing/internal/builddeps/verify.py --module "$module" --scope apple --output apple-tcp-dependency.json
+          (cd "$module" && go test -mod=readonly -race -count=3 -json gvisor.dev/gvisor/pkg/tcpip/transport/tcp gvisor.dev/gvisor/pkg/tcpip/adapters/gonet) | tee apple-dependency-tests.jsonl
+          (cd "$module" && go test -mod=readonly -tags with_gvisor,amnezia_gvisor_2026,amnezia_apple_bridge -race -count=1 -json github.com/StannisMod/amnezia-client/native/routing/awg github.com/StannisMod/amnezia-client/native/routing/wireguard github.com/StannisMod/amnezia-client/native/routing/engine github.com/StannisMod/amnezia-client/native/routing/mobile) | tee apple-routing-tests.jsonl
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: apple-tcp-recovery-${{ matrix.os }}
+          path: |
+            apple-tcp-dependency.json
+            apple-dependency-tests.jsonl
+            apple-routing-tests.jsonl
+
   linux-dns-regression:
     needs: cancel-superseded
     runs-on: ubuntu-24.04
@@ -620,7 +660,7 @@ jobs:
 
   build-gate:
     if: always()
-    needs: [cancel-superseded, core-tests, core-cross-compile, client-linux, client-windows, client-android, client-ios, linux-dns-regression]
+    needs: [cancel-superseded, core-tests, core-cross-compile, client-linux, client-windows, client-android, client-ios, apple-tcp-recovery, linux-dns-regression]
     runs-on: ubuntu-22.04
     steps:
       - name: Fail for any failed, cancelled or skipped required lane
