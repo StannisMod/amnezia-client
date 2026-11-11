@@ -253,10 +253,10 @@ public final class RoutingInstrumentation extends Instrumentation {
             StringBuilder stack = new StringBuilder();
             for (StackTraceElement frame : error.getStackTrace()) if (frame.getClassName().startsWith("org.amnezia.routingtest")) stack.append(frame).append("\n");
             result.putString("test_stack", stack.toString());
+            // Capture the blocked native/JNI path before another network call
+            // or cleanup changes it. The rooted driver collects debuggerd.
+            progress("RESOURCE_CHECKPOINT failure"); SystemClock.sleep(10000);
             try { result.putString("observers", control("/stats", false).toString()); } catch (Exception ignored) {}
-            // Let the rooted driver snapshot the failed session before the
-            // finally block disconnects it and removes its capture routes.
-            progress("RESOURCE_CHECKPOINT failure"); SystemClock.sleep(3000);
         } finally {
             if (service != null) try { send(DISCONNECT, new Bundle()); send(UNREGISTER, new Bundle()); } catch (Exception ignored) {}
             if (didBind) getTargetContext().unbindService(connection);

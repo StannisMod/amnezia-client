@@ -62,6 +62,7 @@ def snapshot():
     return {"cpu_ticks":int(fields[11])+int(fields[12]),"captured_at":time.monotonic(),"capture_links": capture_links, "pid": int(pid[0]), "fd_count": len(descriptors),
             "eventfds": targets.count("anon_inode:[eventfd]"),
             "capture_fds": sum(target in ("/dev/tun", "/dev/net/tun", "anon_inode:[tun]") for target in targets),
+            "uid": int(re.search(r"^Uid:\s+(\d+)", status, re.M)[1]),
             "threads": int(re.search(r"^Threads:\s+(\d+)", status, re.M)[1]),
             "rss_kib": int(re.search(r"^VmRSS:\s+(\d+)", status, re.M)[1])}
 
@@ -317,6 +318,13 @@ def main():
                         # when that failure terminated the service process.
                         report["resources"][label] = {"snapshot_error": type(error).__name__}
                     if label == "failure":
+                        failed = report['resources'].get('failure', {})
+                        if 'pid' in failed:
+                            try:
+                                trace = subprocess.run(['adb','shell','debuggerd','-b',str(failed['pid'])],capture_output=True,text=True,timeout=8)
+                                (work/'failure-native-backtrace.log').write_text(trace.stdout+trace.stderr)
+                            except subprocess.TimeoutExpired:
+                                (work/'failure-native-backtrace.log').write_text('Native backtrace timed out\n')
                         for name, command in {
                             "routes": ("shell", "ip", "route", "show", "table", "all"),
                             "rules": ("shell", "ip", "rule"),
