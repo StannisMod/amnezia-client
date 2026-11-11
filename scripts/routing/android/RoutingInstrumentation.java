@@ -62,6 +62,7 @@ public final class RoutingInstrumentation extends Instrumentation {
     private boolean performanceOnly;
     private boolean sharedFirst;
     private boolean primaryOnly;
+    private boolean uploadMtuOnly;
     private final CountDownLatch bound = new CountDownLatch(1);
     private final ServiceConnection connection = new ServiceConnection() {
         @Override public void onServiceConnected(ComponentName name, IBinder binder) {
@@ -78,6 +79,7 @@ public final class RoutingInstrumentation extends Instrumentation {
         performanceOnly=Boolean.parseBoolean(args.getString("performance_only","false"));
         cycles = Integer.parseInt(args.getString("cycles", "100"));
         primaryOnly = Boolean.parseBoolean(args.getString("primary_only", "false"));
+        uploadMtuOnly = Boolean.parseBoolean(args.getString("upload_mtu_only", "false"));
         start();
     }
     @Override public void onStart() {
@@ -112,6 +114,10 @@ public final class RoutingInstrumentation extends Instrumentation {
             require(didBind && bound.await(15, TimeUnit.SECONDS), "AwgService binding failed");
             Bundle registration = new Bundle(); registration.putString("CLIENT_NAME", "routing-acceptance");
             send(REGISTER, registration);
+            if (uploadMtuOnly) {
+                automaticUploadMtu();
+                result.putString("routing_result", "PASS_UPLOAD_MTU_ONLY");code = 0;return;
+            }
             if (performanceOnly) {
                 performanceComparison();
                 result.putString("routing_result","PASS_PERFORMANCE_ONLY");code=0;return;
@@ -477,7 +483,16 @@ public final class RoutingInstrumentation extends Instrumentation {
         try {
             interactive = retainedSocket(dns("vpn.test", 1));
             media = retainedSocket(dns("vpn.test", 1)); media.setSoTimeout(60000);
-            exchange(interactiveIo, interactive, new byte[]{42});
+            // Keep both original sockets through at least two normal worker
+            // periods. The impairment must exercise a changed established path,
+            // rather than just the first probe after connecting the VPN.
+            long opened = SystemClock.elapsedRealtime();
+            while (SystemClock.elapsedRealtime() - opened < 65000) {
+                exchange(interactiveIo, interactive, new byte[]{42});
+                exchange(uploadIo, media, new byte[]{43});
+                SystemClock.sleep(250);
+            }
+            long ageAtFault = SystemClock.elapsedRealtime() - opened;
             retainedCheckpoint("drop_upload_mtu"); fault = true;
             final Socket originalMedia = media;
             byte[] payload = new byte[256 * 1024]; new java.security.SecureRandom().nextBytes(payload);
@@ -499,7 +514,8 @@ public final class RoutingInstrumentation extends Instrumentation {
             require(connectionDiagnostics().getLong("session_id") == session, "MTU adaptation replaced the core");
             require(after.getLong("vpn_tcp") == before.getLong("vpn_tcp") + 2, "MTU adaptation redialled TCP");
             progress("MTU_UPLOAD_RESULT " + new JSONObject().put("elapsed_ms", SystemClock.elapsedRealtime() - started)
-                .put("original_tcp_accepts", 2).put("same_session", true).put("filter_still_active", true));
+                .put("original_tcp_accepts", 2).put("age_before_fault_ms", ageAtFault)
+                .put("same_session", true).put("filter_still_active", true));
         } finally {
             if (fault) retainedCheckpoint("restore_upload_mtu");
             if (media != null) media.close(); if (interactive != null) interactive.close();

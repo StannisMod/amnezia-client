@@ -91,6 +91,19 @@ def performance_metrics(output, report):
     report['performance_emulator']=measurements
 
 
+def upload_mtu_metrics(output, report):
+    upload = re.search(r'MTU_UPLOAD_RESULT (\{[^\n]*\})', output)
+    assert upload, 'automatic upload MTU result missing'
+    metrics = report['automatic_upload_mtu'] = json.loads(upload[1])
+    assert metrics['same_session'] and metrics['filter_still_active']
+    assert metrics['original_tcp_accepts'] == 2
+    assert metrics['age_before_fault_ms'] >= 65000, 'MTU fault must affect established sockets after normal probe periods'
+    assert report['dropped_outer_packets']['restore_upload_mtu'] > 0
+    a, b = (report['retained_resources'][key] for key in ('upload_mtu_before', 'upload_mtu_after'))
+    assert a['pid'] == b['pid'] and a['capture_links'] and a['capture_links'] == b['capture_links']
+    assert a['capture_fds'] == b['capture_fds'] == 1
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--apk", type=Path, required=True)
@@ -101,10 +114,13 @@ def main():
     parser.add_argument("--cycles", type=int, default=100)
     parser.add_argument("--source-sha", help="test-harness commit when a read-only worktree has no mounted Git metadata")
     parser.add_argument("--apk-source-sha", help="record the actual packaged client source independently of the harness")
+    parser.add_argument("--upload-mtu-only", action="store_true", help="focused aged-TCP MTU regression; not full acceptance")
     parser.add_argument("--primary-only", action="store_true", help="focused retained-TCP debug run; not full acceptance")
     parser.add_argument("--performance-only",action="store_true",help="benchmark only; does not run full acceptance")
     parser.add_argument("--performance-order",choices=("legacy-first","shared-first"),default="legacy-first")
     args = parser.parse_args()
+    if sum((args.upload_mtu_only, args.primary_only, args.performance_only)) > 1:
+        parser.error("focused acceptance modes are mutually exclusive")
     check_ipc_contract()
     for value in (args.source_sha, args.apk_source_sha):
         assert value is None or re.fullmatch(r'[0-9a-f]{40}', value), 'invalid source revision'
@@ -182,6 +198,7 @@ def main():
         # Require the explicit PASS result and successful resource assertions.
         command = ["adb", "shell", "am", "instrument", "-w", "-r", "-e", "cycles", str(args.cycles),
                    "-e", "primary_only", str(args.primary_only).lower(),
+                   "-e", "upload_mtu_only", str(args.upload_mtu_only).lower(),
                    "-e", "performance_only", str(args.performance_only).lower(),
                    "-e", "performance_order", args.performance_order,
                    "org.amnezia.routingtest/org.amnezia.routingtest.RoutingInstrumentation"]
@@ -269,6 +286,11 @@ def main():
             assert process.wait(timeout=15) == 0
             timer.cancel()
         output = "".join(output)
+        if args.upload_mtu_only:
+            assert 'INSTRUMENTATION_RESULT: routing_result=PASS_UPLOAD_MTU_ONLY' in output
+            upload_mtu_metrics(output, report)
+            report['native_vpn_acceptance'] = 'NOT_RUN_UPLOAD_MTU_ONLY'
+            return
         if args.performance_only:
             assert 'INSTRUMENTATION_RESULT: routing_result=PASS_PERFORMANCE_ONLY' in output
             performance_metrics(output,report)
@@ -301,10 +323,7 @@ def main():
             assert a['pid'] == b['pid'] and a['capture_links'] and a['capture_links'] == b['capture_links'], 'network/policy change recreated service or TUN'
             assert a['capture_fds'] == 1 and b['capture_fds'] == 1, 'capture ownership changed'
         if not args.primary_only:
-            upload = re.search(r'MTU_UPLOAD_RESULT (\{[^\n]*\})', output)
-            assert upload, 'automatic upload MTU result missing'
-            report['automatic_upload_mtu'] = json.loads(upload[1])
-            assert report['automatic_upload_mtu']['same_session'] and report['automatic_upload_mtu']['filter_still_active']
+            upload_mtu_metrics(output, report)
             performance_metrics(output,report)
         report['ordinary_app_only_preserving_recovery'] = 'PASS'
         if not args.primary_only: report['all_vpn_lockdown'] = 'PASS'
