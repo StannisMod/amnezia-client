@@ -43,12 +43,14 @@ jobs:
         run: docker build -f server/mtu/lab/Dockerfile -t awg-mtu-regression .
       - name: Test original TCP flows, peer isolation and crash recovery
         run: |
-          mkdir -p mtu-results
-          docker run --rm --init --network none --privileged --pids-limit 512 --memory 3g --cpus 4 -v "$PWD/mtu-results:/results" awg-mtu-regression
+          for mtu in 1280 1420; do
+            mkdir -p "mtu-results/$mtu"
+            docker run --rm --init --network none --privileged --pids-limit 512 --memory 3g --cpus 4 -e MTU_LAB_SERVER_MTU="$mtu" -v "$PWD/mtu-results/$mtu:/results" awg-mtu-regression
+          done
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: awg-mtu-results
           path: |
-            mtu-results/mtu-result.json
-            mtu-results/supervisor.jsonl
+            mtu-results/**/mtu-result.json
+            mtu-results/**/supervisor.jsonl

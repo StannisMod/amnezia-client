@@ -59,7 +59,13 @@ func stabilityMTUPeer(t *testing.T, config awg.Config) (netip.AddrPort, net.List
 	var listener net.Listener
 	var endpoint netip.AddrPort
 	withStabilityNS(t, "/run/netns/stability-peer", func() error {
-		packet, e := tun.CreateTUN("stb-peer", 1280)
+		mtu := 1280
+		if value := os.Getenv("MTU_LAB_SERVER_MTU"); value != "" {
+			if _, err := fmt.Sscan(value, &mtu); err != nil || mtu < 1280 || mtu > 1500 {
+				return fmt.Errorf("invalid MTU lab value")
+			}
+		}
+		packet, e := tun.CreateTUN("stb-peer", mtu)
 		if e != nil {
 			return e
 		}
