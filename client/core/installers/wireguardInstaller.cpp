@@ -1,4 +1,5 @@
 #include "wireguardInstaller.h"
+#include "core/configurators/wireguardConfigurator.h"
 
 #include "core/utils/containerEnum.h"
 #include "core/utils/containers/containerUtils.h"
@@ -28,22 +29,10 @@ ErrorCode WireguardInstaller::extractConfigFromContainer(DockerContainer contain
         return errorCode;
     }
 
-    QMap<QString, QString> serverConfigMap;
-    auto serverConfigLines = serverConfig.split("\n");
-    for (auto &line : serverConfigLines) {
-        auto trimmedLine = line.trimmed();
-        if (trimmedLine.startsWith("[") && trimmedLine.endsWith("]")) {
-            continue;
-        } else {
-            QStringList parts = trimmedLine.split(" = ");
-            if (parts.count() == 2) {
-                serverConfigMap.insert(parts[0].trimmed(), parts[1].trimmed());
-            }
-        }
-    }
-
     if (auto* wgConfig = config.getWireGuardProtocolConfig()) {
-        wgConfig->serverConfig.subnetAddress = serverConfigMap.value("Address").remove("/24");
+        const auto prefix = WireguardConfigurator::serverIPv4CidrFromInterfaceConfig(serverConfig);
+        wgConfig->serverConfig.subnetAddress = prefix.section('/', 0, 0);
+        wgConfig->serverConfig.subnetCidr = prefix.section('/', 1, 1);
     }
     
     return ErrorCode::NoError;

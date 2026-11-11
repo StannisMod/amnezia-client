@@ -100,14 +100,21 @@ QList<QHostAddress> WireguardConfigurator::getIpsFromConf(const QString &input)
 
 QString WireguardConfigurator::pathMtuProbeFromInterfaceConfig(const QString &configuration)
 {
+    return serverIPv4CidrFromInterfaceConfig(configuration).section('/', 0, 0);
+}
+
+QString WireguardConfigurator::serverIPv4CidrFromInterfaceConfig(const QString &configuration)
+{
     const QRegularExpression interfaceAddress(QStringLiteral("(?:^|\\n)\\s*Address\\s*=\\s*([^\\r\\n]+)"));
     const auto addressMatch = interfaceAddress.match(configuration);
     if (addressMatch.hasMatch()) {
         for (const auto &entry : addressMatch.captured(1).split(',')) {
             QHostAddress address(entry.trimmed().section('/', 0, 0));
+            const auto subnet = QHostAddress::parseSubnet(entry.trimmed());
             if (address.protocol() == QAbstractSocket::IPv4Protocol && !address.isNull()
-                && !address.isLoopback() && !address.isMulticast()) {
-                return address.toString();
+                && address != QHostAddress::AnyIPv4 && !address.isLoopback() && !address.isMulticast()
+                && subnet.second >= 0) {
+                return address.toString() + "/" + QString::number(subnet.second);
             }
         }
     }

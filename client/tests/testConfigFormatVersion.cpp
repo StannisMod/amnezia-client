@@ -83,6 +83,14 @@ private slots:
         QVERIFY(WireGuardClientConfig::fromJson({}).pathMtuProbe.isEmpty());
         QVERIFY(AwgClientConfig::fromJson({}).pathMtuProbe.isEmpty());
     }
+    void testDualStackServerAddressKeepsIPv4HostAndMask()
+    {
+        QCOMPARE(WireguardConfigurator::serverIPv4CidrFromInterfaceConfig("Address = fd77::1/64, 10.77.0.9/20\n"), QString("10.77.0.9/20"));
+        QCOMPARE(WireguardConfigurator::serverIPv4CidrFromInterfaceConfig("Address = 10.77.0.9/32, fd77::1/64\n"), QString("10.77.0.9/32"));
+        QVERIFY(WireguardConfigurator::serverIPv4CidrFromInterfaceConfig("Address = 0.0.0.0/24\n").isEmpty());
+        QVERIFY(WireguardConfigurator::serverIPv4CidrFromInterfaceConfig("Address = fd77::1/64\n").isEmpty());
+        QVERIFY(WireguardConfigurator::serverIPv4CidrFromInterfaceConfig("Address = 10.77.0.9/99\n").isEmpty());
+    }
     void initTestCase()
     {
         const QString testOrg = "AmneziaVPN-Test-" + QUuid::createUuid().toString();
