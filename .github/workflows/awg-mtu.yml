@@ -1,0 +1,32 @@
+name: AWG MTU controller
+on:
+  push:
+    paths:
+      - server/mtu/**
+      - client/server_scripts/awg/**
+      - client/server_scripts/awg_legacy/**
+      - client/server_scripts/serverScripts.qrc
+      - .github/workflows/awg-mtu.yml
+  pull_request:
+    paths:
+      - server/mtu/**
+      - client/server_scripts/awg/**
+      - client/server_scripts/awg_legacy/**
+      - .github/workflows/awg-mtu.yml
+permissions:
+  contents: read
+jobs:
+  ownership:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Check route ownership regressions
+        run: python3 -m unittest discover -s server/mtu -p 'test_*.py'
+      - name: Check installed startup scripts
+        run: |
+          bash -n client/server_scripts/awg/start.sh
+          bash -n client/server_scripts/awg_legacy/start.sh
+          python3 -m py_compile server/mtu/controller.py server/mtu/supervisor.py

@@ -111,6 +111,8 @@ def main():
                 if route(peer)!=expected[peer]:
                     raise RuntimeError('route changed by another owner: '+peer)
                 result=discover(peer,args.source,args.maximum)
+                if route(peer)!=expected[peer]:
+                    raise RuntimeError('route changed during probing: '+peer)
                 current_tokens=shlex.split(expected[peer])
                 current=int(current_tokens[current_tokens.index('mtu')+1]) if 'mtu' in current_tokens else args.maximum
                 target=result.get('mtu',current)
