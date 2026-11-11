@@ -55,11 +55,15 @@ try:
         wait_for(lambda:routes()==initial)
         process=subprocess.Popen(command,stdout=log,stderr=log)
         wait_for(lambda:'mtu 1104' in routes())
+        (out/'remove-peer1').touch()
+        wait_for(lambda:routes()==initial)
+        (out/'remove-peer1').unlink()
+        wait_for(lambda:'mtu 1104' in routes())
         subprocess.run(['nft','delete','table','inet','mtu_lab'],check=True)
         wait_for(lambda:routes()==initial)
         process.terminate();process.wait(timeout=12);process=None
         assert routes()==initial
-    (out/'mtu-result.json').write_text(json.dumps({'old_tcp':'retained','healthy_peer':'progressing','reduction':1104,'parent_kill':'restored','restart':'PASS','raise':'PASS'}))
+    (out/'mtu-result.json').write_text(json.dumps({'old_tcp':'retained','healthy_peer':'progressing','reduction':1104,'parent_kill':'restored','restart':'PASS','peer_removal':'PASS','raise':'PASS'}))
 finally:
     if process is not None:
         process.terminate();process.wait(timeout=12)

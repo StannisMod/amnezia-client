@@ -8,7 +8,8 @@ CAP_NET_RAW and CAP_NET_ADMIN.
 
 The source must be assigned to the server. Each selected peer must already
 have a direct IPv4 /32 route on the interface with no explicit MTU metric.
-The maximum should not exceed the interface MTU. No keys or profiles change.
+Without --maximum the interface MTU is used, including non-multiples of 16.
+An explicit maximum is capped at the interface MTU. No keys or profiles change.
 
 Periodic checks run even during idle periods. Candidate sizes require two
 of three replies. Large failures are checked alongside small successes.

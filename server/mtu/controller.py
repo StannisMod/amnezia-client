@@ -44,7 +44,7 @@ def discover(peer, source, maximum=1280):
             return {'state':'inconclusive','history':history}
         if passes(maximum):
             return {'state':'unchanged','mtu':maximum,'history':history}
-        low, high = 36, maximum//16  # steps of 16 bytes, lower bound 576
+        low, high = 36, (maximum+15)//16  # steps of 16 bytes, lower bound 576
         if not passes(576):
             return {'state':'inconclusive','history':history}
         while high-low > 1:
@@ -68,12 +68,15 @@ import shlex
 def route(peer):
     return subprocess.check_output(['ip','-o','-4','route','show','exact',peer+'/32'],text=True).strip()
 
+def interface_mtu(name):
+    return json.loads(subprocess.check_output(["ip","-j","link","show","dev",name],text=True))[0]["mtu"]
+
 def main():
     parser=argparse.ArgumentParser(description="IPv4 AWG per-peer MTU prototype")
     parser.add_argument('--interface',required=True)
     parser.add_argument('--source',required=True)
     parser.add_argument('--peer',action='append',required=True)
-    parser.add_argument('--maximum',type=int,default=1280)
+    parser.add_argument('--maximum',type=int,default=0)
     parser.add_argument('--interval',type=float,default=30)
     parser.add_argument('--state-dir',type=Path,default=Path('/run/awg-mtu'))
     parser.add_argument('--once',action='store_true')
@@ -81,11 +84,13 @@ def main():
     import ipaddress
     args.peer=list(dict.fromkeys(str(ipaddress.IPv4Address(p)) for p in args.peer))
     ipaddress.IPv4Address(args.source)
-    if args.maximum<576 or args.maximum>65520 or args.maximum%16 or args.interval<1:
-        parser.error('maximum must be a multiple of 16 in 576..65520; interval >= 1')
+    if (args.maximum and not 576 <= args.maximum <= 65535) or args.interval<1:
+        parser.error('maximum must be 0 (interface MTU) or 576..65535; interval >= 1')
     if '/' in args.interface or not args.interface:
         parser.error('invalid interface name')
     socket.if_nametoindex(args.interface)
+    native_mtu=interface_mtu(args.interface)
+    args.maximum=min(args.maximum or native_mtu,native_mtu)
     lock=open('/run/awg-mtu-'+args.interface+'-'+ '-'.join(args.peer)+'.lock','w')
     fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
     args.state_dir.mkdir(mode=0o700,parents=True,exist_ok=True)
@@ -142,7 +147,7 @@ def main():
                 if route(peer)!=expected[peer]:
                     raise RuntimeError('route changed during probing: '+peer)
                 current_tokens=shlex.split(expected[peer])
-                current=int(current_tokens[current_tokens.index('mtu')+1]) if 'mtu' in current_tokens else args.maximum
+                current=int(current_tokens[current_tokens.index('mtu')+1]) if 'mtu' in current_tokens else native_mtu
                 target=result.get('mtu',current)
                 if target>current:
                     previous,count=candidates.get(peer,(None,0))
@@ -155,7 +160,7 @@ def main():
                     if 'mtu' in tokens:
                         idx=tokens.index('mtu')
                         del tokens[idx:idx+2]
-                    if target!=args.maximum: tokens+=['mtu',str(target)]
+                    if target!=native_mtu: tokens+=['mtu',str(target)]
                     record(peer,baseline[peer],target)
                     subprocess.run(['ip','-4','route','replace',*tokens],check=True)
                     expected[peer]=route(peer)

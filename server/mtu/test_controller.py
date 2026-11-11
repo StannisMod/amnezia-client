@@ -12,7 +12,7 @@ spec.loader.exec_module(controller)
 
 
 class RouteOwnershipTest(unittest.TestCase):
-    def exercise(self, result, external_change=False, crashed=False):
+    def exercise(self, result, external_change=False, crashed=False, native_mtu=1280):
         original = '10.77.0.1 dev awg0 scope link'
         state = [original]
         commands = []
@@ -35,6 +35,7 @@ class RouteOwnershipTest(unittest.TestCase):
         with tempfile.TemporaryFile(mode='w+') as lock:
             with patch.object(sys, 'argv', argv), patch.object(controller, 'open', return_value=lock, create=True), \
                  patch.object(controller.socket, 'if_nametoindex', return_value=1), \
+                 patch.object(controller, 'interface_mtu', return_value=native_mtu), \
                  patch.object(controller, 'route', side_effect=lambda _: state[0]), \
                  patch.object(controller, 'discover', side_effect=discover), \
                  patch.object(controller.subprocess, 'run', side_effect=execute):
@@ -55,6 +56,12 @@ class RouteOwnershipTest(unittest.TestCase):
         original, final, commands = self.exercise({'state': 'inconclusive'}, crashed=True)
         self.assertEqual(final, original)
         self.assertEqual(len(commands), 1)
+
+    def test_smaller_confirmed_limit_is_installed_above_default_1280(self):
+        original, final, commands = self.exercise({'state': 'unchanged', 'mtu': 1280}, native_mtu=1420)
+        self.assertEqual(final, original)
+        self.assertEqual(commands[0][-2:], ['mtu', '1280'])
+        self.assertEqual(len(commands), 2)
 
     def test_outage_does_not_change_route(self):
         original, final, commands = self.exercise({'state': 'inconclusive'})
