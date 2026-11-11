@@ -50,7 +50,7 @@ func TestOldTCPAfterClientLinkMTUReduction(t *testing.T) {
 	}
 	defer b.Close()
 	var filter atomic.Bool
-	var dropped, received atomic.Int64
+	var dropped atomic.Int64
 	pump := func(from, to *FlowStack, filterOutput bool) {
 		data := make([]byte, 65535)
 		sizes := make([]int, 1)
@@ -70,6 +70,13 @@ func TestOldTCPAfterClientLinkMTUReduction(t *testing.T) {
 	}
 	go pump(a, b, true)
 	go pump(b, a, false)
+	testRetainedUploadMTU(t, a, b, &filter, &dropped)
+}
+
+func testRetainedUploadMTU(t *testing.T, a, b *FlowStack, filter *atomic.Bool, dropped *atomic.Int64) {
+	t.Helper()
+	var received atomic.Int64
+	var corrupted atomic.Bool
 	listener, err := b.ListenTCPAddrPort(netip.MustParseAddrPort("10.77.0.2:18081"))
 	if err != nil {
 		t.Fatal(err)
@@ -100,6 +107,16 @@ func TestOldTCPAfterClientLinkMTUReduction(t *testing.T) {
 		buf := make([]byte, 65535)
 		for {
 			n, err := server.Read(buf)
+			base := received.Load()
+			for i, value := range buf[:n] {
+				want := byte(0)
+				if base+int64(i) < 6 {
+					want = "before"[base+int64(i)]
+				}
+				if value != want {
+					corrupted.Store(true)
+				}
+			}
 			received.Add(int64(n))
 			if err != nil {
 				return
@@ -138,7 +155,82 @@ func TestOldTCPAfterClientLinkMTUReduction(t *testing.T) {
 	if received.Load() != 256*1024+6 {
 		t.Fatalf("old TCP remained stalled after link MTU reduction: received=%d dropped=%d", received.Load(), dropped.Load())
 	}
+	if corrupted.Load() {
+		t.Fatal("retained upload payload corrupted")
+	}
 	t.Logf("same TCP transferred complete payload after client MTU reduction in %s; original oversized packets dropped=%d", time.Since(repairStarted), dropped.Load())
+}
+
+type mtuLossConn struct {
+	net.PacketConn
+	filter  *atomic.Bool
+	dropped *atomic.Int64
+}
+
+func (c *mtuLossConn) WriteTo(p []byte, to net.Addr) (int, error) {
+	if c.filter.Load() && len(p) > 1200 {
+		c.dropped.Add(1)
+		return len(p), nil
+	}
+	return c.PacketConn.WriteTo(p, to)
+}
+
+func TestEncryptedAWGRetainedUploadMTU(t *testing.T) {
+	for _, obfuscated := range []bool{false, true} {
+		name := "plain"
+		if obfuscated {
+			name = "AWG31"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			aPriv, aPub := keypair(t)
+			bPriv, bPub := keypair(t)
+			var filter atomic.Bool
+			var dropped atomic.Int64
+			var lc net.ListenConfig
+			params := map[string]string(nil)
+			if obfuscated {
+				params = map[string]string{"s1": "16", "s2": "24", "s3": "8", "s4": "8", "h1": "1001", "h2": "1002", "h3": "1003", "h4": "1004"}
+			}
+			serverConfig := Config{Address: []netip.Addr{netip.MustParseAddr("10.77.0.2")}, PrivateKey: bPriv, PublicKey: aPub, Endpoint: netip.MustParseAddrPort("127.0.0.1:9"), AllowedIPs: []netip.Prefix{netip.MustParsePrefix("10.77.0.1/32")}, MTU: 1420, Parameters: params}
+			b, err := New(ctx, serverConfig, lc.ListenPacket)
+			if err != nil {
+				t.Fatal(err)
+			}
+			serverPort, err := b.LocalPort()
+			if err != nil {
+				b.Close()
+				t.Fatal(err)
+			}
+			a, err := New(ctx, Config{Address: []netip.Addr{netip.MustParseAddr("10.77.0.1")}, PrivateKey: aPriv, PublicKey: bPub, Endpoint: netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), serverPort), AllowedIPs: []netip.Prefix{netip.MustParsePrefix("10.77.0.2/32")}, MTU: 1420, Parameters: params}, func(ctx context.Context, n, address string) (net.PacketConn, error) {
+				pc, err := lc.ListenPacket(ctx, n, address)
+				if err != nil {
+					return nil, err
+				}
+				return &mtuLossConn{PacketConn: pc, filter: &filter, dropped: &dropped}, nil
+			})
+			if err != nil {
+				b.Close()
+				t.Fatal(err)
+			}
+			defer a.Close()
+			clientPort, err := a.LocalPort()
+			if err != nil {
+				b.Close()
+				t.Fatal(err)
+			}
+			b.Close()
+			serverConfig.ListenPort = serverPort
+			serverConfig.Endpoint = netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), clientPort)
+			b, err = New(ctx, serverConfig, lc.ListenPacket)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer b.Close()
+			testRetainedUploadMTU(t, a.Net, b.Net, &filter, &dropped)
+		})
+	}
 }
 
 type zeroReader struct{}
