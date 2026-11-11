@@ -189,6 +189,14 @@ func (p *networkDNSProxy) exchange(caller context.Context, message *mDNS.Msg) (*
 	}
 	stop := context.AfterFunc(caller, cancel)
 	defer func() { stop(); cancel() }()
+	// The service registry belongs to the DNS generation, but application
+	// identity belongs to the original flow. Dropping it would make every
+	// per-app query look like an unknown owner (and select VPN DNS).
+	if metadata := adapter.ContextFrom(caller); metadata != nil {
+		copy := *metadata
+		copy.ResetRuleCache()
+		ctx = adapter.WithContext(ctx, &copy)
+	}
 	response, err := g.router.Exchange(ctx, message, adapter.DNSQueryOptions{})
 	p.mu.RLock()
 	valid := p.current == g

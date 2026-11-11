@@ -16,6 +16,7 @@ import (
 	"github.com/StannisMod/amnezia-client/native/routing/dnspolicy"
 	"github.com/StannisMod/amnezia-client/native/routing/rules"
 	"github.com/miekg/dns"
+	box "github.com/sagernet/sing-box"
 	"github.com/sagernet/sing-box/adapter"
 	M "github.com/sagernet/sing/common/metadata"
 	"github.com/sagernet/sing/service"
@@ -189,14 +190,24 @@ func testSplitDNSSimultaneousPolicies(t *testing.T, androidApps bool) {
 	raw, _ = json.Marshal(compiled)
 	ctx = Context(ctx, Underlay{DialContext: dial.DialContext, ListenPacket: listen})
 	ctx = service.ContextWith[adapter.PlatformInterface](ctx, loopbackTestPlatform{})
-	instance, err := New(ctx, raw)
-	if err != nil {
-		t.Fatal(err)
+	var instance *box.Box
+	if androidApps {
+		runtime, startErr := StartRuntimeWithNetworkDNS(ctx, raw, "")
+		if startErr != nil {
+			t.Fatal(startErr)
+		}
+		defer runtime.Close()
+		instance = runtime.box
+	} else {
+		instance, err = New(ctx, raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = instance.Start(); err != nil {
+			t.Fatal(err)
+		}
+		defer instance.Close()
 	}
-	if err = instance.Start(); err != nil {
-		t.Fatal(err)
-	}
-	defer instance.Close()
 	router := service.FromContext[adapter.DNSRouter](ctx)
 	if androidApps {
 		// Resolve the identical name alternately for both application modes.
