@@ -58,7 +58,8 @@ def snapshot():
     targets = adb("shell", f'for fd in /proc/{pid[0]}/fd/*; do readlink "$fd" || true; done').splitlines()
     link_text = adb("shell", "ip", "link", "show")
     capture_links = {name: int(index) for index, name in re.findall(r"(?m)^([0-9]+): ([^: ]+):", link_text) if name.startswith("tun")}
-    return {"capture_links": capture_links, "pid": int(pid[0]), "fd_count": len(descriptors),
+    fields = adb('shell','cat',f'/proc/{pid[0]}/stat').split(')',1)[1].split()
+    return {"cpu_ticks":int(fields[11])+int(fields[12]),"captured_at":time.monotonic(),"capture_links": capture_links, "pid": int(pid[0]), "fd_count": len(descriptors),
             "eventfds": targets.count("anon_inode:[eventfd]"),
             "capture_fds": sum(target in ("/dev/tun", "/dev/net/tun", "anon_inode:[tun]") for target in targets),
             "threads": int(re.search(r"^Threads:\s+(\d+)", status, re.M)[1]),
@@ -177,7 +178,7 @@ def main():
                 print(line, end="", flush=True); log.write(line); log.flush(); output.append(line)
                 if "RETAIN_CHECKPOINT " in line:
                     name = line.strip().split("RETAIN_CHECKPOINT ", 1)[1]
-                    assert name in ('before', 'after', 'restore_mtu', 'drop_mtu', 'drop_before_media', 'restore_before_media', 'drop_with_media', 'restore_with_media', 'wifi_off', 'wifi_on', 'safe_policy_before', 'safe_policy_after')
+                    assert name in ('before', 'after', 'restore_mtu', 'drop_mtu', 'drop_before_media', 'restore_before_media', 'drop_with_media', 'restore_with_media', 'wifi_off', 'wifi_on', 'safe_policy_before', 'safe_policy_after', 'perf_legacy_before', 'perf_legacy_after', 'perf_shared_before', 'perf_shared_after')
                     if name == 'before' and os.environ.get('AWG_ECHO_LAB') == '1':
                         observations=[]
                         for size in (128,576,1104,1280):
@@ -209,7 +210,7 @@ def main():
                             print(f"RESTORED_NS={report['mtu_restored_wall_ns']}", flush=True)
                     elif name == 'wifi_off': adb('shell', 'svc', 'wifi', 'disable')
                     elif name == 'wifi_on': adb('shell', 'svc', 'wifi', 'enable')
-                    if name in ('before', 'after', 'safe_policy_before', 'safe_policy_after'):
+                    if name in ('before', 'after', 'safe_policy_before', 'safe_policy_after', 'perf_legacy_before', 'perf_legacy_after', 'perf_shared_before', 'perf_shared_after'):
                         report['retained_resources'][name] = snapshot()
                     with urllib.request.urlopen('http://127.0.0.1:18080/stats', timeout=5) as response:
                         stats = json.load(response)
@@ -275,6 +276,15 @@ def main():
             a, b = report['retained_resources'][first], report['retained_resources'][last]
             assert a['pid'] == b['pid'] and a['capture_links'] and a['capture_links'] == b['capture_links'], 'network/policy change recreated service or TUN'
             assert a['capture_fds'] == 1 and b['capture_fds'] == 1, 'capture ownership changed'
+        if not args.primary_only:
+            measurements=[json.loads(row) for row in re.findall(r'PERFORMANCE (\{[^\n]*\})',output)]
+            assert {r['backend'] for r in measurements}=={'legacy','shared'}, 'performance comparison missing'
+            for row in measurements:
+                before=report['retained_resources']['perf_'+row['backend']+'_before']
+                after=report['retained_resources']['perf_'+row['backend']+'_after']
+                assert before['pid']==after['pid'], 'performance process replaced'
+                row.update(cpu_ticks=after['cpu_ticks']-before['cpu_ticks'],rss_before_kib=before['rss_kib'],rss_after_kib=after['rss_kib'])
+            report['performance_emulator']=measurements
         report['ordinary_app_only_preserving_recovery'] = 'PASS'
         if not args.primary_only: report['all_vpn_lockdown'] = 'PASS'
     finally:

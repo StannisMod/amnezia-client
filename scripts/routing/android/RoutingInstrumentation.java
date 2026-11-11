@@ -208,6 +208,7 @@ public final class RoutingInstrumentation extends Instrumentation {
             connect(false); requireRoute(dns("vpn.test", 1), "VPN"); disconnect();
             pass("OS always-on, active lockdown shutdown, lockdown startup rejection and recovery");
             allVpnLockdown();
+            performanceComparison();
             result.putString("retained_result", retainedResult.toString());
             result.putString("routing_result", "PASS"); code = 0;
         } catch (Throwable error) {
@@ -227,6 +228,33 @@ public final class RoutingInstrumentation extends Instrumentation {
             result.putString("passed", new JSONArray(passed).toString());
             finish(code, result);
         }
+    }
+
+    private void performanceComparison() throws Exception {
+        for (boolean legacy : new boolean[]{true, false}) {
+            String mode = legacy ? "legacy" : "shared";
+            JSONObject config = primaryConfiguration();
+            if (legacy) {
+                config.remove("sing_box_routing"); config.remove("sing_box_dns");
+                config.put("android_legacy_awg_backend", true);
+            }
+            startService(config); awaitState(CONNECTED, false);
+            ExecutorService io = Executors.newSingleThreadExecutor();
+            try (Socket connection = retainedSocket(InetAddress.getByName("10.77.0.2"))) {
+                byte[] payload = new byte[256 * 1024];
+                new java.security.SecureRandom().nextBytes(payload);
+                exchange(io, connection, payload);
+                retainedCheckpoint("perf_" + mode + "_before");
+                long begin = SystemClock.elapsedRealtime(), bytes = 0;
+                while (SystemClock.elapsedRealtime() - begin < 8000) {
+                    exchange(io, connection, payload); bytes += payload.length;
+                }
+                long elapsed = SystemClock.elapsedRealtime() - begin;
+                retainedCheckpoint("perf_" + mode + "_after");
+                progress("PERFORMANCE " + new JSONObject().put("backend", mode).put("bytes", bytes).put("elapsed_ms", elapsed));
+            } finally { io.shutdownNow(); disconnect(); }
+        }
+        pass("legacy/shared CPU and RSS observations with verified original-stream payloads");
     }
 
     private JSONObject connectionDiagnostics() throws Exception {
