@@ -30,6 +30,10 @@ import (
 // while a notifier can send. Shutdown cancels producers, waits for admitted I/O,
 // stops the stack and releases queued views before returning.
 type FlowStack struct {
+	tcpPathGate       sync.Mutex
+	tcpNextID         uint64
+	tcpProbeCursor    uint64
+	tcpProbeBudget    tcpProbeBudget
 	tcpConnections    map[*flowTCPConn]struct{}
 	tcpPathGeneration uint64
 	tcpProofSerial    uint64
@@ -156,6 +160,8 @@ func (s *FlowStack) MTU() (int, error) {
 // claim that existing TCP has learned a smaller PMTU; regression tests must
 // establish that separately before a controller enables this automatically.
 func (s *FlowStack) SetPathMTU(mtu int) error {
+	s.tcpPathGate.Lock()
+	defer s.tcpPathGate.Unlock()
 	s.state.Lock()
 	defer s.state.Unlock()
 	if s.closed {

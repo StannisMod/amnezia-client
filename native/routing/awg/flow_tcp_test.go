@@ -48,6 +48,20 @@ func TestTCPRegistryPreservesHalfCloseAndOwnership(t *testing.T) {
 	if len(snapshot) != 1 || snapshot[0] != tracked.TCPConn {
 		t.Fatal("registry lost actual TCP endpoint")
 	}
+	// A live, healthy TCP stream must not be retransmitted merely because a
+	// path was verified. Exercise the dispatcher against the actual endpoint.
+	proof := tcpPathProof{owner: flow, generation: flow.tcpPathGeneration, serial: 1, size: 1280, verifiedAt: time.Now()}
+	flow.tcpProofSerial = 1
+	if n := flow.dispatchTCPPathProof(proof); n != 0 {
+		t.Fatal("healthy stream probed", n)
+	}
+	if flow.tcpProbeBudget.attempts != 1 || flow.tcpProbeBudget.packets != 0 {
+		t.Fatal("dispatcher accounting")
+	}
+	flow.invalidateTCPPath()
+	if n := flow.dispatchTCPPathProof(proof); n != 0 || flow.tcpProbeBudget.attempts != 1 {
+		t.Fatal("stale proof reached endpoint")
+	}
 	if err = client.(interface{ CloseWrite() error }).CloseWrite(); err != nil {
 		t.Fatal(err)
 	}

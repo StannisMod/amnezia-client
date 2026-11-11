@@ -20,6 +20,8 @@ type tcpPathProof struct {
 const tcpPathProofLifetime = time.Second
 
 func (s *FlowStack) invalidateTCPPath() {
+	s.tcpPathGate.Lock()
+	defer s.tcpPathGate.Unlock()
 	s.state.Lock()
 	s.tcpPathGeneration++
 	s.state.Unlock()

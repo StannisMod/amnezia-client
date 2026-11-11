@@ -12,6 +12,7 @@ import (
 type flowTCPConn struct {
 	*gonet.TCPConn
 	owner    *FlowStack
+	id       uint64
 	once     sync.Once
 	closeErr error
 }
@@ -36,7 +37,8 @@ func (s *FlowStack) trackTCP(conn *gonet.TCPConn) (net.Conn, error) {
 	if s.tcpConnections == nil {
 		s.tcpConnections = make(map[*flowTCPConn]struct{})
 	}
-	tracked := &flowTCPConn{TCPConn: conn, owner: s}
+	s.tcpNextID++
+	tracked := &flowTCPConn{TCPConn: conn, owner: s, id: s.tcpNextID}
 	s.tcpConnections[tracked] = struct{}{}
 	s.state.Unlock()
 	return tracked, nil
