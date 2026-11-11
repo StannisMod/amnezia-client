@@ -3,6 +3,8 @@ on:
   push:
     paths:
       - server/mtu/**
+      - client/server_scripts/prepare_ipv6_network.sh
+      - client/tests/test_ipv6_network_prepare.py
       - native/routing/**
       - client/server_scripts/awg/**
       - client/server_scripts/awg_legacy/**
@@ -11,6 +13,8 @@ on:
   pull_request:
     paths:
       - server/mtu/**
+      - client/server_scripts/prepare_ipv6_network.sh
+      - client/tests/test_ipv6_network_prepare.py
       - native/routing/**
       - client/server_scripts/awg/**
       - client/server_scripts/awg_legacy/**
@@ -27,6 +31,10 @@ jobs:
           python-version: '3.12'
       - name: Check route ownership regressions
         run: python3 -m unittest discover -s server/mtu -p 'test_*.py'
+      - name: Check non-destructive IPv6 bridge preparation
+        run: |
+          sh -n client/server_scripts/prepare_ipv6_network.sh
+          python3 client/tests/test_ipv6_network_prepare.py
       - name: Check transactional script activation
         run: bash server/mtu/lab/test_activation.sh
       - name: Check installed startup scripts

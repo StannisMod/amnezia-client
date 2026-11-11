@@ -2,6 +2,12 @@ find_package(Qt6 REQUIRED COMPONENTS Test)
 
 include(CTest)
 
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT ANDROID)
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    add_test(NAME IPv6NetworkPreparationTest
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_ipv6_network_prepare.py")
+endif()
+
 function(amnezia_copy_runtime_dlls)
     if(NOT WIN32)
         return()

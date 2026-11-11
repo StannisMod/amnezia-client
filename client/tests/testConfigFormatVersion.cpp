@@ -17,6 +17,7 @@
 #include "core/configurators/wireguardConfigurator.h"
 #include "core/models/protocols/wireGuardProtocolConfig.h"
 #include "core/models/protocols/awgProtocolConfig.h"
+#include "core/utils/selfhosted/scriptsRegistry.h"
 
 using namespace amnezia;
 
@@ -55,6 +56,16 @@ private:
     SecureQSettings *m_settings = nullptr;
 
 private slots:
+    void testIPv6PreparationIsPackagedForAWGAndWG()
+    {
+        for (const auto container : {DockerContainer::Awg, DockerContainer::Awg2, DockerContainer::WireGuard}) {
+            const auto script = scriptData(ProtocolScriptType::run_container, container);
+            QVERIFY(script.contains("AMNEZIA_IPV6_NETWORK_STATUS"));
+            QVERIFY(script.contains("--ipv4=false"));
+            QVERIFY(script.contains("sudo docker network connect \"$AMNEZIA_IPV6_NETWORK\""));
+        }
+        QVERIFY(!scriptData(ProtocolScriptType::run_container, DockerContainer::OpenVpn).contains("AMNEZIA_IPV6_NETWORK_STATUS"));
+    }
     void testClientIPv6AllocationUsesExplicitServerPrefix()
     {
         const auto configuration = QString("Address = 10.8.1.0/24, fd77:1234:5678:9::1/64\n");

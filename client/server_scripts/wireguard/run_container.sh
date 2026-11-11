@@ -12,6 +12,9 @@ sudo docker run -d \
 $CONTAINER_NAME
 
 sudo docker network connect amnezia-dns-net $CONTAINER_NAME
+if [ -n "$AMNEZIA_IPV6_NETWORK" ]; then
+    sudo docker network connect "$AMNEZIA_IPV6_NETWORK" "$CONTAINER_NAME" || exit 1
+fi
 
 # Prevent to route packets outside of the container in case if server behind of the NAT
 #sudo docker exec -i $CONTAINER_NAME sh -c "ifconfig eth0:0 $SERVER_IP_ADDRESS netmask 255.255.255.255 up"
