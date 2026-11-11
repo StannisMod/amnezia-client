@@ -5,6 +5,11 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QUuid>
+#include <QRegularExpression>
+#include <QSet>
+#ifdef Q_OS_ANDROID
+#include <QJniObject>
+#endif
 
 #include "core/utils/errorCodes.h"
 #include "core/utils/routeModes.h"
@@ -249,6 +254,35 @@ namespace {
 AppsRouteMode SecureAppSettingsRepository::appsRouteMode() const
 {
     return static_cast<AppsRouteMode>(value("Conf/appsRouteMode", 0).toInt());
+}
+
+QJsonObject SecureAppSettingsRepository::androidAppRoutingPolicy() const
+{
+    return value("Conf/androidAppRoutingV1").toJsonObject();
+}
+
+void SecureAppSettingsRepository::setAndroidAppRoutingPolicy(const QJsonObject &policy)
+{
+    setValue("Conf/androidAppRoutingV1", policy);
+}
+
+bool SecureAppSettingsRepository::validateAndroidAppRoutingPolicy(const QJsonObject &policy, bool supported)
+{
+    if (policy.isEmpty()) return true;
+    if (!supported || policy.value("version").toDouble(-1) != 1
+        || !policy.value("site_rule_packages").isArray()) return false;
+    for (auto it = policy.begin(); it != policy.end(); ++it)
+        if (it.key() != "version" && it.key() != "site_rule_packages" && it.key() != "vpn_dns_policy") return false;
+    if (policy.contains("vpn_dns_policy") && !policy.value("vpn_dns_policy").isString()) return false;
+    const auto packages = policy.value("site_rule_packages").toArray();
+    if (packages.size() > 4096) return false;
+    const QRegularExpression packageName("^[A-Za-z0-9_]+(\\.[A-Za-z0-9_]+)+$");
+    QSet<QString> seen;
+    for (const auto &value : packages) {
+        if (!value.isString() || !packageName.match(value.toString()).hasMatch() || seen.contains(value.toString())) return false;
+        seen.insert(value.toString());
+    }
+    return true;
 }
 
 void SecureAppSettingsRepository::setAppsRouteMode(AppsRouteMode mode)
@@ -506,7 +540,20 @@ QByteArray SecureAppSettingsRepository::backupAppConfig() const
 
 bool SecureAppSettingsRepository::restoreAppConfig(const QByteArray &cfg)
 {
-    return m_settings->restoreAppConfig(cfg);
+    auto document = QJsonDocument::fromJson(cfg).object();
+    const auto key = QStringLiteral("Conf/androidAppRoutingV1");
+    if (document.contains(key)) {
+        bool supported = true;
+#ifdef Q_OS_ANDROID
+        supported = QJniObject::getStaticField<jint>("android/os/Build$VERSION", "SDK_INT") >= 29;
+#endif
+        if (!document.value(key).isObject() || !validateAndroidAppRoutingPolicy(document.value(key).toObject(), supported)) return false;
+    } else if (!document.isEmpty()) {
+        // An old backup must restore old routing semantics, not retain a
+        // mixed-mode policy left over from the destination installation.
+        document.insert(key, QJsonObject());
+    }
+    return m_settings->restoreAppConfig(QJsonDocument(document).toJson());
 }
 
 void SecureAppSettingsRepository::clearSettings()

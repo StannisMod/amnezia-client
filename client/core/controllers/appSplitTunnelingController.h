@@ -21,6 +21,8 @@ public:
     AppsRouteMode getRouteMode() const;
     bool isSplitTunnelingEnabled() const;
     QVector<amnezia::InstalledAppInfo> getApps() const;
+    bool appliesSiteRules(int index) const;
+    bool setAppliesSiteRules(int index, bool enabled);
 
 private:
     SecureAppSettingsRepository* m_appSettingsRepository;

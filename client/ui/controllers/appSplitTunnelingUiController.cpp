@@ -1,6 +1,9 @@
 #include "appSplitTunnelingUiController.h"
 
 #include <QFileInfo>
+#ifdef Q_OS_ANDROID
+#include <QJniObject>
+#endif
 
 #include "core/utils/errorCodes.h"
 #include "core/utils/routeModes.h"
@@ -75,5 +78,30 @@ void AppSplitTunnelingUiController::updateModel()
     m_appSplitTunnelingModel->updateModel(m_appSplitTunnelingController->getApps());
     emit routeModeChanged();
     emit isSplitTunnelingEnabledChanged();
+    ++m_applicationPolicyRevision;
+    emit applicationPolicyChanged();
+}
+
+bool AppSplitTunnelingUiController::perAppSiteRulesSupported() const
+{
+#ifdef Q_OS_ANDROID
+    return QJniObject::getStaticField<jint>("android/os/Build$VERSION", "SDK_INT") >= 29;
+#else
+    return false;
+#endif
+}
+
+bool AppSplitTunnelingUiController::appliesSiteRules(int index) const
+{
+    return m_appSplitTunnelingController->appliesSiteRules(index);
+}
+
+void AppSplitTunnelingUiController::setAppliesSiteRules(int index, bool enabled)
+{
+    if (!perAppSiteRulesSupported()) return;
+    if (m_appSplitTunnelingController->setAppliesSiteRules(index, enabled)) {
+        ++m_applicationPolicyRevision;
+        emit applicationPolicyChanged();
+    }
 }
 

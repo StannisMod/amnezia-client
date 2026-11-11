@@ -171,12 +171,14 @@ PageType {
 
         delegate: Item {
             width: listView.width
-            implicitHeight: appItem.implicitHeight
+            implicitHeight: appItem.implicitHeight + (siteRulesSwitch.visible ? siteRulesSwitch.implicitHeight + 24 : 0)
 
             ListItemType {
                 id: appItem
 
-                anchors.fill: parent
+                anchors.top: parent.top
+                anchors.left: parent.left
+                anchors.right: parent.right
                 anchors.leftMargin: 16
                 anchors.rightMargin: 16
 
@@ -196,6 +198,25 @@ PageType {
 
                     showQuestionDrawer(headerText, "", yesButtonText, noButtonText, yesButtonFunction, noButtonFunction)
                 }
+            }
+
+            SwitchType {
+                id: siteRulesSwitch
+                anchors.top: appItem.bottom
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.leftMargin: 32
+                anchors.rightMargin: 32
+                visible: AppSplitTunnelingController.perAppSiteRulesSupported
+                         && AppSplitTunnelingController.routeMode === routeMode.onlyForwardApps
+                enabled: root.pageEnabled
+                text: qsTr("Apply site rules")
+                descriptionText: qsTr("Off: all traffic and DNS from this app use VPN. On: site routing and DNS rules apply. Changes apply on the next connection.")
+                checked: {
+                    var revision = AppSplitTunnelingController.applicationPolicyRevision
+                    return AppSplitTunnelingController.appliesSiteRules(proxyAppSplitTunnelingModel.mapToSource(index))
+                }
+                onToggled: AppSplitTunnelingController.setAppliesSiteRules(proxyAppSplitTunnelingModel.mapToSource(index), checked)
             }
         }
     }
