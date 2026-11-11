@@ -193,6 +193,7 @@ func testFakeIPSharedAddressEgress(t *testing.T, defaultPolicy rules.Action, rea
 		defer server.Shutdown()
 		addr := netip.MustParseAddrPort(pc.LocalAddr().String())
 		policy := rules.Config{Version: 1, Default: defaultPolicy, Rules: []rules.Rule{
+			{Kind: rules.CIDR, Value: "127.0.0.0/8", Action: rules.Direct},
 			{Kind: rules.Suffix, Value: "*.corp.example.test", Action: rules.Direct},
 			{Kind: rules.Suffix, Value: "*.ru", Action: rules.Direct},
 		}}
@@ -374,6 +375,18 @@ func testFakeIPSharedAddressEgress(t *testing.T, defaultPolicy rules.Action, rea
 	}
 	if directConnections.Load() != expectedDirect {
 		t.Fatal("VPN failure fell back to DIRECT")
+	}
+	if realDNS {
+		// A server-first literal DIRECT flow must not wait for DNS or VPN.
+		// No application bytes are available for HTTP/TLS sniffing here.
+		literalApp, literalCapture := net.Pipe()
+		defer literalApp.Close()
+		literalApp.SetDeadline(time.Now().Add(2 * time.Second))
+		go instance.Router().RouteConnectionEx(ctx, literalCapture, adapter.InboundContext{Inbound: TUNTag, Network: "tcp", Destination: M.Socksaddr{Addr: netip.MustParseAddr("127.0.0.1"), Port: port}}, nil)
+		label := make([]byte, len("DIRECT"))
+		if _, err := io.ReadFull(literalApp, label); err != nil || string(label) != "DIRECT" {
+			t.Fatalf("literal DIRECT while VPN down: %q %v", label, err)
+		}
 	}
 }
 
