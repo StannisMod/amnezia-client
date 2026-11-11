@@ -571,7 +571,9 @@ void VpnConnection::appendSplitTunnelingConfig()
     m_vpnConfiguration.insert(configKey::splitTunnelApps, appsJsonArray);
 #ifdef Q_OS_ANDROID
     m_vpnConfiguration.remove("android_app_routing");
-    if (appsRouteMode == amnezia::AppsRouteMode::VpnOnlyForwardApps) {
+    if (appsRouteMode == amnezia::AppsRouteMode::VpnOnlyForwardApps
+        && (protocolName == ProtocolUtils::protoToString(Proto::Awg)
+            || protocolName == ProtocolUtils::protoToString(Proto::WireGuard))) {
         const auto appPolicy = m_appSettingsRepository->androidAppRoutingPolicy();
         if (!appPolicy.isEmpty()) m_vpnConfiguration.insert("android_app_routing", appPolicy);
     }

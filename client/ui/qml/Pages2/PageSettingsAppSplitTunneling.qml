@@ -208,6 +208,7 @@ PageType {
                 anchors.leftMargin: 32
                 anchors.rightMargin: 32
                 visible: AppSplitTunnelingController.perAppSiteRulesSupported
+                         && ServersUiController.defaultServerSupportsPerAppSiteRules
                          && AppSplitTunnelingController.routeMode === routeMode.onlyForwardApps
                 enabled: root.pageEnabled
                 text: qsTr("Apply site rules")
