@@ -214,17 +214,20 @@ open class Wireguard : Protocol() {
                     onError("Experimental domain routing stopped because Android VPN lockdown is enabled")
                     break
                 }
-                val snapshot = RoutingBackend.stats(statusHandle)
-                if (routedHandle != statusHandle) break
-                if (snapshot == null) {
-                    synchronized(endpointLock) {
-                        if (routedHandle == statusHandle) {
-                            stopVpn()
-                            onError("VPN packet capture stopped; reconnect is required")
+                // Capture handover holds endpointLock through establish()
+                // and the native FD transfer. Read health and act on it under
+                // that same lock: a stale null must not stop a repaired core.
+                val snapshot = synchronized(endpointLock) {
+                    if (routedHandle != statusHandle) null else {
+                        RoutingBackend.stats(statusHandle).also {
+                            if (it == null) {
+                                stopVpn()
+                                onError("VPN packet capture stopped; reconnect is required")
+                            }
                         }
                     }
-                    break
                 }
+                if (snapshot == null || routedHandle != statusHandle) break
                 if (!announced && snapshot[2] > 0) { state.value = CONNECTED; announced = true }
                 delay(1000)
             }

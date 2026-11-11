@@ -357,6 +357,13 @@ func TestMobileRecoveryKeepsInteractiveAndDelayedMediaTCP(t *testing.T) {
 						next, newApp := capturePair(t)
 						old := appLink.Load()
 						appLink.Store(&recoveryPacketLink{newApp})
+						if i == 0 {
+							descriptor.file.Close()
+							<-descriptor.done
+							if platform.CaptureError() == nil {
+								t.Fatal("retired reader was reported healthy before handover")
+							}
+						}
 						if err := session.ReplaceCapture(next); err != nil {
 							t.Fatal(err)
 						}

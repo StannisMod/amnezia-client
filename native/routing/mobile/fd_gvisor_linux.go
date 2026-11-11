@@ -87,8 +87,8 @@ func (p *packetDescriptor) Start() error {
 }
 
 // replaceDescriptor consumes a freshly owned descriptor on every path. It is
-// deliberately internal until Android's UID-range handover is proven. The
-// PacketFlow endpoint, gVisor stack and established connections never restart.
+// called through the owning Session API. The host serializes establish and
+// health checks; the PacketFlow endpoint and gVisor stack remain unchanged.
 func (p *packetDescriptor) replaceDescriptor(fd int) error {
 	// os.NewFile must observe O_NONBLOCK when it registers the descriptor
 	// with Go's poller; setting it afterwards makes an idle read return EAGAIN.
@@ -111,11 +111,9 @@ func (p *packetDescriptor) replaceDescriptor(fd int) error {
 	if p.closed || !p.started {
 		return net.ErrClosed
 	}
-	select {
-	case <-p.done:
-		return net.ErrClosed
-	default:
-	}
+	// A host may deliver a replacement after Android has already retired
+	// the old TUN. Until this explicit operation, CaptureError still reports
+	// that stopped reader. The stable endpoint is only destroyed by Close.
 	p.fileMu.Lock()
 	old := p.file
 	p.file = file

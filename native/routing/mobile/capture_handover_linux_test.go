@@ -59,6 +59,15 @@ func TestCaptureDescriptorHandoverKeepsCoreAndFakeIP(t *testing.T) {
 				if generation > 0 {
 					next, newApp := capturePair(t)
 					old := capture.fd
+					if generation == 1 {
+						// Android can retire the old TUN during establish(),
+						// before the host can deliver its replacement FD.
+						capture.file.Close()
+						<-capture.done
+						if capture.CaptureError() == nil {
+							t.Fatal("unexpected reader exit was hidden")
+						}
+					}
 					if err = session.ReplaceCapture(next); err != nil {
 						t.Fatal(err)
 					}
