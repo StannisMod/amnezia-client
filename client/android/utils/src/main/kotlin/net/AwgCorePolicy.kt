@@ -82,6 +82,16 @@ object AwgCorePolicy {
         return result
     }
 
+    fun retainsVpnDns(config: JSONObject): Boolean {
+        val dns = config.optJSONObject("sing_box_dns") ?: return false
+        if (dns.optBoolean("preserve_network_domains")) return false
+        val policies = dns.optJSONObject("policies") ?: return false
+        return policies.length() > 0 && policies.keys().asSequence().all {
+            val policy = policies.getJSONObject(it)
+            policy.optString("source") != "network" && policy.optString("path") == "vpn"
+        }
+    }
+
     fun transportAdapter(protocol: String, extensionParameters: Boolean): String {
         require(protocol in setOf("awg", "wireguard"))
         // Imported WireGuard extension profiles used the same AWG device in

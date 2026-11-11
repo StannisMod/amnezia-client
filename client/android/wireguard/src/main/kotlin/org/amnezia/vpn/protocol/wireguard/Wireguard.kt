@@ -530,7 +530,8 @@ open class Wireguard : Protocol() {
         if (handle <= 0) return@synchronized
         val ticket = recoveryState.request(force) ?: return@synchronized
         routedRecoveryJob?.cancel()
-        RoutingBackend.suspendNetworkDns(handle)
+        val refreshDns = !AwgCorePolicy.retainsVpnDns(profile)
+        if (refreshDns) RoutingBackend.suspendNetworkDns(handle)
         routedRecoveryJob = routedScope.launch {
             var attempt = 0
             while (true) {
@@ -552,22 +553,24 @@ open class Wireguard : Protocol() {
                         // slow/broken bootstrap DNS must not stall a usable IP.
                         recoveryState.commitTransport(ticket, identity, endpoint)
                     }
-                    val dns = profile.optJSONObject("sing_box_dns")
-                    val needsNetwork = dns?.let { options ->
-                        options.optBoolean("preserve_network_domains") ||
-                            options.getJSONObject("policies").keys().asSequence().any {
-                                options.getJSONObject("policies").getJSONObject(it).optString("source") == "network"
-                            }
-                    } ?: false
-                    val inventory = if (needsNetwork) networkDnsSnapshot?.invoke()
-                        ?: throw VpnException("Network DNS is unavailable")
-                    else JSONObject().put("links", JSONArray()).put("routing_domains_available", false)
-                    currentCoroutineContext().ensureActive()
-                    if (underlayIdentity?.invoke() != identity) continue
-                    synchronized(endpointLock) {
-                        if (!recoveryState.current(ticket) || handle != routedHandle) return@launch
-                        if (!RoutingBackend.reloadNetworkDns(handle, inventory.toString().toByteArray(Charsets.UTF_8)))
-                            throw VpnException("Network DNS refresh failed")
+                    if (refreshDns) {
+                        val dns = profile.optJSONObject("sing_box_dns")
+                        val needsNetwork = dns?.let { options ->
+                            options.optBoolean("preserve_network_domains") ||
+                                options.getJSONObject("policies").keys().asSequence().any {
+                                    options.getJSONObject("policies").getJSONObject(it).optString("source") == "network"
+                                }
+                        } ?: false
+                        val inventory = if (needsNetwork) networkDnsSnapshot?.invoke()
+                            ?: throw VpnException("Network DNS is unavailable")
+                        else JSONObject().put("links", JSONArray()).put("routing_domains_available", false)
+                        currentCoroutineContext().ensureActive()
+                        if (underlayIdentity?.invoke() != identity) continue
+                        synchronized(endpointLock) {
+                            if (!recoveryState.current(ticket) || handle != routedHandle) return@launch
+                            if (!RoutingBackend.reloadNetworkDns(handle, inventory.toString().toByteArray(Charsets.UTF_8)))
+                                throw VpnException("Network DNS refresh failed")
+                        }
                     }
                     if (decision.verifyPeer) {
                         var authenticated = false

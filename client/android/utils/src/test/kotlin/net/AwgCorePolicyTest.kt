@@ -90,4 +90,18 @@ class AwgCorePolicyTest {
         assertTrue(AwgCorePolicy.platformSafe(35, false, safe))
     }
 
+    @Test fun fixedVpnDnsSurvivesUnderlayRecovery() {
+        val config = AwgCorePolicy.prepare(profile())
+        assertTrue(AwgCorePolicy.retainsVpnDns(config))
+        val policy = config.getJSONObject("sing_box_dns").getJSONObject("policies").getJSONObject("vpn")
+        policy.put("source", "network")
+        assertFalse(AwgCorePolicy.retainsVpnDns(config))
+        policy.remove("source")
+        policy.put("path", "direct")
+        assertFalse(AwgCorePolicy.retainsVpnDns(config))
+        policy.put("path", "vpn")
+        config.getJSONObject("sing_box_dns").put("preserve_network_domains", true)
+        assertFalse(AwgCorePolicy.retainsVpnDns(config))
+    }
+
 }
