@@ -63,6 +63,10 @@ public final class RoutingInstrumentation extends Instrumentation {
     private boolean sharedFirst;
     private boolean primaryOnly;
     private boolean uploadMtuOnly;
+    private boolean appPolicyOnly;
+    private long applicationPolicyReply = -1;
+    private boolean applicationPolicyAccepted;
+    private String applicationPolicyError = "";
     private final CountDownLatch bound = new CountDownLatch(1);
     private final ServiceConnection connection = new ServiceConnection() {
         @Override public void onServiceConnected(ComponentName name, IBinder binder) {
@@ -80,6 +84,7 @@ public final class RoutingInstrumentation extends Instrumentation {
         cycles = Integer.parseInt(args.getString("cycles", "100"));
         primaryOnly = Boolean.parseBoolean(args.getString("primary_only", "false"));
         uploadMtuOnly = Boolean.parseBoolean(args.getString("upload_mtu_only", "false"));
+        appPolicyOnly = Boolean.parseBoolean(args.getString("app_policy_only", "false"));
         start();
     }
     @Override public void onStart() {
@@ -105,6 +110,11 @@ public final class RoutingInstrumentation extends Instrumentation {
                         catch (Exception bad) { serviceError = true; serviceErrorText = "invalid connection diagnostics"; }
                     }
                     if (message.what == 3) { serviceError = true; serviceErrorText = message.getData().getString("ERROR", ""); }
+                    if (message.what == 4) {
+                        applicationPolicyReply = message.getData().getLong("APPLICATION_POLICY_REQUEST_ID", -1);
+                        applicationPolicyAccepted = message.getData().getBoolean("APPLICATION_POLICY_SUCCESS");
+                        applicationPolicyError = message.getData().getString("APPLICATION_POLICY_ERROR", "");
+                    }
                     lock.notifyAll();
                 }
                 return true;
@@ -114,6 +124,10 @@ public final class RoutingInstrumentation extends Instrumentation {
             require(didBind && bound.await(15, TimeUnit.SECONDS), "AwgService binding failed");
             Bundle registration = new Bundle(); registration.putString("CLIENT_NAME", "routing-acceptance");
             send(REGISTER, registration);
+            if (appPolicyOnly) {
+                perApplicationPolicy();
+                result.putString("routing_result", "PASS_APP_POLICY_ONLY");code = 0;return;
+            }
             if (uploadMtuOnly) {
                 automaticUploadMtu();
                 result.putString("routing_result", "PASS_UPLOAD_MTU_ONLY");code = 0;return;
@@ -207,6 +221,7 @@ public final class RoutingInstrumentation extends Instrumentation {
             pass("legacy AWG TCP/UDP/QUIC and routed-to-legacy-to-routed service transition");
             retainedPrimarySession();
             automaticUploadMtu();
+            perApplicationPolicy();
             restrictedProfiles();
             // restrictedProfiles leaves an IPv6-only profile in the service's
             // saved configuration. Always-on restores that exact profile;
@@ -466,6 +481,87 @@ public final class RoutingInstrumentation extends Instrumentation {
         boolean blocked = false;try { blocked = tcp(InetAddress.getByName("10.0.2.2")) == null; } catch (Exception expected) { blocked = true; }
         require(blocked, "IPv6-only profile gained an implicit native IPv4 bypass");disconnect();
         pass("restricted IPv4 MTU1200 and IPv6-only profiles preserve scope; IPv6 DNS over VPN");
+    }
+
+    private JSONObject appProbe(int index, String operation, String tag) throws Exception {
+        JSONObject command = new JSONObject().put("op", operation).put("tag", tag).put("payload", "old TCP after live policy switch");
+        try (Socket socket = new Socket()) {
+            socket.connect(new InetSocketAddress("127.0.0.1", 19091 + index), 2000);socket.setSoTimeout(12000);
+            socket.getOutputStream().write((command.toString()+"\n").getBytes(StandardCharsets.UTF_8));
+            JSONObject reply = new JSONObject(new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8)).readLine());
+            if (!operation.equals("ready")) progress("APP_PROBE " + reply);
+            require(reply.getBoolean("ok"), "application probe failed: " + reply.optString("error"));
+            require(reply.getString("package").equals("org.amnezia.routingprobe." + (index == 0 ? "a" : "b")), "wrong probe package");
+            return reply;
+        }
+    }
+    private void awaitAppProbe(int index) throws Exception {
+        long until = SystemClock.elapsedRealtime()+15000;
+        while (true) {
+            try {appProbe(index,"ready","old");return;}
+            catch (java.net.ConnectException notReady) {if(SystemClock.elapsedRealtime()>=until)throw notReady;SystemClock.sleep(100);}
+        }
+    }
+    private void updateApplicationPolicy(String sitePackage) throws Exception {
+        long request = System.nanoTime();
+        JSONObject policy = new JSONObject().put("version",1).put("site_rule_packages",new JSONArray().put(sitePackage));
+        Bundle args = new Bundle();args.putLong("APPLICATION_POLICY_REQUEST_ID",request);args.putString("APPLICATION_POLICY",policy.toString());
+        synchronized(lock){applicationPolicyReply=-1;applicationPolicyAccepted=false;applicationPolicyError="";}
+        send(7,args);
+        long until=SystemClock.elapsedRealtime()+20000;
+        synchronized(lock){
+            while(applicationPolicyReply!=request && !serviceError && SystemClock.elapsedRealtime()<until)lock.wait(100);
+            require(applicationPolicyReply==request && applicationPolicyAccepted && !serviceError,"live application update was not acknowledged: "+applicationPolicyError);
+        }
+    }
+    private void perApplicationPolicy() throws Exception {
+        awaitAppProbe(0);awaitAppProbe(1);
+        JSONObject config=primaryConfiguration();
+        config.put("splitTunnelApps",new JSONArray().put("org.amnezia.routingprobe.a").put("org.amnezia.routingprobe.b"));
+        config.put("android_app_routing",new JSONObject().put("version",1).put("site_rule_packages",new JSONArray().put("org.amnezia.routingprobe.b")));
+        config.put("sing_box_routing",new JSONObject().put("version",1).put("default","vpn")
+            .put("rules",new JSONArray().put(rule("suffix","app-policy.test","direct"))));
+        JSONObject policies=new JSONObject()
+            .put("lan",new JSONObject().put("transport","udp").put("server","10.0.2.2").put("port",1053).put("path","direct"))
+            .put("vpn",new JSONObject().put("transport","udp").put("server","10.77.0.2").put("port",53).put("path","vpn"));
+        config.put("sing_box_dns",new JSONObject().put("version",1).put("default","vpn").put("follow_routing",true)
+            .put("direct","lan").put("vpn","vpn").put("policies",policies).put("rules",new JSONArray()));
+        state=-1;serviceError=false;startService(config);awaitState(CONNECTED,false);
+        long session=connectionDiagnostics().getLong("session_id");
+        retainedCheck=true;retainedStateChanged=false;
+        try {
+            JSONObject before=retainedCheckpoint("app_policy_before");
+            JSONObject a=appProbe(0,"open","old"),b=appProbe(1,"open","old");
+            require(a.getInt("uid")!=b.getInt("uid"),"two probes share a UID");
+            require(a.getString("route").equals("VPN") && b.getString("route").equals("DIRECT"),"initial per-app routing wrong");
+            require(a.getString("address").equals(b.getString("address")) && fake(InetAddress.getByName(a.getString("address"))),"apps did not share a FakeIP");
+            for(int i=0;i<2;i++) {
+                require(appProbe(i,"txt","old").getString("answer").equals(i==0?"VPN":"DIRECT"),"initial application DNS context wrong");
+                require(appProbe(i,"udp","old").getString("reply").equals((i==0?"VPN:":"DIRECT:")+"app-policy-proof"),"initial application UDP route wrong");
+            }
+            updateApplicationPolicy("org.amnezia.routingprobe.a");
+            JSONObject oldA=appProbe(0,"echo","old"),oldB=appProbe(1,"echo","old");
+            require(oldA.getInt("local_port")==a.getInt("local_port") && oldB.getInt("local_port")==b.getInt("local_port"),"old TCP was replaced");
+            require(oldA.getString("route").equals("VPN") && oldB.getString("route").equals("DIRECT"),"old TCP changed outbound");
+            JSONObject newA=appProbe(0,"open","fresh"),newB=appProbe(1,"open","fresh");
+            require(newA.getString("route").equals("DIRECT") && newB.getString("route").equals("VPN"),"new flows ignored updated policy");
+            require(newA.getString("address").equals(a.getString("address")) && newB.getString("address").equals(a.getString("address")),"FakeIP changed during policy update");
+            for(int i=0;i<2;i++) {
+                require(appProbe(i,"txt","fresh").getString("answer").equals(i==0?"DIRECT":"VPN"),"old DNS cache/policy survived update");
+                require(appProbe(i,"udp","fresh").getString("reply").equals((i==0?"DIRECT:":"VPN:")+"app-policy-proof"),"new UDP flow ignored policy update");
+            }
+            JSONObject after=retainedCheckpoint("app_policy_after");
+            require(after.getLong("vpn_tcp")==before.getLong("vpn_tcp")+2 && after.getLong("direct_tcp")==before.getLong("direct_tcp")+2,"unexpected TCP redial or observer");
+            require(after.getLong("native_dns_queries")>before.getLong("native_dns_queries") && after.getLong("dns_queries")>before.getLong("dns_queries"),"both DNS observers were not exercised");
+            require(connectionDiagnostics().getLong("session_id")==session && !retainedStateChanged,"application update replaced/disconnected the core");
+            progress("APP_POLICY_RESULT "+new JSONObject().put("uids",new JSONArray().put(a.getInt("uid")).put(b.getInt("uid")))
+                .put("same_session",true).put("same_old_ports",true).put("dns_contexts_switched",true));
+        } finally {
+            retainedCheck=false;
+            for(int i=0;i<2;i++)try{appProbe(i,"stop","old");}catch(Exception ignored){}
+            disconnect();
+        }
+        pass("two real Android UIDs switch new TCP/UDP/DNS policy while original TCP and shared FakeIP survive");
     }
 
     private void automaticUploadMtu() throws Exception {

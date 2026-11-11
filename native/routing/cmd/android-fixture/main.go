@@ -61,6 +61,7 @@ type fixture struct {
 	directTCP, directUDP, vpnTCP, vpnUDP atomic.Int64
 	bulkTCP                              atomic.Int64
 	dnsQueries                           atomic.Int64
+	nativeDNSQueries                     atomic.Int64
 	dnsNamesMu                           sync.Mutex
 	dnsNames                             []string
 	outerRX, outerTX                     atomic.Int64
@@ -289,6 +290,8 @@ func (f *fixture) start() error {
 					if name != "ipv6.test." {
 						a.Answer = append(a.Answer, &dns.A{Hdr: hdr, A: net.ParseIP(sharedIP)})
 					}
+				case dns.TypeTXT:
+					a.Answer = append(a.Answer, &dns.TXT{Hdr: hdr, Txt: []string{"VPN"}})
 				case dns.TypeAAAA:
 					if name == "ipv6.test." {
 						a.Answer = append(a.Answer, &dns.AAAA{Hdr: hdr, AAAA: net.ParseIP("fd77::2")})
@@ -406,6 +409,7 @@ func main() {
 		}
 		defer pc.Close()
 		server := &dns.Server{PacketConn: pc, Handler: dns.HandlerFunc(func(w dns.ResponseWriter, q *dns.Msg) {
+			f.nativeDNSQueries.Add(1)
 			var reply dns.Msg
 			reply.SetReply(q)
 			for _, question := range q.Question {
@@ -415,6 +419,9 @@ func main() {
 				}
 				if question.Qtype == dns.TypeA {
 					reply.Answer = append(reply.Answer, &dns.A{Hdr: dns.RR_Header{Name: question.Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 1}, A: net.ParseIP(sharedIP).To4()})
+				}
+				if question.Qtype == dns.TypeTXT {
+					reply.Answer = append(reply.Answer, &dns.TXT{Hdr: dns.RR_Header{Name: question.Name, Rrtype: dns.TypeTXT, Class: dns.ClassINET, Ttl: 30}, Txt: []string{"DIRECT"}})
 				}
 			}
 			w.WriteMsg(&reply)
@@ -434,7 +441,7 @@ func main() {
 	control.HandleFunc("/stats", func(w http.ResponseWriter, _ *http.Request) {
 		// Datagram counts identify delivery/peer response failures without
 		// persisting handshake payloads, keys or private UAPI configuration.
-		json.NewEncoder(w).Encode(map[string]int64{"direct_tcp": f.directTCP.Load(), "direct_udp": f.directUDP.Load(), "vpn_tcp": f.vpnTCP.Load(), "bulk_tcp": f.bulkTCP.Load(), "vpn_udp": f.vpnUDP.Load(), "dns_queries": f.dnsQueries.Load(), "outer_received": f.outerRX.Load(), "outer_sent": f.outerTX.Load()})
+		json.NewEncoder(w).Encode(map[string]int64{"direct_tcp": f.directTCP.Load(), "direct_udp": f.directUDP.Load(), "vpn_tcp": f.vpnTCP.Load(), "bulk_tcp": f.bulkTCP.Load(), "vpn_udp": f.vpnUDP.Load(), "dns_queries": f.dnsQueries.Load(), "native_dns_queries": f.nativeDNSQueries.Load(), "outer_received": f.outerRX.Load(), "outer_sent": f.outerTX.Load()})
 	})
 	control.HandleFunc("/endpoint-dns", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {

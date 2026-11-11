@@ -104,6 +104,36 @@ def upload_mtu_metrics(output, report):
     assert a['capture_fds'] == b['capture_fds'] == 1
 
 
+def app_policy_metrics(output, report):
+    match = re.search(r'APP_POLICY_RESULT (\{[^\n]*\})', output)
+    assert match, 'two-application policy result missing'
+    metrics = report['per_application_policy'] = json.loads(match[1])
+    assert len(metrics['uids']) == 2 and len(set(metrics['uids'])) == 2 and min(metrics['uids']) > 0
+    assert metrics['same_session'] and metrics['same_old_ports'] and metrics['dns_contexts_switched']
+    a,b = (report['retained_resources'][key] for key in ('app_policy_before','app_policy_after'))
+    assert a['pid'] == b['pid'] and a['capture_links'] and a['capture_links'] == b['capture_links']
+    assert a['capture_fds'] == b['capture_fds'] == 1
+
+
+def build_application_probes(tools, android_jar, work, sign):
+    probe_apks = []
+    probe_source = ROOT / 'scripts/routing/android-app-probe'
+    probe_classes, probe_dex = work/'app-probe-classes', work/'app-probe-dex'
+    probe_classes.mkdir(); probe_dex.mkdir()
+    run('javac','-source','8','-target','8','-classpath',android_jar,'-d',probe_classes,probe_source/'Probe.java')
+    run(tools/'d8','--min-api','28','--lib',android_jar,'--output',probe_dex,*sorted(probe_classes.rglob('*.class')))
+    for suffix in ('a','b'):
+        package = 'org.amnezia.routingprobe.'+suffix
+        manifest = work/('probe-'+suffix+'-manifest.xml')
+        manifest.write_text((probe_source/'AndroidManifest.xml.in').read_text().replace('@PACKAGE@',package))
+        unsigned_probe = work/('probe-'+suffix+'-unsigned.apk')
+        run(tools/'aapt2','link','-I',android_jar,'--manifest',manifest,'-o',unsigned_probe)
+        with zipfile.ZipFile(unsigned_probe,'a') as archive: archive.write(probe_dex/'classes.dex','classes.dex')
+        signed_probe = work/('probe-'+suffix+'.apk')
+        sign(unsigned_probe,signed_probe); probe_apks.append(signed_probe)
+    return probe_apks
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--apk", type=Path, required=True)
@@ -114,12 +144,13 @@ def main():
     parser.add_argument("--cycles", type=int, default=100)
     parser.add_argument("--source-sha", help="test-harness commit when a read-only worktree has no mounted Git metadata")
     parser.add_argument("--apk-source-sha", help="record the actual packaged client source independently of the harness")
+    parser.add_argument("--app-policy-only", action="store_true", help="focused two-app live policy regression; not full acceptance")
     parser.add_argument("--upload-mtu-only", action="store_true", help="focused aged-TCP MTU regression; not full acceptance")
     parser.add_argument("--primary-only", action="store_true", help="focused retained-TCP debug run; not full acceptance")
     parser.add_argument("--performance-only",action="store_true",help="benchmark only; does not run full acceptance")
     parser.add_argument("--performance-order",choices=("legacy-first","shared-first"),default="legacy-first")
     args = parser.parse_args()
-    if sum((args.upload_mtu_only, args.primary_only, args.performance_only)) > 1:
+    if sum((args.app_policy_only, args.upload_mtu_only, args.primary_only, args.performance_only)) > 1:
         parser.error("focused acceptance modes are mutually exclusive")
     check_ipc_contract()
     for value in (args.source_sha, args.apk_source_sha):
@@ -173,6 +204,10 @@ def main():
     instrument = work / "instrumentation.apk"
     sign(aligned, instrument)
 
+    probe_apks, probe_processes, probe_logs = [], [], []
+    if not (args.upload_mtu_only or args.primary_only or args.performance_only):
+        probe_apks = build_application_probes(tools, android_jar, work, sign)
+
     assert adb("shell", "getprop", "ro.kernel.qemu") == "1", "only disposable Android emulators are supported"
     adb("root"); adb("wait-for-device")
     assert adb("shell", "id", "-u") == "0", "rooted emulator is needed to measure the actual service process"
@@ -187,11 +222,17 @@ def main():
         # Only the emulator was accepted above. Remove stale test-only device
         # ownership/signatures from an interrupted prior disposable run.
         subprocess.run(['adb', 'shell', 'dpm', 'remove-active-admin', admin], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
-        for package in ('org.amnezia.routingtest', PACKAGE):
+        for package in ('org.amnezia.routingtest', PACKAGE, 'org.amnezia.routingprobe.a', 'org.amnezia.routingprobe.b'):
             subprocess.run(['adb', 'uninstall', package], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
         adb("shell", "settings", "put", "global", "private_dns_mode", "off")
         adb("install", "-r", "-t", str(target))
         adb("install", "-r", "-t", str(instrument))
+        for index,probe_apk in enumerate(probe_apks):
+            adb('install','-r','-t',str(probe_apk))
+            suffix = ('a','b')[index]
+            log = (work/('app-probe-'+suffix+'.log')).open('w'); probe_logs.append(log)
+            probe_processes.append(subprocess.Popen(['adb','shell','am','instrument','-w','-r','-e','port',str(19091+index),
+                'org.amnezia.routingprobe.'+suffix+'/org.amnezia.appprobe.Probe'],stdout=log,stderr=subprocess.STDOUT))
         assert "Success" in adb("shell", "dpm", "set-device-owner", admin), "AVD device owner setup failed"
         adb("shell", "appops", "set", PACKAGE, "ACTIVATE_VPN", "allow")
         # am instrument does not set a useful shell exit code on test failure.
@@ -199,6 +240,7 @@ def main():
         command = ["adb", "shell", "am", "instrument", "-w", "-r", "-e", "cycles", str(args.cycles),
                    "-e", "primary_only", str(args.primary_only).lower(),
                    "-e", "upload_mtu_only", str(args.upload_mtu_only).lower(),
+                   "-e", "app_policy_only", str(args.app_policy_only).lower(),
                    "-e", "performance_only", str(args.performance_only).lower(),
                    "-e", "performance_order", args.performance_order,
                    "org.amnezia.routingtest/org.amnezia.routingtest.RoutingInstrumentation"]
@@ -210,7 +252,7 @@ def main():
                 print(line, end="", flush=True); log.write(line); log.flush(); output.append(line)
                 if "RETAIN_CHECKPOINT " in line:
                     name = line.strip().split("RETAIN_CHECKPOINT ", 1)[1]
-                    assert name in ('before', 'after', 'restore_mtu', 'drop_mtu', 'drop_before_media', 'restore_before_media', 'drop_with_media', 'restore_with_media', 'wifi_off', 'wifi_on', 'safe_policy_before', 'safe_policy_after', 'perf_legacy_before', 'perf_legacy_after', 'perf_shared_before', 'perf_shared_after', 'upload_mtu_before', 'drop_upload_mtu', 'upload_mtu_after', 'restore_upload_mtu')
+                    assert name in ('before', 'after', 'restore_mtu', 'drop_mtu', 'drop_before_media', 'restore_before_media', 'drop_with_media', 'restore_with_media', 'wifi_off', 'wifi_on', 'safe_policy_before', 'safe_policy_after', 'perf_legacy_before', 'perf_legacy_after', 'perf_shared_before', 'perf_shared_after', 'upload_mtu_before', 'drop_upload_mtu', 'upload_mtu_after', 'restore_upload_mtu', 'app_policy_before', 'app_policy_after')
                     if name == 'before' and os.environ.get('AWG_ECHO_LAB') == '1':
                         observations=[]
                         for size in (128,576,1104,1280):
@@ -246,7 +288,7 @@ def main():
                             print(f"RESTORED_NS={report['mtu_restored_wall_ns']}", flush=True)
                     elif name == 'wifi_off': adb('shell', 'svc', 'wifi', 'disable')
                     elif name == 'wifi_on': adb('shell', 'svc', 'wifi', 'enable')
-                    if name in ('before', 'after', 'safe_policy_before', 'safe_policy_after', 'perf_legacy_before', 'perf_legacy_after', 'perf_shared_before', 'perf_shared_after', 'upload_mtu_before', 'upload_mtu_after'):
+                    if name in ('before', 'after', 'safe_policy_before', 'safe_policy_after', 'perf_legacy_before', 'perf_legacy_after', 'perf_shared_before', 'perf_shared_after', 'upload_mtu_before', 'upload_mtu_after', 'app_policy_before', 'app_policy_after'):
                         report['retained_resources'][name] = snapshot()
                     with urllib.request.urlopen('http://127.0.0.1:18080/stats', timeout=5) as response:
                         stats = json.load(response)
@@ -286,6 +328,11 @@ def main():
             assert process.wait(timeout=15) == 0
             timer.cancel()
         output = "".join(output)
+        if args.app_policy_only:
+            assert 'INSTRUMENTATION_RESULT: routing_result=PASS_APP_POLICY_ONLY' in output
+            app_policy_metrics(output,report)
+            report['native_vpn_acceptance']='NOT_RUN_APP_POLICY_ONLY'
+            return
         if args.upload_mtu_only:
             assert 'INSTRUMENTATION_RESULT: routing_result=PASS_UPLOAD_MTU_ONLY' in output
             upload_mtu_metrics(output, report)
@@ -324,6 +371,7 @@ def main():
             assert a['capture_fds'] == 1 and b['capture_fds'] == 1, 'capture ownership changed'
         if not args.primary_only:
             upload_mtu_metrics(output, report)
+            app_policy_metrics(output, report)
             performance_metrics(output,report)
         report['ordinary_app_only_preserving_recovery'] = 'PASS'
         if not args.primary_only: report['all_vpn_lockdown'] = 'PASS'
@@ -357,6 +405,14 @@ def main():
             except subprocess.CalledProcessError:
                 pass
         adb("shell", "am", "force-stop", PACKAGE)
+        for suffix in ('a','b'):
+            subprocess.run(['adb','shell','am','force-stop','org.amnezia.routingprobe.'+suffix],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=10)
+        for process in probe_processes:
+            try: process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.terminate(); process.wait(timeout=5)
+        for log in probe_logs: log.close()
+        for probe_apk in probe_apks: probe_apk.unlink(missing_ok=True)
         # Always remove the throwaway keys and the fixture-bearing test APKs.
         for path in (key, target, instrument, aligned, unsigned):
             path.unlink(missing_ok=True)

@@ -15,8 +15,10 @@ on:
       - scripts/routing/android_host_sources.py
       - scripts/routing/test_android_host_sources.py
       - scripts/routing/test_android_upload_mtu_metrics.py
+      - scripts/routing/test_android_app_policy_metrics.py
       - native/routing/androidbridge/**
       - scripts/routing/android/**
+      - scripts/routing/android-app-probe/**
       - .github/workflows/routing-android-acceptance.yml
       - recipes/**
       - scripts/routing/android/**
@@ -76,6 +78,7 @@ jobs:
         run: |
           python3 scripts/routing/test_android_host_sources.py
           python3 scripts/routing/test_android_upload_mtu_metrics.py
+          python3 scripts/routing/test_android_app_policy_metrics.py
       - name: Select an APK with compatible production Android host sources
         env:
           GH_TOKEN: ${{ github.token }}
@@ -209,7 +212,7 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           script: |
             sudo ip addr add 198.51.100.2/32 dev lo
-            "$RUNNER_TEMP/android-fixture" --shared-ip 198.51.100.2 --endpoint-host 10.0.2.2 --transport "${{ matrix.transport }}" --persistent --bulk --config "$RUNNER_TEMP/fixture.json" --quic-ca "$RUNNER_TEMP/quic.der" > fixture-server.log 2>&1 & echo $! > "$RUNNER_TEMP/fixture.pid"
+            "$RUNNER_TEMP/android-fixture" --shared-ip 198.51.100.2 --endpoint-host 10.0.2.2 --transport "${{ matrix.transport }}" --persistent --bulk --native-dns-port 1053 --config "$RUNNER_TEMP/fixture.json" --quic-ca "$RUNNER_TEMP/quic.der" > fixture-server.log 2>&1 & echo $! > "$RUNNER_TEMP/fixture.pid"
             for i in $(seq 1 30); do test -s "$RUNNER_TEMP/fixture.json" && break; sleep 1; done
             python3 scripts/routing/run_android_acceptance.py --apk "$FEATURE_APK" --fixture "$RUNNER_TEMP/fixture.json" --quic-probe "$RUNNER_TEMP/android-traffic-probe" --quic-ca "$RUNNER_TEMP/quic.der" --work "$RUNNER_TEMP/android-acceptance" --cycles "${{ inputs.cycles || '100' }}" --apk-source-sha "$(python3 -c 'import json;print(json.load(open("tested-apk-source.json"))["head_sha"])')"
       - name: Stop the local peer and remove ephemeral private configuration
