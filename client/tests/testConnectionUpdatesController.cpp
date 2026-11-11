@@ -6,6 +6,9 @@
 #include <QTcpServer>
 #include <QTimer>
 #include <QUuid>
+#include <QSemaphore>
+#include <QScopeGuard>
+#include <atomic>
 #include <openssl/pem.h>
 #include <openssl/x509v3.h>
 
@@ -103,6 +106,49 @@ private slots:
         QJsonObject migrated; QVERIFY(connectionUpdates::mergePathProbe(*servers.serverJsonById(id), "amnezia-wireguard", "10.8.0.1", migrated));
         servers.editServer(id, migrated, serverConfigUtils::SelfHostedAdmin);
         QVERIFY(!updates.needsRefreshBeforeConnect(id));
+        settings.clearSettings();
+    }
+    void asynchronousAdminProbeRefresh_data()
+    {
+        QTest::addColumn<QString>("scenario");
+        for (const auto *name : { "success", "failure", "edited", "deadline", "canceled" }) QTest::newRow(name) << QString(name);
+    }
+    void asynchronousAdminProbeRefresh()
+    {
+        QFETCH(QString, scenario);
+        SecureQSettings settings("Amnezia-Probe-Async-" + QUuid::createUuid().toString(), "test", nullptr, false);
+        SecureServersRepository servers(&settings); SecureAppSettingsRepository app(&settings); VpnConnection vpn(&servers, &app); ConnectionController connection(&servers, &app, &vpn);
+        disconnect(&connection, &ConnectionController::openConnectionRequested, &vpn, &VpnConnection::connectToVpn);
+        auto administrator = profile(); administrator.remove("connectionUpdates"); administrator["userName"] = "root"; administrator["password"] = "test-password"; administrator["port"] = 22;
+        const auto id = servers.addServer({}, administrator, serverConfigUtils::SelfHostedAdmin); servers.setDefaultServer(id);
+        const auto original = *servers.serverJsonById(id);
+        QSemaphore gate; std::atomic<int> calls { 0 }; std::atomic<bool> correctReaderArguments { false };
+        ConnectionUpdatesController updates(&servers, &connection, nullptr, [&](const ServerCredentials &credentials, DockerContainer container, QString &target) {
+            correctReaderArguments.store(credentials.userName == "root" && container == DockerContainer::WireGuard);
+            calls.fetch_add(1); gate.acquire(); target = "10.8.0.1";
+            return scenario == "failure" ? ErrorCode::InternalError : ErrorCode::NoError;
+        });
+        const auto unblock = qScopeGuard([&] { gate.release(); });
+        ServersController serverController(&servers, &app); ConnectionUiController ui(&connection, &serverController); ui.setConnectionUpdatesController(&updates);
+        QSignalSpy attempts(&connection, &ConnectionController::openConnectionRequested);
+        int continuations = 0;
+        if (scenario == "canceled") ui.openConnection();
+        else updates.refreshBeforeConnect(id, [&] { ++continuations; });
+        QVERIFY(updates.busy()); QTRY_COMPARE(calls.load(), 1); QVERIFY(correctReaderArguments.load());
+        if (scenario == "edited") { auto edited = original; edited["description"] = "user edit"; servers.editServer(id, edited, serverConfigUtils::SelfHostedAdmin); }
+        if (scenario == "canceled") ui.closeConnection();
+        if (scenario == "deadline") {
+            QTRY_COMPARE_WITH_TIMEOUT(continuations, 1, 2500); QVERIFY(updates.busy()); QCOMPARE(*servers.serverJsonById(id), original);
+        }
+        gate.release(); QTRY_VERIFY(!updates.busy());
+        if (scenario == "canceled") QCOMPARE(attempts.count(), 0);
+        else QCOMPARE(continuations, 1);
+        const auto result = *servers.serverJsonById(id);
+        if (scenario == "success") {
+            QCOMPARE(client(result, false).value("path_mtu_probe").toString(), "10.8.0.1");
+            QCOMPARE(client(result, false).value("client_priv_key"), client(original, false).value("client_priv_key"));
+        } else if (scenario == "failure" || scenario == "deadline") QCOMPARE(result, original);
+        else if (scenario == "edited") { QCOMPARE(result.value("description").toString(), "user edit"); QVERIFY(!client(result, false).contains("path_mtu_probe")); }
         settings.clearSettings();
     }
     void verifiedFetchAndPreservedStorage()

@@ -14,6 +14,8 @@
 #include <QRegularExpression>
 #include <QUuid>
 #include <QtConcurrent>
+#include <memory>
+#include <utility>
 
 #include "core/controllers/connectionController.h"
 #include "core/utils/connectionUpdates.h"
@@ -38,8 +40,9 @@ ErrorCode flushPendingRevocations(const ServerCredentials &credentials, const QJ
 }
 
 }
-ConnectionUpdatesController::ConnectionUpdatesController(SecureServersRepository *servers, ConnectionController *connection, QObject *parent)
-    : QObject(parent), m_servers(servers), m_connection(connection)
+ConnectionUpdatesController::ConnectionUpdatesController(SecureServersRepository *servers, ConnectionController *connection, QObject *parent, ProbeAddressReader probeAddressReader)
+    : QObject(parent), m_servers(servers), m_connection(connection),
+      m_probeAddressReader(probeAddressReader ? std::move(probeAddressReader) : ProbeAddressReader(&ConnectionUpdatesController::fetchPathMtuProbeAddress))
 {
     m_adminPool.setMaxThreadCount(1);
     connect(servers, &SecureServersRepository::serverAdded, this, &ConnectionUpdatesController::configurationChanged);
@@ -331,18 +334,24 @@ void ConnectionUpdatesController::refreshBeforeConnect(const QString &id, const 
     const auto cached = admin->containerConfig(container).protocolConfig.getClientConfigJson();
     if (cached.isEmpty() || !cached.value("path_mtu_probe").toString().isEmpty()) { done(); return; }
     setBusy(true); auto *watcher = new QFutureWatcher<AdminResult>(this);
-    connect(watcher, &QFutureWatcher<AdminResult>::finished, this, [this, watcher, id, original, container, done] {
-        const auto result = watcher->result(); watcher->deleteLater(); setBusy(false);
+    const auto completed = std::make_shared<bool>(false);
+    const auto continueOnce = [completed, done] { if (!*completed) { *completed = true; done(); } };
+    // Optional metadata discovery must not hold up a usable VPN connection.
+    // The SSH operation may finish later, but its stale result cannot commit.
+    QTimer::singleShot(1500, watcher, continueOnce);
+    connect(watcher, &QFutureWatcher<AdminResult>::finished, this, [this, watcher, id, original, container, completed, continueOnce] {
+        const auto result = watcher->result(); watcher->deleteLater();
         QJsonObject updated;
-        if (result.error == ErrorCode::NoError && m_connection->isDisconnected() && m_servers->serverJsonById(id) == original
+        if (!*completed && result.error == ErrorCode::NoError && m_connection->isDisconnected() && m_servers->serverJsonById(id) == original
             && connectionUpdates::mergePathProbe(*original, ContainerUtils::containerToString(container), result.metadata.value("pathMtuProbe"), updated)) {
             m_servers->editServer(id, updated, serverConfigUtils::SelfHostedAdmin);
         }
-        done();
+        setBusy(false);
+        continueOnce();
     });
-    watcher->setFuture(QtConcurrent::run(&m_adminPool, [credentials = admin->credentials(), container] {
+    watcher->setFuture(QtConcurrent::run(&m_adminPool, [credentials = admin->credentials(), container, reader = m_probeAddressReader] {
         AdminResult result; QString target;
-        result.error = fetchPathMtuProbeAddress(credentials, container, target);
+        result.error = reader(credentials, container, target);
         if (result.error == ErrorCode::NoError) result.metadata["pathMtuProbe"] = target;
         return result;
     }));

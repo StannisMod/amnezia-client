@@ -15,7 +15,8 @@ class ConnectionUpdatesController : public QObject {
     Q_PROPERTY(QStringList protectionServers READ protectionServers NOTIFY configurationChanged)
     Q_PROPERTY(QStringList updatableServers READ updatableServers NOTIFY configurationChanged)
 public:
-    explicit ConnectionUpdatesController(SecureServersRepository *servers, ConnectionController *connection, QObject *parent = nullptr);
+    using ProbeAddressReader = std::function<ErrorCode(const ServerCredentials &, DockerContainer, QString &)>;
+    explicit ConnectionUpdatesController(SecureServersRepository *servers, ConnectionController *connection, QObject *parent = nullptr, ProbeAddressReader probeAddressReader = {});
     ~ConnectionUpdatesController() override;
     bool busy() const { return m_busy; }
     QStringList enabledServers() const;
@@ -46,6 +47,7 @@ private:
     void administer(const QString &serverId, const QString &action, int container = -1, const QString &clientPublicKey = {});
     SecureServersRepository *m_servers;
     ConnectionController *m_connection;
+    ProbeAddressReader m_probeAddressReader;
     QNetworkAccessManager m_network;
     QThreadPool m_adminPool;
     bool m_busy = false;
