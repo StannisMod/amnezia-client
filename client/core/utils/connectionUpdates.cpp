@@ -85,6 +85,28 @@ bool identityMatches(const QJsonObject &client)
         && pub == QByteArray(reinterpret_cast<char *>(derived), 32);
 }
 }
+bool parsePathProbeAddress(const QString &output, const QString &interfaceName, QString &address)
+{
+    const QString marker = "\namnezia_interface_addresses=ok\n";
+    if ((interfaceName != "wg0" && interfaceName != "awg0") || output.size() > 65536 || !output.endsWith(marker)) return false;
+    const QRegularExpression linePattern(QStringLiteral("^\\d+:\\s+(\\S+)\\s+(inet6?)\\s+(\\S+)(?:\\s|$)"));
+    QString ipv4, ipv6;
+    for (const auto &line : output.left(output.size() - marker.size()).split('\n', Qt::SkipEmptyParts)) {
+        const auto match = linePattern.match(line.trimmed());
+        if (!match.hasMatch() || match.captured(1) != interfaceName) return false;
+        const auto cidr = match.captured(3); const auto subnet = QHostAddress::parseSubnet(cidr);
+        if (!cidr.contains('/') || subnet.second < 0) return false;
+        const QHostAddress candidate(cidr.section('/', 0, 0));
+        const bool v4 = match.captured(2) == "inet";
+        if (candidate.protocol() != (v4 ? QAbstractSocket::IPv4Protocol : QAbstractSocket::IPv6Protocol)
+            || !validPathProbe(candidate.toString())) return false;
+        auto &target = v4 ? ipv4 : ipv6;
+        if (target.isEmpty()) target = candidate.toString();
+    }
+    const auto target = ipv4.isEmpty() ? ipv6 : ipv4;
+    if (target.isEmpty()) return false;
+    address = target; return true;
+}
 bool parsePeerList(const QString &output, QStringList &peers)
 {
     const QString marker = "\namnezia_peers=ok\n";
@@ -245,6 +267,28 @@ bool mergeServerSettings(const QJsonObject &profile, const QString &name, const 
     if (!preserveManagementHost) result[configKey::hostName] = settings.value("hostName");
     updated = result; return true;
 }
+bool mergePathProbe(const QJsonObject &profile, const QString &name, const QJsonValue &target, QJsonObject &updated)
+{
+    if (!supported(name) || !validPathProbe(target)) return false;
+    auto containers = profile.value(configKey::containers).toArray(); int found = -1;
+    for (int i = 0; i < containers.size(); ++i) {
+        if (containers[i].toObject().value(configKey::container).toString() == name) {
+            if (found >= 0) return false;
+            found = i;
+        }
+    }
+    if (found < 0) return false;
+    auto container = containers[found].toObject(); const auto protoName = protocol(name);
+    auto proto = container.value(protoName).toObject();
+    auto client = QJsonDocument::fromJson(proto.value(configKey::lastConfig).toString().toUtf8()).object();
+    if (!identityMatches(client)) return false;
+    // Optional control metadata never widens application routes.
+    if (usablePathProbe(target, client)) client["path_mtu_probe"] = target;
+    else client.remove("path_mtu_probe");
+    proto[configKey::lastConfig] = QString::fromUtf8(QJsonDocument(client).toJson(QJsonDocument::Compact));
+    container[protoName] = proto; containers[found] = container;
+    auto result = profile; result[configKey::containers] = containers; updated = result; return true;
+}
 bool apply(const QJsonObject &profile, const QByteArray &envelope, qint64 now, QJsonObject &updated)
 {
     if (envelope.size() > 65536 || !validateProfile(profile)) return false;
@@ -277,18 +321,9 @@ bool apply(const QJsonObject &profile, const QByteArray &envelope, qint64 now, Q
     if (p.contains("pathMtuProbe")) {
         const auto target = p.value("pathMtuProbe");
         if (revisionText == m.value("revision").toString() && m.contains("pathMtuProbe") && target != m.value("pathMtuProbe")) return false;
-        auto containers = result.value(configKey::containers).toArray();
-        auto container = containers.first().toObject();
-        const auto protoName = protocol(m.value("container").toString());
-        auto proto = container.value(protoName).toObject();
-        auto client = QJsonDocument::fromJson(proto.value(configKey::lastConfig).toString().toUtf8()).object();
-        if (!validPathProbe(target)) return false;
-        // Optional control-plane metadata must not widen user routes or make
-        // an otherwise valid old profile unusable when this family is absent.
-        if (usablePathProbe(target, client)) client["path_mtu_probe"] = target;
-        else client.remove("path_mtu_probe");
-        proto[configKey::lastConfig] = QString::fromUtf8(QJsonDocument(client).toJson(QJsonDocument::Compact));
-        container[protoName] = proto; containers[0] = container; result[configKey::containers] = containers;
+        QJsonObject withProbe;
+        if (!mergePathProbe(result, m.value("container").toString(), target, withProbe)) return false;
+        result = withProbe;
         metadata["pathMtuProbe"] = target;
     }
     metadata["revision"] = revisionText; metadata["issuedAt"] = issued; metadata["settingsHash"] = hash;

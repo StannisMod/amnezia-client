@@ -133,6 +133,21 @@ private slots:
         QCOMPARE(client(merged, true).value("client_priv_key"), client(admin, true).value("client_priv_key"));
         QCOMPARE(client(merged, true).value("HeaderProtectionKey"), settings(true).value("HeaderProtectionKey"));
     }
+    void managementProbeMergeKeepsCredentialsAndOtherContainers()
+    {
+        auto admin = profile(true); admin["userName"] = "root"; admin["password"] = "local-secret"; admin["port"] = 2222;
+        auto containers = admin["containers"].toArray(); const auto other = profile()["containers"].toArray().at(0); containers.append(other); admin["containers"] = containers;
+        QJsonObject merged; QVERIFY(connectionUpdates::mergePathProbe(admin, "amnezia-awg2", "10.8.0.1", merged));
+        QCOMPARE(merged.value("userName"), admin.value("userName")); QCOMPARE(merged.value("password"), admin.value("password"));
+        QCOMPARE(merged.value("port"), admin.value("port")); QCOMPARE(merged["containers"].toArray()[1], other);
+        const auto before = client(admin, true), after = client(merged, true);
+        for (const auto *key : { "client_priv_key", "client_pub_key", "psk_key", "client_ip", "allowed_ips", "config", "hostName" }) QCOMPARE(after.value(key), before.value(key));
+        QCOMPARE(after.value("path_mtu_probe").toString(), "10.8.0.1");
+        QJsonObject rejected { { "sentinel", true } };
+        QVERIFY(!connectionUpdates::mergePathProbe(admin, "amnezia-awg2", "localhost", rejected)); QCOMPARE(rejected.size(), 1);
+        containers.append(containers.at(0)); admin["containers"] = containers;
+        QVERIFY(!connectionUpdates::mergePathProbe(admin, "amnezia-awg2", "10.8.0.1", rejected)); QCOMPARE(rejected.size(), 1);
+    }
     void readinessProofMatchesGoWithoutSendingPrivateKey()
     {
         QFile file(":/connection-updates/readiness-interop.json"); QVERIFY(file.open(QIODevice::ReadOnly));
@@ -145,6 +160,21 @@ private slots:
         QVERIFY(connectionUpdates::readinessProof(profile(), envelope, 2000000601).isEmpty());
         auto zero = payload(profile()); zero["ackChallenge"] = QString::fromLatin1(QByteArray(32, '\0').toBase64());
         QVERIFY(connectionUpdates::readinessProof(profile(), sign(zero), 2000000001).isEmpty());
+    }
+    void activeInterfaceProbeRequiresSuccessfulRead()
+    {
+        QString target = "keep";
+        const QString marker = "\namnezia_interface_addresses=ok\n";
+        QFile captured(":/connection-updates/interface-addresses.txt"); QVERIFY(captured.open(QIODevice::ReadOnly));
+        QVERIFY(connectionUpdates::parsePathProbeAddress(QString::fromUtf8(captured.readAll()), "wg0", target)); QCOMPARE(target, "10.77.0.9");
+        QVERIFY(connectionUpdates::parsePathProbeAddress("7: wg0 inet 10.77.0.9/24 scope global wg0\n7: wg0 inet6 fd77::1/64 scope global" + marker, "wg0", target));
+        QCOMPARE(target, "10.77.0.9");
+        QVERIFY(connectionUpdates::parsePathProbeAddress("8: awg0 inet6 fd77::9/64 scope global" + marker, "awg0", target)); QCOMPARE(target, "fd77::9");
+        const QStringList invalid { "", "7: wg0 inet 10.77.0.9/24 scope global", "7: eth0 inet 10.77.0.9/24 scope global" + marker,
+            "7: wg0 inet 127.0.0.1/8 scope global" + marker, "7: wg0 inet6 fe80::1/64 scope global" + marker,
+            "7: wg0 inet 10.77.0.9/99 scope global" + marker, "7: wg0 inet 10.77.0.9 scope global" + marker,
+            "Address = 10.77.0.9/24" + marker, "7: wg0 inet6 10.77.0.9/24 scope global" + marker };
+        for (const auto &output : invalid) { target = "keep"; QVERIFY(!connectionUpdates::parsePathProbeAddress(output, "wg0", target)); QCOMPARE(target, "keep"); }
     }
     void peerListRequiresSuccessfulTerminalMarker()
     {

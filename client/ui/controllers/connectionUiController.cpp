@@ -52,7 +52,7 @@ void ConnectionUiController::openConnection()
             notifyConnectionBlocked(errorCode);
         }
     };
-    if (m_updates && m_updates->available(serverId)) {
+    if (m_updates && m_updates->needsRefreshBeforeConnect(serverId)) {
         m_refreshPending = true;
         m_isConnectionInProgress = true;
         m_connectionStateText = tr("Checking connection updates...");

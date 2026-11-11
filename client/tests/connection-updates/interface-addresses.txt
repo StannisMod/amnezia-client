@@ -1,0 +1,4 @@
+2: wg0    inet 10.77.0.9/24 scope global wg0\       valid_lft forever preferred_lft forever
+2: wg0    inet6 fd77::1/64 scope global \       valid_lft forever preferred_lft forever
+
+amnezia_interface_addresses=ok

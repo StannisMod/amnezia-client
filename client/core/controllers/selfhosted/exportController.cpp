@@ -133,7 +133,10 @@ ExportController::ExportResult ExportController::generateConnectionConfig(const 
     if (updatable) {
         const auto client = containerConfig.protocolConfig.getClientConfigJson();
         QJsonObject response;
-        const QJsonObject request { { "container", ContainerUtils::containerToString(container) },
+        QString probe;
+        result.errorCode = ConnectionUpdatesController::fetchPathMtuProbeAddress(credentials, container, probe);
+        if (result.errorCode != ErrorCode::NoError) return result;
+        const QJsonObject request { { "pathMtuProbe", probe }, { "container", ContainerUtils::containerToString(container) },
             { "clientPublicKey", client.value(configKey::clientPubKey) },
             { "settings", connectionUpdates::publicSettings(client, container == DockerContainer::Awg2) } };
         result.errorCode = ConnectionUpdatesController::command(credentials, "issue", request, response);
@@ -174,13 +177,13 @@ ExportController::ExportResult ExportController::generateConnectionUpdates(const
         result.errorCode = ErrorCode::InternalError; return result;
     }
     const auto host = vpnEndpoint::normalizeHost(admin->vpnHostName.isEmpty() ? admin->hostName : admin->vpnHostName);
-    QJsonObject settings; QStringList peers;
-    result.errorCode = ConnectionUpdatesController::fetchPublicSettings(admin->credentials(), container, host, settings, &peers);
+    QJsonObject settings; QStringList peers; QString probe;
+    result.errorCode = ConnectionUpdatesController::fetchPublicSettings(admin->credentials(), container, host, settings, &peers, &probe);
     if (result.errorCode != ErrorCode::NoError) return result;
     if (!peers.contains(clientPublicKey)) { result.errorCode = ErrorCode::InternalError; return result; }
     QJsonObject response;
     result.errorCode = ConnectionUpdatesController::command(admin->credentials(), "issue", {
-        { "container", ContainerUtils::containerToString(container) }, { "clientPublicKey", clientPublicKey }, { "settings", settings } }, response);
+        { "pathMtuProbe", probe }, { "container", ContainerUtils::containerToString(container) }, { "clientPublicKey", clientPublicKey }, { "settings", settings } }, response);
     if (result.errorCode != ErrorCode::NoError) return result;
     if (response.value("publicKey") != admin->connectionUpdates.value("publicKey") || response.value("certificate") != admin->connectionUpdates.value("certificate")) {
         result.errorCode = ErrorCode::InternalError; return result;

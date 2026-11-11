@@ -76,8 +76,19 @@ bool ConnectionUpdatesController::canEnableHeaderProtection(const QString &id, i
     return awg && awg->serverConfig.headerProtectionKey.isEmpty();
 }
 void ConnectionUpdatesController::enableHeaderProtection(const QString &id, int container) { administer(id, "activate-awg3", container); }
+ErrorCode ConnectionUpdatesController::fetchPathMtuProbeAddress(const ServerCredentials &credentials, DockerContainer container, QString &address)
+{
+    if (container != DockerContainer::WireGuard && container != DockerContainer::Awg2) return ErrorCode::InternalError;
+    const auto name = ContainerUtils::containerToString(container);
+    const QString iface = container == DockerContainer::Awg2 ? "awg0" : "wg0";
+    SshSession ssh; QString output;
+    const auto error = ssh.runScript(credentials, QString("sudo docker exec %1 ip -o addr show dev %2 scope global && printf '\\namnezia_interface_addresses=ok\\n'").arg(name, iface),
+        [&](const QString &data, libssh::Client &) { if (output.size() + data.size() > 65536) return ErrorCode::InternalError; output += data; return ErrorCode::NoError; });
+    if (error != ErrorCode::NoError) return error;
+    return connectionUpdates::parsePathProbeAddress(output, iface, address) ? ErrorCode::NoError : ErrorCode::InternalError;
+}
 ErrorCode ConnectionUpdatesController::fetchPublicSettings(const ServerCredentials &credentials, DockerContainer container,
-                                                           const QString &host, QJsonObject &settings, QStringList *peers)
+                                                           const QString &host, QJsonObject &settings, QStringList *peers, QString *pathMtuProbe)
 {
     if (container != DockerContainer::WireGuard && container != DockerContainer::Awg2) return ErrorCode::InternalError;
     SshSession ssh;
@@ -111,7 +122,14 @@ ErrorCode ConnectionUpdatesController::fetchPublicSettings(const ServerCredentia
         if (error != ErrorCode::NoError) return error;
         if (!connectionUpdates::parsePeerList(output, *peers)) return ErrorCode::InternalError;
     }
-    settings = candidate; return ErrorCode::NoError;
+    QString probe;
+    if (pathMtuProbe) {
+        error = fetchPathMtuProbeAddress(credentials, container, probe);
+        if (error != ErrorCode::NoError) return error;
+    }
+    settings = candidate;
+    if (pathMtuProbe) *pathMtuProbe = probe;
+    return ErrorCode::NoError;
 }
 bool ConnectionUpdatesController::available(const QString &id) const
 {
@@ -282,10 +300,11 @@ void ConnectionUpdatesController::administer(const QString &id, const QString &a
         QJsonObject request { { "container", ContainerUtils::containerToString(container) } };
         if (action == "revoke") request["clientPublicKey"] = clientKey;
         else {
-            QJsonObject settings; QStringList peers;
-            result.error = fetchPublicSettings(credentials, container, host, settings, &peers);
+            QJsonObject settings; QStringList peers; QString probe;
+            result.error = fetchPublicSettings(credentials, container, host, settings, &peers, &probe);
             if (result.error != ErrorCode::NoError) return result;
             request["settings"] = settings;
+            request["pathMtuProbe"] = probe;
             request["clientPublicKeys"] = QJsonArray::fromStringList(peers);
         }
         const auto remoteAction = action == "publish" ? QString("publish-live") : action;
@@ -293,10 +312,40 @@ void ConnectionUpdatesController::administer(const QString &id, const QString &a
     }));
 }
 void ConnectionUpdatesController::refresh(const QString &id) { fetch(id, true); }
+bool ConnectionUpdatesController::needsRefreshBeforeConnect(const QString &id) const
+{
+    if (available(id)) return true;
+    const auto admin = m_servers->selfHostedAdminConfig(id);
+    if (!admin || !admin->credentials().isValid()
+        || (admin->defaultContainer != DockerContainer::WireGuard && admin->defaultContainer != DockerContainer::Awg2)) return false;
+    const auto cached = admin->containerConfig(admin->defaultContainer).protocolConfig.getClientConfigJson();
+    return !cached.isEmpty() && cached.value("path_mtu_probe").toString().isEmpty();
+}
 void ConnectionUpdatesController::refreshBeforeConnect(const QString &id, const std::function<void()> &done)
 {
-    if (!available(id)) { done(); return; }
-    fetch(id, false, done);
+    if (available(id)) { fetch(id, false, done); return; }
+    const auto admin = m_servers->selfHostedAdminConfig(id); const auto original = m_servers->serverJsonById(id);
+    if (m_busy || !m_connection->isDisconnected() || !admin || !original || !admin->credentials().isValid()
+        || (admin->defaultContainer != DockerContainer::WireGuard && admin->defaultContainer != DockerContainer::Awg2)) { done(); return; }
+    const auto container = admin->defaultContainer;
+    const auto cached = admin->containerConfig(container).protocolConfig.getClientConfigJson();
+    if (cached.isEmpty() || !cached.value("path_mtu_probe").toString().isEmpty()) { done(); return; }
+    setBusy(true); auto *watcher = new QFutureWatcher<AdminResult>(this);
+    connect(watcher, &QFutureWatcher<AdminResult>::finished, this, [this, watcher, id, original, container, done] {
+        const auto result = watcher->result(); watcher->deleteLater(); setBusy(false);
+        QJsonObject updated;
+        if (result.error == ErrorCode::NoError && m_connection->isDisconnected() && m_servers->serverJsonById(id) == original
+            && connectionUpdates::mergePathProbe(*original, ContainerUtils::containerToString(container), result.metadata.value("pathMtuProbe"), updated)) {
+            m_servers->editServer(id, updated, serverConfigUtils::SelfHostedAdmin);
+        }
+        done();
+    });
+    watcher->setFuture(QtConcurrent::run(&m_adminPool, [credentials = admin->credentials(), container] {
+        AdminResult result; QString target;
+        result.error = fetchPathMtuProbeAddress(credentials, container, target);
+        if (result.error == ErrorCode::NoError) result.metadata["pathMtuProbe"] = target;
+        return result;
+    }));
 }
 void ConnectionUpdatesController::fetch(const QString &id, bool report, std::function<void()> done)
 {

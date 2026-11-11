@@ -27,6 +27,7 @@ public:
     QSslCertificate certificate;
     QSslKey key;
     QByteArray body, location, authorization;
+    QString pathMtuProbe;
     int status = 200, requests = 0, delay = 0;
     bool advertiseAck = false;
     int ackStatus = 204, acknowledgements = 0, ackDelay = 0;
@@ -84,15 +85,29 @@ public:
     {
         auto data = payload(p); const auto now = QDateTime::currentSecsSinceEpoch(); data["issuedAt"] = now; data["expiresAt"] = now + 600;
         if (advertiseAck) data["ackChallenge"] = QString::fromLatin1(publicKey(QByteArray(32, 'R'), EVP_PKEY_X25519).toBase64());
+        if (!pathMtuProbe.isEmpty()) data["pathMtuProbe"] = pathMtuProbe;
         body = sign(data);
     }
 };
 class TestConnectionUpdatesController : public QObject {
     Q_OBJECT
 private slots:
+    void oldAdministratorProfileNeedsProbeRefreshOnce()
+    {
+        SecureQSettings settings("Amnezia-Probe-" + QUuid::createUuid().toString(), "test", nullptr, false);
+        SecureServersRepository servers(&settings); SecureAppSettingsRepository app(&settings); VpnConnection vpn(&servers, &app); ConnectionController connection(&servers, &app, &vpn);
+        auto administrator = profile(); administrator.remove("connectionUpdates"); administrator["userName"] = "root"; administrator["password"] = "test-password"; administrator["port"] = 22;
+        const auto id = servers.addServer({}, administrator, serverConfigUtils::SelfHostedAdmin);
+        ConnectionUpdatesController updates(&servers, &connection);
+        QVERIFY(!updates.available(id)); QVERIFY(updates.needsRefreshBeforeConnect(id));
+        QJsonObject migrated; QVERIFY(connectionUpdates::mergePathProbe(*servers.serverJsonById(id), "amnezia-wireguard", "10.8.0.1", migrated));
+        servers.editServer(id, migrated, serverConfigUtils::SelfHostedAdmin);
+        QVERIFY(!updates.needsRefreshBeforeConnect(id));
+        settings.clearSettings();
+    }
     void verifiedFetchAndPreservedStorage()
     {
-        FeedServer feed; QVERIFY(feed.listen(QHostAddress::LocalHost)); auto p = feed.bootstrap(); feed.setUpdate(p);
+        FeedServer feed; QVERIFY(feed.listen(QHostAddress::LocalHost)); auto p = feed.bootstrap(); feed.pathMtuProbe = "10.8.0.1"; feed.setUpdate(p);
         SecureQSettings settings("Amnezia-Updates-" + QUuid::createUuid().toString(), "test", nullptr, false);
         SecureServersRepository servers(&settings); SecureAppSettingsRepository app(&settings); VpnConnection vpn(&servers, &app); ConnectionController connection(&servers, &app, &vpn);
         app.setDomainRoutingConfig({ { "local-marker", "keep" } }); app.setPrimaryDns("192.0.2.53");
@@ -102,6 +117,7 @@ private slots:
         QVERIFY(updates.available(id)); updates.refresh(id); QTRY_COMPARE(finished.count(), 1); QVERIFY(finished[0][0].toBool());
         QCOMPARE(feed.requests, 1); QVERIFY(feed.authorization.startsWith("Authorization: Bearer "));
         auto result = *servers.serverJsonById(id); QCOMPARE(result["hostName"].toString(), "vpn2.example.test");
+        QCOMPARE(client(result, false).value("path_mtu_probe").toString(), "10.8.0.1");
         QCOMPARE(client(result, false)["client_priv_key"], client(before, false)["client_priv_key"]);
         QCOMPARE(app.primaryDns(), "192.0.2.53"); QCOMPARE(app.domainRoutingConfig().value("local-marker").toString(), "keep");
         // Typed profile edits and application restart retain trust and replay state.

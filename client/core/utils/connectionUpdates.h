@@ -9,6 +9,7 @@
 namespace amnezia::connectionUpdates {
 inline constexpr char metadataKey[] = "connectionUpdates";
 // All outputs are assigned only after full authentication and validation.
+bool parsePathProbeAddress(const QString &output, const QString &interfaceName, QString &address);
 bool parsePeerList(const QString &output, QStringList &peers);
 bool validateProfile(const QJsonObject &profile);
 QJsonObject invitationMetadata(const QJsonObject &administratorMetadata);
@@ -16,6 +17,7 @@ QJsonObject publicSettings(const QJsonObject &client, bool awg);
 bool mergeServerSettings(const QJsonObject &profile, const QString &container,
                          const QJsonObject &settings, bool preserveManagementHost,
                          QJsonObject &updated);
+bool mergePathProbe(const QJsonObject &profile, const QString &container, const QJsonValue &target, QJsonObject &updated);
 QByteArray readinessProof(const QJsonObject &profile, const QByteArray &envelope, qint64 now);
 bool attachInvitation(const QJsonObject &profile, const QJsonObject &invitation, QJsonObject &updated);
 bool clientIdentityMatches(const QJsonObject &client);
