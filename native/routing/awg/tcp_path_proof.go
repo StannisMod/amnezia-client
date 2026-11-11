@@ -65,3 +65,13 @@ func (s *FlowStack) validTCPPathProof(proof tcpPathProof, now time.Time) bool {
 		proof.serial == s.tcpProofSerial && proof.generation == s.tcpPathGeneration &&
 		proof.size == s.mtu && age >= 0 && age <= tcpPathProofLifetime
 }
+
+// Serialize dispatch with the whole rebind operation. Invalidate on both edges
+// so a challenge started during the operation cannot describe the retired path.
+func (s *FlowStack) beginTCPPathChange() func() {
+	s.tcpPathGate.Lock()
+	s.state.Lock()
+	s.tcpPathGeneration++
+	s.state.Unlock()
+	return func() { s.state.Lock(); s.tcpPathGeneration++; s.state.Unlock(); s.tcpPathGate.Unlock() }
+}

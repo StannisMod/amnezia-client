@@ -6,9 +6,9 @@
       "upstream_version": "v0.0.0-20231202080848-1f7806d17489",
       "upstream_commit": "1f7806d17489620e45d46c33933cf8f7010a1436",
       "module": "github.com/StannisMod/gvisor",
-      "version": "v0.0.0-20261111212446-f9f60ee97257",
-      "commit": "f9f60ee9725728dae1a2425573bbc000e7af95c1",
-      "sum": "h1:KcBCiQxwNgi7W/uGXdKbVIdI2QRkiHtnu102udeWdGo=",
+      "version": "v0.0.0-20261111220521-edf112b2636e",
+      "commit": "edf112b2636e4b08828e064dd7613711f3d151bf",
+      "sum": "h1:mVHrJflTkuOmfhdOWFACr1m2I7tgeEro4f+UIX8UzKI=",
       "go_mod_sum": "h1:10sU+Uh5KKNv1+2x2A0Gvzt8FjD3ASIhorV3YsauXhk=",
       "source_sha256": {
         "pkg/tcpip/transport/tcp/snd.go": "f8436a9c05e78720c75d6223a62514dd418c0096f2b54f87a4a83d61abe387ac",
@@ -16,9 +16,9 @@
         "pkg/tcpip/transport/tcp/segment.go": "1670f3cffb98140b2d37f1cca2817ab740479cc11af8e0f616397c247c4945c8",
         "pkg/amnezia/recovery.go": "9c28c3a8aeb8247e1b32398f8bedb20d4a82cdec95a2ea6439e92ed97502282b",
         "NOTICE-AMNEZIA": "72d6d1c41e7a4b412ef3f5a4147ad7a6912cd5cd349cbeae5677907f1b05c1b0",
-        "pkg/tcpip/transport/tcp/verified_path_probe.go": "26f62af0640f2d89bfd3fa1ab5ec52d6d8e061e611d0b4494e45c07e93e38570",
+        "pkg/tcpip/transport/tcp/verified_path_probe.go": "c74bd0368bee4488c851633a0c555d6646bd24b30e5044357af0fa927db4ccde",
         "pkg/tcpip/transport/tcp/tcp_state_autogen.go": "3a401fbfbe7f570e1c520775baba7d71590537a5969f2bfa96c770a7fdc107b0",
-        "pkg/tcpip/adapters/gonet/verified_path_probe.go": "3edea75fb2f3c9573792bfa2e48774594094514c7065827e6b971ba6352d7697"
+        "pkg/tcpip/adapters/gonet/verified_path_probe.go": "ac1670df1de90153fce42e33a467b8c34ff95b69e947345e7fc75e71940294e8"
       }
     },
     "apple": {

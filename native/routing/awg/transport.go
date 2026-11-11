@@ -132,6 +132,7 @@ type Transport struct {
 	address4  netip.Addr
 	address6  netip.Addr
 	mtuWorker *pathMTUWorker
+	tcpWorker *tcpPathWorker
 }
 
 type Stats = tunnel.Stats
@@ -228,6 +229,7 @@ func New(ctx context.Context, c Config, listen ListenUnderlay) (*Transport, erro
 	}
 	if c.PathMTUProbe.IsValid() {
 		t.mtuWorker = startPathMTUWorker(ctx, n, c.PathMTUProbe)
+		t.tcpWorker = startTCPPathWorker(ctx, n, c.PathMTUProbe)
 	}
 	return t, nil
 }
@@ -251,8 +253,9 @@ func (t *Transport) RefreshUnderlay(remote netip.AddrPort) error {
 		return errors.New("invalid VPN recovery endpoint")
 	}
 	remote = netip.AddrPortFrom(remote.Addr().Unmap(), remote.Port())
-	t.Net.invalidateTCPPath()
 	t.mtuWorker.invalidate()
+	finishPathChange := t.Net.beginTCPPathChange()
+	defer finishPathChange()
 	peer := t.device.LookupPeer(t.peerKey)
 	if peer == nil {
 		return errors.New("VPN recovery peer unavailable")
@@ -297,8 +300,12 @@ func (t *Transport) Close() error {
 		return nil
 	}
 	t.closed = true
+	if t.tcpWorker != nil {
+		t.tcpWorker.cancel()
+	}
 	t.mtuWorker.stop()
 	t.device.Close()
+	t.tcpWorker.stop()
 	return nil
 }
 func (t *Transport) DialContext(ctx context.Context, network, address string) (net.Conn, error) {

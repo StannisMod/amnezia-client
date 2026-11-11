@@ -19,6 +19,10 @@ func TestPathMTUWorkerClosesDuringUnansweredProbe(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer transport.Close()
+	tcpWorker := transport.tcpWorker
+	if tcpWorker == nil {
+		t.Fatal("configured TCP path worker was not started")
+	}
 	worker := transport.mtuWorker
 	if worker == nil {
 		t.Fatal("configured MTU worker was not started")
@@ -52,6 +56,11 @@ func TestPathMTUWorkerClosesDuringUnansweredProbe(t *testing.T) {
 	case <-worker.done:
 	default:
 		t.Fatal("MTU worker survived transport close")
+	}
+	select {
+	case <-tcpWorker.done:
+	default:
+		t.Fatal("TCP path worker survived transport close")
 	}
 	if mtu, _ := transport.Net.MTU(); mtu != 1280 {
 		t.Fatal("unanswered probe changed MTU", mtu)
