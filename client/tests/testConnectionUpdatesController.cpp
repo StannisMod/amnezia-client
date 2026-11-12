@@ -24,6 +24,7 @@
 #include "core/controllers/connectionController.h"
 #include "core/controllers/serversController.h"
 #include "ui/controllers/connectionUiController.h"
+#include "ui/controllers/selfhosted/exportUiController.h"
 #include "vpnConnection.h"
 #include "secureQSettings.h"
 #include "core/configurators/wireguardConfigurator.h"
@@ -322,6 +323,24 @@ private slots:
             SecureQSettings settings(qEnvironmentVariable("AMNEZIA_TEST_RESUME_EXPORT_ORGANIZATION"),"test",nullptr,false);
             SecureServersRepository servers(&settings); SecureAppSettingsRepository app(&settings);
             ExportController exporter(&servers,&app);
+            const auto serverId=qEnvironmentVariable("AMNEZIA_TEST_RESUME_EXPORT_SERVER");
+            const auto index=qEnvironmentVariableIntValue("AMNEZIA_TEST_RESUME_EXPORT_CONTAINER");
+            if (qEnvironmentVariableIsSet("AMNEZIA_TEST_ACK_EXPORT")) {
+                const auto expected=settings.value("Conf/testRecoveredExport").toString(); QVERIFY(!expected.isEmpty());
+                ExportUiController ui(&exporter); bool pendingWhenDisplayed=false;
+                connect(&ui,&ExportUiController::exportConfigChanged,&ui,[&] {
+                    if (ui.getConfig().isEmpty()) return;
+                    QJsonObject pending;
+                    pendingWhenDisplayed=servers.pendingPeerExport(serverId,static_cast<DockerContainer>(index),pending)
+                        && pending.value("result").toObject().value("config")==expected;
+                });
+                QSignalSpy errors(&ui,qOverload<ErrorCode>(&ExportUiController::exportErrorOccurred));
+                ui.generateConnectionConfig(serverId,index,"synthetic IPv6 peer",true);
+                QCOMPARE(errors.count(),0); QVERIFY(ui.getConfig()==expected); QVERIFY(!ui.getQrCodes().isEmpty());
+                QVERIFY(pendingWhenDisplayed);
+                QJsonObject acknowledged; QVERIFY(servers.pendingPeerExport(serverId,static_cast<DockerContainer>(index),acknowledged)); QVERIFY(acknowledged.isEmpty());
+                return;
+            }
             const auto result=exporter.generateConnectionConfig(qEnvironmentVariable("AMNEZIA_TEST_RESUME_EXPORT_SERVER"),
                 qEnvironmentVariableIntValue("AMNEZIA_TEST_RESUME_EXPORT_CONTAINER"),"synthetic IPv6 peer",true);
             QCOMPARE(result.errorCode,ErrorCode::NoError); QVERIFY(!result.config.isEmpty());
@@ -485,7 +504,33 @@ private slots:
                 exported.config=disk.value("Conf/testRecoveredExport").toString();
                 SecureQSettings recoveredSettings(organization,"test",nullptr,false);
                 SecureServersRepository restarted(&recoveredSettings);
-                QJsonObject finished; QVERIFY(restarted.pendingPeerExport(id,container,finished)); QVERIFY(finished.isEmpty());
+                QJsonObject finished; QVERIFY(restarted.pendingPeerExport(id,container,finished)); QVERIFY(!finished.isEmpty());
+                QVERIFY(finished.value("result").toObject().value("config")==exported.config);
+                ExportController acknowledgment(&restarted,&app);
+                QVERIFY(!acknowledgment.acknowledgeConnectionExport(id,static_cast<int>(container),exported.config+"wrong"));
+                QJsonObject unchanged; QVERIFY(restarted.pendingPeerExport(id,container,unchanged)); QVERIFY(unchanged==finished);
+                auto corruptReady=finished; auto corruptResult=corruptReady.value("result").toObject();
+                corruptResult["digest"]=QString(64,'0'); corruptReady["result"]=corruptResult;
+                QVERIFY(restarted.compareAndSetPendingPeerExport(id,container,finished,corruptReady));
+                const auto refused=acknowledgment.generateConnectionConfig(id,static_cast<int>(container),"synthetic IPv6 peer",true);
+                QVERIFY(refused.errorCode!=ErrorCode::NoError); QVERIFY(refused.config.isEmpty());
+                QVERIFY(restarted.pendingPeerExport(id,container,unchanged)); QVERIFY(unchanged==corruptReady);
+                QVERIFY(restarted.compareAndSetPendingPeerExport(id,container,corruptReady,finished));
+                // The next process receives the completed result while delivery is
+                // unavailable, then the actual UI acknowledges only after display.
+                bool cachedDeliveryHidden=false;
+                auto restoreCachedDelivery=qScopeGuard([&] { if (cachedDeliveryHidden) failDelivery.runScript(credentials,
+                    "sudo docker rename amnezia-connection-updates.fixture-hidden amnezia-connection-updates"); });
+                QCOMPARE(failDelivery.runScript(credentials,"sudo docker rename amnezia-connection-updates amnezia-connection-updates.fixture-hidden"),ErrorCode::NoError);
+                cachedDeliveryHidden=true;
+                environment.insert("AMNEZIA_TEST_ACK_EXPORT","1"); restartedProcess.setProcessEnvironment(environment);
+                restartedProcess.start(QCoreApplication::applicationFilePath(),{"realAdminNewIPv6ProfileExport"});
+                QVERIFY(restartedProcess.waitForFinished(30000)); QCOMPARE(restartedProcess.exitStatus(),QProcess::NormalExit); QCOMPARE(restartedProcess.exitCode(),0);
+                QCOMPARE(failDelivery.runScript(credentials,"sudo docker rename amnezia-connection-updates.fixture-hidden amnezia-connection-updates"),ErrorCode::NoError);
+                cachedDeliveryHidden=false; restoreCachedDelivery.dismiss();
+                disk.sync(); SecureQSettings acknowledgedSettings(organization,"test",nullptr,false);
+                SecureServersRepository acknowledgedServers(&acknowledgedSettings);
+                QVERIFY(acknowledgedServers.pendingPeerExport(id,container,finished)); QVERIFY(finished.isEmpty());
                 SshSession fault; QString receipt;
                 QCOMPARE(fault.runScript(credentials,QString("cat /tmp/issue-reply-loss-%1").arg(ContainerUtils::containerToString(container)),
                     [&](const QString &data,libssh::Client &){receipt+=data;return ErrorCode::NoError;}),ErrorCode::NoError);
@@ -494,6 +539,7 @@ private slots:
                 QVERIFY(!replay.value("droppedId").toString().isEmpty()); QCOMPARE(replay.value("droppedId"),replay.value("replayedId"));
             } else exported=exporter.generateConnectionConfig(id,static_cast<int>(container),"synthetic IPv6 peer",true);
             QCOMPARE(exported.errorCode, ErrorCode::NoError); QVERIFY(exported.config.startsWith("vpn://"));
+            if (recoveredExportKey.isEmpty()) QVERIFY(exporter.acknowledgeConnectionExport(id,static_cast<int>(container),exported.config));
             const auto user = QJsonDocument::fromJson(qUncompress(QByteArray::fromBase64(exported.config.mid(6).toLatin1(), QByteArray::Base64UrlEncoding))).object();
             if (!recoveredExportKey.isEmpty()) {
                 QVERIFY(user.value("connectionUpdates").toObject().value("clientPublicKey").toString()==recoveredExportKey);

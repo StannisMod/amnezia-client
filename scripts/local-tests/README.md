@@ -124,9 +124,22 @@ HTTPS refresh must accept the recovered token. The wrapper checks the private
 Docker daemon's disposable label and records only operation/record IDs and call
 counts, never bearer tokens. This models reply loss, not an actual SSH socket
 failure. Concurrent Go replay tests also require one record and byte-identical
-state after retry. Durable final-result acknowledgment, idempotent existing-key
-invitation export, abandoned-operation cleanup and reconciliation with concurrent
-foreign configuration changes remain separate required work.
+state after retry.
+
+Normal WG/current-AWG export persists its completed URL and checksum before
+returning. Until acknowledged, another process can recover the exact URL and QR
+series locally, before any SSH/info call. The UI acknowledges only after setting
+its model and emitting the profile signal; a wrong/stale URL cannot clear the
+receipt. Corrupt receipts fail without generating another peer. Cached and fresh
+payloads respect the one-byte QR sequence count limit. The required fixture
+lets one process finish without acknowledgment, makes delivery unavailable, then
+uses the real UI controller in another process to recover/display and acknowledge
+the same profile. It observes the durable receipt during the display signal and
+requires it to disappear afterward; signed-issue call counts stay unchanged.
+Acknowledgment denotes UI model acceptance, not proof that a human copied it.
+Idempotent existing-key invitation/native-export variants, abandoned-operation
+cleanup and reconciliation with concurrent foreign configuration changes remain
+separate required work.
 
 
 The same required fixture runs the packaged `install.sh` helper deployment against

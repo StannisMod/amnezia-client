@@ -78,18 +78,6 @@ ExportController::ExportResult ExportController::generateConnectionConfig(const 
     }
     bool individualIPv6Supported = false;
     bool idempotentIssueSupported = false;
-    if (updatable) {
-        QJsonObject info;
-        result.errorCode = ConnectionUpdatesController::command(credentials, "info", {}, info);
-        if (result.errorCode != ErrorCode::NoError) return result;
-        if (info.value("publicKey") != updateMetadata.value("publicKey")
-            || info.value("certificate") != updateMetadata.value("certificate")) {
-            result.errorCode = ErrorCode::InternalError;
-            return result;
-        }
-        individualIPv6Supported = info.value("features").toArray().contains("client-ipv6-v1");
-        idempotentIssueSupported = info.value("features").toArray().contains("idempotent-issue-v1");
-    }
     ContainerConfig containerConfig = adminConfig->containerConfig(container);
     const bool recoverablePeer=container==DockerContainer::WireGuard || container==DockerContainer::Awg2;
     QJsonObject pendingPeer;
@@ -102,12 +90,38 @@ ExportController::ExportResult ExportController::generateConnectionConfig(const 
             {"deliveryCertificate",updateMetadata.value("certificate")}};
         pendingBinding=QString::fromLatin1(QCryptographicHash::hash(QJsonDocument(binding).toJson(QJsonDocument::Compact),QCryptographicHash::Sha256).toHex());
         if (!m_serversRepository->pendingPeerExport(serverId,container,pendingPeer)
-            || (!pendingPeer.isEmpty() && (pendingPeer.size()!=5 || pendingPeer.value("version")!=1
+            || (!pendingPeer.isEmpty() && ((pendingPeer.size()!=5 && pendingPeer.size()!=6) || pendingPeer.value("version")!=1
+                || (pendingPeer.size()==6)!=pendingPeer.contains("result")
                 || pendingPeer.value("clientName")!=clientName || pendingPeer.value("updatable")!=updatable
                 || pendingPeer.value("binding")!=pendingBinding || !pendingPeer.value("prepared").isObject()
                 || pendingPeer.value("prepared").toObject().isEmpty()))) {
             result.errorCode=ErrorCode::InternalError; return result;
         }
+    }
+
+    if (pendingPeer.contains("result")) {
+        const auto ready=pendingPeer.value("result").toObject();
+        const auto config=ready.value("config").toString();
+        const auto digest=QString::fromLatin1(QCryptographicHash::hash(config.toUtf8(),QCryptographicHash::Sha256).toHex());
+        const auto compressed=QByteArray::fromBase64(config.mid(6).toLatin1(),QByteArray::Base64UrlEncoding);
+        if (ready.size()!=2 || !config.startsWith("vpn://") || compressed.size()<4 || compressed.size()>255*850
+            || ready.value("digest")!=digest || generateVpnUrl(compressed)!=config) {
+            result.errorCode=ErrorCode::InternalError; return result;
+        }
+        result.config=config; result.qrCodes=generateQrCodesFromConfig(compressed);
+        return result; // No SSH, peer mutation or new issue after completed generation.
+    }
+    if (updatable) {
+        QJsonObject info;
+        result.errorCode = ConnectionUpdatesController::command(credentials, "info", {}, info);
+        if (result.errorCode != ErrorCode::NoError) return result;
+        if (info.value("publicKey") != updateMetadata.value("publicKey")
+            || info.value("certificate") != updateMetadata.value("certificate")) {
+            result.errorCode = ErrorCode::InternalError;
+            return result;
+        }
+        individualIPv6Supported = info.value("features").toArray().contains("client-ipv6-v1");
+        idempotentIssueSupported = info.value("features").toArray().contains("idempotent-issue-v1");
     }
 
     if (ContainerUtils::containerService(container) != ServiceType::Other) {
@@ -224,13 +238,30 @@ ExportController::ExportResult ExportController::generateConnectionConfig(const 
     QByteArray compressedConfig = QJsonDocument(serverJson).toJson();
     compressedConfig = qCompress(compressedConfig, 8);
     result.config = generateVpnUrl(compressedConfig);
+    if (recoverablePeer && compressedConfig.size()>255*850) { result.config.clear(); result.errorCode=ErrorCode::InternalError; return result; }
     result.qrCodes = generateQrCodesFromConfig(compressedConfig);
-    if (recoverablePeer && !pendingPeer.isEmpty()
-        && !m_serversRepository->compareAndSetPendingPeerExport(serverId,container,pendingPeer,{})) {
-        result.config.clear(); result.qrCodes.clear(); result.errorCode=ErrorCode::InternalError;
+    if (recoverablePeer && !pendingPeer.isEmpty()) {
+        auto ready=pendingPeer;
+        ready["result"]=QJsonObject{{"config",result.config},{"digest",QString::fromLatin1(QCryptographicHash::hash(result.config.toUtf8(),QCryptographicHash::Sha256).toHex())}};
+        if (!m_serversRepository->compareAndSetPendingPeerExport(serverId,container,pendingPeer,ready)) {
+            result.config.clear(); result.qrCodes.clear(); result.errorCode=ErrorCode::InternalError;
+        }
     }
 
     return result;
+}
+
+bool ExportController::acknowledgeConnectionExport(const QString &serverId, int containerIndex, const QString &config)
+{
+    const auto container=static_cast<DockerContainer>(containerIndex);
+    if (container!=DockerContainer::WireGuard && container!=DockerContainer::Awg2) return true;
+    QJsonObject pending;
+    if (!m_serversRepository->pendingPeerExport(serverId,container,pending) || pending.isEmpty()) return false;
+    const auto ready=pending.value("result").toObject();
+    if (pending.size()!=6 || pending.value("version")!=1 || ready.size()!=2) return false;
+    const auto digest=QString::fromLatin1(QCryptographicHash::hash(config.toUtf8(),QCryptographicHash::Sha256).toHex());
+    if (config.isEmpty() || ready.value("config")!=config || ready.value("digest")!=digest) return false;
+    return m_serversRepository->compareAndSetPendingPeerExport(serverId,container,pending,{});
 }
 
 ExportController::ExportResult ExportController::generateConnectionUpdates(const QString &serverId, int containerIndex, const QString &clientPublicKey)
