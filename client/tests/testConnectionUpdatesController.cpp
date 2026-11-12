@@ -194,10 +194,51 @@ private slots:
                 QVERIFY(error != ErrorCode::NoError); QCOMPARE(assignments, (QJsonObject { { "sentinel", true } })); continue;
             }
             QCOMPARE(error, ErrorCode::NoError);
-            const auto a = QString::fromLatin1(QByteArray(32, 'A').toBase64());
+            const auto a = QString::fromLatin1(publicKey(deviceSeed, EVP_PKEY_X25519).toBase64());
             const auto b = QString::fromLatin1(QByteArray(32, 'B').toBase64());
             const auto c = QString::fromLatin1(QByteArray(32, 'C').toBase64());
             QCOMPARE(assignments, (QJsonObject { { a, container == DockerContainer::Awg2 ? "fd88::2" : "fd77::2" }, { b, "" }, { c, "" } }));
+        }
+    }
+    void realAdminIPv6InvitationExport()
+    {
+        const auto host = qEnvironmentVariable("AMNEZIA_SSH_PROBE_HOST");
+        if (host.isEmpty()) QSKIP("Run scripts/local-tests/path-probe-ssh.sh with this test executable");
+        ServerCredentials credentials; credentials.hostName = host; credentials.port = qEnvironmentVariableIntValue("AMNEZIA_SSH_PROBE_PORT");
+        credentials.userName = "root"; credentials.secretData = "synthetic-probe-fixture";
+        QJsonObject info;
+        QCOMPARE(ConnectionUpdatesController::command(credentials, "info", {}, info), ErrorCode::NoError);
+        QVERIFY(info.value("features").toArray().contains("client-ipv6-v1"));
+        for (const bool awg : { false, true }) {
+            const auto container = awg ? DockerContainer::Awg2 : DockerContainer::WireGuard;
+            QJsonObject live; QCOMPARE(ConnectionUpdatesController::fetchPublicSettings(credentials, container, host, live), ErrorCode::NoError);
+            auto administrator = profile(awg); administrator["hostName"] = host;
+            administrator["userName"] = credentials.userName; administrator["password"] = credentials.secretData; administrator["port"] = credentials.port;
+            auto metadata = info; metadata["url"] = QString("https://%1:8443").arg(host);
+            administrator["connectionUpdates"] = metadata;
+            SecureQSettings settings("Amnezia-IPv6-Export-" + QUuid::createUuid().toString(), "test", nullptr, false);
+            SecureServersRepository servers(&settings); SecureAppSettingsRepository app(&settings);
+            const auto id = servers.addServer({}, administrator, serverConfigUtils::SelfHostedAdmin);
+            ExportController exporter(&servers, &app);
+            const auto key = client(administrator, awg).value("client_pub_key").toString();
+            const auto exported = exporter.generateConnectionUpdates(id, static_cast<int>(container), key);
+            QCOMPARE(exported.errorCode, ErrorCode::NoError); QVERIFY(exported.config.startsWith("vpn://"));
+            const auto invitation = QJsonDocument::fromJson(qUncompress(QByteArray::fromBase64(exported.config.mid(6).toLatin1(), QByteArray::Base64UrlEncoding))).object();
+            QCOMPARE(invitation.value("connectionUpdates").toObject().value("clientPublicKey").toString(), key);
+            auto user = profile(awg);
+            QJsonObject synchronized;
+            QVERIFY(connectionUpdates::mergeServerSettings(user, awg ? "amnezia-awg2" : "amnezia-wireguard", live, false, synchronized));
+            synchronized.remove("connectionUpdates"); QJsonObject attached;
+            QVERIFY(connectionUpdates::attachInvitation(synchronized, invitation, attached));
+            const auto userId = servers.addServer({}, attached, serverConfigUtils::SelfHostedUser);
+            VpnConnection vpn(&servers, &app); ConnectionController connection(&servers, &app, &vpn);
+            ConnectionUpdatesController updates(&servers, &connection); QSignalSpy finished(&updates, &ConnectionUpdatesController::finished);
+            updates.refresh(userId); QTRY_COMPARE_WITH_TIMEOUT(finished.count(), 1, 10000); QVERIFY(finished[0][0].toBool());
+            const auto received = client(*servers.serverJsonById(userId), awg);
+            QCOMPARE(received.value("client_ip").toString(), awg ? "10.8.0.2, fd88::2/128" : "10.8.0.2, fd77::2/128");
+            QCOMPARE(received.value("client_priv_key"), client(user, awg).value("client_priv_key"));
+            QCOMPARE(received.value("allowed_ips"), client(user, awg).value("allowed_ips"));
+            settings.clearSettings();
         }
     }
     void verifiedFetchAndPreservedStorage()

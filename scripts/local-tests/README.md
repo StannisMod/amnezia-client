@@ -96,13 +96,21 @@ bash scripts/local-tests/path-probe-ssh.sh deploy/build/client/tests/test_connec
 ```
 
 The test creates an internal Docker network and a disposable SSH server with its
-own Docker daemon. It preloads a local image, so the internal daemon does not pull
-from a registry. Named `wg0`/`awg0` interfaces carry controlled IPv4/IPv6 addresses;
-they are dummy interfaces for management-command testing, not encrypted VPN peers.
-The application uses its normal SSH reader and asynchronous profile migration.
-The second phase stops the WG container and verifies failed reads leave the output
-unchanged. Keys and credentials are synthetic; no host VPN or production server is
-used. Cleanup removes the daemon, its volumes and the internal network.
+own Docker daemon. It preloads locally built images; the internal daemon does not
+pull from a registry. The `wg0` interface uses kernel WireGuard, and `awg0` uses
+the actual userspace AWG daemon from a digest-pinned image. Synthetic peers cover
+individual IPv6 assignments, IPv4-only peers and peers without addresses. Native
+SSH discovery must reject ambiguous IPv6 subnets and stopped containers without
+changing its output.
+
+The fixture also builds the production signed-update service. The application
+exports an invitation for an existing WG/AWG key over its normal SSH admin path,
+attaches it to a user profile, fetches the signed update over certificate-pinned
+HTTPS and verifies the assigned IPv6 while preserving its private key and routes.
+The existing asynchronous probe-profile migration remains covered. This validates
+management and signed delivery; it does not send encrypted user traffic or prove
+Internet egress. Keys and credentials are synthetic; no host VPN or production
+server is used. Cleanup removes the daemon, its volumes and the internal network.
 
 This is required by the Linux routing build/package workflows. The same Qt test
 is skipped in a plain CTest run without the fixture environment; that skip does
