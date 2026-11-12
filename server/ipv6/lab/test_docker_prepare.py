@@ -12,10 +12,11 @@ import subprocess
 import time
 import tempfile
 import uuid
+from test_restart import test_restarts
 
 
-def command(*args, check=True):
-    result = subprocess.run(args, capture_output=True, text=True, timeout=60)
+def command(*args, check=True, data=None, timeout=60):
+    result = subprocess.run(args, capture_output=True, text=True, timeout=timeout, input=data)
     if check and result.returncode:
         raise RuntimeError(f'{args!r}: {result.stdout}{result.stderr}')
     return result
@@ -30,7 +31,8 @@ def main():
     image = command('docker', 'image', 'inspect', '-f', '{{.Id}}', args.image).stdout.strip()
     fixture = 'amnezia-ipv6-prepare-' + uuid.uuid4().hex[:12]
     def inside(*parts, **kwargs):
-        return command('docker', 'exec', fixture, *parts, **kwargs)
+        prefix = ('docker', 'exec', '-i', fixture) if kwargs.get('data') is not None else ('docker', 'exec', fixture)
+        return command(*prefix, *parts, **kwargs)
     def network(name):
         return json.loads(inside('docker', 'network', 'inspect', name).stdout)[0]
     def prepare(check=True):
@@ -134,6 +136,10 @@ time.sleep(300)
             attached = inside('sh', '-c', '. /prepare_ipv6_network.sh; amnezia_attach_ipv6_network "$1"', 'sh', container)
             assert 'attached-egress-unverified' in attached.stdout
             current = json.loads(inside('docker', 'inspect', container).stdout)[0]
+            ipv6_endpoint = current['NetworkSettings']['Networks']['amnezia-ipv6-egress']
+            assert ipv6_endpoint['NetworkID'] == first['Id'] and ipv6_endpoint['GlobalIPv6Address']
+            members = network('amnezia-ipv6-egress')['Containers']
+            assert current['Id'] in members and members[current['Id']]['Name'] == container
             assert current['NetworkSettings']['Networks']['amnezia-dns-net'] == baseline['NetworkSettings']['Networks']['amnezia-dns-net']
             assert inside('docker', 'exec', container, 'ip', '-4', 'route', 'show', 'table', 'all').stdout == routes
             assert inside('docker', 'exec', container, 'cat', '/etc/resolv.conf').stdout == resolver
@@ -149,6 +155,7 @@ time.sleep(300)
             assert json.loads(inside('docker', 'exec', container, 'cat', '/result').stdout) == dict(tcp_preserved=True,dns_preserved=True)
             inside('docker', 'rm', '-f', container)
         inside('docker', 'rm', '-f', 'fixture-peer')
+        restart_results = test_restarts(inside, args.image, root)
         inside('docker', 'network', 'rm', 'amnezia-ipv6-egress')
         inside('docker', 'network', 'create', '--label', 'fixture=foreign', 'amnezia-ipv6-egress')
         foreign = network('amnezia-ipv6-egress')
@@ -157,13 +164,14 @@ time.sleep(300)
         assert network('amnezia-ipv6-egress') == foreign, 'foreign network was modified'
         assert network('amnezia-dns-net') == dns_before, 'conflict changed DNS bridge'
         args.report.parent.mkdir(parents=True, exist_ok=True)
-        args.report.write_text(json.dumps({'schema_version': 1, 'result': 'PASS',
-            'scope': 'production-script/private-docker-bridge-and-live-attachment', 'internet_egress': 'NOT_TESTED',
+        args.report.write_text(json.dumps({'schema_version': 1, 'result': 'PASS', 'real_restarts': restart_results,
+            'scope': 'production-script/private-docker-bridge-live-attachment-and-native-restarts', 'internet_egress': 'NOT_TESTED',
             'checks': ['no-route-no-network', 'actual-ipv6-only-bridge', 'idempotent-repeat',
                        'dns-bridge-preserved', 'foreign-network-rejected',
                        'live-attach-ipv4-routes-resolver-and-endpoint-preserved',
-                       'original-ipv4-tcp-and-dns-survive-attach', 'repeat-attach-idempotent']}, indent=2) + '\n')
-        print('PASS: production IPv6 bridge installation, ownership and live attachment preserving original IPv4 TCP/DNS', flush=True)
+                       'original-ipv4-tcp-and-dns-survive-attach', 'repeat-attach-idempotent', 'actual-quick-native-tun-container-restarts',
+                       'encrypted-ipv4-ipv6-tcp-after-restart', 'ipv4-boot-without-ipv6-egress']}, indent=2) + '\n')
+        print('PASS: IPv6 bridge attachment, original IPv4 TCP/DNS and actual WG/AWG encrypted restart acceptance', flush=True)
     finally:
         command('docker', 'rm', '-f', '-v', fixture, check=False)
 

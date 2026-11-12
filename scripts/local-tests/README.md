@@ -219,3 +219,21 @@ negative control reinstating the old fatal exit fails this test. Boot candidate
 validation can also replace that exact old fatal call in recognized startup
 bodies without changing unrelated lines. Retrying IPv6 preparation when a
 previously missing route returns still needs the migration lifecycle coordinator.
+
+The private-Docker IPv6 preparation regression now requires an actual additional
+IPv6 endpoint, its nonempty address and membership in the owned bridge. Checking
+only unchanged IPv4 state is insufficient: an earlier Docker template treated a
+missing map entry as a truthy zero struct and skipped attachment. The production
+helper now checks the indexed endpoint's nonempty Name.
+
+That regression also executes real kernel WireGuard and userspace AWG startup
+scripts, real quick commands and the actual MTU supervisor. An unchanged native
+client checks new 64 KiB TCP exchanges over IPv4 and IPv6 after initial startup,
+container restart with the IPv6 bridge, and restart after removing that bridge.
+It verifies interface kinds, persistent keys/configuration/addresses, the original
+Docker IPv4 endpoint and exact IPv6 membership. In phases with IPv6 egress it
+also checks forwarding/NAT rules and encrypted TCP through NAT66 to an independent
+local IPv6 origin; that origin must observe the server's bridge address. No tunnel
+or daemon command is replaced in this test. It verifies new connections after a
+real restart, separately from the existing tests of retained connections during
+live reconfiguration. Public Internet IPv6 reachability is not tested.

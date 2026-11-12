@@ -43,7 +43,7 @@ amnezia_attach_ipv6_network() {
     amnezia_v6_container_id=$(sudo docker inspect --format '{{.Id}}' "$amnezia_v6_container") || return 1
     amnezia_v6_routes_before=$(sudo docker exec "$amnezia_v6_container_id" ip -4 route show table all) || return 1
     amnezia_v6_dns_before=$(sudo docker exec "$amnezia_v6_container_id" cat /etc/resolv.conf) || return 1
-    amnezia_v6_attached=$(sudo docker network inspect --format "{{if index .Containers \"$amnezia_v6_container_id\"}}yes{{end}}" "$amnezia_v6_network_id") || return 1
+    amnezia_v6_attached=$(sudo docker network inspect --format "{{if (index .Containers \"$amnezia_v6_container_id\").Name}}yes{{end}}" "$amnezia_v6_network_id") || return 1
     if [ "$amnezia_v6_attached" != yes ]; then
         sudo docker network connect "$amnezia_v6_network_id" "$amnezia_v6_container_id" || return 1
     fi
