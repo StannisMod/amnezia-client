@@ -398,14 +398,36 @@ ErrorCode UsersController::revokeManagedPeer(const QString &serverId, DockerCont
         return row;
     };
     if (operation.isEmpty()) {
+        const auto encodedKey=clientPublicKey.toLatin1();
+        const auto decodedKey=QByteArray::fromBase64(encodedKey);
+        if (decodedKey.size()!=32 || decodedKey.toBase64()!=encodedKey) return ErrorCode::InternalError;
+        auto table=ssh.getTextFileFromContainer(container,credentials,tablePath,error);
+        if (error!=ErrorCode::NoError) return error;
+        auto document=QJsonDocument::fromJson(table);
+        if (!document.isArray() || uniqueRow(document.array(),clientPublicKey)==-1) {
+            // The container-profile entry point need not have opened the list.
+            // Migrate or recover a missing metadata row before capturing
+            // revocation state, without recursively calling updateClients or
+            // resuming a different operation.
+            auto migrated=document.isArray()?document.array():QJsonArray{};
+            if (!document.isArray()) migration(table,migrated);
+            int count=0;
+            error=getWireGuardClients(container,credentials,&ssh,count,migrated);
+            if (error!=ErrorCode::NoError) return error;
+            const auto replacement=QJsonDocument(migrated).toJson();
+            bool transactional=false;
+            error=ssh.replaceClientTable(container,credentials,table,replacement,transactional,!document.isArray());
+            if (error!=ErrorCode::NoError || !transactional) return error==ErrorCode::NoError?ErrorCode::InternalError:error;
+            table=replacement; document=QJsonDocument::fromJson(table);
+        }
+        if (!document.isArray() || uniqueRow(document.array(),clientPublicKey)<0) return ErrorCode::InternalError;
+        // Migration may have waited for another writer. Capture the protocol
+        // baseline afterwards so the new durable context never uses an older
+        // configuration paired with a newly migrated table.
         const auto original=QString::fromUtf8(ssh.getTextFileFromContainer(container,credentials,path,error));
         if (error!=ErrorCode::NoError) return error;
         QString candidate;
         if (!connectionUpdates::removePeerFromServerConfig(original,clientPublicKey,candidate)) return ErrorCode::InternalError;
-        const auto table=ssh.getTextFileFromContainer(container,credentials,tablePath,error);
-        if (error!=ErrorCode::NoError) return error;
-        const auto document=QJsonDocument::fromJson(table);
-        if (!document.isArray() || uniqueRow(document.array(),clientPublicKey)<0) return ErrorCode::InternalError;
         operation={{"version",1},{"binding",binding},{"clientPublicKey",clientPublicKey},
             {"original",original},{"candidate",candidate},{"table",QString::fromLatin1(table.toBase64())}};
         if (capabilities.value("features").toArray().contains("native-receipt-v1")) {

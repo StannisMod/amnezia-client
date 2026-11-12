@@ -460,6 +460,23 @@ This covers cooperating normal client-table writers; peer-scoped intent
 coordination with pending revocation, bootstrap, backend updates, archive/restore
 and other protocol writers still need the full migration coordinator.
 
+Profile-based managed revocation also prepares metadata when the list has never
+been opened. It conditionally converts a known old object or existing empty
+file, and reconstructs missing rows from the protocol configuration while
+copying every existing array entry unchanged. The protocol baseline is captured
+after that preparation. Pending revocation contexts skip this step and retain
+their existing recovery direction; updateClients is never called recursively.
+Invalid public keys or corrupt metadata fail before a new native operation or
+revocation context is created. An absent metadata file still needs bootstrap.
+
+Required transport-specific SSH cases call the ContainerConfig revoke overload
+on a fresh UsersController for an old object, empty file, empty array, nonempty
+array missing the target, and corrupt data. Valid inputs must remove the actual
+fixture peer without losing another peer's custom data; corrupt input must
+preserve both the peer and exact old bytes with no pending context. Lost legacy
+migration replies are exercised, and every fixture config/table is restored.
+The WG and AWG cases each retain the existing 90-second test limit.
+
 The server helper also advertises `native-receipt-v1`. A caller with a durable
 local operation ID can opt in with `prepare-receipt` before staging. The fixed
 sidecar store binds that ID to the original/candidate hashes under the protocol

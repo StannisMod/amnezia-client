@@ -511,6 +511,84 @@ private slots:
             settings.clearSettings();
         }
     }
+    void realAdminProfileRevokeMigratesMetadata_data()
+    {
+        QTest::addColumn<int>("containerIndex");
+        QTest::newRow("wireguard")<<static_cast<int>(DockerContainer::WireGuard);
+        QTest::newRow("awg")<<static_cast<int>(DockerContainer::Awg2);
+    }
+    void realAdminProfileRevokeMigratesMetadata()
+    {
+        const auto host=qEnvironmentVariable("AMNEZIA_SSH_PROBE_HOST");
+        if (host.isEmpty()) QSKIP("Run scripts/local-tests/path-probe-ssh.sh with this test executable");
+        ServerCredentials credentials; credentials.hostName=host; credentials.port=qEnvironmentVariableIntValue("AMNEZIA_SSH_PROBE_PORT");
+        credentials.userName="root"; credentials.secretData="synthetic-probe-fixture";
+        QFETCH(int,containerIndex);
+        const auto container=static_cast<DockerContainer>(containerIndex);
+        {
+            SecureQSettings settings("Amnezia-Profile-Revoke-Migration-"+QUuid::createUuid().toString(),"test",nullptr,false);
+            SecureServersRepository servers(&settings);
+            auto administrator=profile(container==DockerContainer::Awg2); administrator.remove("connectionUpdates");
+            administrator["hostName"]=host; administrator["userName"]=credentials.userName;
+            administrator["password"]=credentials.secretData; administrator["port"]=credentials.port;
+            const auto id=servers.addServer({},administrator,serverConfigUtils::SelfHostedAdmin);
+            auto target=servers.selfHostedAdminConfig(id)->containerConfig(container);
+            const auto key=QString::fromLatin1(QByteArray(32,'N').toBase64());
+            const auto a=QString::fromLatin1(QByteArray(32,'B').toBase64());
+            target.protocolConfig.setClientConfigJson({{"clientId",key},{"client_pub_key",key}});
+            QCOMPARE(target.protocolConfig.clientId(),key);
+            SshSession ssh; ErrorCode error=ErrorCode::NoError;
+            const auto name=ContainerUtils::containerToString(container);
+            const auto tablePath=QString("/opt/amnezia/%1/clientsTable").arg(ContainerUtils::containerTypeToString(container));
+            const QString path=container==DockerContainer::Awg2?"/opt/amnezia/awg/awg0.conf":"/opt/amnezia/wireguard/wg0.conf";
+            const auto baseline=QString::fromUtf8(ssh.getTextFileFromContainer(container,credentials,path,error)); QCOMPARE(error,ErrorCode::NoError); QVERIFY(!baseline.contains(key));
+            const auto baselineTable=ssh.getTextFileFromContainer(container,credentials,tablePath,error); QCOMPARE(error,ErrorCode::NoError);
+            const auto added=baseline+"\n[Peer]\nPublicKey = "+key+"\nAllowedIPs = 10.251.0.249/32\n";
+            QString removed; QVERIFY(connectionUpdates::removePeerFromServerConfig(added,key,removed));
+            const QJsonObject keep{{"clientName","preserved existing peer"},{"extra",QJsonObject{{"unchanged",true}}}};
+            QVERIFY(baseline.contains(a)); // A peer actually installed by the fixture.
+            const auto legacy=QJsonDocument(QJsonObject{{key,QJsonObject{{"clientName","old N"},{"extra",7}}},{a,keep}}).toJson();
+            const auto missingRow=QJsonDocument(QJsonArray{QJsonObject{{"clientId",a},{"userData",keep}}}).toJson();
+            for (const auto &old: {legacy,QByteArray{},QByteArray("[]"),missingRow,QByteArray("corrupt profile metadata")}) {
+                bool handled=false;
+                QCOMPARE(ssh.replaceLiveProtocolConfig(container,credentials,baseline,added,handled),ErrorCode::NoError); QVERIFY(handled);
+                QCOMPARE(ssh.uploadTextFileToContainer(container,credentials,QString::fromUtf8(old),tablePath),ErrorCode::NoError);
+                QCOMPARE(ssh.runScript(credentials,QString("sudo docker exec %1 rm -f /opt/amnezia/protocol-loss-client-table-migration").arg(name)),ErrorCode::NoError);
+                UsersController fresh(&servers); // Never calls updateClients before profile revoke.
+                const auto result=fresh.revokeClient(id,target,container);
+                QJsonObject pending; QVERIFY(servers.pendingPeerRevocation(id,container,pending)); QVERIFY(pending.isEmpty());
+                if (old=="corrupt profile metadata") {
+                    QVERIFY(result!=ErrorCode::NoError);
+                    QVERIFY(QString::fromUtf8(ssh.getTextFileFromContainer(container,credentials,path,error))==added); QCOMPARE(error,ErrorCode::NoError);
+                    QCOMPARE(ssh.getTextFileFromContainer(container,credentials,tablePath,error),old); QCOMPARE(error,ErrorCode::NoError);
+                    QJsonObject unchanged;
+                    QCOMPARE(ssh.protocolConfigTransaction(container,credentials,{{"action","check-live"},{"expected",QString::fromLatin1(added.toUtf8().toBase64())}},unchanged),ErrorCode::NoError);
+                    handled=false; QCOMPARE(ssh.replaceLiveProtocolConfig(container,credentials,added,baseline,handled),ErrorCode::NoError); QVERIFY(handled);
+                } else {
+                    QCOMPARE(result,ErrorCode::NoError);
+                    QVERIFY(QString::fromUtf8(ssh.getTextFileFromContainer(container,credentials,path,error))==removed); QCOMPARE(error,ErrorCode::NoError);
+                    const auto entries=QJsonDocument::fromJson(ssh.getTextFileFromContainer(container,credentials,tablePath,error)).array(); QCOMPARE(error,ErrorCode::NoError);
+                    bool preserved=false;
+                    for (const auto &entry:entries) {
+                        QVERIFY(entry.toObject().value("clientId")!=key);
+                        if (entry.toObject().value("clientId")==a) {
+                            preserved=true;
+                            if (old==legacy || old==missingRow) QVERIFY(entry.toObject().value("userData").toObject()==keep);
+                        }
+                    }
+                    QVERIFY(preserved);
+                    if (!QJsonDocument::fromJson(old).isArray()) {
+                        QCOMPARE(ssh.getTextFileFromContainer(container,credentials,"/opt/amnezia/protocol-loss-client-table-migration",error),QByteArray("1")); QCOMPARE(error,ErrorCode::NoError);
+                    }
+                    QJsonObject unchanged;
+                    QCOMPARE(ssh.protocolConfigTransaction(container,credentials,{{"action","check-live"},{"expected",QString::fromLatin1(removed.toUtf8().toBase64())}},unchanged),ErrorCode::NoError);
+                    handled=false; QCOMPARE(ssh.replaceLiveProtocolConfig(container,credentials,removed,baseline,handled),ErrorCode::NoError); QVERIFY(handled);
+                }
+                QCOMPARE(ssh.uploadTextFileToContainer(container,credentials,QString::fromUtf8(baselineTable),tablePath),ErrorCode::NoError);
+            }
+            settings.clearSettings();
+        }
+    }
     void realAdminV1RevocationContext()
     {
         const auto host=qEnvironmentVariable("AMNEZIA_SSH_PROBE_HOST");
