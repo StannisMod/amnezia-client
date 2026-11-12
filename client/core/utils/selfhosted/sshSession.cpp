@@ -179,7 +179,7 @@ ErrorCode SshSession::protocolConfigTransaction(DockerContainer container, const
 {
     if (container != DockerContainer::WireGuard && container != DockerContainer::Awg2) return ErrorCode::InternalError;
     const auto action = input.value("action").toString();
-    if (action != "capabilities" && action != "stage-live" && action != "apply-commit" && action != "status" && action != "rollback-live" && action != "check-live") return ErrorCode::InternalError;
+    if (action != "capabilities" && action != "stage-live" && action != "apply-commit" && action != "status" && action != "rollback-live" && action != "check-live" && action != "discard-stage") return ErrorCode::InternalError;
     auto request = input; request["container"] = ContainerUtils::containerToString(container);
     const auto folder = "/tmp/amnezia-protocol-request-" + QUuid::createUuid().toString(QUuid::Id128);
     auto error = runScript(credentials, "umask 077 && mkdir '" + folder + "'");
@@ -234,20 +234,41 @@ ErrorCode SshSession::replaceLiveProtocolConfig(DockerContainer container, const
             && current.value("current").toBool() && current.value("candidateHash") == candidateHash) return ErrorCode::NoError;
     }
     QJsonObject staged;
-    error = protocolConfigTransaction(container, credentials, { {"action", "stage-live"},
-        {"expected", QString::fromLatin1(original.toBase64())}, {"candidate", QString::fromLatin1(replacement.toBase64())} }, staged);
-    if (error != ErrorCode::NoError) {
-        const auto stageError = error;
-        error = protocolConfigTransaction(container, credentials, { {"action", "status"} }, staged);
-        if (error != ErrorCode::NoError) return stageError;
-    }
-    const auto operation = staged.value("operation").toString();
+    auto stageOnce=[&]() {
+        staged={};
+        auto result=protocolConfigTransaction(container, credentials, { {"action", "stage-live"},
+            {"expected", QString::fromLatin1(original.toBase64())}, {"candidate", QString::fromLatin1(replacement.toBase64())} }, staged);
+        if (result!=ErrorCode::NoError) {
+            const auto stageError=result;
+            if (protocolConfigTransaction(container,credentials,{{"action","status"}},staged)!=ErrorCode::NoError) return stageError;
+        }
+        return ErrorCode::NoError;
+    };
     static const QRegularExpression nonce("^[a-f0-9]{64}$");
-    if (!nonce.match(operation).hasMatch() || staged.value("originalHash") != originalHash || staged.value("candidateHash") != candidateHash
-        || !staged.value("nativeWriteIntent").isBool() || !staged.value("nativeApplied").isBool()
-        || staged.value("rollbackPending").toBool()
-        || (staged.value("nativeWriteIntent").toBool() && !staged.value("nativeApplied").toBool()
-            && !capabilities.value("features").toArray().contains("native-reconcile-v1"))) return ErrorCode::InternalError;
+    auto validStage=[&]() {
+        return nonce.match(staged.value("operation").toString()).hasMatch() && staged.value("originalHash")==originalHash
+            && staged.value("candidateHash")==candidateHash && staged.value("nativeWriteIntent").isBool()
+            && staged.value("nativeApplied").isBool() && !staged.value("rollbackPending").toBool()
+            && (!staged.value("nativeWriteIntent").toBool() || staged.value("nativeApplied").toBool()
+                || capabilities.value("features").toArray().contains("native-reconcile-v1"));
+    };
+    error=stageOnce();
+    if (error!=ErrorCode::NoError) return error;
+    if (!validStage()) return ErrorCode::InternalError;
+    if (staged.value("state")=="original" && !staged.value("nativeWriteIntent").toBool() && !staged.value("nativeApplied").toBool()) {
+        if (!capabilities.value("features").toArray().contains("native-stage-restart-v1")) return ErrorCode::InternalError;
+        QJsonObject discarded;
+        error=protocolConfigTransaction(container,credentials,{{"action","discard-stage"},{"operation",staged.value("operation")}},discarded);
+        if (error!=ErrorCode::NoError || !discarded.value("discardedStage").toBool()) {
+            QJsonObject current;
+            if (protocolConfigTransaction(container,credentials,{{"action","check-live"},{"expected",QString::fromLatin1(original.toBase64())}},current)!=ErrorCode::NoError
+                || !current.value("current").toBool() || current.value("candidateHash")!=originalHash) return ErrorCode::InternalError;
+        }
+        error=stageOnce(); // Bounded restart, using the same persisted peer key.
+        if (error!=ErrorCode::NoError) return error;
+        if (!validStage() || staged.value("state")=="original") return ErrorCode::InternalError;
+    }
+    const auto operation=staged.value("operation").toString();
     QJsonObject applied;
     error = protocolConfigTransaction(container, credentials, { {"action", "apply-commit"}, {"operation", operation} }, applied);
     if (error == ErrorCode::NoError && applied.value("operation") == operation && applied.value("candidateHash") == candidateHash

@@ -114,6 +114,7 @@ timeout 90 "$@" realAdminPeerIPv6Read
 timeout 90 "$@" realAdminIPv6InvitationExport
 export AMNEZIA_PEER_TRANSACTIONS=enabled
 timeout 90 "$@" realAdminNewIPv6ProfileExport
+timeout 90 "$@" realAdminStagePublicationRecovery
 for kind in wireguard awg2; do
     docker exec "$fixture" docker exec "amnezia-$kind" mv /opt/amnezia/config-helper /opt/amnezia/config-helper.fixture-disabled
     for marker in config-helper.amnezia-owner config-helper.owner.amnezia-lock; do

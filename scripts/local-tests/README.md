@@ -369,6 +369,23 @@ address. Plain repeated `apply` also verifies an already-applied state instead
 of overwriting later changes. Older helpers do not get the client's new recovery
 permission without advertising the capability.
 
+With `native-stage-restart-v1`, a journal published before its candidate file
+can be discarded and staged again using the same persisted client key. The
+operation-bound `discard-stage` checks the original file, native-backed role,
+absence of write/apply/rollback intent and file metadata under the transaction
+lock. A stale client observation cannot discard a later native attempt. The
+client permits one bounded restart; a missing discard reply requires a locked
+`check-live` of the original before retry. The required SSH suite exercises this
+window through the actual client for both WG and AWG, without reconnecting.
+
+Exclusive journal/helper publication uses Linux `renameat2(RENAME_NOREPLACE)`
+instead of linking and then unlinking the temporary name. A subprocess exits
+immediately after publication to prove that no second link remains; the old
+link-based control reproduces that window. Concurrent publishers must produce
+one complete winner and preserve an existing target. Unsupported kernels or
+filesystems fail closed. Pre-existing ambiguous hardlinks remain refused, and
+this change does not collect unpublished temporary files left before rename.
+
 Guarded native rollback now snapshots the canonical candidate digest durably
 before replacing its file. Runtime must match the original or that verified
 candidate; foreign native edits cause refusal before any file/native rewrite.

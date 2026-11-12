@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -681,4 +682,184 @@ func TestOwnedHelperPreservesStartupJournalAndRejectsNativeRole(t *testing.T) {
 	}
 	assertConfig(t, target, []byte("second helper"))
 	assertConfig(t, startup, candidate)
+}
+
+func TestAtomicPublicationSurvivesExitWithoutCleanup(t *testing.T) {
+	if directory := os.Getenv("AMNEZIA_ATOMIC_PUBLICATION_CHILD"); directory != "" {
+		source, target := filepath.Join(directory, "prepared"), filepath.Join(directory, "published")
+		if err := os.WriteFile(source, []byte("complete private publication"), 0600); err != nil {
+			os.Exit(31)
+		}
+		file, err := os.Open(source)
+		if err != nil {
+			os.Exit(32)
+		}
+		err = file.Sync()
+		file.Close()
+		if err != nil {
+			os.Exit(33)
+		}
+		if os.Getenv("AMNEZIA_ATOMIC_PUBLICATION_LEGACY") == "1" {
+			err = os.Link(source, target)
+		} else {
+			err = renameConfigNoReplace(source, target)
+		}
+		if err != nil {
+			os.Exit(34)
+		}
+		os.Exit(23) // No defer, directory sync or temporary-file cleanup can run.
+	}
+	for _, legacy := range []bool{false, true} {
+		directory := t.TempDir()
+		command := exec.Command(os.Args[0], "-test.run=^TestAtomicPublicationSurvivesExitWithoutCleanup$")
+		command.Env = append(os.Environ(), "AMNEZIA_ATOMIC_PUBLICATION_CHILD="+directory)
+		if legacy {
+			command.Env = append(command.Env, "AMNEZIA_ATOMIC_PUBLICATION_LEGACY=1")
+		}
+		err := command.Run()
+		var exited *exec.ExitError
+		if !errors.As(err, &exited) || exited.ExitCode() != 23 {
+			t.Fatal("publication child failed", err)
+		}
+		target := filepath.Join(directory, "published")
+		assertConfig(t, target, []byte("complete private publication"))
+		info, err := os.Stat(target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		links := info.Sys().(*syscall.Stat_t).Nlink
+		_, sourceErr := os.Lstat(filepath.Join(directory, "prepared"))
+		if legacy {
+			if links != 2 || sourceErr != nil {
+				t.Fatal("legacy control did not expose double-link window")
+			}
+		} else if links != 1 || !errors.Is(sourceErr, os.ErrNotExist) {
+			t.Fatal("atomic publication left a temporary alias")
+		}
+	}
+}
+
+func TestExclusivePublicationRacePreservesWinner(t *testing.T) {
+	directory := t.TempDir()
+	target := filepath.Join(directory, "published")
+	type result struct {
+		data []byte
+		err  error
+	}
+	results := make(chan result, 12)
+	for i := 0; i < 12; i++ {
+		go func(value byte) {
+			data := bytes.Repeat([]byte{value}, 256<<10)
+			err := writeConfigAtomic(target, data, 0600, os.Geteuid(), os.Getegid(), true)
+			results <- result{data, err}
+		}(byte(i + 1))
+	}
+	winners := 0
+	var winner []byte
+	for i := 0; i < 12; i++ {
+		r := <-results
+		if r.err == nil {
+			winners++
+			winner = r.data
+		} else if !errors.Is(r.err, os.ErrExist) {
+			t.Fatal("unexpected publication error", r.err)
+		}
+	}
+	if winners != 1 {
+		t.Fatal("exclusive publication did not choose exactly one writer")
+	}
+	assertConfig(t, target, winner)
+	info, err := os.Stat(target)
+	if err != nil || info.Sys().(*syscall.Stat_t).Nlink != 1 {
+		t.Fatal("published inode has aliases")
+	}
+	remaining, err := filepath.Glob(filepath.Join(directory, ".amnezia-config-*"))
+	if err != nil || len(remaining) != 0 {
+		t.Fatal("finished writers left temporary files")
+	}
+	before := info
+	if err := writeConfigAtomic(target, []byte("foreign replacement"), 0700, os.Geteuid(), os.Getegid(), true); !errors.Is(err, os.ErrExist) {
+		t.Fatal("existing target was replaceable")
+	}
+	after, err := os.Stat(target)
+	if err != nil || !os.SameFile(before, after) || after.Mode().Perm() != 0600 {
+		t.Fatal("losing writer changed existing inode")
+	}
+	assertConfig(t, target, winner)
+}
+
+func TestDiscardStageRequiresUnappliedOriginalAndMatchingOperation(t *testing.T) {
+	for _, scenario := range []string{"original", "candidate", "foreign", "intent", "applied", "wrong-operation", "file-only", "mode-change"} {
+		t.Run(scenario, func(t *testing.T) {
+			path, original, candidate := transactionFixture(t)
+			txn, err := beginPreparedConfigTransaction(path, original, candidate, func(j *configJournal) error {
+				if scenario != "file-only" {
+					j.NativeOriginal = []byte("native snapshot")
+					j.NativeHash = configHash(j.NativeOriginal)
+				}
+				return nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			operation := txn.journal.Operation
+			if scenario == "intent" {
+				txn.journal.NativeWriteIntent = true
+			}
+			if scenario == "applied" {
+				txn.journal.NativeWriteIntent = true
+				txn.journal.NativeApplied = true
+			}
+			if err := txn.saveJournal(); err != nil {
+				t.Fatal(err)
+			}
+			txn.close()
+			current := original
+			if scenario == "candidate" {
+				current = candidate
+			}
+			if scenario == "foreign" {
+				current = []byte("independent edit")
+			}
+			if err := os.WriteFile(path, current, 0640); err != nil {
+				t.Fatal(err)
+			}
+			if scenario == "mode-change" {
+				if err := os.Chmod(path, 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before, err := os.ReadFile(path + ".amnezia-journal")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if scenario == "wrong-operation" {
+				operation = strings.Repeat("0", 64)
+			}
+			raw, err := json.Marshal(configTransactionRequest{Action: "discard-stage", Container: "amnezia-wireguard", Operation: operation})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var output bytes.Buffer
+			err = configTransactionCommand(bytes.NewReader(raw), &output, map[string]string{"amnezia-wireguard": path})
+			assertConfig(t, path, current)
+			if scenario == "original" {
+				if err != nil {
+					t.Fatal(err)
+				}
+				var result map[string]any
+				if err := json.Unmarshal(output.Bytes(), &result); err != nil || result["discardedStage"] != true {
+					t.Fatal("missing discard receipt", err)
+				}
+				if _, err := os.Lstat(path + ".amnezia-journal"); !errors.Is(err, os.ErrNotExist) {
+					t.Fatal("discarded stage journal remains")
+				}
+			} else {
+				if err == nil || output.Len() != 0 {
+					t.Fatal("unsafe discard accepted")
+				}
+				assertConfig(t, path+".amnezia-journal", before)
+			}
+		})
+	}
 }

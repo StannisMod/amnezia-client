@@ -10,8 +10,10 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"syscall"
 	"unicode/utf8"
+	"unsafe"
 )
 
 var errConfigConflict = errors.New("configuration changed during transaction")
@@ -136,7 +138,7 @@ func writeConfigAtomic(path string, data []byte, mode os.FileMode, uid, gid int,
 		return err
 	}
 	if exclusive {
-		err = os.Link(name, path)
+		err = renameConfigNoReplace(name, path)
 	} else {
 		err = os.Rename(name, path)
 	}
@@ -145,6 +147,55 @@ func writeConfigAtomic(path string, data []byte, mode os.FileMode, uid, gid int,
 	}
 	return syncConfigDirectory(path)
 }
+
+// Linux renameat2(RENAME_NOREPLACE) publishes the completed inode without the
+// crash window in link(temp,target)+unlink(temp). Do not fall back to that
+// two-step operation on an unsupported kernel/filesystem.
+func renameConfigNoReplace(source, target string) error {
+	if runtime.GOOS != "linux" {
+		return syscall.ENOSYS
+	}
+	// Stable Linux UAPI numbers, checked against x/sys/unix zsysnum_linux files.
+	// Keep the standalone server helper free of a new network-fetched dependency.
+	var trap uintptr
+	switch runtime.GOARCH {
+	case "amd64":
+		trap = 316
+	case "386":
+		trap = 353
+	case "arm":
+		trap = 382
+	case "arm64", "loong64", "riscv64":
+		trap = 276
+	case "mips", "mipsle":
+		trap = 4351
+	case "mips64", "mips64le":
+		trap = 5311
+	case "ppc64", "ppc64le":
+		trap = 357
+	case "s390x":
+		trap = 347
+	default:
+		return syscall.ENOSYS
+	}
+	old, err := syscall.BytePtrFromString(source)
+	if err != nil {
+		return err
+	}
+	next, err := syscall.BytePtrFromString(target)
+	if err != nil {
+		return err
+	}
+	currentDirectory := -100 // AT_FDCWD; paths used by the helper are absolute.
+	_, _, errno := syscall.Syscall6(trap, uintptr(currentDirectory), uintptr(unsafe.Pointer(old)), uintptr(currentDirectory), uintptr(unsafe.Pointer(next)), 1, 0)
+	runtime.KeepAlive(old)
+	runtime.KeepAlive(next)
+	if errno != 0 {
+		return errno
+	}
+	return nil
+}
+
 func beginConfigTransaction(path string, expected, candidate []byte) (*configTransaction, error) {
 	return beginPreparedConfigTransaction(path, expected, candidate, nil)
 }
@@ -312,7 +363,7 @@ func configTransactionCommand(input io.Reader, output io.Writer, paths map[strin
 		if request.Operation != "" || len(request.Expected) != 0 || len(request.Candidate) != 0 || request.ServerIPv6 != "" {
 			return errors.New("unexpected capability fields")
 		}
-		return json.NewEncoder(output).Encode(map[string]any{"version": 1, "features": []string{"native-mutation-v1", "native-reconcile-v1", "native-rollback-guard-v1"}})
+		return json.NewEncoder(output).Encode(map[string]any{"version": 1, "features": []string{"native-mutation-v1", "native-reconcile-v1", "native-rollback-guard-v1", "native-stage-restart-v1"}})
 	}
 	if request.Action == "check-live" {
 		if request.Operation != "" || len(request.Expected) == 0 || len(request.Expected) > 4<<20 || len(request.Candidate) != 0 || request.ServerIPv6 != "" {
@@ -406,7 +457,7 @@ func configTransactionCommand(input io.Reader, output io.Writer, paths map[strin
 			if request.Operation != "" {
 				return errors.New("unexpected operation identifier")
 			}
-		case "commit", "rollback", "apply", "apply-commit", "rollback-live", "prepare-forwarding":
+		case "commit", "rollback", "apply", "apply-commit", "rollback-live", "prepare-forwarding", "discard-stage":
 			if !configOperationOK(request.Operation) {
 				return errors.New("invalid operation identifier")
 			}
@@ -428,6 +479,21 @@ func configTransactionCommand(input io.Reader, output io.Writer, paths map[strin
 	}
 
 	switch request.Action {
+	case "discard-stage":
+		if len(transaction.journal.NativeOriginal) == 0 || transaction.journal.IPv6 != nil || transaction.journal.NativeWriteIntent || transaction.journal.NativeApplied || transaction.journal.NativeRollbackHash != "" {
+			return errors.New("stage cannot be discarded")
+		}
+		current, _, err := readConfigFile(path, 4<<20)
+		if err != nil {
+			return err
+		}
+		if configHash(current) != transaction.journal.OriginalHash {
+			return errConfigConflict
+		}
+		if err := transaction.finish(true); err != nil {
+			return err
+		}
+		result["discardedStage"] = true
 	case "prepare-forwarding":
 		if err := prepareConfigForwarding(transaction, request.Container); err != nil {
 			return err

@@ -317,6 +317,47 @@ private slots:
             settings.clearSettings();
         }
     }
+    void realAdminStagePublicationRecovery()
+    {
+        const auto host=qEnvironmentVariable("AMNEZIA_SSH_PROBE_HOST");
+        if (host.isEmpty()) QSKIP("Run scripts/local-tests/path-probe-ssh.sh with this test executable");
+        ServerCredentials credentials; credentials.hostName=host;
+        credentials.port=qEnvironmentVariableIntValue("AMNEZIA_SSH_PROBE_PORT");
+        credentials.userName="root"; credentials.secretData="synthetic-probe-fixture";
+        for (const auto container:{DockerContainer::WireGuard,DockerContainer::Awg2}) {
+            SshSession manager; ErrorCode read=ErrorCode::NoError;
+            const auto name=ContainerUtils::containerToString(container);
+            const QString path=container==DockerContainer::Awg2?"/opt/amnezia/awg/awg0.conf":"/opt/amnezia/wireguard/wg0.conf";
+            const auto original=QString::fromUtf8(manager.getTextFileFromContainer(container,credentials,path,read));
+            QCOMPARE(read,ErrorCode::NoError); QVERIFY(!original.isEmpty());
+            const auto candidate=original+"\n# interrupted journal publication regression\n";
+            QJsonObject staged;
+            QCOMPARE(manager.protocolConfigTransaction(container,credentials,{{"action","stage-live"},
+                {"expected",QString::fromLatin1(original.toUtf8().toBase64())},
+                {"candidate",QString::fromLatin1(candidate.toUtf8().toBase64())}},staged),ErrorCode::NoError);
+            // State after durable journal publication but before candidate rename.
+            // Private data stays inside the disposable server, never in arguments.
+            const auto restoreOriginal=QString("sudo docker exec %1 python3 -c 'import json,pathlib,base64; p=pathlib.Path(\"%2\"); j=json.loads(pathlib.Path(str(p)+\".amnezia-journal\").read_bytes()); p.write_bytes(base64.b64decode(j[\"original\"]))'").arg(name,path);
+            QCOMPARE(manager.runScript(credentials,restoreOriginal),ErrorCode::NoError);
+            QJsonObject status;
+            QCOMPARE(manager.protocolConfigTransaction(container,credentials,{{"action","status"}},status),ErrorCode::NoError);
+            QCOMPARE(status.value("state").toString(),QString("original"));
+            QJsonObject denied;
+            QVERIFY(manager.protocolConfigTransaction(container,credentials,{{"action","discard-stage"},
+                {"operation",QString(64,'0')}},denied)!=ErrorCode::NoError);
+            bool handled=false;
+            QCOMPARE(manager.replaceLiveProtocolConfig(container,credentials,original,candidate,handled),ErrorCode::NoError);
+            QVERIFY(handled);
+            QVERIFY(QString::fromUtf8(manager.getTextFileFromContainer(container,credentials,path,read))==candidate);
+            QCOMPARE(read,ErrorCode::NoError);
+            QVERIFY(manager.protocolConfigTransaction(container,credentials,{{"action","status"}},status)!=ErrorCode::NoError);
+            handled=false;
+            QCOMPARE(manager.replaceLiveProtocolConfig(container,credentials,candidate,original,handled),ErrorCode::NoError);
+            QVERIFY(handled);
+            QVERIFY(QString::fromUtf8(manager.getTextFileFromContainer(container,credentials,path,read))==original);
+            QCOMPARE(read,ErrorCode::NoError);
+        }
+    }
     void realAdminNewIPv6ProfileExport()
     {
         if (qEnvironmentVariableIsSet("AMNEZIA_TEST_RESUME_EXPORT_ORGANIZATION")) {
