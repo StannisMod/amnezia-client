@@ -74,21 +74,6 @@ bool validClientIPv6(const QJsonValue &value)
     for (int i = 0; i < 12; ++i) compatible = compatible && bytes[i] == 0;
     return !compatible;
 }
-bool usablePathProbe(const QJsonValue &value, const QJsonObject &client)
-{
-    if (!validPathProbe(value)) return false;
-    const QHostAddress address(value.toString());
-    bool family = false, allowed = false;
-    for (const auto &entry : client.value(configKey::clientIp).toString().split(',')) {
-        const QHostAddress local(entry.trimmed().section('/', 0, 0));
-        if (!local.isNull() && local.protocol() == address.protocol()) family = true;
-    }
-    for (const auto &entry : client.value(configKey::allowedIps).toArray()) {
-        const auto subnet = QHostAddress::parseSubnet(entry.toString());
-        if (subnet.second >= 0 && subnet.first.protocol() == address.protocol() && address.isInSubnet(subnet)) allowed = true;
-    }
-    return family && allowed;
-}
 bool identityMatches(const QJsonObject &client)
 {
     const auto priv = decode(client.value(configKey::clientPrivKey), 32);
@@ -100,6 +85,22 @@ bool identityMatches(const QJsonObject &client)
     return key && EVP_PKEY_get_raw_public_key(key.get(), derived, &size) == 1 && size == 32
         && pub == QByteArray(reinterpret_cast<char *>(derived), 32);
 }
+}
+bool usablePathProbe(const QJsonValue &value, const QJsonObject &client)
+{
+    if (!validPathProbe(value)) return false;
+    const QHostAddress address(value.toString());
+    bool family = false, allowed = false;
+    for (const auto &entry : client.value(configKey::clientIp).toString().split(',')) {
+        const QHostAddress local(entry.trimmed().section('/', 0, 0));
+        if (local == address) return false;
+        if (!local.isNull() && local.protocol() == address.protocol()) family = true;
+    }
+    for (const auto &entry : client.value(configKey::allowedIps).toArray()) {
+        const auto subnet = QHostAddress::parseSubnet(entry.toString());
+        if (subnet.second >= 0 && subnet.first.protocol() == address.protocol() && address.isInSubnet(subnet)) allowed = true;
+    }
+    return family && allowed;
 }
 bool parsePathProbeAddress(const QString &output, const QString &interfaceName, QString &address)
 {

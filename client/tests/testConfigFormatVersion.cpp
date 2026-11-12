@@ -19,6 +19,7 @@
 #include "core/models/protocols/wireGuardProtocolConfig.h"
 #include "core/models/protocols/awgProtocolConfig.h"
 #include "core/utils/selfhosted/scriptsRegistry.h"
+#include "core/utils/connectionUpdates.h"
 
 using namespace amnezia;
 
@@ -152,14 +153,30 @@ private slots:
         QCOMPARE(WireguardConfigurator::pathMtuProbeFromInterfaceConfig("Address = 10.8.1.0/24\nAllowedIPs = 10.8.1.2/32"), QString("10.8.1.0"));
         QCOMPARE(WireguardConfigurator::pathMtuProbeFromInterfaceConfig("Address = fd77::1/64, 10.77.0.9/24\n"), QString("10.77.0.9"));
         QVERIFY(WireguardConfigurator::pathMtuProbeFromInterfaceConfig("AllowedIPs = 10.77.0.2/32\n").isEmpty());
-        QVERIFY(WireguardConfigurator::pathMtuProbeFromInterfaceConfig("Address = fd77::1/64\n").isEmpty());
+        QCOMPARE(WireguardConfigurator::pathMtuProbeFromInterfaceConfig("Address = fd77::1/64\n"), QString("fd77::1"));
+        QCOMPARE(WireguardConfigurator::pathMtuProbeFromInterfaceConfig("[Interface]\nAddress = FD77::9/64 # server\n[Peer]\nAllowedIPs = fd77::2/128\n"), QString("fd77::9"));
+        QCOMPARE(WireguardConfigurator::pathMtuProbeFromInterfaceConfig("Address = fd77::1/64\nAddress = 10.77.0.9/24\n"), QString("10.77.0.9"));
+        QVERIFY(WireguardConfigurator::pathMtuProbeFromInterfaceConfig("[Interface]\n[Peer]\nAddress = fd77::2/128\n").isEmpty());
+        for (const auto &address : {"::/128", "::1/128", "fe80::1/64", "ff02::1/128", "::ffff:192.0.2.1/128", "fd77::1%wg0/64", "fd77::1/129"}) {
+            QVERIFY(WireguardConfigurator::pathMtuProbeFromInterfaceConfig(QString("Address = %1\n").arg(address)).isEmpty());
+        }
         QVERIFY(WireguardConfigurator::pathMtuProbeFromInterfaceConfig("Address = 127.0.0.1/8\n").isEmpty());
         WireGuardClientConfig wg; wg.pathMtuProbe = "10.77.0.9";
+        QCOMPARE(WireGuardClientConfig::fromJson(wg.toJson()).pathMtuProbe, wg.pathMtuProbe);
+        wg.pathMtuProbe = "fd77::9";
         QCOMPARE(WireGuardClientConfig::fromJson(wg.toJson()).pathMtuProbe, wg.pathMtuProbe);
         AwgClientConfig awg; awg.pathMtuProbe = wg.pathMtuProbe;
         QCOMPARE(AwgClientConfig::fromJson(awg.toJson()).pathMtuProbe, awg.pathMtuProbe);
         QVERIFY(WireGuardClientConfig::fromJson({}).pathMtuProbe.isEmpty());
         QVERIFY(AwgClientConfig::fromJson({}).pathMtuProbe.isEmpty());
+        wg.clientIp = "10.77.0.2/32";
+        wg.allowedIps = QStringList{"0.0.0.0/0", "::/0"};
+        QVERIFY(!connectionUpdates::usablePathProbe("fd77::9", wg.toJson()));
+        wg.clientIp += ", fd77::2/128";
+        QVERIFY(connectionUpdates::usablePathProbe("fd77::9", wg.toJson()));
+        QVERIFY(!connectionUpdates::usablePathProbe("fd77::2", wg.toJson()));
+        wg.allowedIps = QStringList{"0.0.0.0/0", "fd88::/64"};
+        QVERIFY(!connectionUpdates::usablePathProbe("fd77::9", wg.toJson()));
     }
     void testDualStackServerAddressKeepsIPv4HostAndMask()
     {

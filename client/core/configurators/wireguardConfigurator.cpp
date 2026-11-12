@@ -27,6 +27,7 @@
 #include "core/utils/constants/configKeys.h"
 #include "core/utils/constants/protocolConstants.h"
 #include "core/utils/utilities.h"
+#include "core/utils/connectionUpdates.h"
 #include "core/models/containerConfig.h"
 #include "core/models/protocols/wireGuardProtocolConfig.h"
 #include "core/models/protocols/awgProtocolConfig.h"
@@ -132,7 +133,27 @@ QList<QHostAddress> WireguardConfigurator::getIpsFromConf(const QString &input)
 
 QString WireguardConfigurator::pathMtuProbeFromInterfaceConfig(const QString &configuration)
 {
-    return serverIPv4CidrFromInterfaceConfig(configuration).section('/', 0, 0);
+    QString ipv6;
+    // A server can expose only an IPv6 tunnel address. Use its configured
+    // interface address, never an address inferred from a client's AllowedIPs.
+    QString section = "[Interface]";
+    for (const auto &rawLine : configuration.split('\n')) {
+        const auto line = rawLine.section('#', 0, 0).trimmed();
+        if (line.startsWith('[')) { section = line; continue; }
+        if (section != "[Interface]" || line.section('=', 0, 0).trimmed() != "Address" || !line.contains('=')) continue;
+        for (const auto &entry : line.section('=', 1).split(',')) {
+            const auto cidr = entry.trimmed();
+            const auto subnet = QHostAddress::parseSubnet(cidr);
+            const QHostAddress address(cidr.section('/', 0, 0));
+            bool mapped = false; address.toIPv4Address(&mapped);
+            if (subnet.second < 0 || address.isNull() || address == QHostAddress::AnyIPv4 || address == QHostAddress::AnyIPv6
+                || address == QHostAddress::Broadcast || address.isLoopback() || address.isMulticast()
+                || address.isLinkLocal() || !address.scopeId().isEmpty()) continue;
+            if (address.protocol() == QAbstractSocket::IPv4Protocol) return address.toString();
+            if (address.protocol() == QAbstractSocket::IPv6Protocol && !mapped && ipv6.isEmpty()) ipv6 = address.toString();
+        }
+    }
+    return ipv6;
 }
 
 QString WireguardConfigurator::serverIPv4CidrFromInterfaceConfig(const QString &configuration)
@@ -427,7 +448,6 @@ ProtocolConfig WireguardConfigurator::createConfig(const ServerCredentials &cred
     clientConfig.port = connData.port.toInt();
     clientConfig.clientIp = connData.clientIP;
     if (!connData.clientIPv6.isEmpty()) clientConfig.clientIp += "/32, " + connData.clientIPv6 + "/128";
-    clientConfig.pathMtuProbe = connData.pathMtuProbe;
     clientConfig.clientPrivateKey = connData.clientPrivKey;
     clientConfig.clientPublicKey = connData.clientPubKey;
     clientConfig.serverPublicKey = connData.serverPubKey;
@@ -440,6 +460,8 @@ ProtocolConfig WireguardConfigurator::createConfig(const ServerCredentials &cred
     clientConfig.mtu = mtu;
     clientConfig.isObfuscationEnabled = false;
     
+    if (connectionUpdates::usablePathProbe(connData.pathMtuProbe, clientConfig.toJson()))
+        clientConfig.pathMtuProbe = connData.pathMtuProbe;
     protocolConfig.setClientConfig(clientConfig);
     
     return protocolConfig;
