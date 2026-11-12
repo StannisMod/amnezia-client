@@ -179,7 +179,7 @@ ErrorCode SshSession::protocolConfigTransaction(DockerContainer container, const
 {
     if (container != DockerContainer::WireGuard && container != DockerContainer::Awg2) return ErrorCode::InternalError;
     const auto action = input.value("action").toString();
-    if (action != "capabilities" && action != "stage-live" && action != "apply-commit" && action != "status" && action != "rollback-live" && action != "check-live" && action != "discard-stage") return ErrorCode::InternalError;
+    if (action != "capabilities" && action != "stage-live" && action != "apply-commit" && action != "status" && action != "rollback-live" && action != "check-live" && action != "discard-stage" && action != "replace-client-table" && action != "check-client-table") return ErrorCode::InternalError;
     auto request = input; request["container"] = ContainerUtils::containerToString(container);
     const auto folder = "/tmp/amnezia-protocol-request-" + QUuid::createUuid().toString(QUuid::Id128);
     auto error = runScript(credentials, "umask 077 && mkdir '" + folder + "'");
@@ -204,7 +204,7 @@ ErrorCode SshSession::protocolConfigTransaction(DockerContainer container, const
 }
 
 ErrorCode SshSession::replaceLiveProtocolConfig(DockerContainer container, const ServerCredentials &credentials,
-                                               const QString &expected, const QString &candidate, bool &handled, bool reconcileCommitted)
+                                               const QString &expected, const QString &candidate, bool &handled, bool reconcileCommitted, const QStringList &requiredFeatures)
 {
     handled = false;
     if (container != DockerContainer::WireGuard && container != DockerContainer::Awg2) return ErrorCode::NoError;
@@ -223,6 +223,9 @@ ErrorCode SshSession::replaceLiveProtocolConfig(DockerContainer container, const
     error = protocolConfigTransaction(container, credentials, { {"action", "capabilities"} }, capabilities);
     if (error != ErrorCode::NoError) return error;
     if (!capabilities.value("features").toArray().contains("native-mutation-v1")) return ErrorCode::InternalError;
+    for (const auto &feature : requiredFeatures) {
+        if (!capabilities.value("features").toArray().contains(feature)) return ErrorCode::InternalError;
+    }
     const auto original = expected.toUtf8(), replacement = candidate.toUtf8();
     if (original.isEmpty() || original.size() > 4*1024*1024 || replacement.isEmpty() || replacement.size() > 4*1024*1024) return ErrorCode::InternalError;
     const auto originalHash = QString::fromLatin1(QCryptographicHash::hash(original, QCryptographicHash::Sha256).toHex());

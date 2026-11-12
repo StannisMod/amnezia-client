@@ -356,6 +356,26 @@ private slots:
             QVERIFY(handled);
             QVERIFY(QString::fromUtf8(manager.getTextFileFromContainer(container,credentials,path,read))==original);
             QCOMPARE(read,ErrorCode::NoError);
+            const auto tablePath=QString("/opt/amnezia/%1/clientsTable").arg(ContainerUtils::containerTypeToString(container));
+            const auto table=manager.getTextFileFromContainer(container,credentials,tablePath,read);
+            QCOMPARE(read,ErrorCode::NoError);
+            const auto tableDocument=QJsonDocument::fromJson(table); QVERIFY(tableDocument.isArray());
+            auto changed=tableDocument.array();
+            changed.append(QJsonObject{{"clientId","synthetic-cas-only-metadata"},{"unknown",QJsonObject{{"preserve",true}}}});
+            const auto replacement=QJsonDocument(changed).toJson();
+            QJsonObject receipt;
+            QCOMPARE(manager.protocolConfigTransaction(container,credentials,{{"action","replace-client-table"},
+                {"expected",QString::fromLatin1(table.toBase64())},{"candidate",QString::fromLatin1(replacement.toBase64())}},receipt),ErrorCode::NoError);
+            QVERIFY(manager.protocolConfigTransaction(container,credentials,{{"action","replace-client-table"},
+                {"expected",QString::fromLatin1(table.toBase64())},{"candidate",QString::fromLatin1(QByteArray("[]").toBase64())}},receipt)!=ErrorCode::NoError);
+            QVERIFY(manager.getTextFileFromContainer(container,credentials,tablePath,read)==replacement);
+            QCOMPARE(read,ErrorCode::NoError);
+            QCOMPARE(manager.protocolConfigTransaction(container,credentials,{{"action","check-client-table"},
+                {"expected",QString::fromLatin1(replacement.toBase64())}},receipt),ErrorCode::NoError);
+            QCOMPARE(manager.protocolConfigTransaction(container,credentials,{{"action","replace-client-table"},
+                {"expected",QString::fromLatin1(replacement.toBase64())},{"candidate",QString::fromLatin1(table.toBase64())}},receipt),ErrorCode::NoError);
+            QVERIFY(manager.getTextFileFromContainer(container,credentials,tablePath,read)==table);
+            QCOMPARE(read,ErrorCode::NoError);
         }
     }
     void realAdminNewIPv6ProfileExport()
@@ -642,6 +662,11 @@ private slots:
                 if (currentTable[row].toObject().value("clientId") == generated.value("client_pub_key")) targetRow = row;
             QVERIFY(targetRow >= 0);
             QCOMPARE(users.revokeClient(id, targetRow, container), ErrorCode::NoError);
+            if (qEnvironmentVariable("AMNEZIA_PEER_TRANSACTIONS") == "enabled") {
+                SshSession proof; ErrorCode observedTable=ErrorCode::NoError;
+                QCOMPARE(proof.getTextFileFromContainer(container,credentials,"/opt/amnezia/protocol-loss-client-table",observedTable),QByteArray("1"));
+                QCOMPARE(observedTable,ErrorCode::NoError);
+            }
             QString expected;
             QVERIFY(connectionUpdates::removePeerFromServerConfig(misleading, generated.value("client_pub_key").toString(), expected));
             const auto actual = QString::fromUtf8(ssh.getTextFileFromContainer(container, credentials, path, readError));

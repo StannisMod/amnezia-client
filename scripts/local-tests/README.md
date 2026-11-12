@@ -386,6 +386,22 @@ one complete winner and preserve an existing target. Unsupported kernels or
 filesystems fail closed. Pre-existing ambiguous hardlinks remain refused, and
 this change does not collect unpublished temporary files left before rename.
 
+Client metadata exposes `client-table-cas-v1`: fixed-path `replace-client-table`
+and `check-client-table` use the protocol lock, reject pending protocol journals,
+validate bounded JSON arrays of objects and require exact expected file bytes.
+Writes preserve ownership/mode through the existing atomic writer; symlinks,
+foreign ownership, writable files and hardlinks are refused. No caller-supplied
+path is accepted. Native peer removal requires this capability before staging,
+then conditionally removes the exact key from a fresh server table, preserving
+other entries. A lost successful metadata reply is reconciled with a locked
+candidate check. The fixture drops that reply after actual effect and requires
+the real UsersController revoke to complete for WG and AWG; another case checks
+stale-table refusal and preservation of independent metadata. Local rows are
+changed only after the metadata write succeeds. Legacy servers retain direct
+writes. This is not yet a durable transaction across token, peer and table:
+application-restart recovery, partial-revoke receipts and migration of all other
+metadata writers remain required.
+
 Guarded native rollback now snapshots the canonical candidate digest durably
 before replacing its file. Runtime must match the original or that verified
 candidate; foreign native edits cause refusal before any file/native rewrite.

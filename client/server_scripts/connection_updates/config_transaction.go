@@ -363,7 +363,10 @@ func configTransactionCommand(input io.Reader, output io.Writer, paths map[strin
 		if request.Operation != "" || len(request.Expected) != 0 || len(request.Candidate) != 0 || request.ServerIPv6 != "" {
 			return errors.New("unexpected capability fields")
 		}
-		return json.NewEncoder(output).Encode(map[string]any{"version": 1, "features": []string{"native-mutation-v1", "native-reconcile-v1", "native-rollback-guard-v1", "native-stage-restart-v1"}})
+		return json.NewEncoder(output).Encode(map[string]any{"version": 1, "features": []string{"native-mutation-v1", "native-reconcile-v1", "native-rollback-guard-v1", "native-stage-restart-v1", "client-table-cas-v1"}})
+	}
+	if request.Action == "replace-client-table" || request.Action == "check-client-table" {
+		return clientTableTransaction(path, request, output)
 	}
 	if request.Action == "check-live" {
 		if request.Operation != "" || len(request.Expected) == 0 || len(request.Expected) > 4<<20 || len(request.Candidate) != 0 || request.ServerIPv6 != "" {
@@ -738,4 +741,64 @@ func installOwnedConfigHelper(configPath, startupPath, target string, candidate 
 		return err
 	}
 	return writeConfigAtomic(receiptPath, complete, 0600, os.Geteuid(), os.Getegid(), false)
+}
+
+// Client metadata shares the protocol lock so participating writers cannot
+// replace a table from a stale snapshot or mutate it during a pending peer edit.
+// This is a separate durable step; it does not claim atomicity with native state.
+func clientTableTransaction(configPath string, request configTransactionRequest, output io.Writer) error {
+	if request.Operation != "" || request.ServerIPv6 != "" || !validClientTable(request.Expected) {
+		return errors.New("invalid client table request")
+	}
+	if request.Action == "replace-client-table" {
+		if !validClientTable(request.Candidate) {
+			return errors.New("invalid replacement client table")
+		}
+	} else if len(request.Candidate) != 0 {
+		return errors.New("unexpected replacement client table")
+	}
+	lock, err := lockConfig(configPath)
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+	if _, err := os.Lstat(configPath + ".amnezia-journal"); !errors.Is(err, os.ErrNotExist) {
+		return errors.New("configuration transaction is pending")
+	}
+	path := filepath.Join(filepath.Dir(configPath), "clientsTable")
+	current, info, err := readConfigFile(path, 4<<20)
+	if err != nil {
+		return err
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || stat.Nlink != 1 || int(stat.Uid) != os.Geteuid() || info.Mode().Perm()&0022 != 0 || !validClientTable(current) {
+		return errors.New("unsafe client table")
+	}
+	if !bytes.Equal(current, request.Expected) {
+		return errConfigConflict
+	}
+	result := current
+	if request.Action == "replace-client-table" && !bytes.Equal(current, request.Candidate) {
+		if err := writeConfigAtomic(path, request.Candidate, info.Mode(), int(stat.Uid), int(stat.Gid), false); err != nil {
+			return err
+		}
+		result = request.Candidate
+	}
+	return json.NewEncoder(output).Encode(map[string]any{"version": 1, "current": true, "candidateHash": configHash(result)})
+}
+func validClientTable(data []byte) bool {
+	if len(data) == 0 || len(data) > 4<<20 || !utf8.Valid(data) {
+		return false
+	}
+	var entries []json.RawMessage
+	if json.Unmarshal(data, &entries) != nil || entries == nil {
+		return false
+	}
+	for _, entry := range entries {
+		var object map[string]json.RawMessage
+		if json.Unmarshal(entry, &object) != nil || object == nil {
+			return false
+		}
+	}
+	return true
 }

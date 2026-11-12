@@ -6,6 +6,7 @@
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QDateTime>
+#include <QCryptographicHash>
 
 #include "core/utils/containerEnum.h"
 #include "core/utils/containers/containerUtils.h"
@@ -627,8 +628,28 @@ ErrorCode UsersController::revokeWireGuard(const int row, const DockerContainer 
         logger.error() << "Cannot identify a unique WireGuard peer in the server configuration";
         return ErrorCode::InternalError;
     }
+    const auto clientsTableFile = QString("/opt/amnezia/%1/clientsTable").arg(ContainerUtils::containerTypeToString(container));
+    QByteArray expectedTable;
+    QJsonArray remoteTable;
+    const bool supportsTransactions = container == DockerContainer::WireGuard || container == DockerContainer::Awg2;
+    if (supportsTransactions) {
+        expectedTable = sshSession->getTextFileFromContainer(container, credentials, clientsTableFile, error);
+        if (error != ErrorCode::NoError) return error;
+        const auto document = QJsonDocument::fromJson(expectedTable);
+        if (!document.isArray()) return ErrorCode::InternalError;
+        remoteTable = document.array();
+        int target = -1;
+        for (int i = 0; i < remoteTable.size(); ++i) {
+            if (!remoteTable[i].isObject()) return ErrorCode::InternalError;
+            if (remoteTable[i].toObject().value(configKey::clientId).toString() != clientId) continue;
+            if (target >= 0) return ErrorCode::InternalError;
+            target = i;
+        }
+        if (target < 0) return ErrorCode::InternalError;
+        remoteTable.removeAt(target);
+    }
     bool transactional = false;
-    error = sshSession->replaceLiveProtocolConfig(container, credentials, wireguardConfigString, newWireGuardConfig, transactional);
+    error = sshSession->replaceLiveProtocolConfig(container, credentials, wireguardConfigString, newWireGuardConfig, transactional, false, { "client-table-cas-v1" });
     if (error != ErrorCode::NoError) return error;
     if (!transactional) {
         error = sshSession->uploadTextFileToContainer(container, credentials, newWireGuardConfig, configPath);
@@ -638,23 +659,31 @@ ErrorCode UsersController::revokeWireGuard(const int row, const DockerContainer 
         }
     }
 
-    clientsTable.removeAt(row);
-
-    const QByteArray clientsTableString = QJsonDocument(clientsTable).toJson();
-
-    QString clientsTableFile = QString("/opt/amnezia/%1/clientsTable");
-    if (container == DockerContainer::OpenVpn) {
-        clientsTableFile = clientsTableFile.arg(ContainerUtils::containerTypeToString(DockerContainer::OpenVpn));
-    } else {
-        clientsTableFile = clientsTableFile.arg(ContainerUtils::containerTypeToString(container));
+    auto updatedClientsTable = clientsTable;
+    updatedClientsTable.removeAt(row);
+    if (transactional) {
+        const auto replacement = QJsonDocument(remoteTable).toJson();
+        const auto hash = QString::fromLatin1(QCryptographicHash::hash(replacement, QCryptographicHash::Sha256).toHex());
+        QJsonObject result;
+        error = sshSession->protocolConfigTransaction(container, credentials, {
+            { "action", "replace-client-table" }, { "expected", QString::fromLatin1(expectedTable.toBase64()) },
+            { "candidate", QString::fromLatin1(replacement.toBase64()) } }, result);
+        if (error != ErrorCode::NoError || !result.value("current").toBool() || result.value("candidateHash") != hash) {
+            result = {};
+            error = sshSession->protocolConfigTransaction(container, credentials, {
+                { "action", "check-client-table" }, { "expected", QString::fromLatin1(replacement.toBase64()) } }, result);
+            if (error != ErrorCode::NoError || !result.value("current").toBool() || result.value("candidateHash") != hash)
+                return error == ErrorCode::NoError ? ErrorCode::InternalError : error;
+        }
+        clientsTable = remoteTable;
+        return ErrorCode::NoError;
     }
-    error = sshSession->uploadTextFileToContainer(container, credentials, clientsTableString, clientsTableFile);
+    error = sshSession->uploadTextFileToContainer(container, credentials, QJsonDocument(updatedClientsTable).toJson(), clientsTableFile);
     if (error != ErrorCode::NoError) {
         logger.error() << "Failed to upload the clientsTable file to the server";
         return error;
     }
-
-    if (transactional) return ErrorCode::NoError;
+    clientsTable = updatedClientsTable;
 
     bool isAwg2 = (container == DockerContainer::Awg2);
     QString command = isAwg2 ? QStringLiteral("awg") : QStringLiteral("wg");

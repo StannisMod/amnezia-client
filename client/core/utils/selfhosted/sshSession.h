@@ -29,7 +29,7 @@ public:
     ErrorCode protocolConfigTransaction(DockerContainer container, const ServerCredentials &credentials,
                                         const QJsonObject &request, QJsonObject &response);
     ErrorCode replaceLiveProtocolConfig(DockerContainer container, const ServerCredentials &credentials,
-                                       const QString &expected, const QString &candidate, bool &handled, bool reconcileCommitted = false);
+                                       const QString &expected, const QString &candidate, bool &handled, bool reconcileCommitted = false, const QStringList &requiredFeatures = {});
     QByteArray getTextFileFromContainer(DockerContainer container, const ServerCredentials &credentials, const QString &path,
                                         ErrorCode &errorCode);
 

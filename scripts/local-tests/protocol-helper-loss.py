@@ -22,6 +22,8 @@ if result.returncode == 0 and request.get('action') == 'stage-live':
         discard = Path('/opt/amnezia/protocol-loss-stage')
 if result.returncode == 0 and request.get('action') == 'apply-commit':
     discard = Path('/opt/amnezia/protocol-loss-commit')
+if result.returncode == 0 and request.get('action') == 'replace-client-table':
+    discard = Path('/opt/amnezia/protocol-loss-client-table')
 if discard is not None and not discard.exists():
     discard.write_text('1')
 else:

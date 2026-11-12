@@ -863,3 +863,82 @@ func TestDiscardStageRequiresUnappliedOriginalAndMatchingOperation(t *testing.T)
 		})
 	}
 }
+
+func TestClientTableCASPreservesForeignDataAndMetadata(t *testing.T) {
+	path, original, candidate := transactionFixture(t)
+	table := filepath.Join(filepath.Dir(path), "clientsTable")
+	before := []byte("[ {\"clientId\":\"first\",\"unknown\":{\"preserve\":true}} ]\n")
+	after := []byte("[]\n")
+	if err := os.WriteFile(table, before, 0640); err != nil {
+		t.Fatal(err)
+	}
+	invoke := func(action string, expected, replacement []byte) error {
+		raw, err := json.Marshal(configTransactionRequest{Action: action, Container: "amnezia-wireguard", Expected: expected, Candidate: replacement})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var output bytes.Buffer
+		err = configTransactionCommand(bytes.NewReader(raw), &output, map[string]string{"amnezia-wireguard": path})
+		if err == nil {
+			var result map[string]any
+			if json.Unmarshal(output.Bytes(), &result) != nil || result["current"] != true {
+				t.Fatal("invalid table receipt")
+			}
+		}
+		return err
+	}
+	if err := invoke("check-client-table", before, nil); err != nil {
+		t.Fatal(err)
+	}
+	pending, err := beginConfigTransaction(path, original, candidate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending.close()
+	if err := invoke("replace-client-table", before, after); err == nil {
+		t.Fatal("table mutated during pending peer transaction")
+	}
+	assertConfig(t, table, before)
+	pending, err = resumeConfigTransaction(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pending.finish(true); err != nil {
+		t.Fatal(err)
+	}
+	for _, invalid := range [][]byte{nil, []byte("null"), []byte("{}"), []byte("[null]"), []byte("[1]"), []byte("[{}] trailing")} {
+		if err := invoke("replace-client-table", before, invalid); err == nil {
+			t.Fatal("invalid metadata accepted")
+		}
+		assertConfig(t, table, before)
+	}
+	foreign := []byte("[{\"clientId\":\"independent\"}]")
+	if err := os.WriteFile(table, foreign, 0640); err != nil {
+		t.Fatal(err)
+	}
+	if err := invoke("replace-client-table", before, after); !errors.Is(err, errConfigConflict) {
+		t.Fatal("stale snapshot accepted", err)
+	}
+	assertConfig(t, table, foreign)
+	if err := invoke("replace-client-table", foreign, after); err != nil {
+		t.Fatal(err)
+	}
+	assertConfig(t, table, after)
+	info, err := os.Stat(table)
+	if err != nil || info.Mode().Perm() != 0640 {
+		t.Fatal("metadata permissions changed", err)
+	}
+	if err := invoke("check-client-table", after, nil); err != nil {
+		t.Fatal("lost reply reconciliation failed", err)
+	}
+	if err := invoke("replace-client-table", foreign, after); !errors.Is(err, errConfigConflict) {
+		t.Fatal("stale operation replay accepted", err)
+	}
+	if err := os.Link(table, table+".foreign"); err != nil {
+		t.Fatal(err)
+	}
+	if err := invoke("replace-client-table", after, before); err == nil {
+		t.Fatal("hardlinked metadata accepted")
+	}
+	assertConfig(t, table, after)
+}
