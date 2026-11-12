@@ -9,7 +9,8 @@ include(CTest)
 add_executable(test_connection_updates testConnectionUpdates.cpp fixtures.qrc ../../core/utils/connectionUpdates.cpp)
 target_include_directories(test_connection_updates PRIVATE ../..)
 target_link_libraries(test_connection_updates PRIVATE Qt6::Core Qt6::Network Qt6::Test OpenSSL::Crypto)
-add_test(NAME ConnectionUpdatesTest COMMAND test_connection_updates)
+add_test(NAME ConnectionUpdatesTest COMMAND test_connection_updates
+    -o "${CMAKE_CURRENT_BINARY_DIR}/connection-updates-test.txt,txt" -o "-,txt" -v2)
 # Match the parent Qt regression harness on Windows. This test lives in its own
 # output directory, so the parent's DLL-copy pass cannot discover its target.
 if(COMMAND amnezia_copy_runtime_dlls)

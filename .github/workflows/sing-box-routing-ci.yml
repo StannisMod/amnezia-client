@@ -331,6 +331,8 @@ jobs:
           $testResult = $LASTEXITCODE
           $report = 'deploy/build/client/tests/server-edit-test.txt'
           if (Test-Path $report) { Get-Content $report }
+          $updatesReport = 'deploy/build/client/tests/connection-updates/connection-updates-test.txt'
+          if (Test-Path $updatesReport) { Get-Content $updatesReport }
           exit $testResult
       - name: Record baseline result
         if: always()
@@ -392,6 +394,7 @@ jobs:
             client-build.log
             routing-build-manifest.json
             deploy/build/client/tests/server-edit-test.txt
+            deploy/build/client/tests/connection-updates/connection-updates-test.txt
             deploy/build/client/tests/qt-regression.xml
             deploy/build/client/tests/Testing/Temporary/LastTest.log
             deploy/build/AmneziaVPN_*_windows_x64.exe
