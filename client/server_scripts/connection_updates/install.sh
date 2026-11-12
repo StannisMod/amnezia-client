@@ -1,6 +1,43 @@
 #!/bin/sh
 # Run as root through SSH. Source lives in the caller's private staging directory.
 set -eu
+# Stage from the immutable image we just built. No VPN container restart and
+# no mutation of keys/configuration is required to deploy the helper.
+install_protocol_helpers() {
+    helper_source=$(docker create --network none --entrypoint /updates "$image")
+    if ! docker cp "$helper_source:/updates" "$build/config-helper-candidate"; then
+        docker rm "$helper_source" >/dev/null
+        return 1
+    fi
+    docker rm "$helper_source" >/dev/null
+    chmod 700 "$build/config-helper-candidate"
+    for protocol in amnezia-wireguard amnezia-awg2; do
+        if ! docker container inspect "$protocol" >/dev/null 2>&1; then continue; fi
+        protocol_id=$(docker inspect -f '{{.Id}}' "$protocol")
+        test "$(docker inspect -f '{{.State.Running}}' "$protocol_id")" = true
+        helper_stage="/opt/amnezia/.helper-install-$operation"
+        docker exec "$protocol_id" sh -ec 'umask 077; mkdir "$1"' sh "$helper_stage"
+        if docker cp "$build/config-helper-candidate" "$protocol_id:$helper_stage/candidate" &&
+            docker exec "$protocol_id" chmod 700 "$helper_stage/candidate" &&
+            printf '{"container":"%s"}' "$protocol" | docker exec -i "$protocol_id" "$helper_stage/candidate" install-config-helper >/dev/null; then
+            docker exec "$protocol_id" rm -rf -- "$helper_stage"
+        else
+            docker exec "$protocol_id" rm -rf -- "$helper_stage" || true
+            return 1
+        fi
+    done
+}
+# The helper-only entry point is also used by the disposable native acceptance.
+if [ "$1" = --install-protocol-helpers ]; then
+    image=$2
+    build=$3
+    operation=$(cat /proc/sys/kernel/random/uuid)
+    case "$image" in sha256:*) ;; *) exit 1 ;; esac
+    test "$(docker image inspect -f '{{.Id}}' "$image")" = "$image"
+    test "$(docker image inspect -f '{{index .Config.Labels "org.amnezia.connection-updates"}}' "$image")" = 1
+    install_protocol_helpers
+    exit
+fi
 build=$1
 host=$2
 name=amnezia-connection-updates
@@ -28,6 +65,7 @@ fi
 # Do not fill the SSH stderr channel with a long image-build log.
 docker build --network host -t amnezia-connection-updates:1 "$build" >"$build/build.log" 2>&1
 image=$(docker image inspect -f '{{.Id}}' amnezia-connection-updates:1)
+install_protocol_helpers
 printf '{"host":"%s"}' "$host" | docker run --rm -i --network none --read-only --cap-drop ALL --security-opt no-new-privileges --mount "type=volume,source=$volume,target=/data" "$image" init >/dev/null
 if [ -n "$original_id" ] && [ "$(docker inspect -f '{{.Image}}' "$original_id")" = "$image" ] && [ "$original_running" = true ]; then
     docker exec "$original_id" /updates probe </dev/null >/dev/null

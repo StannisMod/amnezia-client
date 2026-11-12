@@ -89,6 +89,18 @@ rollback preserving the signed revision floor.
 
 ### Existing-profile probe address over SSH
 
+The same required fixture runs the packaged `install.sh` helper deployment against
+already running kernel WG and userspace AWG containers, twice. It checks immutable
+container identity, process/start time, native configuration, stored configuration,
+interface addresses, executable permissions and the durable ownership receipt.
+The production connection-update installer uses this deployment before starting
+or upgrading delivery. Helper installation does not restart the VPN. Unknown
+existing executables are refused; upgrading relies on the private receipt rather
+than adopting an observed hash. Go tests cover interrupted publication on either
+side of rename, foreign replacement, stale expectations and pending transactions.
+This does not prove original TCP survival or close the legacy-writer bootstrap race.
+
+
 After building the Linux Qt tests, run:
 
 ```sh

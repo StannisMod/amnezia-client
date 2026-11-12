@@ -559,3 +559,63 @@ func installConfigHelper(configPath, startupPath, target string, candidate []byt
 	}
 	return writeConfigAtomic(target, candidate, 0700, int(stat.Uid), int(stat.Gid), false)
 }
+
+// The receipt is written before publication, so a lost process/SSH session can
+// reconcile either side of the atomic rename without trusting an unknown file.
+func installOwnedConfigHelper(configPath, startupPath, target string, candidate []byte) error {
+	lock, err := lockConfig(target + ".owner")
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+	receiptPath := target + ".amnezia-owner"
+	type receipt struct {
+		Version   int    `json:"version"`
+		Installed string `json:"installed"`
+		Candidate string `json:"candidate"`
+	}
+	var state receipt
+	raw, info, err := readConfigFile(receiptPath, 4096)
+	if err == nil {
+		stat, ok := info.Sys().(*syscall.Stat_t)
+		if !ok || stat.Nlink != 1 || int(stat.Uid) != os.Geteuid() || info.Mode().Perm() != 0600 {
+			return errors.New("unsafe helper ownership receipt")
+		}
+		decoder := json.NewDecoder(bytes.NewReader(raw))
+		decoder.DisallowUnknownFields()
+		if decoder.Decode(&state) != nil || decoder.Decode(new(any)) != io.EOF || state.Version != 1 || (state.Installed != "" && !configOperationOK(state.Installed)) || !configOperationOK(state.Candidate) {
+			return errors.New("invalid helper ownership receipt")
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	current, _, readErr := readConfigFile(target, 64<<20)
+	expected := ""
+	if readErr == nil {
+		expected = configHash(current)
+		if state.Version != 1 || (expected != state.Installed && expected != state.Candidate) {
+			return errors.New("unowned helper executable")
+		}
+	} else if !errors.Is(readErr, os.ErrNotExist) {
+		return readErr
+	} else if state.Installed != "" {
+		return errors.New("owned helper disappeared")
+	}
+	state = receipt{Version: 1, Installed: expected, Candidate: configHash(candidate)}
+	pending, err := json.Marshal(state)
+	if err != nil {
+		return err
+	}
+	if err := writeConfigAtomic(receiptPath, pending, 0600, os.Geteuid(), os.Getegid(), false); err != nil {
+		return err
+	}
+	if err := installConfigHelper(configPath, startupPath, target, candidate, expected); err != nil {
+		return err
+	}
+	state.Installed = state.Candidate
+	complete, err := json.Marshal(state)
+	if err != nil {
+		return err
+	}
+	return writeConfigAtomic(receiptPath, complete, 0600, os.Geteuid(), os.Getegid(), false)
+}

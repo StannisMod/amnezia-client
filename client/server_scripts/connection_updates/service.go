@@ -675,7 +675,10 @@ func run() error {
 		if err != nil {
 			return err
 		}
-		if err := installConfigHelper(path, "/opt/amnezia/start.sh", "/opt/amnezia/config-helper", candidate, request.ExpectedHash); err != nil {
+		if request.ExpectedHash != "" {
+			return errors.New("owned installer does not accept observed hashes")
+		}
+		if err := installOwnedConfigHelper(path, "/opt/amnezia/start.sh", "/opt/amnezia/config-helper", candidate); err != nil {
 			return err
 		}
 		return json.NewEncoder(os.Stdout).Encode(map[string]any{"version": 1, "installedHash": configHash(candidate)})

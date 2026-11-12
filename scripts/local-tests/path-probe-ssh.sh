@@ -93,9 +93,11 @@ auto_ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{
 AMNEZIA_SSH_PROBE_HOST="$auto_ip"
 export AMNEZIA_SSH_PROBE_NETWORK="$network" AMNEZIA_SSH_PROBE_PORT=2222 AMNEZIA_SSH_PROBE_PHASE=present
 export QT_QPA_PLATFORM=offscreen
-docker exec "$fixture" docker cp amnezia-connection-updates:/updates /tmp/config-helper
+# Deploy through the exact packaged installer, into already running native VPNs.
+docker exec -i "$fixture" sh -ec 'umask 077; cat > /tmp/helper-install.sh; mkdir /tmp/helper-install-stage' < "$repo/client/server_scripts/connection_updates/install.sh"
+docker exec -i "$fixture" sh -ec 'umask 077; cat > /tmp/helper-install-acceptance.py' < "$repo/scripts/local-tests/helper-install-acceptance.py"
+docker exec "$fixture" python3 /tmp/helper-install-acceptance.py
 for kind in wireguard awg2; do
-    docker exec "$fixture" docker cp /tmp/config-helper "amnezia-$kind:/opt/amnezia/config-helper"
     docker exec "$fixture" docker exec "amnezia-$kind" mv /opt/amnezia/config-helper /opt/amnezia/config-helper.real
     docker exec -i "$fixture" docker exec -i "amnezia-$kind" sh -ec 'umask 077; cat > /opt/amnezia/config-helper; chmod 700 /opt/amnezia/config-helper' < "$repo/scripts/local-tests/protocol-helper-loss.py"
     docker exec -i "$fixture" docker exec -i "amnezia-$kind" sh -ec 'umask 077; cat > /opt/amnezia/fixture-forwarding-legacy.sh' < "$repo/client/server_scripts/connection_updates/testdata/ipv6-forwarding-legacy.sh"

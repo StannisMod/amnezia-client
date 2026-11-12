@@ -422,3 +422,51 @@ func TestConfigHelperAtomicInstallation(t *testing.T) {
 		t.Fatal("helper permissions")
 	}
 }
+
+func TestOwnedHelperInstallationRecovery(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "helper")
+	config := filepath.Join(dir, "wg.conf")
+	startup := filepath.Join(dir, "start.sh")
+	old, next := []byte("first verified candidate"), []byte("second verified candidate")
+	install := func(data []byte) error { return installOwnedConfigHelper(config, startup, target, data) }
+	if err := install(old); err != nil {
+		t.Fatal(err)
+	}
+	if err := install(next); err != nil {
+		t.Fatal(err)
+	}
+	assertConfig(t, target, next)
+	// Model a crash after durable intent but before or after executable rename.
+	for _, published := range []bool{false, true} {
+		current := old
+		if published {
+			current = next
+		}
+		if err := os.WriteFile(target, current, 0700); err != nil {
+			t.Fatal(err)
+		}
+		receipt := map[string]any{"version": 1, "installed": configHash(old), "candidate": configHash(next)}
+		raw, _ := json.Marshal(receipt)
+		if err := os.WriteFile(target+".amnezia-owner", raw, 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := install(next); err != nil {
+			t.Fatalf("recovery published=%v: %v", published, err)
+		}
+		assertConfig(t, target, next)
+	}
+	if err := os.WriteFile(target, []byte("foreign"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := install(next); err == nil {
+		t.Fatal("foreign replacement adopted")
+	}
+	assertConfig(t, target, []byte("foreign"))
+	if err := os.Remove(target + ".amnezia-owner"); err != nil {
+		t.Fatal(err)
+	}
+	if err := install(next); err == nil {
+		t.Fatal("unowned existing helper adopted")
+	}
+}
