@@ -99,6 +99,10 @@ def upload_mtu_metrics(output, report):
     assert metrics['same_session'] and metrics['filter_still_active']
     assert metrics['original_tcp_accepts'] == 2
     assert metrics['age_before_fault_ms'] >= 65000, 'MTU fault must affect established sockets after normal probe periods'
+    # Controlled local fixture: allow scheduling/observer overhead, but reject
+    # the old ~51s RTO pause even when it eventually preserves the TCP stream.
+    # This is a regression ceiling, not an Internet delivery-time guarantee.
+    assert type(metrics.get('elapsed_ms')) is int and 0 < metrics['elapsed_ms'] <= 15000, 'MTU recovery exceeded the local regression latency budget'
     assert report['dropped_outer_packets']['restore_upload_mtu'] > 0
     a, b = (report['retained_resources'][key] for key in ('upload_mtu_before', 'upload_mtu_after'))
     assert a['pid'] == b['pid'] and a['capture_links'] and a['capture_links'] == b['capture_links']
