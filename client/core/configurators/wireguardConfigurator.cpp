@@ -211,17 +211,9 @@ WireguardConfigurator::ConnectionData WireguardConfigurator::prepareWireguardCon
     if (container == DockerContainer::Awg) {
         configPath = amnezia::protocols::awg::serverLegacyConfigPath;
     }
-    QString getIpsScript = QString("cat %1 | grep -E '^[[:space:]]*(Address|AllowedIPs)[[:space:]]*='").arg(configPath);
-    QString stdOut;
-    auto cbReadStdOut = [&](const QString &data, libssh::Client &) {
-        stdOut += data + "\n";
-        return ErrorCode::NoError;
-    };
-
-    errorCode = m_sshSession->runContainerScript(credentials, container, getIpsScript, cbReadStdOut);
-    if (errorCode != ErrorCode::NoError) {
-        return connData;
-    }
+    const auto originalConfig = QString::fromUtf8(m_sshSession->getTextFileFromContainer(container, credentials, configPath, errorCode));
+    if (errorCode != ErrorCode::NoError) return connData;
+    const auto &stdOut = originalConfig;
     auto ips = getIpsFromConf(stdOut);
     connData.pathMtuProbe = pathMtuProbeFromInterfaceConfig(stdOut);
 
@@ -275,6 +267,13 @@ WireguardConfigurator::ConnectionData WireguardConfigurator::prepareWireguardCon
                                  "PresharedKey = %2\n"
                                  "AllowedIPs = %3\n\n")
                                  .arg(connData.clientPubKey, connData.pskKey, peerAddresses);
+
+    auto candidate = originalConfig;
+    if (!candidate.endsWith('\n')) candidate += '\n';
+    candidate += configPart;
+    bool transactional = false;
+    errorCode = m_sshSession->replaceLiveProtocolConfig(container, credentials, originalConfig, candidate, transactional);
+    if (errorCode != ErrorCode::NoError || transactional) return connData;
 
     errorCode = m_sshSession->uploadTextFileToContainer(container, credentials, configPart, configPath,
                                                               libssh::ScpOverwriteMode::ScpAppendToExisting);

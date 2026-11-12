@@ -267,5 +267,25 @@ This path preserves quick-only settings (Address, MTU, DNS, Table and hooks),
 which syncconf does not apply. IPv6 address migration uses its separate actor.
 The real WG/AWG regression injects native route edits before apply and before
 commit, verifies refusal/preservation, then checks successful apply-commit and
-failed-parser recovery. Client-side creation/revocation still need to be wired
-to these transactions; this does not yet establish cooperation by all writers.
+failed-parser recovery. Client-side creation/revocation use these transactions
+when a compatible helper is installed; automatic helper installation and the
+remaining writers still need migration coordination.
+
+The SSH layer checks the `native-mutation-v1` capability before staging, uploads
+JSON only through a private temporary directory, and validates operation IDs and
+file hashes. If the stage reply is lost, it can recover the matching journal. If
+the apply-commit reply is lost, `check-live` confirms an exact committed file and
+native state under the lock; a pending journal is never reported as committed.
+Repeating an already-applied apply-commit verifies and commits without applying
+again. Errors on this path never fall back to direct file upload. An absent
+helper with a pending journal is also refused; a clean old server without a
+helper retains the existing behavior.
+
+The ordinary SSH fixture runs fresh creation/revocation in both managed and
+legacy modes. In managed mode it also blocks a conflicting app writer, temporarily
+hides the helper while a journal exists, and deliberately discards successful
+stage/commit responses using `protocol-helper-loss.py`. Marker assertions require
+both faults to have occurred before accepting the app's successful export. The
+proxy executes only in the disposable fixture and forwards the production binary;
+it does not simulate an actual SSH connection loss. All previous native, signed
+update, Interface-preservation and rollback checks remain enabled.

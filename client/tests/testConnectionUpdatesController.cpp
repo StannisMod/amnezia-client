@@ -261,9 +261,52 @@ private slots:
             SecureServersRepository servers(&settings); SecureAppSettingsRepository app(&settings);
             const auto id = servers.addServer({}, synchronized, serverConfigUtils::SelfHostedAdmin);
             ExportController exporter(&servers, &app);
+            // A pending server mutation must block another app writer without
+            // falling back to a direct upload.
+            if (qEnvironmentVariable("AMNEZIA_PEER_TRANSACTIONS") == "enabled") {
+                SshSession manager; ErrorCode read = ErrorCode::NoError;
+                const QString configPath = awg ? "/opt/amnezia/awg/awg0.conf" : "/opt/amnezia/wireguard/wg0.conf";
+                const auto before = QString::fromUtf8(manager.getTextFileFromContainer(container, credentials, configPath, read));
+                QCOMPARE(read, ErrorCode::NoError);
+                const auto pending = before + "\n# pending server mutation\n";
+                QJsonObject staged;
+                QCOMPARE(manager.protocolConfigTransaction(container, credentials, {
+                    {"action", "stage-live"}, {"expected", QString::fromLatin1(before.toUtf8().toBase64())},
+                    {"candidate", QString::fromLatin1(pending.toUtf8().toBase64())} }, staged), ErrorCode::NoError);
+                bool handled = false;
+                QVERIFY(manager.replaceLiveProtocolConfig(container, credentials, before,
+                    before + "\n# conflicting app writer\n", handled) != ErrorCode::NoError);
+                QVERIFY(handled);
+                QVERIFY(QString::fromUtf8(manager.getTextFileFromContainer(container, credentials, configPath, read)) == pending);
+                const auto name = ContainerUtils::containerToString(container);
+                const auto restoreCommand = QString("sudo docker exec %1 mv /opt/amnezia/config-helper.fixture-hidden /opt/amnezia/config-helper").arg(name);
+                auto restoreHelper = qScopeGuard([&] { manager.runScript(credentials, restoreCommand); });
+                QString hidden;
+                QCOMPARE(manager.runScript(credentials, QString("sudo docker exec %1 mv /opt/amnezia/config-helper /opt/amnezia/config-helper.fixture-hidden && printf missing").arg(name),
+                    [&](const QString &data, libssh::Client &) { hidden += data; return ErrorCode::NoError; }), ErrorCode::NoError);
+                QCOMPARE(hidden, QString("missing"));
+                handled = false;
+                QVERIFY(manager.replaceLiveProtocolConfig(container, credentials, before,
+                    before + "\n# blocked without helper\n", handled) != ErrorCode::NoError);
+                QVERIFY(handled);
+                QVERIFY(QString::fromUtf8(manager.getTextFileFromContainer(container, credentials, configPath, read)) == pending);
+                QCOMPARE(manager.runScript(credentials, restoreCommand), ErrorCode::NoError);
+                restoreHelper.dismiss();
+                QJsonObject restored;
+                QCOMPARE(manager.protocolConfigTransaction(container, credentials, {
+                    {"action", "rollback-live"}, {"operation", staged.value("operation")} }, restored), ErrorCode::NoError);
+                QVERIFY(QString::fromUtf8(manager.getTextFileFromContainer(container, credentials, configPath, read)) == before);
+            }
             const auto exported = exporter.generateConnectionConfig(id, static_cast<int>(container), "synthetic IPv6 peer", true);
             QCOMPARE(exported.errorCode, ErrorCode::NoError); QVERIFY(exported.config.startsWith("vpn://"));
             const auto user = QJsonDocument::fromJson(qUncompress(QByteArray::fromBase64(exported.config.mid(6).toLatin1(), QByteArray::Base64UrlEncoding))).object();
+            if (qEnvironmentVariable("AMNEZIA_PEER_TRANSACTIONS") == "enabled") {
+                SshSession verified; ErrorCode observed = ErrorCode::NoError;
+                QCOMPARE(verified.getTextFileFromContainer(container, credentials, "/opt/amnezia/protocol-loss-stage", observed), QByteArray("1"));
+                QCOMPARE(observed, ErrorCode::NoError);
+                QCOMPARE(verified.getTextFileFromContainer(container, credentials, "/opt/amnezia/protocol-loss-commit", observed), QByteArray("1"));
+                QCOMPARE(observed, ErrorCode::NoError);
+            }
             QVERIFY(connectionUpdates::validateProfile(user)); const auto generated = client(user, awg);
             QVERIFY(generated.value("client_pub_key") != client(administrator, awg).value("client_pub_key"));
             QJsonObject assignments;

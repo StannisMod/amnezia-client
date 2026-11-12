@@ -291,6 +291,41 @@ func configTransactionCommand(input io.Reader, output io.Writer, paths map[strin
 	if !exists {
 		return errors.New("unsupported configuration container")
 	}
+	if request.Action == "capabilities" {
+		if request.Operation != "" || len(request.Expected) != 0 || len(request.Candidate) != 0 || request.ServerIPv6 != "" {
+			return errors.New("unexpected capability fields")
+		}
+		return json.NewEncoder(output).Encode(map[string]any{"version": 1, "features": []string{"native-mutation-v1"}})
+	}
+	if request.Action == "check-live" {
+		if request.Operation != "" || len(request.Expected) == 0 || len(request.Expected) > 4<<20 || len(request.Candidate) != 0 || request.ServerIPv6 != "" {
+			return errors.New("invalid live-state check")
+		}
+		lock, err := lockConfig(path)
+		if err != nil {
+			return err
+		}
+		defer lock.Close()
+		if _, err := os.Lstat(path + ".amnezia-journal"); !errors.Is(err, os.ErrNotExist) {
+			return errors.New("configuration transaction is pending")
+		}
+		current, info, err := readConfigFile(path, 4<<20)
+		if err != nil {
+			return err
+		}
+		stat, ok := info.Sys().(*syscall.Stat_t)
+		if !ok || stat.Nlink != 1 || int(stat.Uid) != os.Geteuid() || info.Mode().Perm()&0022 != 0 || !bytes.Equal(current, request.Expected) {
+			return errConfigConflict
+		}
+		native, err := captureNativeProtocol(request.Container)
+		if err != nil {
+			return err
+		}
+		if err := verifyNativeConfigBaseline(request.Container, path, native); err != nil {
+			return err
+		}
+		return json.NewEncoder(output).Encode(map[string]any{"version": 1, "current": true, "candidateHash": configHash(current)})
+	}
 	var transaction *configTransaction
 	var assignments map[string]string
 	if request.Action == "stage-ipv6" {
@@ -370,7 +405,7 @@ func configTransactionCommand(input io.Reader, output io.Writer, paths map[strin
 	if request.Action != "stage" && request.Action != "stage-live" && request.Action != "stage-ipv6" && request.Action != "status" && request.Operation != transaction.journal.Operation {
 		return errors.New("configuration operation mismatch")
 	}
-	result := map[string]any{"nativeApplied": transaction.journal.NativeApplied, "version": 1, "operation": transaction.journal.Operation, "originalHash": transaction.journal.OriginalHash, "candidateHash": transaction.journal.CandidateHash}
+	result := map[string]any{"nativeWriteIntent": transaction.journal.NativeWriteIntent, "nativeApplied": transaction.journal.NativeApplied, "version": 1, "operation": transaction.journal.Operation, "originalHash": transaction.journal.OriginalHash, "candidateHash": transaction.journal.CandidateHash}
 	if assignments != nil {
 		result["clientIpv6"] = assignments
 	}
@@ -382,8 +417,10 @@ func configTransactionCommand(input io.Reader, output io.Writer, paths map[strin
 		}
 		result["ipv6ForwardingPrepared"] = true
 	case "apply", "apply-commit", "rollback-live":
-		if err := applyConfigTransactionRuntime(transaction, request.Container, request.Action == "rollback-live"); err != nil {
-			return err
+		if request.Action != "apply-commit" || !transaction.journal.NativeApplied {
+			if err := applyConfigTransactionRuntime(transaction, request.Container, request.Action == "rollback-live"); err != nil {
+				return err
+			}
 		}
 		if request.Action == "apply-commit" {
 			if err := verifyProtocolCommit(transaction, request.Container); err != nil {
@@ -448,6 +485,7 @@ func configTransactionCommand(input io.Reader, output io.Writer, paths map[strin
 		result["clientIpv6"] = plan.Assignments
 	}
 	result["nativeApplied"] = transaction.journal.NativeApplied
+	result["nativeWriteIntent"] = transaction.journal.NativeWriteIntent
 	return json.NewEncoder(output).Encode(result)
 }
 

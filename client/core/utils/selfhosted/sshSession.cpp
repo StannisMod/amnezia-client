@@ -6,12 +6,15 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonDocument>
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QLoggingCategory>
 #include <QPointer>
 #include <QTemporaryFile>
 #include <QThread>
 #include <QTimer>
+#include <QUuid>
+#include <QRegularExpression>
 #include <QtConcurrent>
 
 #include <filesystem>
@@ -169,6 +172,83 @@ ErrorCode SshSession::uploadTextFileToContainer(DockerContainer container, const
 
     runScript(credentials, replaceVars(QString("sudo shred -u %1").arg(tmpFileName), amnezia::genBaseVars(credentials, container, QString(), QString())));
     return e;
+}
+
+ErrorCode SshSession::protocolConfigTransaction(DockerContainer container, const ServerCredentials &credentials,
+                                                const QJsonObject &input, QJsonObject &response)
+{
+    if (container != DockerContainer::WireGuard && container != DockerContainer::Awg2) return ErrorCode::InternalError;
+    const auto action = input.value("action").toString();
+    if (action != "capabilities" && action != "stage-live" && action != "apply-commit" && action != "status" && action != "rollback-live" && action != "check-live") return ErrorCode::InternalError;
+    auto request = input; request["container"] = ContainerUtils::containerToString(container);
+    const auto folder = "/tmp/amnezia-protocol-request-" + QUuid::createUuid().toString(QUuid::Id128);
+    auto error = runScript(credentials, "umask 077 && mkdir '" + folder + "'");
+    if (error != ErrorCode::NoError) return error;
+    error = uploadFileToHost(credentials, QJsonDocument(request).toJson(QJsonDocument::Compact), folder + "/request.json");
+    if (error == ErrorCode::NoError) {
+        QString output;
+        const auto script = QString("chmod 600 '%1/request.json' && container_id=$(sudo docker inspect -f '{{.Id}}' %2) && sudo docker exec -i \"$container_id\" /opt/amnezia/config-helper config-file-transaction < '%1/request.json'")
+                                .arg(folder, ContainerUtils::containerToString(container));
+        error = runScript(credentials, script, [&](const QString &data, libssh::Client &) {
+            if (output.size() + data.size() > 65536) return ErrorCode::InternalError;
+            output += data; return ErrorCode::NoError;
+        });
+        if (error == ErrorCode::NoError) {
+            const auto result = QJsonDocument::fromJson(output.toUtf8()).object();
+            if (result.value("version").toInt() != 1) error = ErrorCode::InternalError;
+            else response = result;
+        }
+    }
+    runScript(credentials, "rm -rf -- '" + folder + "'");
+    return error;
+}
+
+ErrorCode SshSession::replaceLiveProtocolConfig(DockerContainer container, const ServerCredentials &credentials,
+                                               const QString &expected, const QString &candidate, bool &handled)
+{
+    handled = false;
+    if (container != DockerContainer::WireGuard && container != DockerContainer::Awg2) return ErrorCode::NoError;
+    QString capability;
+    auto error = runScript(credentials,
+        QString("container_id=$(sudo docker inspect -f '{{.Id}}' %1) && sudo docker exec \"$container_id\" sh -c 'if [ -x /opt/amnezia/config-helper ]; then printf transaction; elif [ -e %2 ] || [ -L %2 ]; then printf blocked; else printf legacy; fi' && printf '\\namnezia_protocol_helper=ok\\n'")
+            .arg(ContainerUtils::containerToString(container), container == DockerContainer::Awg2
+                ? "/opt/amnezia/awg/awg0.conf.amnezia-journal" : "/opt/amnezia/wireguard/wg0.conf.amnezia-journal"),
+        [&](const QString &data, libssh::Client &) { if (capability.size() + data.size() > 65536) return ErrorCode::InternalError; capability += data; return ErrorCode::NoError; });
+    if (error != ErrorCode::NoError) return error;
+    if (capability.trimmed() == "legacy\namnezia_protocol_helper=ok") return ErrorCode::NoError;
+    if (capability.trimmed() == "blocked\namnezia_protocol_helper=ok") { handled = true; return ErrorCode::InternalError; }
+    if (capability.trimmed() != "transaction\namnezia_protocol_helper=ok") return ErrorCode::InternalError;
+    handled = true; // Every subsequent error stays on the transaction path.
+    QJsonObject capabilities;
+    error = protocolConfigTransaction(container, credentials, { {"action", "capabilities"} }, capabilities);
+    if (error != ErrorCode::NoError) return error;
+    if (!capabilities.value("features").toArray().contains("native-mutation-v1")) return ErrorCode::InternalError;
+    const auto original = expected.toUtf8(), replacement = candidate.toUtf8();
+    if (original.isEmpty() || original.size() > 4*1024*1024 || replacement.isEmpty() || replacement.size() > 4*1024*1024) return ErrorCode::InternalError;
+    const auto originalHash = QString::fromLatin1(QCryptographicHash::hash(original, QCryptographicHash::Sha256).toHex());
+    const auto candidateHash = QString::fromLatin1(QCryptographicHash::hash(replacement, QCryptographicHash::Sha256).toHex());
+    QJsonObject staged;
+    error = protocolConfigTransaction(container, credentials, { {"action", "stage-live"},
+        {"expected", QString::fromLatin1(original.toBase64())}, {"candidate", QString::fromLatin1(replacement.toBase64())} }, staged);
+    if (error != ErrorCode::NoError) {
+        const auto stageError = error;
+        error = protocolConfigTransaction(container, credentials, { {"action", "status"} }, staged);
+        if (error != ErrorCode::NoError) return stageError;
+    }
+    const auto operation = staged.value("operation").toString();
+    static const QRegularExpression nonce("^[a-f0-9]{64}$");
+    if (!nonce.match(operation).hasMatch() || staged.value("originalHash") != originalHash || staged.value("candidateHash") != candidateHash
+        || !staged.value("nativeWriteIntent").isBool() || !staged.value("nativeApplied").isBool()
+        || (staged.value("nativeWriteIntent").toBool() && !staged.value("nativeApplied").toBool())) return ErrorCode::InternalError;
+    QJsonObject applied;
+    error = protocolConfigTransaction(container, credentials, { {"action", "apply-commit"}, {"operation", operation} }, applied);
+    if (error == ErrorCode::NoError && applied.value("operation") == operation && applied.value("candidateHash") == candidateHash
+        && applied.value("nativeApplied").toBool()) return ErrorCode::NoError;
+    QJsonObject current;
+    if (protocolConfigTransaction(container, credentials, { {"action", "check-live"},
+        {"expected", QString::fromLatin1(replacement.toBase64())} }, current) == ErrorCode::NoError
+        && current.value("current").toBool() && current.value("candidateHash") == candidateHash) return ErrorCode::NoError;
+    return error == ErrorCode::NoError ? ErrorCode::InternalError : error;
 }
 
 QByteArray SshSession::getTextFileFromContainer(DockerContainer container, const ServerCredentials &credentials, const QString &path,

@@ -26,6 +26,10 @@ public:
     ErrorCode uploadTextFileToContainer(DockerContainer container, const ServerCredentials &credentials, const QString &file,
                                         const QString &path,
                                         libssh::ScpOverwriteMode overwriteMode = libssh::ScpOverwriteMode::ScpOverwriteExisting);
+    ErrorCode protocolConfigTransaction(DockerContainer container, const ServerCredentials &credentials,
+                                        const QJsonObject &request, QJsonObject &response);
+    ErrorCode replaceLiveProtocolConfig(DockerContainer container, const ServerCredentials &credentials,
+                                       const QString &expected, const QString &candidate, bool &handled);
     QByteArray getTextFileFromContainer(DockerContainer container, const ServerCredentials &credentials, const QString &path,
                                         ErrorCode &errorCode);
 

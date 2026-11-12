@@ -130,6 +130,9 @@ for container, binary, interface, path in (
         'allowed-ips', ','.join(route.decode() for route in peer_routes) + ',fd99::55/128')
     independently_changed = allowed()
     invoke('commit', operation=pending_live['operation'], ok=False)
+    invoke('apply-commit', operation=pending_live['operation'], ok=False)
+    assert allowed() == independently_changed
+    invoke('check-live', expected=live_candidate, ok=False)
     assert allowed() == independently_changed
     assert invoke('status')['operation'] == pending_live['operation']
     run('docker', 'exec', container, binary, 'set', interface, 'peer', peer_key,
@@ -139,6 +142,7 @@ for container, binary, interface, path in (
     invoke('apply-commit', operation='0' * 64, ok=False)
     invoke('apply-commit', operation=restore_live['operation'])
     invoke('status', ok=False)
+    assert invoke('check-live', expected=original)['current']
     assert allowed() == original_allowed
     assert run('docker', 'exec', container, 'cat', path).stdout == original
     # The native parser really rejects this candidate; the durable journal survives.

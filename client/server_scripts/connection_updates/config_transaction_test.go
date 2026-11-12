@@ -330,3 +330,37 @@ func TestNativeWriteIntentJournalInvariant(t *testing.T) {
 		t.Fatal("write intent without backup accepted")
 	}
 }
+
+func TestLiveStateCheckRefusesPendingAndMismatchedFile(t *testing.T) {
+	path, original, candidate := transactionFixture(t)
+	txn, err := beginConfigTransaction(path, original, candidate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	txn.close()
+	invoke := func(req configTransactionRequest) error {
+		raw, _ := json.Marshal(req)
+		var output bytes.Buffer
+		return configTransactionCommand(bytes.NewReader(raw), &output, map[string]string{"amnezia-wireguard": path})
+	}
+	if err := invoke(configTransactionRequest{Action: "check-live", Container: "amnezia-wireguard", Expected: candidate}); err == nil {
+		t.Fatal("pending file reported committed")
+	}
+	resumed, err := resumeConfigTransaction(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := resumed.finish(true); err != nil {
+		t.Fatal(err)
+	}
+	resumed.close()
+	if err := invoke(configTransactionRequest{Action: "check-live", Container: "amnezia-wireguard", Expected: candidate}); err == nil {
+		t.Fatal("mismatched file reported current")
+	}
+	if err := invoke(configTransactionRequest{Action: "capabilities", Container: "amnezia-wireguard"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := invoke(configTransactionRequest{Action: "capabilities", Container: "amnezia-wireguard", Expected: original}); err == nil {
+		t.Fatal("capability query accepted unrelated input")
+	}
+}

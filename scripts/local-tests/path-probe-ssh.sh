@@ -60,7 +60,7 @@ for kind in wireguard awg2; do
     if [[ "$kind" == awg2 ]]; then
         setup='mkdir -p /dev/net; test -c /dev/net/tun || mknod /dev/net/tun c 10 200; amneziawg-go awg0; umask 077; awg genkey > /tmp/private; a=$(printf DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD | base64 | wg pubkey); b=$(printf BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB | base64); c=$(printf CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC | base64); awg set awg0 private-key /tmp/private peer "$a" allowed-ips 10.88.0.2/32,fd88::2/128 peer "$b" allowed-ips 10.88.0.3/32 peer "$c" persistent-keepalive 25; rm /tmp/private'
     fi
-    docker exec "$fixture" docker run --pull=never -d --name "amnezia-$kind" --network none --privileged --cap-add NET_ADMIN --cap-add MKNOD --device /dev/net/tun \
+    docker exec "$fixture" docker run --pull=never -d --name "amnezia-$kind" --network none --privileged -e AMNEZIA_PROTOCOL_LOSS_FIXTURE=disposable --cap-add NET_ADMIN --cap-add MKNOD --device /dev/net/tun \
         --sysctl net.ipv6.conf.all.disable_ipv6=0 --entrypoint sh "$loaded_image" -ec \
         "$setup; $addresses; ip link set $iface up; touch /ready; exec sleep 300" >/dev/null
     ready=false
@@ -93,13 +93,11 @@ auto_ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{
 AMNEZIA_SSH_PROBE_HOST="$auto_ip"
 export AMNEZIA_SSH_PROBE_NETWORK="$network" AMNEZIA_SSH_PROBE_PORT=2222 AMNEZIA_SSH_PROBE_PHASE=present
 export QT_QPA_PLATFORM=offscreen
-timeout 90 "$@" realAdminProbeAddressRead
-timeout 90 "$@" realAdminPeerIPv6Read
-timeout 90 "$@" realAdminIPv6InvitationExport
-timeout 90 "$@" realAdminNewIPv6ProfileExport
 docker exec "$fixture" docker cp amnezia-connection-updates:/updates /tmp/config-helper
 for kind in wireguard awg2; do
     docker exec "$fixture" docker cp /tmp/config-helper "amnezia-$kind:/opt/amnezia/config-helper"
+    docker exec "$fixture" docker exec "amnezia-$kind" mv /opt/amnezia/config-helper /opt/amnezia/config-helper.real
+    docker exec -i "$fixture" docker exec -i "amnezia-$kind" sh -ec 'umask 077; cat > /opt/amnezia/config-helper; chmod 700 /opt/amnezia/config-helper' < "$repo/scripts/local-tests/protocol-helper-loss.py"
     docker exec -i "$fixture" docker exec -i "amnezia-$kind" sh -ec 'umask 077; cat > /opt/amnezia/fixture-forwarding-legacy.sh' < "$repo/client/server_scripts/connection_updates/testdata/ipv6-forwarding-legacy.sh"
     startup_kind=wireguard
     if [[ "$kind" == awg2 ]]; then startup_kind=awg; fi
@@ -107,6 +105,20 @@ for kind in wireguard awg2; do
     { printf '#!/bin/bash\n'; cat "$repo/client/server_scripts/enable_ipv6_forwarding.sh"; printf '\ntouch /opt/amnezia/forbidden-startup-body\nexit 87\n'; } |
         docker exec -i "$fixture" docker exec -i "amnezia-$kind" sh -ec 'umask 077; cat > /opt/amnezia/start.sh; chmod 700 /opt/amnezia/start.sh'
 done
+timeout 90 "$@" realAdminProbeAddressRead
+timeout 90 "$@" realAdminPeerIPv6Read
+timeout 90 "$@" realAdminIPv6InvitationExport
+export AMNEZIA_PEER_TRANSACTIONS=enabled
+timeout 90 "$@" realAdminNewIPv6ProfileExport
+for kind in wireguard awg2; do
+    docker exec "$fixture" docker exec "amnezia-$kind" mv /opt/amnezia/config-helper /opt/amnezia/config-helper.fixture-disabled
+done
+export AMNEZIA_PEER_TRANSACTIONS=legacy
+timeout 90 "$@" realAdminNewIPv6ProfileExport
+for kind in wireguard awg2; do
+    docker exec "$fixture" docker exec "amnezia-$kind" mv /opt/amnezia/config-helper.fixture-disabled /opt/amnezia/config-helper
+done
+unset AMNEZIA_PEER_TRANSACTIONS
 docker exec -i "$fixture" sh -ec 'umask 077; cat > /tmp/config-transaction-acceptance.py' < "$repo/scripts/local-tests/config-transaction-acceptance.py"
 timeout 90 docker exec "$fixture" python3 /tmp/config-transaction-acceptance.py
 docker exec "$fixture" docker exec amnezia-wireguard sh -ec 'a=$(printf DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD | base64 | wg pubkey); wg set wg0 peer "$a" allowed-ips fd77::/64'

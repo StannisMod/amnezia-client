@@ -627,10 +627,15 @@ ErrorCode UsersController::revokeWireGuard(const int row, const DockerContainer 
         logger.error() << "Cannot identify a unique WireGuard peer in the server configuration";
         return ErrorCode::InternalError;
     }
-    error = sshSession->uploadTextFileToContainer(container, credentials, newWireGuardConfig, configPath);
-    if (error != ErrorCode::NoError) {
-        logger.error() << "Failed to upload the wg conf file to the server";
-        return error;
+    bool transactional = false;
+    error = sshSession->replaceLiveProtocolConfig(container, credentials, wireguardConfigString, newWireGuardConfig, transactional);
+    if (error != ErrorCode::NoError) return error;
+    if (!transactional) {
+        error = sshSession->uploadTextFileToContainer(container, credentials, newWireGuardConfig, configPath);
+        if (error != ErrorCode::NoError) {
+            logger.error() << "Failed to upload the wg conf file to the server";
+            return error;
+        }
     }
 
     clientsTable.removeAt(row);
@@ -648,6 +653,8 @@ ErrorCode UsersController::revokeWireGuard(const int row, const DockerContainer 
         logger.error() << "Failed to upload the clientsTable file to the server";
         return error;
     }
+
+    if (transactional) return ErrorCode::NoError;
 
     bool isAwg2 = (container == DockerContainer::Awg2);
     QString command = isAwg2 ? QStringLiteral("awg") : QStringLiteral("wg");
