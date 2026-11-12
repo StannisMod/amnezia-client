@@ -15,6 +15,13 @@ def run(*args, data=None, ok=True):
     return result
 
 
+def native_fields(raw):
+    # AWG's UAPI iterates peers in map order. Preserve every field/value and
+    # duplicate while ignoring only peer/field order and blank formatting.
+    return tuple(sorted(tuple(sorted(line.strip() for line in block.splitlines() if line.strip()))
+                        for block in raw.split(b'[Peer]')))
+
+
 labels = json.loads(run('docker', 'info', '--format', '{{json .Labels}}').stdout)
 assert 'amnezia.test-environment=disposable' in labels, 'requires disposable private Docker daemon'
 helper = '/opt/amnezia/config-helper'
@@ -299,7 +306,10 @@ for container, binary, interface, path in (
     check = invoke('check-revoked-peer', operation=receipt_id, expected=original, candidate=removed_config, no_writer=True)
     assert check['revoked']
     assert run('docker', 'exec', container, 'cat', path).stdout == independent_config
-    assert run('docker', 'exec', container, binary, 'showconf', interface).stdout == independent_native
+    after_check_native = run('docker', 'exec', container, binary, 'showconf', interface).stdout
+    assert native_fields(after_check_native) == native_fields(independent_native), 'receipt check changed native fields'
+    if after_check_native != independent_native:
+        print(f'PASS: {container} native fields unchanged despite different peer serialization order')
     assert run('docker', 'exec', container, 'test', '-e', '/opt/amnezia/forbidden-recovery-writer', ok=False).returncode
     # Historical completion is not permission to delete a reintroduced peer.
     restoration = invoke('stage-live', expected=independent_config, candidate=original)
