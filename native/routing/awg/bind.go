@@ -61,24 +61,42 @@ func (b *packetBind) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
 	}
 	b.pc = pc
 	b.lastNetwork = network
+	udp, _ := pc.(*net.UDPConn)
+	var peerEndpoint conn.Endpoint = endpoint(remote)
 	// Capture this generation, so reopening never makes an old reader consume
 	// datagrams from the new socket.
 	receive := func(packets [][]byte, sizes []int, eps []conn.Endpoint) (int, error) {
 		for {
-			n, from, e := pc.ReadFrom(packets[0])
+			var n int
+			var addr netip.AddrPort
+			var e error
+			if udp != nil {
+				n, addr, e = udp.ReadFromUDPAddrPort(packets[0])
+			} else {
+				// Keep wrapper-specific ReadFrom semantics; an embedded UDP
+				// socket's promoted methods must not bypass its wrapper.
+				var from net.Addr
+				n, from, e = pc.ReadFrom(packets[0])
+				if e == nil {
+					if fromUDP, ok := from.(*net.UDPAddr); ok {
+						addr = fromUDP.AddrPort()
+					} else {
+						addr, e = netip.ParseAddrPort(from.String())
+						if e != nil {
+							continue
+						}
+					}
+				}
+			}
 			if e != nil {
 				return 0, e
-			}
-			addr, e := netip.ParseAddrPort(from.String())
-			if e != nil {
-				continue
 			}
 			addr = netip.AddrPortFrom(addr.Addr().Unmap(), addr.Port())
 			if addr != remote {
 				continue
 			}
 			sizes[0] = n
-			eps[0] = endpoint(addr)
+			eps[0] = peerEndpoint
 			return 1, nil
 		}
 	}
@@ -143,8 +161,17 @@ func (b *packetBind) Send(bufs [][]byte, _ conn.Endpoint) error {
 	// This bind belongs to exactly one configured peer. The control-plane
 	// target stays authoritative even if an authenticated packet queued before
 	// a refresh makes the device remember the retired endpoint afterward.
+	if udp, ok := pc.(*net.UDPConn); ok {
+		for _, p := range bufs {
+			if _, err := udp.WriteToUDPAddrPort(p, remote); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	to := net.UDPAddrFromAddrPort(remote)
 	for _, p := range bufs {
-		if _, err := pc.WriteTo(p, net.UDPAddrFromAddrPort(remote)); err != nil {
+		if _, err := pc.WriteTo(p, to); err != nil {
 			return err
 		}
 	}
