@@ -2,4 +2,4 @@ FROM amneziavpn/amneziawg-go@sha256:cbafc02b8373a83f428272db6d8001b37bc02e6211cb
 FROM docker:29-dind
 RUN apk add --no-cache python3 openssl openssh-client openssh-server sudo util-linux diffutils coreutils wireguard-tools
 ENV PYTHONDONTWRITEBYTECODE=1
-COPY --from=awg /usr/bin/awg /usr/bin/amneziawg-go /usr/bin/
+COPY --from=awg /usr/bin/awg /usr/bin/amneziawg-go /usr/bin/awg-quick /usr/bin/

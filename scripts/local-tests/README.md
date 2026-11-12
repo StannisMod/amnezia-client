@@ -107,6 +107,9 @@ The fixture also builds the production signed-update service. The application
 exports an invitation for an existing WG/AWG key over its normal SSH admin path,
 attaches it to a user profile, fetches the signed update over certificate-pinned
 HTTPS and verifies the assigned IPv6 while preserving its private key and routes.
+It also creates a fresh peer through the normal configurator, verifies native
+live peer synchronization and the exported dual-stack profile, then confirms a
+signed withdrawal removes its managed IPv6 without changing the generated key.
 The existing asynchronous probe-profile migration remains covered. This validates
 management and signed delivery; it does not send encrypted user traffic or prove
 Internet egress. Keys and credentials are synthetic; no host VPN or production

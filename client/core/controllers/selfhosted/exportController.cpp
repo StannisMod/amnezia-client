@@ -141,11 +141,19 @@ ExportController::ExportResult ExportController::generateConnectionConfig(const 
         QJsonObject request { { "pathMtuProbe", probe }, { "container", ContainerUtils::containerToString(container) },
             { "clientPublicKey", client.value(configKey::clientPubKey) },
             { "settings", connectionUpdates::publicSettings(client, container == DockerContainer::Awg2) } };
+        QString generatedIPv6;
         if (individualIPv6Supported) {
             QJsonObject assignments, individual;
             result.errorCode = ConnectionUpdatesController::fetchPeerIPv6Assignments(credentials, container, assignments);
             if (result.errorCode != ErrorCode::NoError) return result;
             if (!connectionUpdates::individualIPv6Assignment(assignments, client.value(configKey::clientPubKey).toString(), individual)) {
+                result.errorCode = ErrorCode::InternalError; return result;
+            }
+            generatedIPv6 = individual.value(client.value(configKey::clientPubKey).toString()).toString();
+            QStringList generatedAddresses;
+            for (const auto &entry : client.value(configKey::clientIp).toString().split(',')) generatedAddresses << entry.trimmed();
+            if ((!generatedIPv6.isEmpty() && !generatedAddresses.contains(generatedIPv6 + "/128"))
+                || (generatedIPv6.isEmpty() && client.value(configKey::clientIp).toString().contains(':'))) {
                 result.errorCode = ErrorCode::InternalError; return result;
             }
             request["clientIpv6"] = individual;
@@ -160,6 +168,10 @@ ExportController::ExportResult ExportController::generateConnectionConfig(const 
         metadata["id"] = response.value("id"); metadata["token"] = response.value("token");
         metadata["container"] = request.value("container"); metadata["clientPublicKey"] = request.value("clientPublicKey");
         metadata["revision"] = "0";
+        if (individualIPv6Supported) {
+            metadata["clientIpv6"] = generatedIPv6;
+            if (!generatedIPv6.isEmpty()) metadata["managedClientIpv6"] = generatedIPv6;
+        }
         QUrl url(metadata.value("url").toString()); url.setPath("/v1/connections/" + response.value("id").toString()); metadata["url"] = url.toString();
         serverJson[connectionUpdates::metadataKey] = metadata;
         if (!connectionUpdates::validateProfile(serverJson)) { result.errorCode = ErrorCode::InternalError; return result; }

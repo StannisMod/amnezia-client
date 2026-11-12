@@ -4,9 +4,10 @@ set -euo pipefail
 if [[ $# -eq 0 ]]; then echo 'Usage: path-probe-ssh.sh TEST_EXECUTABLE [runner arguments...]' >&2; exit 2; fi
 repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 python3 "$repo/scripts/local-tests/test_docker_image_config_digest.py"
-if ! docker run --pull=never --rm --network none --entrypoint sh amnezia-local-vpn-tests -ec 'command -v wg >/dev/null; command -v awg >/dev/null; command -v amneziawg-go >/dev/null' >/dev/null 2>&1; then
+if ! docker run --pull=never --rm --network none --entrypoint sh amnezia-local-vpn-tests -ec 'command -v wg >/dev/null; command -v awg >/dev/null; command -v amneziawg-go >/dev/null; command -v awg-quick >/dev/null' >/dev/null 2>&1; then
     docker build --network host -t amnezia-local-vpn-tests -f "$repo/scripts/local-tests/Dockerfile.vpn" "$repo/scripts/local-tests"
 fi
+docker build --network host -t amnezia-updates-ssh-tests "$repo/client/server_scripts/connection_updates"
 tool_image=$(docker image inspect -f '{{.Id}}' amnezia-local-vpn-tests)
 tool_os=$(docker image inspect -f '{{.Os}}' "$tool_image")
 tool_arch=$(docker image inspect -f '{{.Architecture}}' "$tool_image")
@@ -68,9 +69,16 @@ for kind in wireguard awg2; do
         sleep 1
     done
     if [[ "$ready" != true ]]; then docker exec "$fixture" docker logs "amnezia-$kind"; exit 1; fi
+    binary=wg; folder=wireguard; local_addresses='10.77.0.9/24, fd77::1/64'
+    if [[ "$kind" == awg2 ]]; then binary=awg; folder=awg; local_addresses='fd88::9/64'; fi
+    docker exec "$fixture" docker exec "amnezia-$kind" sh -ec '
+        umask 077; mkdir -p "/opt/amnezia/$1"
+        "$2" showconf "$3" | awk -v addresses="$4" "{print; if (\$0 == \"[Interface]\") print \"Address = \" addresses}" > "/opt/amnezia/$1/$3.conf"
+        "$2" show "$3" public-key > "/opt/amnezia/$1/wireguard_server_public_key.key"
+        "$2" genpsk > "/opt/amnezia/$1/wireguard_psk.key"
+    ' sh "$folder" "$binary" "$iface" "$local_addresses"
 done
 # Use the production signed-delivery binary and Docker admin command path.
-docker build --network host -t amnezia-updates-ssh-tests "$repo/client/server_scripts/connection_updates"
 docker image save amnezia-updates-ssh-tests | docker exec -i "$fixture" docker image load >/dev/null
 auto_ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$fixture")
 [[ "$auto_ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "No fixture IPv4 address" >&2; exit 1; }
@@ -88,6 +96,7 @@ export QT_QPA_PLATFORM=offscreen
 timeout 90 "$@" realAdminProbeAddressRead
 timeout 90 "$@" realAdminPeerIPv6Read
 timeout 90 "$@" realAdminIPv6InvitationExport
+timeout 90 "$@" realAdminNewIPv6ProfileExport
 docker exec "$fixture" docker exec amnezia-wireguard sh -ec 'a=$(printf DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD | base64 | wg pubkey); wg set wg0 peer "$a" allowed-ips fd77::/64'
 docker exec "$fixture" docker exec amnezia-awg2 sh -ec 'a=$(printf DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD | base64 | wg pubkey); awg set awg0 peer "$a" allowed-ips fd88::/64'
 export AMNEZIA_SSH_PROBE_PHASE=ambiguous

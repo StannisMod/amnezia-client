@@ -241,6 +241,55 @@ private slots:
             settings.clearSettings();
         }
     }
+    void realAdminNewIPv6ProfileExport()
+    {
+        const auto host = qEnvironmentVariable("AMNEZIA_SSH_PROBE_HOST");
+        if (host.isEmpty()) QSKIP("Run scripts/local-tests/path-probe-ssh.sh with this test executable");
+        ServerCredentials credentials; credentials.hostName = host; credentials.port = qEnvironmentVariableIntValue("AMNEZIA_SSH_PROBE_PORT");
+        credentials.userName = "root"; credentials.secretData = "synthetic-probe-fixture";
+        QJsonObject info; QCOMPARE(ConnectionUpdatesController::command(credentials, "info", {}, info), ErrorCode::NoError);
+        for (const bool awg : { false, true }) {
+            const auto container = awg ? DockerContainer::Awg2 : DockerContainer::WireGuard;
+            QJsonObject live; QCOMPARE(ConnectionUpdatesController::fetchPublicSettings(credentials, container, host, live), ErrorCode::NoError);
+            auto administrator = profile(awg); administrator["hostName"] = host;
+            administrator["userName"] = credentials.userName; administrator["password"] = credentials.secretData; administrator["port"] = credentials.port;
+            QJsonObject synchronized;
+            QVERIFY(connectionUpdates::mergeServerSettings(administrator, awg ? "amnezia-awg2" : "amnezia-wireguard", live, true, synchronized));
+            auto metadata = info; metadata["url"] = QString("https://%1:8443").arg(host); synchronized["connectionUpdates"] = metadata;
+            SecureQSettings settings("Amnezia-IPv6-New-Export-" + QUuid::createUuid().toString(), "test", nullptr, false);
+            SecureServersRepository servers(&settings); SecureAppSettingsRepository app(&settings);
+            const auto id = servers.addServer({}, synchronized, serverConfigUtils::SelfHostedAdmin);
+            ExportController exporter(&servers, &app);
+            const auto exported = exporter.generateConnectionConfig(id, static_cast<int>(container), "synthetic IPv6 peer", true);
+            QCOMPARE(exported.errorCode, ErrorCode::NoError); QVERIFY(exported.config.startsWith("vpn://"));
+            const auto user = QJsonDocument::fromJson(qUncompress(QByteArray::fromBase64(exported.config.mid(6).toLatin1(), QByteArray::Base64UrlEncoding))).object();
+            QVERIFY(connectionUpdates::validateProfile(user)); const auto generated = client(user, awg);
+            QVERIFY(generated.value("client_pub_key") != client(administrator, awg).value("client_pub_key"));
+            QJsonObject assignments;
+            QCOMPARE(ConnectionUpdatesController::fetchPeerIPv6Assignments(credentials, container, assignments), ErrorCode::NoError);
+            const auto assigned = assignments.value(generated.value("client_pub_key").toString()).toString();
+            QCOMPARE(user.value("connectionUpdates").toObject().value("managedClientIpv6").toString(), assigned);
+            QVERIFY(!assigned.isEmpty()); QVERIFY(generated.value("client_ip").toString().contains(assigned + "/128"));
+            const auto userId = servers.addServer({}, user, serverConfigUtils::SelfHostedUser);
+            VpnConnection vpn(&servers, &app); ConnectionController connection(&servers, &app, &vpn);
+            ConnectionUpdatesController updates(&servers, &connection); QSignalSpy finished(&updates, &ConnectionUpdatesController::finished);
+            updates.refresh(userId); QTRY_COMPARE_WITH_TIMEOUT(finished.count(), 1, 10000); QVERIFY(finished[0][0].toBool());
+            const auto received = client(*servers.serverJsonById(userId), awg);
+            QCOMPARE(received.value("client_ip"), generated.value("client_ip"));
+            QCOMPARE(received.value("client_priv_key"), generated.value("client_priv_key"));
+            QCOMPARE(received.value("allowed_ips"), generated.value("allowed_ips"));
+            QJsonObject published;
+            QCOMPARE(ConnectionUpdatesController::command(credentials, "publish", {
+                { "container", awg ? "amnezia-awg2" : "amnezia-wireguard" }, { "settings", live },
+                { "clientIpv6", QJsonObject { { generated.value("client_pub_key").toString(), "" } } }
+            }, published), ErrorCode::NoError);
+            updates.refresh(userId); QTRY_COMPARE_WITH_TIMEOUT(finished.count(), 2, 10000); QVERIFY(finished[1][0].toBool());
+            const auto withdrawn = client(*servers.serverJsonById(userId), awg);
+            QCOMPARE(withdrawn.value("client_ip").toString(), generated.value("client_ip").toString().section(',', 0, 0).trimmed());
+            QCOMPARE(withdrawn.value("client_priv_key"), generated.value("client_priv_key"));
+            settings.clearSettings();
+        }
+    }
     void verifiedFetchAndPreservedStorage()
     {
         FeedServer feed; QVERIFY(feed.listen(QHostAddress::LocalHost)); auto p = feed.bootstrap(); feed.pathMtuProbe = "10.8.0.1"; feed.setUpdate(p);
