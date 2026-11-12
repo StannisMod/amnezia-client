@@ -24,6 +24,7 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -45,6 +46,7 @@ var hostLabel = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 var awgKeys = strings.Fields("Jc Jmin Jmax S1 S2 S3 S4 H1 H2 H3 H4 I1 I2 I3 I4 I5 HeaderProtectionKey ContentPaddingAddition RekeyAfterTime RekeyTimeout RejectAfterTime KeepaliveTimeout MaxHandshakeAttempts RandomTrailers DisableCookies")
 
 type record struct {
+	ClientIPv6      *string         `json:"clientIpv6,omitempty"`
 	PathMTUProbe    string          `json:"pathMtuProbe,omitempty"`
 	ID              string          `json:"id"`
 	TokenHash       string          `json:"tokenHash"`
@@ -62,13 +64,14 @@ type state struct {
 	Records     map[string]record `json:"records"`
 }
 type request struct {
-	PathMTUProbe     string          `json:"pathMtuProbe,omitempty"`
-	ClientPublicKeys []string        `json:"clientPublicKeys"`
-	ExpectedState    string          `json:"expectedState"`
-	Host             string          `json:"host"`
-	ClientPublicKey  string          `json:"clientPublicKey"`
-	Container        string          `json:"container"`
-	Settings         json.RawMessage `json:"settings"`
+	ClientIPv6       map[string]string `json:"clientIpv6,omitempty"`
+	PathMTUProbe     string            `json:"pathMtuProbe,omitempty"`
+	ClientPublicKeys []string          `json:"clientPublicKeys"`
+	ExpectedState    string            `json:"expectedState"`
+	Host             string            `json:"host"`
+	ClientPublicKey  string            `json:"clientPublicKey"`
+	Container        string            `json:"container"`
+	Settings         json.RawMessage   `json:"settings"`
 }
 type payload struct {
 	Type            string          `json:"type"`
@@ -162,6 +165,53 @@ func pathMTUProbeOK(value string) bool {
 	return len(value) <= 64 && ip != nil && ip.String() == value && ip.IsGlobalUnicast() && !ip.IsLoopback() && !ip.IsLinkLocalUnicast()
 }
 
+// This is per-device metadata, never a container-wide public setting. An
+// explicit empty value withdraws a managed address; omission preserves it.
+func clientIPv6OK(value string) bool {
+	if value == "" {
+		return true
+	}
+	ip, err := netip.ParseAddr(value)
+	return err == nil && ip.Is6() && !ip.Is4In6() && ip.Zone() == "" && ip.String() == value &&
+		ip.IsGlobalUnicast() && !ip.IsLinkLocalUnicast() && !netip.MustParsePrefix("::/96").Contains(ip)
+}
+func clientIPv6AssignmentsOK(assignments map[string]string) error {
+	seen := map[string]string{}
+	for key, address := range assignments {
+		if !keyOK(key) || !clientIPv6OK(address) {
+			return errors.New("invalid client IPv6 assignment")
+		}
+		if address == "" {
+			continue
+		}
+		if previous, exists := seen[address]; exists && previous != key {
+			return errors.New("duplicate client IPv6 assignment")
+		}
+		seen[address] = key
+	}
+	return nil
+}
+func clientIPv6StateOK(s *state) error {
+	seen := map[string]string{}
+	for _, rec := range s.Records {
+		if rec.ClientIPv6 == nil {
+			continue
+		}
+		if !clientIPv6OK(*rec.ClientIPv6) {
+			return errors.New("invalid saved client IPv6 assignment")
+		}
+		if rec.Revoked || *rec.ClientIPv6 == "" {
+			continue
+		}
+		address := rec.Container + "|" + *rec.ClientIPv6
+		if previous, exists := seen[address]; exists && previous != rec.ClientPublicKey {
+			return errors.New("duplicate saved client IPv6 assignment")
+		}
+		seen[address] = rec.ClientPublicKey
+	}
+	return nil
+}
+
 func readState(dir string) (*state, error) {
 	f, e := os.Open(filepath.Join(dir, "state.json"))
 	if e != nil {
@@ -181,9 +231,15 @@ func readState(dir string) (*state, error) {
 			return nil, errors.New("invalid path probe address")
 		}
 	}
+	if err := clientIPv6StateOK(&s); err != nil {
+		return nil, err
+	}
 	return &s, nil
 }
 func writeState(dir string, s *state) error {
+	if err := clientIPv6StateOK(s); err != nil {
+		return err
+	}
 	b, e := json.Marshal(s)
 	if e != nil {
 		return e
@@ -326,6 +382,9 @@ func admin(dir, command string, req request) (map[string]any, error) {
 	case "init", "info":
 		return out, nil
 	case "issue":
+		if err := clientIPv6AssignmentsOK(req.ClientIPv6); err != nil {
+			return nil, err
+		}
 		if !pathMTUProbeOK(req.PathMTUProbe) {
 			return nil, errors.New("invalid path probe address")
 		}
@@ -346,6 +405,11 @@ func admin(dir, command string, req request) (map[string]any, error) {
 		token := base64.RawURLEncoding.EncodeToString(tokenBytes)
 		hash := sha256.Sum256([]byte(token))
 		s.Records[id] = record{ID: id, TokenHash: hex.EncodeToString(hash[:]), ClientPublicKey: req.ClientPublicKey, Container: req.Container, Revision: 1, Settings: req.Settings, PathMTUProbe: req.PathMTUProbe}
+		if address, exists := req.ClientIPv6[req.ClientPublicKey]; exists {
+			rec := s.Records[id]
+			rec.ClientIPv6 = &address
+			s.Records[id] = rec
+		}
 		out["id"] = id
 		out["token"] = token
 	case "coverage":
@@ -377,6 +441,9 @@ func admin(dir, command string, req request) (map[string]any, error) {
 		out["covered"] = len(seen) - missing
 		return out, nil
 	case "publish", "publish-if", "publish-live", "publish-if-live":
+		if err := clientIPv6AssignmentsOK(req.ClientIPv6); err != nil {
+			return nil, err
+		}
 		if !pathMTUProbeOK(req.PathMTUProbe) {
 			return nil, errors.New("invalid path probe address")
 		}
@@ -413,6 +480,9 @@ func admin(dir, command string, req request) (map[string]any, error) {
 				r.Settings = req.Settings
 				if req.PathMTUProbe != "" {
 					r.PathMTUProbe = req.PathMTUProbe
+				}
+				if address, exists := req.ClientIPv6[r.ClientPublicKey]; exists {
+					r.ClientIPv6 = &address
 				}
 				s.Records[id] = r
 			}
@@ -522,7 +592,7 @@ func handler(dir string, books ...*readinessBook) http.Handler {
 		now := time.Now().Unix()
 		p := payload{payloadType, 1, rec.ID, rec.ClientPublicKey, rec.Container, strconv.FormatUint(rec.Revision, 10), now, now + 600, rec.Settings}
 		b, e := json.Marshal(p)
-		if e == nil && (book.challenge != nil || rec.PathMTUProbe != "") {
+		if e == nil && (book.challenge != nil || rec.PathMTUProbe != "" || rec.ClientIPv6 != nil) {
 			var signed map[string]json.RawMessage
 			e = json.Unmarshal(b, &signed)
 			if e == nil {
@@ -531,6 +601,9 @@ func handler(dir string, books ...*readinessBook) http.Handler {
 				}
 				if e == nil && rec.PathMTUProbe != "" {
 					signed["pathMtuProbe"], e = json.Marshal(rec.PathMTUProbe)
+				}
+				if e == nil && rec.ClientIPv6 != nil {
+					signed["clientIpv6"], e = json.Marshal(*rec.ClientIPv6)
 				}
 			}
 			if e == nil {
