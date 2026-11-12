@@ -97,6 +97,12 @@ timeout 90 "$@" realAdminProbeAddressRead
 timeout 90 "$@" realAdminPeerIPv6Read
 timeout 90 "$@" realAdminIPv6InvitationExport
 timeout 90 "$@" realAdminNewIPv6ProfileExport
+docker exec "$fixture" docker cp amnezia-connection-updates:/updates /tmp/config-helper
+for kind in wireguard awg2; do
+    docker exec "$fixture" docker cp /tmp/config-helper "amnezia-$kind:/opt/amnezia/config-helper"
+done
+docker exec -i "$fixture" sh -ec 'umask 077; cat > /tmp/config-transaction-acceptance.py' < "$repo/scripts/local-tests/config-transaction-acceptance.py"
+timeout 90 docker exec "$fixture" python3 /tmp/config-transaction-acceptance.py
 docker exec "$fixture" docker exec amnezia-wireguard sh -ec 'a=$(printf DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD | base64 | wg pubkey); wg set wg0 peer "$a" allowed-ips fd77::/64'
 docker exec "$fixture" docker exec amnezia-awg2 sh -ec 'a=$(printf DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD | base64 | wg pubkey); awg set awg0 peer "$a" allowed-ips fd88::/64'
 export AMNEZIA_SSH_PROBE_PHASE=ambiguous

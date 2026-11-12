@@ -2,10 +2,12 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -198,4 +200,65 @@ func TestConfigTransactionPreservesIndependentModeChange(t *testing.T) {
 	if err != nil || info.Mode().Perm() != 0600 {
 		t.Fatal("independent permissions not preserved", err)
 	}
+}
+
+func TestConfigTransactionCommandBindsOperation(t *testing.T) {
+	path, original, candidate := transactionFixture(t)
+	paths := map[string]string{"amnezia-wireguard": path}
+	invoke := func(request configTransactionRequest) (map[string]any, error) {
+		raw, err := json.Marshal(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var output bytes.Buffer
+		err = configTransactionCommand(bytes.NewReader(raw), &output, paths)
+		var result map[string]any
+		if output.Len() != 0 {
+			if e := json.Unmarshal(output.Bytes(), &result); e != nil {
+				t.Fatal(e)
+			}
+		}
+		return result, err
+	}
+	staged, err := invoke(configTransactionRequest{Action: "stage", Container: "amnezia-wireguard", Expected: original, Candidate: candidate})
+	if err != nil {
+		t.Fatal(err)
+	}
+	operation := staged["operation"].(string)
+	if !configOperationOK(operation) {
+		t.Fatal("invalid operation identifier")
+	}
+	for _, wrong := range []configTransactionRequest{
+		{Action: "rollback", Container: "amnezia-wireguard", Operation: strings.Repeat("0", 64)},
+		{Action: "rollback", Container: "amnezia-wireguard", Operation: operation, Candidate: candidate},
+		{Action: "commit", Container: "foreign", Operation: operation},
+		{Action: "unknown", Container: "amnezia-wireguard"},
+	} {
+		if result, err := invoke(wrong); err == nil || result != nil {
+			t.Fatal("invalid request accepted")
+		}
+		assertConfig(t, path, candidate)
+	}
+	status, err := invoke(configTransactionRequest{Action: "status", Container: "amnezia-wireguard"})
+	if err != nil || status["state"] != "candidate" || status["operation"] != operation {
+		t.Fatal("pending operation lost", err)
+	}
+	if result, err := invoke(configTransactionRequest{Action: "rollback", Container: "amnezia-wireguard", Operation: operation}); err != nil || result["operation"] != operation {
+		t.Fatal("rollback failed", err)
+	}
+	assertConfig(t, path, original)
+	if _, err := invoke(configTransactionRequest{Action: "rollback", Container: "amnezia-wireguard", Operation: operation}); err == nil {
+		t.Fatal("completed operation replayed")
+	}
+	staged, err = invoke(configTransactionRequest{Action: "stage", Container: "amnezia-wireguard", Expected: original, Candidate: candidate})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if staged["operation"] == operation {
+		t.Fatal("operation identifier reused")
+	}
+	if _, err := invoke(configTransactionRequest{Action: "commit", Container: "amnezia-wireguard", Operation: staged["operation"].(string)}); err != nil {
+		t.Fatal(err)
+	}
+	assertConfig(t, path, candidate)
 }

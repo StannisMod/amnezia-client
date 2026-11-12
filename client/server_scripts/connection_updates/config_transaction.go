@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -16,6 +17,7 @@ var errConfigConflict = errors.New("configuration changed during transaction")
 
 type configJournal struct {
 	Version       int    `json:"version"`
+	Operation     string `json:"operation"`
 	Original      []byte `json:"original"`
 	OriginalHash  string `json:"originalHash"`
 	CandidateHash string `json:"candidateHash"`
@@ -154,7 +156,11 @@ func beginConfigTransaction(path string, expected, candidate []byte) (*configTra
 	if !ok || stat.Nlink != 1 || info.Mode().Perm()&0022 != 0 || int(stat.Uid) != os.Geteuid() {
 		return nil, errors.New("linked configuration file")
 	}
-	journal := configJournal{1, original, configHash(original), configHash(candidate), uint32(info.Mode().Perm()), int(stat.Uid), int(stat.Gid)}
+	nonce := make([]byte, 32)
+	if _, err := rand.Read(nonce); err != nil {
+		return nil, err
+	}
+	journal := configJournal{Version: 2, Operation: hex.EncodeToString(nonce), Original: original, OriginalHash: configHash(original), CandidateHash: configHash(candidate), Mode: uint32(info.Mode().Perm()), UID: int(stat.Uid), GID: int(stat.Gid)}
 	raw, err := json.Marshal(journal)
 	if err != nil {
 		return nil, err
@@ -187,7 +193,7 @@ func resumeConfigTransaction(path string) (*configTransaction, error) {
 	var journal configJournal
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
-	if decoder.Decode(&journal) != nil || decoder.Decode(new(any)) != io.EOF || journal.Version != 1 || len(journal.Original) > 4<<20 || journal.OriginalHash != configHash(journal.Original) || len(journal.CandidateHash) != 64 || journal.Mode & ^uint32(0777) != 0 || info.Mode().Perm() != 0600 || journal.UID < 0 || journal.GID < 0 {
+	if decoder.Decode(&journal) != nil || decoder.Decode(new(any)) != io.EOF || journal.Version != 2 || !configOperationOK(journal.Operation) || len(journal.Original) > 4<<20 || journal.OriginalHash != configHash(journal.Original) || len(journal.CandidateHash) != 64 || journal.Mode & ^uint32(0777) != 0 || info.Mode().Perm() != 0600 || journal.UID < 0 || journal.GID < 0 {
 		return nil, errors.New("invalid configuration journal")
 	}
 	hash, err := hex.DecodeString(journal.CandidateHash)
@@ -229,4 +235,87 @@ func (transaction *configTransaction) finish(rollback bool) error {
 		return err
 	}
 	return syncConfigDirectory(transaction.path)
+}
+
+func configOperationOK(value string) bool {
+	raw, err := hex.DecodeString(value)
+	return err == nil && len(raw) == 32 && hex.EncodeToString(raw) == value
+}
+
+type configTransactionRequest struct {
+	Action    string `json:"action"`
+	Container string `json:"container"`
+	Operation string `json:"operation,omitempty"`
+	Expected  []byte `json:"expected,omitempty"`
+	Candidate []byte `json:"candidate,omitempty"`
+}
+
+// Only the root-owned helper command invokes this; no HTTP handler exposes it.
+func configTransactionCommand(input io.Reader, output io.Writer, paths map[string]string) error {
+	raw, err := io.ReadAll(io.LimitReader(input, (12<<20)+1))
+	if err != nil || len(raw) > 12<<20 {
+		return errors.New("invalid configuration transaction request")
+	}
+	var request configTransactionRequest
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&request) != nil || decoder.Decode(new(any)) != io.EOF {
+		return errors.New("invalid configuration transaction request")
+	}
+	path, exists := paths[request.Container]
+	if !exists {
+		return errors.New("unsupported configuration container")
+	}
+	var transaction *configTransaction
+	if request.Action == "stage" {
+		if request.Operation != "" {
+			return errors.New("unexpected operation identifier")
+		}
+		transaction, err = beginConfigTransaction(path, request.Expected, request.Candidate)
+	} else {
+		if len(request.Expected) != 0 || len(request.Candidate) != 0 {
+			return errors.New("unexpected configuration data")
+		}
+		switch request.Action {
+		case "status":
+			if request.Operation != "" {
+				return errors.New("unexpected operation identifier")
+			}
+		case "commit", "rollback":
+			if !configOperationOK(request.Operation) {
+				return errors.New("invalid operation identifier")
+			}
+		default:
+			return errors.New("unsupported configuration transaction action")
+		}
+		transaction, err = resumeConfigTransaction(path)
+	}
+	if err != nil {
+		return err
+	}
+	defer transaction.close()
+	if request.Action != "stage" && request.Action != "status" && request.Operation != transaction.journal.Operation {
+		return errors.New("configuration operation mismatch")
+	}
+	result := map[string]any{"version": 1, "operation": transaction.journal.Operation, "originalHash": transaction.journal.OriginalHash, "candidateHash": transaction.journal.CandidateHash}
+	switch request.Action {
+	case "commit", "rollback":
+		if err := transaction.finish(request.Action == "rollback"); err != nil {
+			return err
+		}
+	case "status":
+		current, _, err := readConfigFile(path, 4<<20)
+		if err != nil {
+			return err
+		}
+		hash := configHash(current)
+		state := "conflict"
+		if hash == transaction.journal.OriginalHash {
+			state = "original"
+		} else if hash == transaction.journal.CandidateHash {
+			state = "candidate"
+		}
+		result["state"] = state
+	}
+	return json.NewEncoder(output).Encode(result)
 }

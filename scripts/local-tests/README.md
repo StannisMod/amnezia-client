@@ -110,6 +110,12 @@ HTTPS and verifies the assigned IPv6 while preserving its private key and routes
 It also creates a fresh peer through the normal configurator, verifies native
 live peer synchronization and the exported dual-stack profile, then confirms a
 signed withdrawal removes its managed IPv6 without changing the generated key.
+The production configuration helper is also exercised inside both containers:
+private journal creation, operation identifiers, stage/status/commit/rollback,
+rejection of unrelated or completed operations and preservation of live peer sets.
+The helper only changes the configuration file; live protocol application and
+signed publication are separate steps. Its sidecar lock protects participating
+writers; existing writers that ignore it still need integration.
 The existing asynchronous probe-profile migration remains covered. This validates
 management and signed delivery; it does not send encrypted user traffic or prove
 Internet egress. Keys and credentials are synthetic; no host VPN or production

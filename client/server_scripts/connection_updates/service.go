@@ -627,6 +627,12 @@ func run() error {
 	if len(os.Args) > 1 {
 		command = os.Args[1]
 	}
+	if command == "config-file-transaction" {
+		return configTransactionCommand(os.Stdin, os.Stdout, map[string]string{
+			"amnezia-wireguard": "/opt/amnezia/wireguard/wg0.conf",
+			"amnezia-awg2":      "/opt/amnezia/awg/awg0.conf",
+		})
+	}
 	if command == "activate-awg3" {
 		b, e := io.ReadAll(io.LimitReader(os.Stdin, maxAdminRequest+1))
 		if e != nil {
