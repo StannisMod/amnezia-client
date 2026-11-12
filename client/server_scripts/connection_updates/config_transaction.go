@@ -29,6 +29,7 @@ type configIPv6Journal struct {
 	Applied    bool   `json:"applied"`
 }
 type configJournal struct {
+	ReceiptOperation   string             `json:"receiptOperation,omitempty"`
 	NativeRollbackHash string             `json:"nativeRollbackHash,omitempty"`
 	Version            int                `json:"version"`
 	Operation          string             `json:"operation"`
@@ -210,13 +211,19 @@ func beginPreparedConfigTransaction(path string, expected, candidate []byte, pre
 	if err != nil {
 		return nil, err
 	}
+	return beginLockedConfigTransaction(path, expected, candidate, prepare, lock)
+}
+
+// Transfers lock ownership to the returned transaction; closes it on error.
+func beginLockedConfigTransaction(path string, expected, candidate []byte, prepare func(*configJournal) error, lock *os.File) (*configTransaction, error) {
 	accepted := false
 	defer func() {
 		if !accepted {
 			lock.Close()
 		}
 	}()
-	if _, err := readConfigReceipts(path); err != nil {
+	receipts, err := readConfigReceipts(path)
+	if err != nil {
 		return nil, err
 	}
 	original, info, err := readConfigFile(path, 4<<20)
@@ -239,6 +246,12 @@ func beginPreparedConfigTransaction(path string, expected, candidate []byte, pre
 		if err := prepare(&journal); err != nil {
 			return nil, err
 		}
+	}
+	if journal.ReceiptOperation != "" {
+		journal.Version = 7
+	}
+	if err := guardNativePeerIntents(receipts, journal.ReceiptOperation, original, candidate); err != nil {
+		return nil, err
 	}
 	if !configNativeJournalOK(journal) || !configIPv6JournalOK(journal.IPv6) || !configIPv6PlanMatches(journal) {
 		return nil, errors.New("invalid IPv6 journal plan")
@@ -290,7 +303,7 @@ func readLockedConfigJournal(path string) (configJournal, error) {
 	var journal configJournal
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
-	if decoder.Decode(&journal) != nil || decoder.Decode(new(any)) != io.EOF || (journal.Version != 5 && journal.Version != 6) || !configNativeJournalOK(journal) || !configIPv6JournalOK(journal.IPv6) || !configIPv6PlanMatches(journal) || !configOperationOK(journal.Operation) || len(journal.Original) > 4<<20 || journal.OriginalHash != configHash(journal.Original) || len(journal.CandidateHash) != 64 || journal.Mode & ^uint32(0777) != 0 || info.Mode().Perm() != 0600 || journal.UID < 0 || journal.GID < 0 {
+	if decoder.Decode(&journal) != nil || decoder.Decode(new(any)) != io.EOF || (journal.Version != 5 && journal.Version != 6 && journal.Version != 7) || !configNativeJournalOK(journal) || !configIPv6JournalOK(journal.IPv6) || !configIPv6PlanMatches(journal) || !configOperationOK(journal.Operation) || len(journal.Original) > 4<<20 || journal.OriginalHash != configHash(journal.Original) || len(journal.CandidateHash) != 64 || journal.Mode & ^uint32(0777) != 0 || info.Mode().Perm() != 0600 || journal.UID < 0 || journal.GID < 0 {
 		return configJournal{}, errors.New("invalid configuration journal")
 	}
 	stat, ok := info.Sys().(*syscall.Stat_t)
@@ -300,6 +313,15 @@ func readLockedConfigJournal(path string) (configJournal, error) {
 	hash, err := hex.DecodeString(journal.CandidateHash)
 	if err != nil || hex.EncodeToString(hash) != journal.CandidateHash {
 		return configJournal{}, errors.New("invalid candidate digest")
+	}
+	if journal.ReceiptOperation != "" {
+		receipts, err := readConfigReceipts(path)
+		if err != nil {
+			return configJournal{}, err
+		}
+		if err := validatePeerJournal(journal, receipts); err != nil {
+			return configJournal{}, err
+		}
 	}
 	return journal, nil
 }
@@ -379,10 +401,13 @@ func configTransactionCommand(input io.Reader, output io.Writer, paths map[strin
 		if request.Operation != "" || len(request.Expected) != 0 || len(request.Candidate) != 0 || request.ServerIPv6 != "" {
 			return errors.New("unexpected capability fields")
 		}
-		return json.NewEncoder(output).Encode(map[string]any{"version": 1, "features": []string{"native-mutation-v1", "native-reconcile-v1", "native-rollback-guard-v1", "native-stage-restart-v1", "client-table-cas-v1", "native-receipt-v1", "client-table-migration-v1", "peer-metadata-intent-v1"}})
+		return json.NewEncoder(output).Encode(map[string]any{"version": 1, "features": []string{"native-mutation-v1", "native-reconcile-v1", "native-rollback-guard-v1", "native-stage-restart-v1", "client-table-cas-v1", "native-receipt-v1", "client-table-migration-v1", "peer-metadata-intent-v1", "peer-native-revocation-v1"}})
 	}
 	if request.Action == "prepare-receipt" || request.Action == "prepare-peer-metadata" || request.Action == "receipt-status" || request.Action == "check-revoked-peer" || request.Action == "ack-receipt" {
 		return configReceiptCommand(path, request, output)
+	}
+	if request.Action == "revoke-peer" {
+		return revokeNativePeer(path, request, output)
 	}
 	if request.Action == "replace-client-table" || request.Action == "check-client-table" || request.Action == "migrate-client-table" {
 		return clientTableTransaction(path, request, output)
@@ -597,6 +622,9 @@ func configTransactionCommand(input io.Reader, output io.Writer, paths map[strin
 
 func (transaction *configTransaction) saveJournal() error {
 	transaction.journal.Version = 6
+	if transaction.journal.ReceiptOperation != "" {
+		transaction.journal.Version = 7
+	}
 	raw, err := json.Marshal(transaction.journal)
 	if err != nil {
 		return err
@@ -605,10 +633,16 @@ func (transaction *configTransaction) saveJournal() error {
 }
 
 func configNativeJournalOK(journal configJournal) bool {
+	if journal.ReceiptOperation != "" && (journal.Version != 7 || !configOperationOK(journal.ReceiptOperation) || len(journal.NativeOriginal) == 0 || journal.IPv6 != nil) {
+		return false
+	}
+	if journal.Version == 7 && journal.ReceiptOperation == "" {
+		return false
+	}
 	if len(journal.NativeOriginal) == 0 {
 		return journal.NativeRollbackHash == "" && journal.NativeHash == "" && !journal.NativeApplied && !journal.NativeWriteIntent && journal.IPv6 == nil
 	}
-	if journal.NativeRollbackHash != "" && (journal.Version != 6 || !configOperationOK(journal.NativeRollbackHash)) {
+	if journal.NativeRollbackHash != "" && ((journal.Version != 6 && journal.Version != 7) || !configOperationOK(journal.NativeRollbackHash)) {
 		return false
 	}
 	if journal.NativeApplied && !journal.NativeWriteIntent {
@@ -937,9 +971,18 @@ func (transaction *configTransaction) completeReceipts(rollback bool) error {
 	if err != nil {
 		return err
 	}
+	if transaction.journal.ReceiptOperation != "" {
+		if err := validatePeerJournal(transaction.journal, receipts); err != nil {
+			return err
+		}
+	}
 	changed := false
 	for id, record := range receipts.Records {
-		if record.OriginalHash != transaction.journal.OriginalHash || record.CandidateHash != transaction.journal.CandidateHash {
+		if transaction.journal.ReceiptOperation != "" {
+			if id != transaction.journal.ReceiptOperation {
+				continue
+			}
+		} else if record.OriginalHash != transaction.journal.OriginalHash || record.CandidateHash != transaction.journal.CandidateHash {
 			continue
 		}
 		if rollback {
@@ -1009,24 +1052,10 @@ func configReceiptCommand(path string, request configTransactionRequest, output 
 		if err != nil {
 			return err
 		}
-		native, err := receiptNativeConfig(request.Expected)
-		if err != nil {
-			return err
-		}
-		canonical, err := canonicalNativeConfig(native)
-		if err != nil {
-			return err
-		}
-		var fields []string
-		for _, line := range strings.Split(canonical, "\n") {
-			if strings.HasPrefix(line, targetKey+"|") {
-				fields = append(fields, line)
-			}
-		}
-		if len(fields) == 0 {
+		peerHash, err = receiptPeerFingerprint(request.Expected, targetKey)
+		if err != nil || peerHash == "" {
 			return errors.New("missing expected peer")
 		}
-		peerHash = configHash([]byte(strings.Join(fields, "\n")))
 		if exists && (record.TargetKey != targetKey || record.TargetMetadataHash != metadataHash || record.TargetPeerHash != peerHash) {
 			return errConfigConflict
 		}
@@ -1139,6 +1168,250 @@ func configReceiptCommand(path string, request configTransactionRequest, output 
 	return json.NewEncoder(output).Encode(map[string]any{"version": 1, "operation": request.Operation, "state": record.State, "nativeOperation": record.NativeOperation, "originalHash": originalHash, "candidateHash": candidateHash, "targetKey": record.TargetKey, "targetMetadataHash": record.TargetMetadataHash})
 }
 
+// Fingerprints include all native peer settings except the learned endpoint,
+// which follows the existing authenticated-roaming comparison policy.
+func receiptPeerFingerprint(raw []byte, key string) (string, error) {
+	native, err := receiptNativeConfig(raw)
+	if err != nil {
+		return "", err
+	}
+	canonical, err := canonicalNativeConfig(native)
+	if err != nil {
+		return "", err
+	}
+	fields := []string{}
+	for _, line := range strings.Split(canonical, "\n") {
+		if strings.HasPrefix(line, key+"|") {
+			fields = append(fields, line)
+		}
+	}
+	if len(fields) == 0 {
+		return "", nil
+	}
+	return configHash([]byte(strings.Join(fields, "\n"))), nil
+}
+
+// Remove just the selected raw block, preserving every byte outside that block.
+func removeReceiptPeer(raw []byte, key string) ([]byte, error) {
+	if !keyOK(key) {
+		return nil, errors.New("invalid revoked peer")
+	}
+	if _, err := receiptNativeConfig(raw); err != nil {
+		return nil, err
+	}
+	start, end, offset := -1, len(raw), 0
+	blockStart := -1
+	for _, rawLine := range strings.SplitAfter(string(raw), "\n") {
+		line := strings.TrimSpace(strings.SplitN(rawLine, "#", 2)[0])
+		if strings.HasPrefix(line, "[") {
+			if start >= 0 && end == len(raw) {
+				end = offset
+				break
+			}
+			blockStart = -1
+			if line == "[Peer]" {
+				blockStart = offset
+			}
+		} else if blockStart >= 0 {
+			pair := strings.SplitN(line, "=", 2)
+			if len(pair) == 2 && strings.TrimSpace(pair[0]) == "PublicKey" && strings.TrimSpace(pair[1]) == key {
+				if start >= 0 {
+					return nil, errors.New("ambiguous revoked peer")
+				}
+				start = blockStart
+			}
+		}
+		offset += len(rawLine)
+	}
+	if start < 0 {
+		return nil, errors.New("missing revoked peer")
+	}
+	candidate := append([]byte(nil), raw[:start]...)
+	candidate = append(candidate, raw[end:]...)
+	removed, err := receiptRemovedPeer(raw, candidate)
+	if err != nil || removed != key {
+		return nil, errors.New("ambiguous revoked peer")
+	}
+	return candidate, nil
+}
+
+func guardNativePeerIntents(receipts configReceipts, owner string, original, candidate []byte) error {
+	if owner != "" {
+		record, exists := receipts.Records[owner]
+		if !exists || record.TargetKey == "" || record.State != "pending" {
+			return errConfigConflict
+		}
+	}
+	for id, record := range receipts.Records {
+		if record.TargetKey == "" {
+			continue
+		}
+		before, err := receiptPeerFingerprint(original, record.TargetKey)
+		if err != nil {
+			return err
+		}
+		after, err := receiptPeerFingerprint(candidate, record.TargetKey)
+		if err != nil {
+			return err
+		}
+		expected := record.TargetPeerHash
+		if record.State == "committed" {
+			expected = ""
+		}
+		if before != expected {
+			return errConfigConflict
+		}
+		if id == owner {
+			removed, err := removeReceiptPeer(original, record.TargetKey)
+			if err != nil || !bytes.Equal(removed, candidate) {
+				return errConfigConflict
+			}
+		} else if before != after {
+			return errors.New("native peer is reserved")
+		}
+	}
+	return nil
+}
+
+func validatePeerJournal(journal configJournal, receipts configReceipts) error {
+	record, exists := receipts.Records[journal.ReceiptOperation]
+	if !exists || record.TargetKey == "" {
+		return errors.New("missing native peer intent")
+	}
+	fingerprint, err := receiptPeerFingerprint(journal.Original, record.TargetKey)
+	if err != nil || fingerprint != record.TargetPeerHash {
+		return errConfigConflict
+	}
+	candidate, err := removeReceiptPeer(journal.Original, record.TargetKey)
+	if err != nil || configHash(candidate) != journal.CandidateHash {
+		return errConfigConflict
+	}
+	if record.State != "pending" && record.NativeOperation != journal.Operation {
+		return errConfigConflict
+	}
+	return nil
+}
+
+func revokeNativePeer(path string, request configTransactionRequest, output io.Writer) error {
+	if !configOperationOK(request.Operation) || len(request.Expected) != 0 || len(request.Candidate) != 0 || request.ServerIPv6 != "" {
+		return errors.New("invalid native peer request")
+	}
+	lock, err := lockConfig(path)
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+	receipts, err := readConfigReceipts(path)
+	if err != nil {
+		return err
+	}
+	record, exists := receipts.Records[request.Operation]
+	if !exists || record.TargetKey == "" || record.State == "rolled-back" {
+		return errors.New("unavailable native peer intent")
+	}
+	var transaction *configTransaction
+	if _, err := os.Lstat(path + ".amnezia-journal"); err == nil {
+		journal, err := readLockedConfigJournal(path)
+		if err != nil {
+			return err
+		}
+		if journal.ReceiptOperation != request.Operation {
+			return errors.New("another native operation is pending")
+		}
+		transaction = &configTransaction{path, lock, journal}
+		defer transaction.close()
+		// A crash may publish the journal before renaming the staged file.
+		// Replay only the exact owned removal, before any native-write intent.
+		current, info, err := readConfigFile(path, 4<<20)
+		if err != nil {
+			return err
+		}
+		if configHash(current) == journal.OriginalHash && !journal.NativeWriteIntent && journal.NativeRollbackHash == "" {
+			stat, ok := info.Sys().(*syscall.Stat_t)
+			if !ok || stat.Nlink != 1 || int(stat.Uid) != journal.UID || int(stat.Gid) != journal.GID || uint32(info.Mode().Perm()) != journal.Mode {
+				return errConfigConflict
+			}
+			native, err := captureNativeProtocol(request.Container)
+			if err != nil {
+				return err
+			}
+			if err := verifyNativeConfigBaseline(request.Container, path, native); err != nil {
+				return err
+			}
+			candidate, err := removeReceiptPeer(journal.Original, record.TargetKey)
+			if err != nil {
+				return err
+			}
+			if err := writeConfigAtomic(path, candidate, info.Mode(), journal.UID, journal.GID, false); err != nil {
+				return err
+			}
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	} else if record.State == "pending" {
+		current, _, err := readConfigFile(path, 4<<20)
+		if err != nil {
+			return err
+		}
+		candidate, err := removeReceiptPeer(current, record.TargetKey)
+		if err != nil {
+			return err
+		}
+		transaction, err = beginLockedConfigTransaction(path, current, candidate, func(journal *configJournal) error {
+			native, err := captureNativeProtocol(request.Container)
+			if err != nil {
+				return err
+			}
+			if err := verifyNativeConfigBaseline(request.Container, path, native); err != nil {
+				return err
+			}
+			journal.NativeOriginal, journal.NativeHash = native, configHash(native)
+			journal.ReceiptOperation = request.Operation
+			return nil
+		}, lock)
+		if err != nil {
+			return err
+		}
+		defer transaction.close()
+	}
+	if transaction != nil {
+		if !transaction.journal.NativeApplied {
+			if err := applyConfigTransactionRuntime(transaction, request.Container, false); err != nil {
+				return err
+			}
+		}
+		if err := verifyProtocolCommit(transaction, request.Container); err != nil {
+			return err
+		}
+		if err := transaction.finish(false); err != nil {
+			return err
+		}
+		// finish releases the lock; do not inspect mutable state afterwards.
+		return json.NewEncoder(output).Encode(map[string]any{"version": 1, "operation": request.Operation, "committed": true, "clientPublicKey": record.TargetKey})
+	}
+	// A terminal retry is read-only and never replays the historical full file.
+	current, info, err := readConfigFile(path, 4<<20)
+	if err != nil {
+		return err
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || stat.Nlink != 1 || int(stat.Uid) != os.Geteuid() || info.Mode().Perm()&0022 != 0 {
+		return errConfigConflict
+	}
+	fingerprint, err := receiptPeerFingerprint(current, record.TargetKey)
+	if err != nil || fingerprint != "" {
+		return errConfigConflict
+	}
+	native, err := captureNativeProtocol(request.Container)
+	if err != nil {
+		return err
+	}
+	if err := verifyNativeConfigBaseline(request.Container, path, native); err != nil {
+		return err
+	}
+	return json.NewEncoder(output).Encode(map[string]any{"version": 1, "operation": request.Operation, "committed": true, "clientPublicKey": record.TargetKey})
+}
+
 // receiptNativeConfig projects wg-quick configuration into native settings.
 // Repeated quick hooks are valid and must not be parsed as duplicate native
 // interface fields. Never execute hooks to inspect a revocation intent.
@@ -1149,6 +1422,7 @@ func receiptNativeConfig(raw []byte) ([]byte, error) {
 	section := ""
 	lines := []string{}
 	peerFields := map[string]bool{}
+	peerKeys := map[string]bool{}
 	peer := false
 	finishPeer := func() error {
 		if peer && !peerFields["PublicKey"] {
@@ -1186,6 +1460,13 @@ func receiptNativeConfig(raw []byte) ([]byte, error) {
 			if peer {
 				if key == "PublicKey" && peerFields[key] {
 					return nil, errors.New("duplicate receipt peer setting")
+				}
+				if key == "PublicKey" {
+					value := strings.TrimSpace(pair[1])
+					if peerKeys[value] {
+						return nil, errors.New("duplicate receipt peer identity")
+					}
+					peerKeys[value] = true
 				}
 				peerFields[key] = true
 			}

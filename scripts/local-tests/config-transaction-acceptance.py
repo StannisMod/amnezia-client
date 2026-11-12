@@ -43,7 +43,7 @@ for container, binary, interface, path in (
     candidate = original + b'\n# private configuration transaction regression\n'
     peers = sorted(run('docker', 'exec', container, binary, 'show', interface, 'peers').stdout.splitlines())
 
-    def invoke(action, operation=None, expected=None, candidate=None, server_ipv6=None, ok=True, startup=False, no_writer=False, after_writer=False, entry=None):
+    def invoke(action, operation=None, expected=None, candidate=None, server_ipv6=None, ok=True, startup=False, no_writer=False, after_writer=False, entry=None, lost_reply=False):
         request = dict(action=action, container=container)
         if operation is not None:
             request['operation'] = operation
@@ -64,6 +64,9 @@ for container, binary, interface, path in (
                      data=json.dumps(request).encode(), ok=ok)
         if not ok:
             assert result.returncode and not result.stdout, 'invalid request was accepted'
+            return None
+        if lost_reply:
+            assert result.returncode == 0 and not result.stdout, 'reply was not lost after success'
             return None
         return json.loads(result.stdout)
 
@@ -377,15 +380,45 @@ for container, binary, interface, path in (
     invoke('replace-client-table', expected=reserved_table, candidate=changed_table)
     removed_table = json.dumps([changed_other]).encode()
     invoke('replace-client-table', operation=intent_id, expected=changed_table, candidate=removed_table, ok=False)
-    removal = invoke('stage-live', expected=original, candidate=removed_config)
-    invoke('apply-commit', operation=removal['operation'])
+    # Change a different peer after preparing the old full-file intent.
+    assert original.count(b'PersistentKeepalive = 25') == 1
+    later_original = original.replace(b'PersistentKeepalive = 25', b'PersistentKeepalive = 29')
+    later_removed = removed_config.replace(b'PersistentKeepalive = 25', b'PersistentKeepalive = 29')
+    independent = invoke('stage-live', expected=original, candidate=later_original)
+    invoke('apply-commit', operation=independent['operation'])
+    invoke('stage-live', expected=later_original, candidate=later_removed, ok=False)
+    invoke('revoke-peer', operation='e' * 64, ok=False)
+    # Fail the actual syncconf: keep an owned v7 journal and recover that exact
+    # rebased removal, rather than replaying the old original/removed pair.
+    invoke('revoke-peer', operation=intent_id, ok=False, no_writer=True)
+    pending_journal = json.loads(run('docker', 'exec', container, 'cat', path + '.amnezia-journal').stdout)
+    assert pending_journal['version'] == 7 and pending_journal['receiptOperation'] == intent_id
+    assert base64.b64decode(pending_journal['original']) == later_original
+    assert pending_journal['candidateHash'] == hashlib.sha256(later_removed).hexdigest()
+    assert pending_journal['nativeWriteIntent'] and not pending_journal['nativeApplied']
+    assert run('docker', 'exec', container, 'cat', path).stdout == later_removed
+    run('docker', 'exec', container, 'test', '-e', '/opt/amnezia/forbidden-recovery-writer')
+    run('docker', 'exec', container, 'rm', '/opt/amnezia/forbidden-recovery-writer')
+    run('docker', 'exec', container, 'touch', '/opt/amnezia/scoped-revoke-drop-reply')
+    invoke('revoke-peer', operation=intent_id, lost_reply=True)
+    assert invoke('receipt-status', operation=intent_id, expected=original, candidate=removed_config)['state'] == 'committed'
+    assert invoke('revoke-peer', operation=intent_id, no_writer=True)['committed']
+    assert run('docker', 'exec', container, 'cat', path).stdout == later_removed
+    invoke('check-live', expected=later_removed)
     assert invoke('check-revoked-peer', operation=intent_id, expected=original, candidate=removed_config, no_writer=True)['revoked']
-    reintroduced = invoke('stage-live', expected=removed_config, candidate=original)
-    invoke('apply-commit', operation=reintroduced['operation'])
+    invoke('stage-live', expected=later_removed, candidate=later_original, ok=False)
+    # A non-cooperating fixture edit must also be detected by terminal retry.
+    run('docker', 'exec', '-i', container, 'sh', '-ec', 'cat > ' + path, data=later_original)
+    stripped_reintroduced = run('docker', 'exec', container, binary + '-quick', 'strip', path).stdout
+    run('docker', 'exec', '-i', container, binary, 'syncconf', interface, '/dev/stdin', data=stripped_reintroduced)
+    invoke('revoke-peer', operation=intent_id, ok=False, no_writer=True)
     invoke('replace-client-table', operation=intent_id, expected=changed_table, candidate=removed_table, ok=False, no_writer=True)
     assert run('docker', 'exec', container, 'cat', table_path).stdout == changed_table
-    removed_again = invoke('stage-live', expected=original, candidate=removed_config)
-    invoke('apply-commit', operation=removed_again['operation'])
+    run('docker', 'exec', '-i', container, 'sh', '-ec', 'cat > ' + path, data=later_removed)
+    stripped_removed = run('docker', 'exec', container, binary + '-quick', 'strip', path).stdout
+    run('docker', 'exec', '-i', container, binary, 'syncconf', interface, '/dev/stdin', data=stripped_removed)
+    invoke('check-live', expected=later_removed)
+    assert run('docker', 'exec', container, 'test', '-e', '/opt/amnezia/forbidden-recovery-writer', ok=False).returncode
     # Independently changed target metadata is preserved even from its owner.
     write_fixture_table(renamed)
     invoke('replace-client-table', operation=intent_id, expected=renamed, candidate=removed_table, ok=False, no_writer=True)
@@ -397,7 +430,7 @@ for container, binary, interface, path in (
     invoke('replace-client-table', operation=intent_id, expected=removed_table, candidate=changed_table, ok=False)
     assert invoke('ack-receipt', operation=intent_id, expected=original, candidate=removed_config)['acknowledged']
     invoke('replace-client-table', expected=removed_table, candidate=changed_table)
-    restoration = invoke('stage-live', expected=removed_config, candidate=original)
+    restoration = invoke('stage-live', expected=later_removed, candidate=original)
     invoke('apply-commit', operation=restoration['operation'])
     write_fixture_table(old_table)
     assert run('docker', 'exec', container, 'cat', path).stdout == original
@@ -407,6 +440,7 @@ for container, binary, interface, path in (
     invoke('check-live', expected=baseline_original)
     original, removed_config = baseline_original, baseline_removed
     assert run('docker', 'exec', container, 'cat', path).stdout == original
+    print(f'PASS: {container} scoped native revoke rebases later peer edits, resumes v7 intent and retries lost success without writer')
     print(f'PASS: {container} repeated quick hooks accepted without executing hooks; exact baseline restored')
     print(f'PASS: {container} peer metadata intent preserves other clients and requires committed owner removal')
     print(f'PASS: {container} private journal, operation binding, rollback, commit, replay rejection, native apply and failure rollback; live peers preserved')

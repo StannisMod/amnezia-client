@@ -1317,3 +1317,136 @@ func TestReceiptQuickHooksDoNotChangePeerIdentity(t *testing.T) {
 		}
 	}
 }
+
+func TestScopedPeerRemovalPreservesIndependentBytes(t *testing.T) {
+	header := "# keep header\r\n[Interface]\r\nPrivateKey = " + testKey('P') + "\r\nPostUp = echo first\r\nPostUp = echo second\r\n"
+	a := "[Peer] # remove owned block\r\nPublicKey = " + testKey('A') + " # identity\r\nAllowedIPs = 10.8.0.2/32\r\n# owned trailing comment\r\n"
+	b := "[Peer]\r\n# untouched bytes\r\nPublicKey = " + testKey('B') + "\r\nPersistentKeepalive = 17\r\n"
+	for _, parts := range [][2]string{{a, b}, {b, a}} {
+		original := []byte(header + parts[0] + parts[1])
+		candidate, err := removeReceiptPeer(original, testKey('A'))
+		if err != nil || !bytes.Equal(candidate, []byte(header+b)) {
+			t.Fatal("independent bytes changed", err)
+		}
+	}
+	for _, raw := range []string{header + b, header + a + a, header + "[Peer]\nAllowedIPs = 10.8.0.2/32\n"} {
+		if _, err := removeReceiptPeer([]byte(raw), testKey('A')); err == nil {
+			t.Fatal("ambiguous or missing target accepted")
+		}
+	}
+}
+
+func TestScopedNativeIntentAllowsOnlyOwnedRemoval(t *testing.T) {
+	header := "[Interface]\nPrivateKey = " + testKey('P') + "\n"
+	a := "[Peer]\nPublicKey = " + testKey('A') + "\nAllowedIPs = 10.8.0.2/32\n"
+	b := "[Peer]\nPublicKey = " + testKey('B') + "\nAllowedIPs = 10.8.0.3/32\n"
+	original := []byte(header + a + b)
+	unrelated := []byte(header + a + b + "PersistentKeepalive = 17\n")
+	removed := []byte(header + b + "PersistentKeepalive = 17\n")
+	id := strings.Repeat("a", 64)
+	fingerprint, err := receiptPeerFingerprint(original, testKey('A'))
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := configReceipt{TargetKey: testKey('A'), TargetPeerHash: fingerprint, State: "pending"}
+	receipts := configReceipts{Records: map[string]configReceipt{id: record}}
+	if err := guardNativePeerIntents(receipts, "", original, unrelated); err != nil {
+		t.Fatal("unrelated change blocked", err)
+	}
+	if err := guardNativePeerIntents(receipts, id, unrelated, removed); err != nil {
+		t.Fatal("rebased owned removal blocked", err)
+	}
+	for _, attempt := range []struct {
+		owner         string
+		before, after []byte
+	}{
+		{"", unrelated, removed}, {strings.Repeat("b", 64), unrelated, removed},
+		{id, unrelated, []byte(header + b)}, {"", original, []byte(strings.Replace(string(original), "10.8.0.2/32", "10.8.0.9/32", 1))},
+	} {
+		if err := guardNativePeerIntents(receipts, attempt.owner, attempt.before, attempt.after); err == nil {
+			t.Fatal("foreign change accepted")
+		}
+	}
+	journal := configJournal{Version: 7, ReceiptOperation: id, Operation: strings.Repeat("c", 64), Original: unrelated, CandidateHash: configHash(removed), NativeOriginal: original, NativeHash: configHash(original)}
+	if !configNativeJournalOK(journal) || validatePeerJournal(journal, receipts) != nil {
+		t.Fatal("bound rebased journal refused")
+	}
+	journal.CandidateHash = configHash([]byte(header + b))
+	if validatePeerJournal(journal, receipts) == nil {
+		t.Fatal("journal discards later peer change")
+	}
+	journal.Version = 6
+	if configNativeJournalOK(journal) {
+		t.Fatal("binding accepted in old format")
+	}
+	record.State, record.NativeOperation = "committed", strings.Repeat("c", 64)
+	receipts.Records[id] = record
+	if err := guardNativePeerIntents(receipts, "", removed, []byte(header+b+"PersistentKeepalive = 23\n")); err != nil {
+		t.Fatal("later independent edit blocked", err)
+	}
+	if err := guardNativePeerIntents(receipts, "", removed, unrelated); err == nil {
+		t.Fatal("committed target resurrected")
+	}
+}
+
+func TestOwnedHelperRestorePreservesScopedNativeJournal(t *testing.T) {
+	path, _, _ := transactionFixture(t)
+	header := "[Interface]\nPrivateKey = " + testKey('P') + "\n"
+	a := "[Peer]\nPublicKey = " + testKey('A') + "\nAllowedIPs = 10.8.0.2/32\n"
+	b := "[Peer]\nPublicKey = " + testKey('B') + "\nAllowedIPs = 10.8.0.3/32\nPersistentKeepalive = 17\n"
+	original, candidate := []byte(header+a+b), []byte(header+b)
+	if err := os.WriteFile(path, original, 0640); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(filepath.Dir(path), "helper")
+	startup := filepath.Join(filepath.Dir(path), "start.sh")
+	if err := installOwnedConfigHelper(path, startup, target, []byte("first helper")); err != nil {
+		t.Fatal(err)
+	}
+	id := strings.Repeat("a", 64)
+	fingerprint, err := receiptPeerFingerprint(original, testKey('A'))
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipts := configReceipts{Version: 2, Records: map[string]configReceipt{id: {State: "pending", OriginalHash: configHash(original), CandidateHash: configHash(candidate), TargetKey: testKey('A'), TargetMetadataHash: strings.Repeat("b", 64), TargetPeerHash: fingerprint}}}
+	if err := writeConfigReceipts(path, receipts); err != nil {
+		t.Fatal(err)
+	}
+	lock, err := lockConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transaction, err := beginLockedConfigTransaction(path, original, candidate, func(journal *configJournal) error {
+		journal.ReceiptOperation = id
+		journal.NativeOriginal, journal.NativeHash = original, configHash(original)
+		return nil
+	}, lock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transaction.close()
+	journalBefore, err := os.ReadFile(path + ".amnezia-journal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(target); err != nil {
+		t.Fatal(err)
+	}
+	if err := installOwnedConfigHelper(path, startup, target, []byte("replacement helper")); err != nil {
+		t.Fatal(err)
+	}
+	assertConfig(t, path+".amnezia-journal", journalBefore)
+	assertConfig(t, path, candidate)
+	resumed, err := resumeConfigTransaction(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resumed.close()
+	if resumed.journal.Version != 7 || resumed.journal.ReceiptOperation != id {
+		t.Fatal("scoped binding lost")
+	}
+	if err := resumed.saveJournal(); err != nil {
+		t.Fatal(err)
+	}
+	assertConfig(t, path+".amnezia-journal", journalBefore)
+}

@@ -40,6 +40,9 @@ if result.returncode == 0 and request.get('action') == 'migrate-client-table':
     discard = Path('/opt/amnezia/protocol-loss-client-table-migration')
 if result.returncode == 0 and request.get('action') == 'ack-receipt':
     discard = Path('/opt/amnezia/protocol-loss-receipt-ack')
+if result.returncode == 0 and request.get('action') == 'revoke-peer' and Path('/opt/amnezia/scoped-revoke-drop-reply').exists():
+    Path('/opt/amnezia/scoped-revoke-drop-reply').unlink()
+    sys.exit(0)
 if discard is not None and not discard.exists():
     discard.write_text('1')
 else:
