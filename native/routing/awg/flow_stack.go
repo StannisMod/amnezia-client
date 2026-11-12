@@ -50,6 +50,8 @@ type FlowStack struct {
 	maximumMTU        int
 	events            chan tun.Event
 	packets           chan *buffer.View
+	outputWake        chan struct{}
+	outputDone        chan struct{}
 	done              chan struct{}
 	state             sync.Mutex
 	closed            bool
@@ -88,9 +90,11 @@ func NewFlowTUN(addresses []netip.Addr, mtu int) (tun.Device, *FlowStack, error)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &FlowStack{tcpPathWake: make(chan struct{}, 1), ctx: ctx, cancel: cancel, mtu: mtu, events: make(chan tun.Event, 1), packets: make(chan *buffer.View), done: make(chan struct{}),
+		outputWake: make(chan struct{}, 1), outputDone: make(chan struct{}),
 		endpoint: channel.New(1024, uint32(mtu), ""), stack: stack.New(stack.Options{
 			NetworkProtocols:   []stack.NetworkProtocolFactory{ipv4.NewProtocol, ipv6.NewProtocol},
 			TransportProtocols: []stack.TransportProtocolFactory{tcp.NewProtocol, udp.NewProtocol, icmp.NewProtocol4, icmp.NewProtocol6}, HandleLocal: true})}
+	go s.runOutput()
 	failed := true
 	defer func() {
 		if failed {
@@ -242,22 +246,36 @@ func (s *FlowStack) Write(packets [][]byte, offset int) (int, error) {
 	return len(packets), nil
 }
 func (s *FlowStack) WriteNotify() {
-	if !s.begin() {
-		return
+	// The callback runs on transport send paths while endpoint locks may be
+	// held. Only wake the reader; never wait for the encrypted device here.
+	select {
+	case s.outputWake <- struct{}{}:
+	case <-s.done:
+	default:
 	}
-	defer s.active.Done()
+}
+
+func (s *FlowStack) runOutput() {
+	defer close(s.outputDone)
 	for {
-		pkt := s.endpoint.Read()
-		if pkt == nil {
-			return
-		}
-		view := pkt.ToView()
-		pkt.DecRef()
 		select {
-		case s.packets <- view:
 		case <-s.done:
-			view.Release()
 			return
+		case <-s.outputWake:
+		}
+		for {
+			pkt := s.endpoint.Read()
+			if pkt == nil {
+				break
+			}
+			view := pkt.ToView()
+			pkt.DecRef()
+			select {
+			case s.packets <- view:
+			case <-s.done:
+				view.Release()
+				return
+			}
 		}
 	}
 }
@@ -272,6 +290,7 @@ func (s *FlowStack) Close() error {
 		if s.notify != nil {
 			s.endpoint.RemoveNotify(s.notify)
 		}
+		<-s.outputDone
 		s.active.Wait()
 		s.endpoint.Close()
 		s.stack.RemoveNIC(1)
