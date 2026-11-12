@@ -194,7 +194,10 @@ func TestTCPWorkerStopsDuringEncryptedBlackhole(t *testing.T) {
 func TestEncryptedTCPRecoveryAggregateBudget(t *testing.T) {
 	testEncryptedTCPRecovery(t, true, false, true)
 }
-func testEncryptedTCPRecovery(t *testing.T, automatic, stopDuringLoss, aggregate bool) {
+func TestEncryptedTCPRecoveryAggregateBudgetWithUnevenRTO(t *testing.T) {
+	testEncryptedTCPRecovery(t, true, false, true, true)
+}
+func testEncryptedTCPRecovery(t *testing.T, automatic, stopDuringLoss, aggregate bool, unevenRTO ...bool) {
 	for _, standard := range []bool{false, true} {
 		for _, innerV6 := range []bool{false, true} {
 			t.Run(fmt.Sprintf("standard=%t/innerIPv6=%t", standard, innerV6), func(t *testing.T) {
@@ -297,7 +300,7 @@ func testEncryptedTCPRecovery(t *testing.T, automatic, stopDuringLoss, aggregate
 				}
 				exchange("initial")
 				if aggregate {
-					testEncryptedAggregateRecovery(t, ctx, client, first, stream, serverIP, &accepts)
+					testEncryptedAggregateRecovery(t, ctx, client, first, stream, serverIP, &accepts, unevenRTO...)
 					return
 				}
 				// This challenge traverses both real devices and the UDP relay,
