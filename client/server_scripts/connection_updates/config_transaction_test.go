@@ -364,3 +364,61 @@ func TestLiveStateCheckRefusesPendingAndMismatchedFile(t *testing.T) {
 		t.Fatal("capability query accepted unrelated input")
 	}
 }
+
+func TestConfigHelperAtomicInstallation(t *testing.T) {
+	for _, blocked := range []string{"", "config", "startup", "symlink", "foreign", "busy"} {
+		t.Run(blocked, func(t *testing.T) {
+			dir := t.TempDir()
+			target := filepath.Join(dir, "config-helper")
+			config := filepath.Join(dir, "wg0.conf")
+			startup := filepath.Join(dir, "start.sh")
+			old, next := []byte("verified old executable"), []byte("verified candidate executable")
+			if err := os.WriteFile(target, old, 0700); err != nil {
+				t.Fatal(err)
+			}
+			switch blocked {
+			case "config":
+				os.WriteFile(config+".amnezia-journal", []byte("pending"), 0600)
+			case "startup":
+				os.WriteFile(startup+".amnezia-journal", []byte("pending"), 0600)
+			case "symlink":
+				os.Remove(target)
+				os.Symlink(config, target)
+			case "foreign":
+				os.WriteFile(target, []byte("foreign executable"), 0700)
+			case "busy":
+				lock, err := lockConfig(config)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer lock.Close()
+			}
+			err := installConfigHelper(config, startup, target, next, configHash(old))
+			if blocked != "" {
+				if err == nil {
+					t.Fatal("unsafe replacement accepted")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertConfig(t, target, next)
+			if err := installConfigHelper(config, startup, target, next, configHash(old)); err != nil {
+				t.Fatalf("lost-response retry: %v", err)
+			}
+			if err := installConfigHelper(config, startup, target, old, configHash(old)); err == nil {
+				t.Fatal("stale expected hash accepted")
+			}
+		})
+	}
+	dir := t.TempDir()
+	target := filepath.Join(dir, "helper")
+	if err := installConfigHelper(filepath.Join(dir, "wg0.conf"), filepath.Join(dir, "start.sh"), target, []byte("candidate"), ""); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(target)
+	if err != nil || info.Mode().Perm() != 0700 {
+		t.Fatal("helper permissions")
+	}
+}

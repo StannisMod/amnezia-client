@@ -509,3 +509,53 @@ func configNativeJournalOK(journal configJournal) bool {
 	}
 	return len(journal.NativeOriginal) <= 4<<20 && utf8.Valid(journal.NativeOriginal) && journal.NativeHash == configHash(journal.NativeOriginal)
 }
+
+// installConfigHelper is called by a verified candidate executable, not by the
+// currently installed helper. expectedHash must come from the owned deployment
+// record; observing an arbitrary existing file does not establish ownership.
+func installConfigHelper(configPath, startupPath, target string, candidate []byte, expectedHash string) error {
+	if len(candidate) == 0 || len(candidate) > 64<<20 || (expectedHash != "" && !configOperationOK(expectedHash)) {
+		return errors.New("invalid helper installation")
+	}
+	locks := []*os.File{}
+	defer func() {
+		for i := len(locks) - 1; i >= 0; i-- {
+			locks[i].Close()
+		}
+	}()
+	for _, path := range []string{target, configPath, startupPath} {
+		lock, err := lockConfig(path)
+		if err != nil {
+			return err
+		}
+		locks = append(locks, lock)
+	}
+	for _, path := range []string{configPath, startupPath} {
+		if _, err := os.Lstat(path + ".amnezia-journal"); !errors.Is(err, os.ErrNotExist) {
+			return errors.New("pending transaction prevents helper replacement")
+		}
+	}
+	current, info, err := readConfigFile(target, 64<<20)
+	if errors.Is(err, os.ErrNotExist) {
+		if expectedHash != "" {
+			return errConfigConflict
+		}
+		// Exclusive publication preserves a target created by an independent writer.
+		return writeConfigAtomic(target, candidate, 0700, os.Geteuid(), os.Getegid(), true)
+	}
+	if err != nil {
+		return err
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || stat.Nlink != 1 || int(stat.Uid) != os.Geteuid() || info.Mode().Perm()&0022 != 0 {
+		return errors.New("unsafe existing helper")
+	}
+	// An exact retry after a lost success response is harmless. No write occurs.
+	if bytes.Equal(current, candidate) && info.Mode().Perm() == 0700 {
+		return nil
+	}
+	if expectedHash == "" || configHash(current) != expectedHash {
+		return errConfigConflict
+	}
+	return writeConfigAtomic(target, candidate, 0700, int(stat.Uid), int(stat.Gid), false)
+}

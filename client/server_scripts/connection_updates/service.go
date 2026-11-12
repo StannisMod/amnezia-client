@@ -648,6 +648,38 @@ func run() error {
 	if len(os.Args) > 1 {
 		command = os.Args[1]
 	}
+	if command == "install-config-helper" {
+		raw, err := io.ReadAll(io.LimitReader(os.Stdin, 4097))
+		if err != nil || len(raw) > 4096 {
+			return errors.New("invalid helper request")
+		}
+		var request struct {
+			Container    string `json:"container"`
+			ExpectedHash string `json:"expectedHash"`
+		}
+		decoder := json.NewDecoder(strings.NewReader(string(raw)))
+		decoder.DisallowUnknownFields()
+		if decoder.Decode(&request) != nil || decoder.Decode(new(any)) != io.EOF {
+			return errors.New("invalid helper request")
+		}
+		paths := map[string]string{"amnezia-wireguard": "/opt/amnezia/wireguard/wg0.conf", "amnezia-awg2": "/opt/amnezia/awg/awg0.conf"}
+		path, ok := paths[request.Container]
+		if !ok {
+			return errors.New("unsupported helper container")
+		}
+		executable, err := os.Executable()
+		if err != nil {
+			return err
+		}
+		candidate, _, err := readConfigFile(executable, 64<<20)
+		if err != nil {
+			return err
+		}
+		if err := installConfigHelper(path, "/opt/amnezia/start.sh", "/opt/amnezia/config-helper", candidate, request.ExpectedHash); err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(map[string]any{"version": 1, "installedHash": configHash(candidate)})
+	}
 	if command == "startup-file-transaction" {
 		return startupTransactionCommand(os.Stdin, os.Stdout, map[string]string{
 			"amnezia-wireguard": "/opt/amnezia/start.sh",
