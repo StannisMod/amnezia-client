@@ -100,18 +100,8 @@ func startupCandidateOK(original, candidate []byte) bool {
 	if len(candidate) < forwardingPrefixSize || configHash(candidate[:forwardingPrefixSize]) != forwardingPrefixHash {
 		return false
 	}
-	if len(original) >= forwardingPrefixSize && configHash(original[:forwardingPrefixSize]) == forwardingPrefixHash {
-		return bytes.Equal(original, candidate)
-	}
-	newline := bytes.IndexByte(original, '\n')
-	if newline < 0 {
-		return false
-	}
-	header := string(original[:newline])
-	if header != "#!/bin/bash" {
-		return false
-	}
-	return bytes.Equal(candidate[forwardingPrefixSize:], original[newline+1:])
+	body, ok := startupBody(original)
+	return ok && bytes.Equal(candidate[forwardingPrefixSize:], body)
 }
 
 func startupTransactionCommand(input io.Reader, output io.Writer, paths map[string]string) error {
@@ -143,14 +133,9 @@ func startupBootCandidateOK(original, candidate []byte, container string) bool {
 	if len(candidate) < forwardingPrefixSize || configHash(candidate[:forwardingPrefixSize]) != forwardingPrefixHash {
 		return false
 	}
-	var body []byte
-	if len(original) >= forwardingPrefixSize && configHash(original[:forwardingPrefixSize]) == forwardingPrefixHash {
-		body = original[forwardingPrefixSize:]
-	} else {
-		if !bytes.HasPrefix(original, []byte("#!/bin/bash\n")) {
-			return false
-		}
-		body = original[len("#!/bin/bash\n"):]
+	body, ok := startupBody(original)
+	if !ok {
+		return false
 	}
 	var iface, anchor string
 	var hashes []string
@@ -212,4 +197,45 @@ func canonicalStartupPrelude(raw []byte) []byte {
 
 func startupBootCall(iface string) string {
 	return "amnezia_enable_ipv6 " + iface + " || echo 'AMNEZIA_IPV6_FORWARDING_STATUS=boot-preparation-failed' >&2"
+}
+
+// Exact fingerprints of the shared blocks emitted by released installer paths.
+// Strip recognized old definitions instead of leaving them to shadow new ones.
+const currentForwardingBodySize = 2542
+const currentForwardingBodyHash = "e43c1908792f787467bb8d05ae4001a19e70a0e046b918e78a8915a3ead6826f"
+const legacyForwardingBodySize = 1923
+const legacyForwardingBodyHash = "91b5c7b6840daa721a8337a3102b1fed0e66f59498d66df3d2a0e53bfa3c7f5e"
+
+func startupBody(original []byte) ([]byte, bool) {
+	header := []byte("#!/bin/bash\n")
+	if !bytes.HasPrefix(original, header) {
+		return nil, false
+	}
+	body := original[len(header):]
+	for count := 0; count < 4; count++ {
+		size := 0
+		if len(body) >= currentForwardingBodySize && configHash(body[:currentForwardingBodySize]) == currentForwardingBodyHash {
+			size = currentForwardingBodySize
+		}
+		if len(body) >= legacyForwardingBodySize && configHash(body[:legacyForwardingBodySize]) == legacyForwardingBodyHash {
+			size = legacyForwardingBodySize
+		}
+		if size == 0 {
+			break
+		}
+		body = body[size:]
+	}
+	for _, line := range strings.Split(string(body), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "#") {
+			continue
+		}
+		if strings.Contains(line, "amnezia_ipv6_rule") {
+			return nil, false
+		}
+		if strings.Contains(line, "amnezia_enable_ipv6") && line != startupBootCall("wg0") && line != startupBootCall("awg0") && line != "amnezia_enable_ipv6 wg0 || exit 1" && line != "amnezia_enable_ipv6 awg0 || exit 1" {
+			return nil, false
+		}
+	}
+	return body, true
 }

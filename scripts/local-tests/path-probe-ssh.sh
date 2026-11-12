@@ -100,6 +100,7 @@ timeout 90 "$@" realAdminNewIPv6ProfileExport
 docker exec "$fixture" docker cp amnezia-connection-updates:/updates /tmp/config-helper
 for kind in wireguard awg2; do
     docker exec "$fixture" docker cp /tmp/config-helper "amnezia-$kind:/opt/amnezia/config-helper"
+    docker exec -i "$fixture" docker exec -i "amnezia-$kind" sh -ec 'umask 077; cat > /opt/amnezia/fixture-forwarding-legacy.sh' < "$repo/client/server_scripts/connection_updates/testdata/ipv6-forwarding-legacy.sh"
     startup_kind=wireguard
     if [[ "$kind" == awg2 ]]; then startup_kind=awg; fi
     docker exec -i "$fixture" docker exec -i "amnezia-$kind" sh -ec 'umask 077; cat > /opt/amnezia/fixture-startup-source.sh' < "$repo/client/server_scripts/$startup_kind/start.sh"

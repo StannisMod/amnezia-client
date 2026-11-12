@@ -237,3 +237,13 @@ local IPv6 origin; that origin must observe the server's bridge address. No tunn
 or daemon command is replaced in this test. It verifies new connections after a
 real restart, separately from the existing tests of retained connections during
 live reconfiguration. Public Internet IPv6 reachability is not tested.
+
+Startup migration recognizes the exact historical shared forwarding resource
+from commit `348218b` (kept unchanged in the server helper's testdata) as well as
+the current resource. It removes recognized definitions before adding the current
+block, preserving the original startup body. This also repairs files where a
+previous maintenance update prepended the current block before the historical
+one. Unknown function definitions are refused rather than left to shadow the new
+functions. The ordinary signed-service suite checks fingerprints, mixed prefixes,
+body preservation and combined boot-hook repair. The required SSH regression
+performs real stage/rollback/commit of the historical file for WG and AWG.

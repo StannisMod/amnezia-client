@@ -292,3 +292,60 @@ func TestBootForwardingRunsAfterTunnelUp(t *testing.T) {
 		t.Fatal("forwarding did not follow tunnel up", err)
 	}
 }
+
+func TestHistoricalStartupPrefixReplacement(t *testing.T) {
+	legacy, err := os.ReadFile("testdata/ipv6-forwarding-legacy.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy = append(legacy, '\n')
+	if len(legacy) != legacyForwardingBodySize || configHash(legacy) != legacyForwardingBodyHash {
+		t.Fatal("historical fixture fingerprint drift")
+	}
+	current, err := os.ReadFile("../enable_ipv6_forwarding.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	current = append(current, '\n')
+	if len(current) != currentForwardingBodySize || configHash(current) != currentForwardingBodyHash {
+		t.Fatal("current block fingerprint drift")
+	}
+	header := []byte("#!/bin/bash\n")
+	body := []byte("# original custom body preserved\nexit 23\n")
+	desired := append(append(bytes.Clone(header), current...), body...)
+	original := append(append(bytes.Clone(header), legacy...), body...)
+	if !startupCandidateOK(original, desired) {
+		t.Fatal("historical definitions cannot be replaced")
+	}
+	nested := append(append(append(bytes.Clone(header), current...), legacy...), body...)
+	if !startupCandidateOK(nested, desired) {
+		t.Fatal("previous prepend upgrade leaves old definitions shadowing current ones")
+	}
+	for _, definition := range []string{"amnezia_enable_ipv6 () { :; }\n", "function amnezia_enable_ipv6 { :; }\n"} {
+		unknownBody := append([]byte(definition), body...)
+		unknown := append(bytes.Clone(header), unknownBody...)
+		proposed := append(append(bytes.Clone(header), current...), unknownBody...)
+		if startupCandidateOK(unknown, proposed) {
+			t.Fatal("unknown function definition accepted")
+		}
+	}
+	modified := bytes.Clone(original)
+	modified[len(header)+1] ^= 1
+	if startupCandidateOK(modified, desired) {
+		t.Fatal("unknown historical definition changed implicitly")
+	}
+	if startupCandidateOK(original, append(bytes.Clone(desired), []byte("changed body\n")...)) {
+		t.Fatal("historical upgrade rewrote body")
+	}
+	template, err := os.ReadFile("../wireguard/start.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	deployedBody := template[len(header):]
+	desired = append(append(bytes.Clone(header), current...), deployedBody...)
+	oldBody := bytes.Replace(deployedBody, []byte("\n"+startupBootCall("wg0")+"\n"), []byte("\namnezia_enable_ipv6 wg0 || exit 1\n"), 1)
+	original = append(append(bytes.Clone(header), legacy...), oldBody...)
+	if !startupBootCandidateOK(original, desired, "amnezia-wireguard") {
+		t.Fatal("historical prefix and fatal boot hook cannot be upgraded together")
+	}
+}

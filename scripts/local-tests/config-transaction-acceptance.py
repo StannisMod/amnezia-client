@@ -227,6 +227,15 @@ for container, binary, interface, path in (
     assert run('docker', 'exec', container, 'cat', '/opt/amnezia/start.sh').stdout == startup
     assert run('docker', 'exec', container, 'stat', '-c', '%a', '/opt/amnezia/start.sh').stdout.strip() == b'700'
     assert run('docker', 'exec', container, 'test', '-e', '/opt/amnezia/forbidden-startup-body', ok=False).returncode != 0
+    legacy_block = run('docker', 'exec', container, 'cat', '/opt/amnezia/fixture-forwarding-legacy.sh').stdout + b'\n'
+    historical_startup = b'#!/bin/bash\n' + legacy_block + old_startup.split(b'\n', 1)[1]
+    run('docker', 'exec', '-i', container, 'sh', '-ec', 'cat > /opt/amnezia/start.sh', data=historical_startup)
+    historical_upgrade = invoke('stage', expected=historical_startup, candidate=startup, startup=True)
+    invoke('rollback', operation=historical_upgrade['operation'], startup=True)
+    assert run('docker', 'exec', container, 'cat', '/opt/amnezia/start.sh').stdout == historical_startup
+    historical_upgrade = invoke('stage', expected=historical_startup, candidate=startup, startup=True)
+    invoke('commit', operation=historical_upgrade['operation'], startup=True)
+    assert run('docker', 'exec', container, 'cat', '/opt/amnezia/start.sh').stdout == startup
     # Upgrade the real known startup body as well as the maintenance capability.
     template = run('docker', 'exec', container, 'cat', '/opt/amnezia/fixture-startup-source.sh').stdout.replace(b'$SERVER_IP_ADDRESS', b'203.0.113.7')
     boot_call = ("\namnezia_enable_ipv6 " + interface + " || echo 'AMNEZIA_IPV6_FORWARDING_STATUS=boot-preparation-failed' >&2\n").encode()
