@@ -31,4 +31,28 @@ amnezia_prepare_ipv6_network() {
     AMNEZIA_IPV6_NETWORK="$amnezia_v6_name"
     echo 'AMNEZIA_IPV6_NETWORK_STATUS=bridge-prepared-egress-unverified'
 }
+# This is deliberately additive: recovery must not detach a bridge that clients
+# may already be using. The migration coordinator owns any later cleanup.
+amnezia_attach_ipv6_network() {
+    amnezia_v6_container=$1
+    case "$amnezia_v6_container" in amnezia-wireguard|amnezia-awg|amnezia-awg2) ;; *) return 1 ;; esac
+    [ "$AMNEZIA_IPV6_NETWORK" = amnezia-ipv6-egress ] || return 1
+    amnezia_v6_network_id=$(sudo docker network inspect --format '{{.Id}}' "$AMNEZIA_IPV6_NETWORK") || return 1
+    amnezia_v6_shape=$(sudo docker network inspect --format '{{.Driver}} {{.EnableIPv6}} {{.EnableIPv4}} {{index .Labels "com.amnezia.ipv6-egress"}}' "$amnezia_v6_network_id") || return 1
+    [ "$amnezia_v6_shape" = 'bridge true false v1' ] || return 1
+    amnezia_v6_container_id=$(sudo docker inspect --format '{{.Id}}' "$amnezia_v6_container") || return 1
+    amnezia_v6_routes_before=$(sudo docker exec "$amnezia_v6_container_id" ip -4 route show table all) || return 1
+    amnezia_v6_dns_before=$(sudo docker exec "$amnezia_v6_container_id" cat /etc/resolv.conf) || return 1
+    amnezia_v6_attached=$(sudo docker network inspect --format "{{if index .Containers \"$amnezia_v6_container_id\"}}yes{{end}}" "$amnezia_v6_network_id") || return 1
+    if [ "$amnezia_v6_attached" != yes ]; then
+        sudo docker network connect "$amnezia_v6_network_id" "$amnezia_v6_container_id" || return 1
+    fi
+    amnezia_v6_routes_after=$(sudo docker exec "$amnezia_v6_container_id" ip -4 route show table all) || return 1
+    amnezia_v6_dns_after=$(sudo docker exec "$amnezia_v6_container_id" cat /etc/resolv.conf) || return 1
+    if [ "$amnezia_v6_routes_before" != "$amnezia_v6_routes_after" ] || [ "$amnezia_v6_dns_before" != "$amnezia_v6_dns_after" ]; then
+        echo 'AMNEZIA_IPV6_NETWORK_STATUS=attachment-changed-ipv4-or-dns' >&2
+        return 1
+    fi
+    echo 'AMNEZIA_IPV6_NETWORK_STATUS=attached-egress-unverified'
+}
 amnezia_prepare_ipv6_network || exit 1

@@ -13,7 +13,7 @@ $CONTAINER_NAME
 
 sudo docker network connect amnezia-dns-net $CONTAINER_NAME
 if [ -n "$AMNEZIA_IPV6_NETWORK" ]; then
-    sudo docker network connect "$AMNEZIA_IPV6_NETWORK" "$CONTAINER_NAME" || exit 1
+    amnezia_attach_ipv6_network "$CONTAINER_NAME" || exit 1
     sudo docker exec "$CONTAINER_NAME" sh -c 'mkdir -p /opt/amnezia; touch /opt/amnezia/ipv6-bridge-attached' || exit 1
 fi
 

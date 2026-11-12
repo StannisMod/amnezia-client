@@ -109,7 +109,9 @@ private slots:
             const auto script = scriptData(ProtocolScriptType::run_container, container);
             QVERIFY(script.contains("AMNEZIA_IPV6_NETWORK_STATUS"));
             QVERIFY(script.contains("--ipv4=false"));
-            QVERIFY(script.contains("sudo docker network connect \"$AMNEZIA_IPV6_NETWORK\""));
+            QVERIFY(script.contains("amnezia_attach_ipv6_network \"$CONTAINER_NAME\" || exit 1"));
+            QVERIFY(script.contains("sudo docker network connect \"$amnezia_v6_network_id\" \"$amnezia_v6_container_id\""));
+            QVERIFY(script.contains("attachment-changed-ipv4-or-dns"));
             const auto startup = scriptData(ProtocolScriptType::container_startup, container);
             QVERIFY(startup.startsWith("#!/bin/bash\n"));
             QVERIFY(startup.contains("amnezia_enable_ipv6()"));

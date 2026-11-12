@@ -147,3 +147,15 @@ server is used. Cleanup removes the daemon, its volumes and the internal network
 This is required by the Linux routing build/package workflows. The same Qt test
 is skipped in a plain CTest run without the fixture environment; that skip does
 not substitute for the separate SSH integration step.
+
+The ordinary AWG MTU workflow also runs
+`python3 server/ipv6/lab/test_docker_prepare.py --report ipv6-docker-prepare.json`.
+This uses a separate Docker daemon with no external network. After preparing the
+production IPv6-only bridge, it attaches running WG/AWG-named fixture containers
+using the production helper. The original IPv4 endpoint, all IPv4 routes and
+resolver file must remain unchanged. A TCP socket opened before attachment must
+exchange another payload afterward, and Docker DNS must resolve the same peer.
+Repeating attachment must preserve both network endpoints. These fixtures test
+container networking; they do not run an encrypted tunnel or prove Internet IPv6
+egress. The helper reports egress as unverified and never detaches automatically
+after a failed preservation check.

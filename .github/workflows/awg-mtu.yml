@@ -11,6 +11,7 @@ on:
       - native/routing/**
       - client/server_scripts/awg/**
       - client/server_scripts/awg_legacy/**
+      - client/server_scripts/wireguard/**
       - client/server_scripts/serverScripts.qrc
       - .github/workflows/awg-mtu.yml
   pull_request:
@@ -24,6 +25,7 @@ on:
       - native/routing/**
       - client/server_scripts/awg/**
       - client/server_scripts/awg_legacy/**
+      - client/server_scripts/wireguard/**
       - .github/workflows/awg-mtu.yml
 permissions:
   contents: read

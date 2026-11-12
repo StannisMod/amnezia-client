@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Run the production IPv6 bridge preparer against disposable nested Docker.
 
-This proves bridge installation, ownership and idempotence, not Internet IPv6
-reachability. All routes and networks created here belong to the private daemon.
+This proves bridge installation, ownership, idempotence and live attachment
+with retained IPv4 TCP and DNS, not Internet IPv6 reachability. All routes and networks created here belong to the private daemon.
 """
 import argparse
 import ipaddress
@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 import subprocess
 import time
+import tempfile
 import uuid
 
 
@@ -69,6 +70,85 @@ def main():
         prepare()
         assert network('amnezia-ipv6-egress') == first, 'repeat preparation changed the installed network'
         assert network('amnezia-dns-net') == dns_before, 'preparation changed the pre-existing DNS bridge'
+        # Load an image into this private daemon; never borrow the host socket.
+        with tempfile.TemporaryDirectory(prefix='amnezia-ipv6-image-') as transfer:
+            archive = Path(transfer) / 'image.tar'
+            command('docker', 'save', '--output', str(archive), args.image)
+            command('docker', 'cp', str(archive), fixture + ':/fixture-image.tar')
+            inside('docker', 'load', '--input', '/fixture-image.tar')
+            inside('rm', '/fixture-image.tar')
+        echo = """import socketserver
+from pathlib import Path
+class Echo(socketserver.BaseRequestHandler):
+ def handle(self):
+  while True:
+   data=self.request.recv(4096)
+   if not data: break
+   self.request.sendall(data)
+server=socketserver.ThreadingTCPServer(('0.0.0.0',29182),Echo)
+Path('/ready').touch()
+server.serve_forever()
+"""
+        inside('docker', 'run', '-d', '--pull=never', '--name', 'fixture-peer',
+               '--network', 'amnezia-dns-net', '--entrypoint', 'python3', args.image, '-c', echo)
+        deadline = time.monotonic() + 15
+        while inside('docker', 'exec', 'fixture-peer', 'test', '-f', '/ready', check=False).returncode:
+            if time.monotonic() >= deadline:
+                logs = inside('docker', 'logs', 'fixture-peer')
+                raise RuntimeError('TCP echo server not ready: ' + logs.stdout + logs.stderr)
+            time.sleep(0.05)
+        client = """import json,socket,time
+from pathlib import Path
+peer=socket.gethostbyname('fixture-peer')
+s=socket.create_connection((peer,29182),timeout=10)
+def check(payload):
+ s.sendall(payload)
+ received=b''
+ while len(received)<len(payload):
+  part=s.recv(len(payload)-len(received))
+  assert part
+  received+=part
+ assert received==payload
+check(b'before-network-attachment')
+identity=(s.getsockname(),s.getpeername())
+Path('/ready').touch()
+while not Path('/continue').exists(): time.sleep(0.02)
+assert socket.gethostbyname('fixture-peer')==peer
+check(b'original-tcp-after-network-attachment')
+assert identity==(s.getsockname(),s.getpeername())
+Path('/result').write_text(json.dumps({'tcp_preserved':True,'dns_preserved':True}))
+time.sleep(300)
+"""
+        for container in ('amnezia-wireguard', 'amnezia-awg2'):
+            inside('docker', 'run', '-d', '--pull=never', '--name', container,
+                   '--network', 'amnezia-dns-net', '--entrypoint', 'python3', args.image, '-c', client)
+            deadline = time.monotonic() + 15
+            while inside('docker', 'exec', container, 'test', '-f', '/ready', check=False).returncode:
+                if time.monotonic() >= deadline:
+                    logs = inside('docker', 'logs', container)
+                    raise RuntimeError('TCP client did not become ready: ' + logs.stdout + logs.stderr)
+                time.sleep(0.05)
+            baseline = json.loads(inside('docker', 'inspect', container).stdout)[0]
+            routes = inside('docker', 'exec', container, 'ip', '-4', 'route', 'show', 'table', 'all').stdout
+            resolver = inside('docker', 'exec', container, 'cat', '/etc/resolv.conf').stdout
+            attached = inside('sh', '-c', '. /prepare_ipv6_network.sh; amnezia_attach_ipv6_network "$1"', 'sh', container)
+            assert 'attached-egress-unverified' in attached.stdout
+            current = json.loads(inside('docker', 'inspect', container).stdout)[0]
+            assert current['NetworkSettings']['Networks']['amnezia-dns-net'] == baseline['NetworkSettings']['Networks']['amnezia-dns-net']
+            assert inside('docker', 'exec', container, 'ip', '-4', 'route', 'show', 'table', 'all').stdout == routes
+            assert inside('docker', 'exec', container, 'cat', '/etc/resolv.conf').stdout == resolver
+            inside('sh', '-c', '. /prepare_ipv6_network.sh; amnezia_attach_ipv6_network "$1"', 'sh', container)
+            assert json.loads(inside('docker', 'inspect', container).stdout)[0]['NetworkSettings']['Networks'] == current['NetworkSettings']['Networks'], 'repeat attach changed endpoints'
+            inside('docker', 'exec', container, 'touch', '/continue')
+            deadline = time.monotonic() + 15
+            while inside('docker', 'exec', container, 'test', '-f', '/result', check=False).returncode:
+                if time.monotonic() >= deadline:
+                    logs = inside('docker', 'logs', container)
+                    raise RuntimeError('original TCP did not survive attachment: ' + logs.stdout + logs.stderr)
+                time.sleep(0.05)
+            assert json.loads(inside('docker', 'exec', container, 'cat', '/result').stdout) == dict(tcp_preserved=True,dns_preserved=True)
+            inside('docker', 'rm', '-f', container)
+        inside('docker', 'rm', '-f', 'fixture-peer')
         inside('docker', 'network', 'rm', 'amnezia-ipv6-egress')
         inside('docker', 'network', 'create', '--label', 'fixture=foreign', 'amnezia-ipv6-egress')
         foreign = network('amnezia-ipv6-egress')
@@ -78,10 +158,12 @@ def main():
         assert network('amnezia-dns-net') == dns_before, 'conflict changed DNS bridge'
         args.report.parent.mkdir(parents=True, exist_ok=True)
         args.report.write_text(json.dumps({'schema_version': 1, 'result': 'PASS',
-            'scope': 'production-script/private-docker-bridge', 'internet_egress': 'NOT_TESTED',
+            'scope': 'production-script/private-docker-bridge-and-live-attachment', 'internet_egress': 'NOT_TESTED',
             'checks': ['no-route-no-network', 'actual-ipv6-only-bridge', 'idempotent-repeat',
-                       'dns-bridge-preserved', 'foreign-network-rejected']}, indent=2) + '\n')
-        print('PASS: production IPv6 bridge installation, idempotence and ownership', flush=True)
+                       'dns-bridge-preserved', 'foreign-network-rejected',
+                       'live-attach-ipv4-routes-resolver-and-endpoint-preserved',
+                       'original-ipv4-tcp-and-dns-survive-attach', 'repeat-attach-idempotent']}, indent=2) + '\n')
+        print('PASS: production IPv6 bridge installation, ownership and live attachment preserving original IPv4 TCP/DNS', flush=True)
     finally:
         command('docker', 'rm', '-f', '-v', fixture, check=False)
 
