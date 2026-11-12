@@ -273,6 +273,8 @@ def main():
                     report['package_lifecycle_uids']=json.loads(line.strip().split('PACKAGE_LIFECYCLE_UIDS ',1)[1])
                 if 'PACKAGE_LIFECYCLE_RESULT ' in line:
                     report['package_lifecycle']=json.loads(line.strip().split('PACKAGE_LIFECYCLE_RESULT ',1)[1])
+                if 'PACKAGE_LIFECYCLE_OBSERVATIONS ' in line:
+                    report['package_lifecycle_observations']=json.loads(line.strip().split('PACKAGE_LIFECYCLE_OBSERVATIONS ',1)[1])
                 if args.diagnose_control and 'CONTROL_PENDING ' in line:
                     request_id = int(line.strip().split('CONTROL_PENDING ',1)[1])
                     def capture_slow_control(request_id=request_id):
@@ -299,6 +301,8 @@ def main():
                         (work/'package-refreshed-connectivity.log').write_text(adb('shell','dumpsys','connectivity'))
                         (work/'package-refreshed-rules.log').write_text(adb('shell','ip','rule','show'))
                         (work/'package-refreshed-routes.log').write_text(adb('shell','ip','route','show','table','all'))
+                        (work/'package-refreshed-vpn.log').write_text(adb('shell','dumpsys','vpn_management'))
+                        (work/'package-refreshed-system.log').write_text(adb('shell','logcat','-d','-t','500','-v','threadtime','-s','Vpn:D','ConnectivityService:D','Netd:D','netd:D'))
                     if name == 'before' and os.environ.get('AWG_ECHO_LAB') == '1':
                         observations=[]
                         for size in (128,576,1104,1280):

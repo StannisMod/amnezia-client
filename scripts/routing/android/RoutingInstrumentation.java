@@ -500,14 +500,17 @@ public final class RoutingInstrumentation extends Instrumentation {
     }
 
     private JSONObject appProbe(int index, String operation, String tag) throws Exception {
+        return appProbe(index, operation, tag, true);
+    }
+    private JSONObject appProbe(int index, String operation, String tag, boolean requireSuccess) throws Exception {
         JSONObject command = new JSONObject().put("op", operation).put("tag", tag).put("payload", "old TCP after live policy switch");
         try (Socket socket = new Socket()) {
             socket.connect(new InetSocketAddress("127.0.0.1", 19091 + index), 2000);socket.setSoTimeout(12000);
             socket.getOutputStream().write((command.toString()+"\n").getBytes(StandardCharsets.UTF_8));
             JSONObject reply = new JSONObject(new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8)).readLine());
             if (!operation.equals("ready")) progress("APP_PROBE " + reply);
-            require(reply.getBoolean("ok"), "application probe failed: " + reply.optString("error"));
-            require(reply.getString("package").equals("org.amnezia.routingprobe." + (index == 0 ? "a" : "b")), "wrong probe package");
+            if (requireSuccess) require(reply.getBoolean("ok"), "application probe failed: " + reply.optString("error"));
+            if (reply.getBoolean("ok")) require(reply.getString("package").equals("org.amnezia.routingprobe." + (index == 0 ? "a" : "b")), "wrong probe package");
             return reply;
         }
     }
@@ -589,11 +592,16 @@ public final class RoutingInstrumentation extends Instrumentation {
                 retainedCheckpoint("package_refreshed");
                 JSONObject capture=connectionDiagnostics();
                 progress("PACKAGE_LIFECYCLE_CAPTURE "+new JSONObject().put("session_id",capture.optLong("session_id",-1)).put("capture_refresh_count",capture.optLong("capture_refresh_count",-1)));
-                JSONObject kept=appProbe(0,"echo","old");
+                // Observe both contracts before asserting either: a broken old
+                // stream must not conceal that the new UID escaped VPN capture.
+                JSONObject reinstalled=appProbe(1,"open","reinstalled",false);
+                JSONObject reinstalledDns=appProbe(1,"txt","reinstalled",false);
+                JSONObject kept=appProbe(0,"echo","old",false);
+                progress("PACKAGE_LIFECYCLE_OBSERVATIONS "+new JSONObject().put("new_tcp",reinstalled).put("new_dns",reinstalledDns).put("old_tcp",kept));
+                require(kept.getBoolean("ok"),"reinstall broke unaffected app TCP: "+kept.optString("error"));
                 require(kept.getInt("local_port")==a.getInt("local_port") && kept.getString("route").equals("VPN"),"reinstall broke unaffected app TCP");
-                JSONObject reinstalled=appProbe(1,"open","reinstalled");
-                require(reinstalled.getString("route").equals("VPN"),"reinstalled always-VPN app escaped its policy");
-                require(appProbe(1,"txt","reinstalled").getString("answer").equals("VPN"),"reinstalled app lost VPN DNS context");
+                require(reinstalled.getBoolean("ok") && reinstalled.optString("route").equals("VPN"),"reinstalled always-VPN app escaped its policy");
+                require(reinstalledDns.getBoolean("ok") && reinstalledDns.optString("answer").equals("VPN"),"reinstalled app lost VPN DNS context");
                 require(connectionDiagnostics().getLong("session_id")==session && !retainedStateChanged,"package refresh replaced/disconnected the core");
                 progress("PACKAGE_LIFECYCLE_RESULT "+new JSONObject().put("uid_changed",true).put("unaffected_tcp_preserved",true).put("vpn_tcp_dns",true).put("same_session",true));
                 pass("package reinstall with a new UID retains VPN capture and unaffected app TCP");
