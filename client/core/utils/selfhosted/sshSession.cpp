@@ -245,6 +245,7 @@ ErrorCode SshSession::replaceLiveProtocolConfig(DockerContainer container, const
     static const QRegularExpression nonce("^[a-f0-9]{64}$");
     if (!nonce.match(operation).hasMatch() || staged.value("originalHash") != originalHash || staged.value("candidateHash") != candidateHash
         || !staged.value("nativeWriteIntent").isBool() || !staged.value("nativeApplied").isBool()
+        || staged.value("rollbackPending").toBool()
         || (staged.value("nativeWriteIntent").toBool() && !staged.value("nativeApplied").toBool()
             && !capabilities.value("features").toArray().contains("native-reconcile-v1"))) return ErrorCode::InternalError;
     QJsonObject applied;

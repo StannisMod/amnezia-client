@@ -470,3 +470,57 @@ func TestOwnedHelperInstallationRecovery(t *testing.T) {
 		t.Fatal("unowned existing helper adopted")
 	}
 }
+
+func TestRollbackEvidenceValidationAndV5Upgrade(t *testing.T) {
+	native := []byte("native snapshot")
+	journal := configJournal{Version: 6, NativeOriginal: native, NativeHash: configHash(native), NativeRollbackHash: strings.Repeat("a", 64)}
+	if !configNativeJournalOK(journal) {
+		t.Fatal("valid rollback evidence refused")
+	}
+	journal.Version = 5
+	if configNativeJournalOK(journal) {
+		t.Fatal("rollback evidence accepted in old format")
+	}
+	journal.Version = 6
+	journal.NativeRollbackHash = "bad"
+	if configNativeJournalOK(journal) {
+		t.Fatal("invalid rollback digest accepted")
+	}
+	journal.NativeRollbackHash = strings.Repeat("a", 64)
+	journal.NativeOriginal = nil
+	journal.NativeHash = ""
+	if configNativeJournalOK(journal) {
+		t.Fatal("rollback evidence without snapshot accepted")
+	}
+	path, original, candidate := transactionFixture(t)
+	transaction, err := beginConfigTransaction(path, original, candidate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := transaction.journal
+	old.Version = 5
+	raw, _ := json.Marshal(old)
+	if err := os.WriteFile(path+".amnezia-journal", raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	transaction.close()
+	resumed, err := resumeConfigTransaction(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resumed.journal.Version != 5 {
+		t.Fatal("old journal not loaded")
+	}
+	if err := resumed.saveJournal(); err != nil {
+		t.Fatal(err)
+	}
+	resumed.close()
+	upgraded, err := resumeConfigTransaction(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer upgraded.close()
+	if upgraded.journal.Version != 6 {
+		t.Fatal("journal not upgraded durably")
+	}
+}

@@ -36,7 +36,7 @@ for container, binary, interface, path in (
     candidate = original + b'\n# private configuration transaction regression\n'
     peers = sorted(run('docker', 'exec', container, binary, 'show', interface, 'peers').stdout.splitlines())
 
-    def invoke(action, operation=None, expected=None, candidate=None, server_ipv6=None, ok=True, startup=False, no_writer=False):
+    def invoke(action, operation=None, expected=None, candidate=None, server_ipv6=None, ok=True, startup=False, no_writer=False, after_writer=False):
         request = dict(action=action, container=container)
         if operation is not None:
             request['operation'] = operation
@@ -47,8 +47,9 @@ for container, binary, interface, path in (
         if server_ipv6 is not None:
             request['serverIpv6'] = server_ipv6
         command = ['docker', 'exec']
-        if no_writer:
-            command += ['-e', 'PATH=/opt/amnezia/no-writer:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin']
+        if no_writer or after_writer:
+            folder = 'no-writer' if no_writer else 'after-writer'
+            command += ['-e', 'PATH=/opt/amnezia/' + folder + ':/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin']
         result = run(*command, '-i', container, helper,
                      'startup-file-transaction' if startup else 'config-file-transaction',
                      data=json.dumps(request).encode(), ok=ok)
@@ -140,6 +141,62 @@ for container, binary, interface, path in (
         'allowed-ips', ','.join(route.decode() for route in recovery_routes))
     invoke('apply-commit', operation=conflict['operation'])
     restore_baseline()
+
+    # Rollback must inspect native ownership BEFORE changing the file. A saved
+    # canonical candidate digest remains usable after a failed rollback has
+    # already replaced that file with the original (possibly invalid) bytes.
+    rollback_stage = invoke('stage-live', expected=original, candidate=live_candidate)
+    invoke('apply', operation=rollback_stage['operation'])
+    rollback_candidate_routes = dict(allowed())[recovery_peer.encode()]
+    run('docker', 'exec', container, binary, 'set', interface, 'peer', recovery_peer,
+        'allowed-ips', ','.join(route.decode() for route in rollback_candidate_routes) + ',fd99::55/128')
+    rollback_foreign = allowed()
+    journal_before = run('docker', 'exec', container, 'cat', path + '.amnezia-journal').stdout
+    invoke('rollback-live', operation=rollback_stage['operation'], ok=False, no_writer=True)
+    assert allowed() == rollback_foreign
+    assert run('docker', 'exec', container, 'cat', path).stdout == live_candidate
+    assert run('docker', 'exec', container, 'cat', path + '.amnezia-journal').stdout == journal_before
+    assert run('docker', 'exec', container, 'test', '-e', '/opt/amnezia/forbidden-recovery-writer', ok=False).returncode
+    run('docker', 'exec', container, binary, 'set', interface, 'peer', recovery_peer,
+        'allowed-ips', ','.join(route.decode() for route in rollback_candidate_routes))
+    invoke('rollback-live', operation=rollback_stage['operation'], ok=False, no_writer=True)
+    assert run('docker', 'exec', container, 'cat', path).stdout == original
+    rollback_receipt = json.loads(run('docker', 'exec', container, 'cat', path + '.amnezia-journal').stdout)
+    assert rollback_receipt['version'] == 6 and len(rollback_receipt['nativeRollbackHash']) == 64
+    assert invoke('status')['rollbackPending']
+    assert not run('docker', 'exec', container, 'test', '-e', '/opt/amnezia/forbidden-recovery-writer').returncode
+    run('docker', 'exec', container, 'rm', '/opt/amnezia/forbidden-recovery-writer')
+    invoke('apply', operation=rollback_stage['operation'], ok=False)
+    invoke('apply-commit', operation=rollback_stage['operation'], ok=False)
+    invoke('commit', operation=rollback_stage['operation'], ok=False)
+    run('docker', 'exec', container, binary, 'set', interface, 'peer', recovery_peer,
+        'allowed-ips', ','.join(route.decode() for route in rollback_candidate_routes) + ',fd99::55/128')
+    rollback_foreign = allowed()
+    invoke('rollback-live', operation=rollback_stage['operation'], ok=False, no_writer=True)
+    assert allowed() == rollback_foreign
+    assert run('docker', 'exec', container, 'cat', path).stdout == original
+    assert run('docker', 'exec', container, 'test', '-e', '/opt/amnezia/forbidden-recovery-writer', ok=False).returncode
+    run('docker', 'exec', container, binary, 'set', interface, 'peer', recovery_peer,
+        'allowed-ips', ','.join(route.decode() for route in rollback_candidate_routes))
+    invoke('rollback-live', operation=rollback_stage['operation'])
+    assert allowed() == original_allowed
+
+    run('docker', 'exec', container, 'mkdir', '-p', '/opt/amnezia/after-writer')
+    applied_then_lost = ('#!/bin/sh\nif [ "$1" = syncconf ]; then ' + tool_path + ' "$@" || exit $?; '
+                         'touch /opt/amnezia/rollback-writer-applied; exit 89; fi\nexec ' + tool_path + ' "$@"\n').encode()
+    run('docker', 'exec', '-i', container, 'sh', '-ec',
+        'umask 077; cat > /opt/amnezia/after-writer/' + binary + '; chmod 700 /opt/amnezia/after-writer/' + binary,
+        data=applied_then_lost)
+    restored_then_lost = invoke('stage-live', expected=original, candidate=live_candidate)
+    invoke('apply', operation=restored_then_lost['operation'])
+    invoke('rollback-live', operation=restored_then_lost['operation'], ok=False, after_writer=True)
+    assert allowed() == original_allowed
+    assert run('docker', 'exec', container, 'cat', path).stdout == original
+    assert not run('docker', 'exec', container, 'test', '-e', '/opt/amnezia/rollback-writer-applied').returncode
+    completed_rollback = invoke('rollback-live', operation=restored_then_lost['operation'], no_writer=True)
+    assert not completed_rollback['rollbackPending']
+    assert allowed() == original_allowed
+    assert run('docker', 'exec', container, 'test', '-e', '/opt/amnezia/forbidden-recovery-writer', ok=False).returncode
 
     # Failure between persisted stage and native apply must recover both states.
     unapplied = invoke('stage', expected=original, candidate=live_candidate)

@@ -358,6 +358,19 @@ address. Plain repeated `apply` also verifies an already-applied state instead
 of overwriting later changes. Older helpers do not get the client's new recovery
 permission without advertising the capability.
 
+Guarded native rollback now snapshots the canonical candidate digest durably
+before replacing its file. Runtime must match the original or that verified
+candidate; foreign native edits cause refusal before any file/native rewrite.
+After interruption with the original file already restored, the saved digest
+still permits safe rollback retry. If native rollback already completed, retry
+verifies it without another writer. Once rollback starts, forward apply, commit
+and forwarding preparation are refused; status exposes `rollbackPending` until
+completion. Internal journal format 6 carries this evidence, and the new reader
+accepts format 5 and upgrades on write. A historical rollback that already lost
+its candidate file without evidence fails closed when native cannot be identified.
+The fixture tests foreign edits before and after file restoration, failure before
+native rollback and failure after real native effect, with writer sentinels.
+
 The real fixture models crash windows by changing only its private journal flags
 before/after actual WG/AWG application. A PATH-scoped writer sentinel makes any
 unexpected `syncconf` fail and leave a marker. Candidate reconciliation must

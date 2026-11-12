@@ -56,7 +56,7 @@ func liveForwardingCommand(ctx context.Context, program []byte, iface string) *e
 }
 
 func prepareConfigForwarding(transaction *configTransaction, container string) error {
-	if transaction.lock == nil || transaction.journal.IPv6 == nil || !transaction.journal.NativeApplied {
+	if transaction.lock == nil || transaction.journal.IPv6 == nil || !transaction.journal.NativeApplied || transaction.journal.NativeRollbackHash != "" {
 		return errors.New("IPv6 migration is not applied")
 	}
 	current, info, err := readConfigFile(transaction.path, 4<<20)

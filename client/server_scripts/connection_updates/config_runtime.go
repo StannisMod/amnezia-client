@@ -163,6 +163,15 @@ func applyConfigTransactionRuntime(transaction *configTransaction, container str
 	if hash != transaction.journal.CandidateHash && !(rollback && hash == transaction.journal.OriginalHash) {
 		return errConfigConflict
 	}
+	rollbackWriter := false
+	if rollback {
+		rollbackWriter, err = prepareNativeRollback(transaction, container, hash)
+		if err != nil {
+			return err
+		}
+	} else if transaction.journal.NativeRollbackHash != "" {
+		return errors.New("native rollback is pending")
+	}
 	if rollback && hash != transaction.journal.OriginalHash {
 		if err := writeConfigAtomic(transaction.path, transaction.journal.Original, os.FileMode(transaction.journal.Mode), transaction.journal.UID, transaction.journal.GID, false); err != nil {
 			return err
@@ -255,7 +264,7 @@ func applyConfigTransactionRuntime(transaction *configTransaction, container str
 	// Keep the lock AND durable journal until native synchronization succeeds.
 	// On any failure a later rollback-live retries the original configuration.
 	if rollback {
-		if transaction.journal.NativeWriteIntent {
+		if rollbackWriter {
 			if err := syncNativeProtocolBytes(container, transaction.journal.NativeOriginal); err != nil {
 				return err
 			}
@@ -264,6 +273,23 @@ func applyConfigTransactionRuntime(transaction *configTransaction, container str
 		return err
 	}
 	if rollback {
+		if transaction.journal.NativeRollbackHash != "" {
+			native, err := captureNativeProtocol(container)
+			if err != nil {
+				return err
+			}
+			old, err := canonicalNativeConfig(transaction.journal.NativeOriginal)
+			if err != nil {
+				return err
+			}
+			actual, err := canonicalNativeConfig(native)
+			if err != nil {
+				return err
+			}
+			if actual != old {
+				return errConfigConflict
+			}
+		}
 		transaction.journal.NativeWriteIntent = false
 		transaction.journal.NativeApplied = false
 		if transaction.journal.IPv6 != nil {
@@ -292,6 +318,9 @@ func applyConfigTransactionRuntime(transaction *configTransaction, container str
 // A previous successful apply is not evidence that native state is still the
 // candidate. Preserve the journal if another writer changed keys or routes.
 func verifyProtocolCommit(transaction *configTransaction, container string) error {
+	if transaction.journal.NativeRollbackHash != "" {
+		return errors.New("native rollback is pending")
+	}
 	if transaction.lock == nil {
 		return errors.New("closed configuration transaction")
 	}
@@ -377,4 +406,60 @@ func classifyInterruptedNative(original, candidate, actual []byte) (bool, error)
 		return false, nil
 	}
 	return false, errConfigConflict
+}
+
+// Persist the sole allowed pre-rollback native digest before replacing the file.
+// It survives a crash after that replacement, when the candidate file is gone.
+func prepareNativeRollback(transaction *configTransaction, container, fileHash string) (bool, error) {
+	journal := &transaction.journal
+	if len(journal.NativeOriginal) == 0 || (!journal.NativeWriteIntent && journal.NativeRollbackHash == "") {
+		return false, nil
+	}
+	native, err := captureNativeProtocol(container)
+	if err != nil {
+		return false, err
+	}
+	actual, err := canonicalNativeConfig(native)
+	if err != nil {
+		return false, err
+	}
+	original, err := canonicalNativeConfig(journal.NativeOriginal)
+	if err != nil {
+		return false, err
+	}
+	if actual == original {
+		if journal.NativeRollbackHash == "" {
+			journal.NativeRollbackHash = configHash([]byte(original))
+			if err := transaction.saveJournal(); err != nil {
+				return false, err
+			}
+		}
+		return false, nil
+	}
+	if !journal.NativeWriteIntent {
+		return false, errConfigConflict
+	}
+	if journal.NativeRollbackHash == "" {
+		if fileHash != journal.CandidateHash {
+			return false, errConfigConflict
+		}
+		candidate, err := stripNativeProtocol(container, transaction.path)
+		if err != nil {
+			return false, err
+		}
+		expected, err := canonicalNativeConfig(candidate)
+		if err != nil {
+			return false, err
+		}
+		if actual != expected {
+			return false, errConfigConflict
+		}
+		journal.NativeRollbackHash = configHash([]byte(expected))
+		if err := transaction.saveJournal(); err != nil {
+			return false, err
+		}
+	} else if configHash([]byte(actual)) != journal.NativeRollbackHash {
+		return false, errConfigConflict
+	}
+	return true, nil
 }
