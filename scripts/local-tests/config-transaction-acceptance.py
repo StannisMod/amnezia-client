@@ -18,6 +18,16 @@ def run(*args, data=None, ok=True):
 labels = json.loads(run('docker', 'info', '--format', '{{json .Labels}}').stdout)
 assert 'amnezia.test-environment=disposable' in labels, 'requires disposable private Docker daemon'
 helper = '/opt/amnezia/config-helper'
+feed_image = run('docker', 'inspect', '--format', '{{.Image}}', 'amnezia-connection-updates').stdout.decode().strip()
+
+
+def feed(action, request):
+    result = run('docker', 'run', '--pull=never', '--rm', '-i', '--network', 'none',
+                 '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
+                 '--mount', 'type=volume,source=amnezia-connection-updates-state,target=/data',
+                 feed_image, action, data=json.dumps(request).encode())
+    return json.loads(result.stdout)
+
 for container, binary, interface, path in (
     ('amnezia-wireguard', 'wg', 'wg0', '/opt/amnezia/wireguard/wg0.conf'),
     ('amnezia-awg2', 'awg', 'awg0', '/opt/amnezia/awg/awg0.conf'),
@@ -184,6 +194,30 @@ for container, binary, interface, path in (
         assert (address + '/128').encode() in actual_routes[key.encode()]
     recovered_status = invoke('status')
     assert recovered_status['clientIpv6'] == staged_ipv6['clientIpv6']
+    # Exercise the production admin executable and persisted receipt, not a mock.
+    # This lab has no active client sessions using the newly published addresses.
+    feed_info = feed('info', {})
+    feed('issue', dict(container=container, clientPublicKey=roaming_key,
+                        settings=dict(hostName=feed_info['host'],
+                                      port=int(run('docker', 'exec', container, binary, 'show', interface, 'listen-port').stdout),
+                                      server_pub_key=public_key.decode().strip())))
+    publication = dict(container=container, operation=staged_ipv6['operation'],
+                       expectedState=feed('info', {})['stateTag'],
+                       clientIpv6=staged_ipv6['clientIpv6'])
+    feed('publish-ipv6-if', publication)  # Discard reply, as if SSH was interrupted.
+    receipt = feed('ipv6-publication-status', dict(container=container, operation=publication['operation']))
+    assert receipt['known'] and receipt['current']
+    published_tag = receipt['stateTag']
+    replay = feed('publish-ipv6-if', publication)
+    assert replay['replayed'] and replay['operation'] == publication['operation']
+    assert feed('info', {})['stateTag'] == published_tag, 'retry changed revisions'
+    # Explicit withdrawal advances revisions rather than reverting a state file.
+    withdrawal = dict(container=container,
+                      operation=hashlib.sha256((publication['operation'] + 'withdraw').encode()).hexdigest(),
+                      expectedState=published_tag,
+                      clientIpv6={key: '' for key in publication['clientIpv6']})
+    feed('publish-ipv6-if', withdrawal)
+    assert feed('info', {})['stateTag'] != published_tag
     invoke('rollback-live', operation=staged_ipv6['operation'])
     assert target.encode() not in addresses() and unrelated.encode() in addresses()
     assert allowed() == legacy_allowed

@@ -119,8 +119,15 @@ Tests cover rollback before apply, an actual route change, and recovery after a
 native parser rejects malformed input. An IPv4-only migration is planned and staged, then the actual server IPv6 and
 per-peer routes are applied together. Rollback removes only the address added by
 the operation and preserves preexisting and unrelated addresses. Commit is
-rejected before successful live application. Egress verification and signed
-publication still require the migration coordinator. The durable journal also
+rejected before successful live application. The production signed-feed admin
+executable then publishes the key-bound assignments conditionally, discards the
+first reply, recovers its persisted operation receipt and retries without another
+revision change. A separate conditional withdrawal advances revisions. Go tests
+also verify the signed HTTPS payload and preservation of individual settings,
+keys, tokens and delivery identity. This controlled fixture has no active clients
+using the newly published IPv6 addresses: its subsequent backend rollback is not
+a safe recovery policy after publication to real clients. Coordinating egress,
+publication and compatible recovery remains unfinished. The durable journal also
 backs up the actual native configuration. IPv6 staging rejects stale on-disk
 identities, and rollback can restore the working protocol even when the old file
 is invalid. Dynamic peer endpoints are omitted from the backup so roaming to a

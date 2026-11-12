@@ -10,6 +10,7 @@
         <file>connection_updates/config_transaction.go</file>
         <file>connection_updates/config_runtime.go</file>
         <file>connection_updates/config_ipv6_runtime.go</file>
+        <file>connection_updates/ipv6_publication.go</file>
         <file>connection_updates/readiness.go</file>
         <file>connection_updates/go.mod</file>
         <file>connection_updates/install.sh</file>

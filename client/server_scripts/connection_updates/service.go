@@ -57,13 +57,15 @@ type record struct {
 	Settings        json.RawMessage `json:"settings"`
 }
 type state struct {
-	Host        string            `json:"host"`
-	SigningKey  []byte            `json:"signingKey"`
-	Certificate []byte            `json:"certificate"`
-	TLSKey      []byte            `json:"tlsKey"`
-	Records     map[string]record `json:"records"`
+	IPv6Publications map[string]ipv6PublicationReceipt `json:"ipv6Publications,omitempty"`
+	Host             string                            `json:"host"`
+	SigningKey       []byte                            `json:"signingKey"`
+	Certificate      []byte                            `json:"certificate"`
+	TLSKey           []byte                            `json:"tlsKey"`
+	Records          map[string]record                 `json:"records"`
 }
 type request struct {
+	Operation        string            `json:"operation,omitempty"`
 	ClientIPv6       map[string]string `json:"clientIpv6,omitempty"`
 	PathMTUProbe     string            `json:"pathMtuProbe,omitempty"`
 	ClientPublicKeys []string          `json:"clientPublicKeys"`
@@ -234,9 +236,15 @@ func readState(dir string) (*state, error) {
 	if err := clientIPv6StateOK(&s); err != nil {
 		return nil, err
 	}
+	if err := validateIPv6Publications(&s); err != nil {
+		return nil, err
+	}
 	return &s, nil
 }
 func writeState(dir string, s *state) error {
+	if err := validateIPv6Publications(s); err != nil {
+		return err
+	}
 	if err := clientIPv6StateOK(s); err != nil {
 		return err
 	}
@@ -315,7 +323,7 @@ func stateTag(s *state) string {
 	return hex.EncodeToString(digest[:])
 }
 func info(s *state) map[string]any {
-	return map[string]any{"version": 1, "stateTag": stateTag(s), "features": []string{"coverage-v1", "conditional-publication-v1", "awg3-header-protection-v1", "rollout-readiness-v1", "live-publication-v1", "path-mtu-probe-v1", "client-ipv6-v1"}, "host": s.Host, "publicKey": []byte(ed25519.PrivateKey(s.SigningKey).Public().(ed25519.PublicKey)), "certificate": s.Certificate}
+	return map[string]any{"version": 1, "stateTag": stateTag(s), "features": []string{"coverage-v1", "conditional-publication-v1", "awg3-header-protection-v1", "rollout-readiness-v1", "live-publication-v1", "path-mtu-probe-v1", "client-ipv6-v1", "conditional-client-ipv6-v1"}, "host": s.Host, "publicKey": []byte(ed25519.PrivateKey(s.SigningKey).Public().(ed25519.PublicKey)), "certificate": s.Certificate}
 }
 func probe(s *state) error {
 	certificate, e := x509.ParseCertificate(s.Certificate)
@@ -412,6 +420,19 @@ func admin(dir, command string, req request) (map[string]any, error) {
 		}
 		out["id"] = id
 		out["token"] = token
+	case "ipv6-publication-status":
+		return ipv6PublicationStatus(s, req)
+	case "publish-ipv6-if":
+		replay, err := publishClientIPv6(s, req)
+		if err != nil {
+			return nil, err
+		}
+		out["operation"] = req.Operation
+		if replay {
+			out["ok"] = true
+			out["replayed"] = true
+			return out, nil
+		}
 	case "coverage":
 		if !containerOK(req.Container) {
 			return nil, errors.New("invalid container")
