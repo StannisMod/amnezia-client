@@ -248,7 +248,7 @@ void ConnectionUpdatesController::administer(const QString &id, const QString &a
             const auto dir = "/tmp/amnezia-connection-updates-" + QUuid::createUuid().toString(QUuid::Id128);
             auto error = ssh.runScript(credentials, "umask 077 && mkdir '" + dir + "'");
             if (error != ErrorCode::NoError) { result.error = error; return result; }
-            for (const auto &name : { "Dockerfile", "service.go", "rollout.go", "readiness.go", "ipv6_migration.go", "go.mod", "install.sh" }) {
+            for (const auto &name : { "Dockerfile", "service.go", "rollout.go", "readiness.go", "ipv6_migration.go", "config_transaction.go", "go.mod", "install.sh" }) {
                 const auto data = resource(name);
                 if (data.isEmpty()) { error = ErrorCode::InternalError; break; }
                 error = ssh.uploadFileToHost(credentials, data, dir + "/" + name);
