@@ -5,6 +5,7 @@
 #include <QHostAddress>
 #include <QJsonDocument>
 #include <QRegularExpression>
+#include <QSet>
 #include <QSslCertificate>
 #include <QUrl>
 #include <openssl/evp.h>
@@ -160,6 +161,46 @@ bool parsePeerIPv6Assignments(const QString &output, QJsonObject &assignments)
         result[fields[0]] = address; // Explicit withdrawal for a live IPv4-only peer.
     }
     assignments = result; return true;
+}
+bool removePeerFromServerConfig(const QString &configuration, const QString &clientPublicKey, QString &updated)
+{
+    if (configuration.size() > 4 * 1024 * 1024 || decode(clientPublicKey, 32).isEmpty()) return false;
+    const auto lines = configuration.split('\n');
+    int interfaces = 0, start = -1, removeStart = -1, removeEnd = -1;
+    QString section, peerKey; QSet<QString> seen;
+    auto finish = [&](int end) {
+        if (section != "Peer") return true;
+        if (peerKey.isEmpty() || seen.contains(peerKey)) return false;
+        seen.insert(peerKey);
+        if (peerKey == clientPublicKey) { removeStart = start; removeEnd = end; }
+        return true;
+    };
+    for (int i = 0; i < lines.size(); ++i) {
+        const auto line = lines[i].section('#', 0, 0).trimmed();
+        if (line.isEmpty()) continue;
+        if (line.startsWith('[')) {
+            if (!line.endsWith(']') || !finish(i)) return false;
+            section = line.mid(1, line.size() - 2); start = i; peerKey.clear();
+            if (section == "Interface") {
+                if (++interfaces != 1 || !seen.isEmpty()) return false;
+            } else if (section != "Peer" || interfaces != 1) return false;
+            continue;
+        }
+        if (section.isEmpty() || !line.contains('=')) return false;
+        if (section == "Peer" && line.section('=', 0, 0).trimmed() == "PublicKey") {
+            const auto key = line.section('=', 1).trimmed();
+            if (!peerKey.isEmpty() || decode(key, 32).isEmpty()) return false;
+            peerKey = key;
+        }
+    }
+    if (!finish(lines.size()) || interfaces != 1 || removeStart < 0) return false;
+    qsizetype from = 0, to = 0;
+    for (int i = 0; i < removeEnd; ++i) {
+        if (i < removeStart) from += lines[i].size() + 1;
+        to += lines[i].size() + 1;
+    }
+    to = qMin(to, configuration.size());
+    updated = configuration.left(from) + configuration.mid(to); return true;
 }
 bool individualIPv6Assignment(const QJsonObject &assignments, const QString &clientPublicKey, QJsonObject &assignment)
 {

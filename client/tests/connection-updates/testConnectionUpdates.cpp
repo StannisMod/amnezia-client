@@ -355,6 +355,29 @@ private slots:
         QJsonObject output { { "sentinel", true } };
         QVERIFY(!connectionUpdates::individualIPv6Assignment(assignments, a, output)); QCOMPARE(output.size(), 1);
     }
+    void rollbackPeerSelectionPreservesOtherConfiguration()
+    {
+        const auto a = QString::fromLatin1(QByteArray(32, 'A').toBase64());
+        const auto b = QString::fromLatin1(QByteArray(32, 'B').toBase64());
+        const QString header = "# server configuration\n[Interface]\nPrivateKey = unchanged\nAddress = 10.8.0.1/24, fd77::1/64\nH1 = 1\n\n";
+        const QString first = "[Peer]\n# misleading other key: " + b + "\nPublicKey = " + a + "\nPresharedKey = keep-this-psk\nAllowedIPs = 10.8.0.2/32, fd77::2/128\n\n";
+        const QString second = "[Peer]\nPublicKey = " + b + " # exact key only\nAllowedIPs = 10.8.0.3/32\n";
+        QString result;
+        QVERIFY(connectionUpdates::removePeerFromServerConfig(header + first + second, b, result));
+        QCOMPARE(result, header + first);
+        QVERIFY(connectionUpdates::removePeerFromServerConfig(header + first + second, a, result));
+        QCOMPARE(result, header + second);
+        for (const auto &bad : { header + first + first, header + "[Peer]\nAllowedIPs = 10.8.0.2/32\n",
+                                header + "[Peer]\nPublicKey = " + a + "\nPublicKey = " + b + "\n",
+                                header + first + "[Unknown]\nx = y\n", first + header,
+                                header + first + "[Interface]\nx = y\n" }) {
+            QString unchanged = "sentinel";
+            QVERIFY(!connectionUpdates::removePeerFromServerConfig(bad, a, unchanged)); QCOMPARE(unchanged, "sentinel");
+        }
+        QString unchanged = "sentinel";
+        QVERIFY(!connectionUpdates::removePeerFromServerConfig(header + first, b, unchanged)); QCOMPARE(unchanged, "sentinel");
+        QVERIFY(!connectionUpdates::removePeerFromServerConfig(header + first, "bad-key", unchanged)); QCOMPARE(unchanged, "sentinel");
+    }
     void goClientIPv6Interoperability()
     {
         QFile file(":/connection-updates/client-ipv6-interop.json"); QVERIFY(file.open(QIODevice::ReadOnly));

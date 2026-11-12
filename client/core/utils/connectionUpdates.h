@@ -13,6 +13,7 @@ bool parsePathProbeAddress(const QString &output, const QString &interfaceName, 
 bool parsePeerList(const QString &output, QStringList &peers);
 // Accept only unambiguous individual IPv6 /128 assignments from live WG/AWG output.
 bool parsePeerIPv6Assignments(const QString &output, QJsonObject &assignments);
+bool removePeerFromServerConfig(const QString &configuration, const QString &clientPublicKey, QString &updated);
 bool individualIPv6Assignment(const QJsonObject &assignments, const QString &clientPublicKey, QJsonObject &assignment);
 bool validateProfile(const QJsonObject &profile);
 QJsonObject invitationMetadata(const QJsonObject &administratorMetadata);
