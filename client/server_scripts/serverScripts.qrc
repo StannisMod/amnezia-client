@@ -6,6 +6,7 @@
         <file>connection_updates/Dockerfile</file>
         <file>connection_updates/service.go</file>
         <file>connection_updates/rollout.go</file>
+        <file>connection_updates/ipv6_migration.go</file>
         <file>connection_updates/readiness.go</file>
         <file>connection_updates/go.mod</file>
         <file>connection_updates/install.sh</file>
