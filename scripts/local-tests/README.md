@@ -129,10 +129,16 @@ using the newly published IPv6 addresses: its subsequent backend rollback is not
 a safe recovery policy after publication to real clients. Coordinating egress,
 publication and compatible recovery remains unfinished. The durable journal also
 backs up the actual native configuration. IPv6 staging rejects stale on-disk
-identities, and rollback can restore the working protocol even when the old file
+identities. A native route edit between stage and first apply is also rejected
+before activating IPv6; rollback of that unapplied transaction preserves the
+independent edit. A durable native-write intent distinguishes a snapshot from an
+attempted protocol modification. Rollback can restore the working protocol even when the old file
 is invalid. Dynamic peer endpoints are omitted from the backup so roaming to a
 new outer address is preserved during rollback. Its sidecar lock protects participating
 writers; existing writers that ignore it still need integration.
+The fresh-peer export also runs against native peer order. IPv4 allocation sorts
+all IPv4 entries in AllowedIPs numerically, including mixed IPv6-first lists;
+the ordinary Qt format suite checks every permutation of a multi-peer example.
 The existing asynchronous probe-profile migration remains covered. This validates
 management and signed delivery; it does not send encrypted user traffic or prove
 Internet egress. Keys and credentials are synthetic; no host VPN or production

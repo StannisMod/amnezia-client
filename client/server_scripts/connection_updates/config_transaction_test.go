@@ -305,3 +305,28 @@ func TestNativeSnapshotIntegrityAndPrivateJournal(t *testing.T) {
 	}
 	assertConfig(t, path, candidate)
 }
+
+func TestNativeWriteIntentJournalInvariant(t *testing.T) {
+	native := []byte("private native snapshot\n")
+	base := configJournal{NativeOriginal: native, NativeHash: configHash(native)}
+	if !configNativeJournalOK(base) {
+		t.Fatal("staged snapshot rejected")
+	}
+	applied := base
+	applied.NativeApplied = true
+	if configNativeJournalOK(applied) {
+		t.Fatal("applied state without write intent accepted")
+	}
+	applied.NativeWriteIntent = true
+	if !configNativeJournalOK(applied) {
+		t.Fatal("applied write intent rejected")
+	}
+	pending := base
+	pending.NativeWriteIntent = true
+	if !configNativeJournalOK(pending) {
+		t.Fatal("interrupted native write rejected")
+	}
+	if configNativeJournalOK(configJournal{NativeWriteIntent: true}) {
+		t.Fatal("write intent without backup accepted")
+	}
+}

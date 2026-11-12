@@ -180,14 +180,39 @@ func applyConfigTransactionRuntime(transaction *configTransaction, container str
 		}
 	}
 	if !rollback {
+		// A staged IPv6 migration spans separate helper invocations. Refuse a
+		// changed runtime before touching addresses or protocol configuration.
+		if transaction.journal.IPv6 != nil && !transaction.journal.NativeWriteIntent {
+			native, err := captureNativeProtocol(container)
+			if err != nil {
+				return err
+			}
+			expected, err := canonicalNativeConfig(transaction.journal.NativeOriginal)
+			if err != nil {
+				return err
+			}
+			actual, err := canonicalNativeConfig(native)
+			if err != nil {
+				return err
+			}
+			if actual != expected {
+				return errConfigConflict
+			}
+		}
 		if err := applyProtocolIPv6(transaction, container); err != nil {
+			return err
+		}
+	}
+	if !rollback && !transaction.journal.NativeWriteIntent {
+		transaction.journal.NativeWriteIntent = true
+		if err := transaction.saveJournal(); err != nil {
 			return err
 		}
 	}
 	// Keep the lock AND durable journal until native synchronization succeeds.
 	// On any failure a later rollback-live retries the original configuration.
 	if rollback {
-		if len(transaction.journal.NativeOriginal) != 0 {
+		if transaction.journal.NativeWriteIntent {
 			if err := syncNativeProtocolBytes(container, transaction.journal.NativeOriginal); err != nil {
 				return err
 			}
@@ -196,6 +221,7 @@ func applyConfigTransactionRuntime(transaction *configTransaction, container str
 		return err
 	}
 	if rollback {
+		transaction.journal.NativeWriteIntent = false
 		transaction.journal.NativeApplied = false
 		if transaction.journal.IPv6 != nil {
 			transaction.journal.IPv6.Applied = false

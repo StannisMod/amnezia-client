@@ -180,6 +180,26 @@ for container, binary, interface, path in (
     assert target.encode() not in addresses() and unrelated.encode() in addresses()
     assert allowed() == legacy_allowed
 
+    # A separate administrator changes native routes after staging, without
+    # changing the file. Reject before IPv6 activation, and preserve that edit
+    # when rolling back a transaction that never attempted a protocol write.
+    changed_key = base64.b64encode(b'B' * 32).decode()
+    original_peer_routes = dict(legacy_allowed)[changed_key.encode()]
+    concurrent_route = 'fd99::b/128'
+    concurrent = invoke('stage-ipv6', expected=legacy, server_ipv6=target)
+    run('docker', 'exec', container, binary, 'set', interface, 'peer', changed_key,
+        'allowed-ips', ','.join(route.decode() for route in original_peer_routes) + ',' + concurrent_route)
+    independently_changed = allowed()
+    invoke('apply', operation=concurrent['operation'], ok=False)
+    assert target.encode() not in addresses(), 'conflicting migration activated IPv6'
+    assert allowed() == independently_changed, 'conflicting apply overwrote native edit'
+    invoke('rollback-live', operation=concurrent['operation'])
+    assert allowed() == independently_changed, 'unapplied rollback overwrote native edit'
+    assert run('docker', 'exec', container, 'cat', path).stdout == legacy
+    run('docker', 'exec', container, binary, 'set', interface, 'peer', changed_key,
+        'allowed-ips', ','.join(route.decode() for route in original_peer_routes))
+    assert allowed() == legacy_allowed
+
     # Change a real peer's endpoint after snapshotting. Both apply and rollback
     # must preserve the newly learned outer address.
     roaming_key = base64.b64encode(b'B' * 32).decode()

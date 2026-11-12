@@ -24,18 +24,19 @@ type configIPv6Journal struct {
 	Applied    bool   `json:"applied"`
 }
 type configJournal struct {
-	Version        int                `json:"version"`
-	Operation      string             `json:"operation"`
-	IPv6           *configIPv6Journal `json:"ipv6,omitempty"`
-	NativeOriginal []byte             `json:"nativeOriginal,omitempty"`
-	NativeHash     string             `json:"nativeHash,omitempty"`
-	NativeApplied  bool               `json:"nativeApplied"`
-	Original       []byte             `json:"original"`
-	OriginalHash   string             `json:"originalHash"`
-	CandidateHash  string             `json:"candidateHash"`
-	Mode           uint32             `json:"mode"`
-	UID            int                `json:"uid"`
-	GID            int                `json:"gid"`
+	Version           int                `json:"version"`
+	Operation         string             `json:"operation"`
+	IPv6              *configIPv6Journal `json:"ipv6,omitempty"`
+	NativeOriginal    []byte             `json:"nativeOriginal,omitempty"`
+	NativeHash        string             `json:"nativeHash,omitempty"`
+	NativeWriteIntent bool               `json:"nativeWriteIntent"`
+	NativeApplied     bool               `json:"nativeApplied"`
+	Original          []byte             `json:"original"`
+	OriginalHash      string             `json:"originalHash"`
+	CandidateHash     string             `json:"candidateHash"`
+	Mode              uint32             `json:"mode"`
+	UID               int                `json:"uid"`
+	GID               int                `json:"gid"`
 }
 type configTransaction struct {
 	path    string
@@ -175,7 +176,7 @@ func beginPreparedConfigTransaction(path string, expected, candidate []byte, pre
 	if _, err := rand.Read(nonce); err != nil {
 		return nil, err
 	}
-	journal := configJournal{Version: 4, Operation: hex.EncodeToString(nonce), Original: original, OriginalHash: configHash(original), CandidateHash: configHash(candidate), Mode: uint32(info.Mode().Perm()), UID: int(stat.Uid), GID: int(stat.Gid)}
+	journal := configJournal{Version: 5, Operation: hex.EncodeToString(nonce), Original: original, OriginalHash: configHash(original), CandidateHash: configHash(candidate), Mode: uint32(info.Mode().Perm()), UID: int(stat.Uid), GID: int(stat.Gid)}
 	if prepare != nil {
 		if err := prepare(&journal); err != nil {
 			return nil, err
@@ -216,7 +217,7 @@ func resumeConfigTransaction(path string) (*configTransaction, error) {
 	var journal configJournal
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
-	if decoder.Decode(&journal) != nil || decoder.Decode(new(any)) != io.EOF || journal.Version != 4 || !configNativeJournalOK(journal) || !configIPv6JournalOK(journal.IPv6) || !configIPv6PlanMatches(journal) || !configOperationOK(journal.Operation) || len(journal.Original) > 4<<20 || journal.OriginalHash != configHash(journal.Original) || len(journal.CandidateHash) != 64 || journal.Mode & ^uint32(0777) != 0 || info.Mode().Perm() != 0600 || journal.UID < 0 || journal.GID < 0 {
+	if decoder.Decode(&journal) != nil || decoder.Decode(new(any)) != io.EOF || journal.Version != 5 || !configNativeJournalOK(journal) || !configIPv6JournalOK(journal.IPv6) || !configIPv6PlanMatches(journal) || !configOperationOK(journal.Operation) || len(journal.Original) > 4<<20 || journal.OriginalHash != configHash(journal.Original) || len(journal.CandidateHash) != 64 || journal.Mode & ^uint32(0777) != 0 || info.Mode().Perm() != 0600 || journal.UID < 0 || journal.GID < 0 {
 		return nil, errors.New("invalid configuration journal")
 	}
 	hash, err := hex.DecodeString(journal.CandidateHash)
@@ -421,7 +422,10 @@ func (transaction *configTransaction) saveJournal() error {
 
 func configNativeJournalOK(journal configJournal) bool {
 	if len(journal.NativeOriginal) == 0 {
-		return journal.NativeHash == "" && !journal.NativeApplied && journal.IPv6 == nil
+		return journal.NativeHash == "" && !journal.NativeApplied && !journal.NativeWriteIntent && journal.IPv6 == nil
+	}
+	if journal.NativeApplied && !journal.NativeWriteIntent {
+		return false
 	}
 	if journal.IPv6 != nil && journal.NativeApplied != journal.IPv6.Applied {
 		return false
