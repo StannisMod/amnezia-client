@@ -156,6 +156,56 @@ private slots:
             settings.clearSettings();
         }
     }
+    void pendingPeerRevocationIsDurableAndSeparateFromExport()
+    {
+        const QJsonObject pending{{"version",1},{"clientPublicKey","synthetic-target"},{"original","synthetic-private-revocation-context"}};
+        if (qEnvironmentVariableIsSet("AMNEZIA_TEST_REVOCATION_READER")) {
+            SecureQSettings settings(qEnvironmentVariable("AMNEZIA_TEST_REVOCATION_READER"),"test",nullptr,false);
+            SecureServersRepository servers(&settings); QJsonObject operation;
+            QVERIFY(servers.pendingPeerRevocation(qEnvironmentVariable("AMNEZIA_TEST_PENDING_SERVER"),DockerContainer::WireGuard,operation));
+            QCOMPARE(operation,pending); return;
+        }
+        const auto organization="Amnezia-Pending-Revoke-"+QUuid::createUuid().toString();
+        SecureQSettings settings(organization,"test",nullptr,false);
+        SecureServersRepository servers(&settings);
+        auto administrator=profile(); administrator["userName"]="root";
+        administrator["password"]="synthetic-admin-secret"; administrator["port"]=22;
+        const auto id=servers.addServer({},administrator,serverConfigUtils::SelfHostedAdmin);
+        QJsonObject operation;
+        QVERIFY(servers.pendingPeerRevocation(id,DockerContainer::WireGuard,operation)); QVERIFY(operation.isEmpty());
+        QVERIFY(servers.compareAndSetPendingPeerRevocation(id,DockerContainer::WireGuard,{},pending));
+        QProcess child; auto environment=QProcessEnvironment::systemEnvironment();
+        environment.insert("AMNEZIA_TEST_REVOCATION_READER",organization); environment.insert("AMNEZIA_TEST_PENDING_SERVER",id);
+        child.setProcessEnvironment(environment);
+        child.start(QCoreApplication::applicationFilePath(),{"pendingPeerRevocationIsDurableAndSeparateFromExport"});
+        QVERIFY(child.waitForFinished(30000)); QCOMPARE(child.exitStatus(),QProcess::NormalExit); QCOMPARE(child.exitCode(),0);
+        const QJsonObject exportPending{{"independent-export",true}};
+        QVERIFY(servers.compareAndSetPendingPeerExport(id,DockerContainer::WireGuard,{},exportPending));
+        QVERIFY(servers.pendingPeerRevocation(id,DockerContainer::WireGuard,operation)); QCOMPARE(operation,pending);
+        QVERIFY(!servers.compareAndSetPendingPeerRevocation(id,DockerContainer::WireGuard,{},{{"different",true}}));
+        QVERIFY(!servers.compareAndSetPendingPeerRevocation(id,DockerContainer::Awg,{},pending));
+        QVERIFY(!servers.compareAndSetPendingPeerRevocation("missing",DockerContainer::WireGuard,{},pending));
+        QVERIFY(!settings.backupAppConfig().contains("pendingPeerRevocations"));
+        QVERIFY(!settings.backupAppConfig().contains("synthetic-private-revocation-context"));
+        QVERIFY(!QJsonDocument(*servers.serverJsonById(id)).toJson().contains("synthetic-private-revocation-context"));
+        ExportController exporter(&servers,nullptr);
+        const auto exported=exporter.generateFullAccessConfig(id);
+        const auto json=qUncompress(QByteArray::fromBase64(exported.config.mid(6).toLatin1(),QByteArray::Base64UrlEncoding));
+        QVERIFY(!json.contains("pendingPeerRevocations")); QVERIFY(!json.contains("synthetic-private-revocation-context"));
+        const auto injected=QJsonDocument(QJsonObject{{"Conf/pendingPeerRevocations",QJsonObject{{"untrusted",true}}},{"Conf/testRestore",true}}).toJson();
+        QVERIFY(settings.restoreAppConfig(injected));
+        QVERIFY(servers.pendingPeerRevocation(id,DockerContainer::WireGuard,operation)); QCOMPARE(operation,pending);
+        QVERIFY(servers.compareAndSetPendingPeerRevocation(id,DockerContainer::WireGuard,pending,{}));
+        QVERIFY(servers.pendingPeerExport(id,DockerContainer::WireGuard,operation)); QCOMPARE(operation,exportPending);
+        const auto key="Conf/pendingPeerRevocations";
+        for (const auto &bad: {QByteArray("corrupt"),QByteArray("{\"version\":99,\"operations\":{}}"),
+            QJsonDocument(QJsonObject{{"version",1},{"operations",QJsonObject{{id+":amnezia-wireguard",QJsonObject{}}}}}).toJson()}) {
+            settings.setValue(key,bad);
+            QVERIFY(!servers.pendingPeerRevocation(id,DockerContainer::WireGuard,operation));
+            QVERIFY(!servers.compareAndSetPendingPeerRevocation(id,DockerContainer::WireGuard,{},pending));
+        }
+        settings.clearSettings();
+    }
     void durablePeerExportRejectsStorageFailure()
     {
         if (!qEnvironmentVariableIsSet("AMNEZIA_TEST_STORAGE_FAILURE_CHILD")) {
@@ -171,6 +221,13 @@ private slots:
         QSettings::setPath(QSettings::IniFormat,QSettings::UserScope,blocked);
         SecureQSettings settings("Amnezia-Durable-Failure-"+QUuid::createUuid().toString(),"test",nullptr,false,QSettings::IniFormat);
         QVERIFY(!settings.compareAndSetDurable("Conf/pendingPeerExports",{},QByteArray("must-not-report-durable")));
+        QVERIFY(!settings.compareAndSetDurable("Conf/pendingPeerRevocations",{},QByteArray("must-not-report-durable")));
+        QVERIFY(!settings.value("Conf/pendingPeerExports").isValid());
+        QVERIFY(!settings.value("Conf/pendingPeerRevocations").isValid());
+        const QByteArray previous("previous accepted view");
+        settings.setValue("Conf/pendingPeerRevocations",previous);
+        QVERIFY(!settings.compareAndSetDurable("Conf/pendingPeerRevocations",previous,QByteArray("unconfirmed replacement")));
+        QCOMPARE(settings.value("Conf/pendingPeerRevocations").toByteArray(),previous);
     }
     void oldAdministratorProfileNeedsProbeRefreshOnce()
     {
@@ -380,6 +437,19 @@ private slots:
     }
     void realAdminNewIPv6ProfileExport()
     {
+        if (qEnvironmentVariableIsSet("AMNEZIA_TEST_RESUME_REVOCATION")) {
+            SecureQSettings settings(qEnvironmentVariable("AMNEZIA_TEST_RESUME_REVOCATION"),"test",nullptr,false);
+            SecureServersRepository servers(&settings); UsersController users(&servers);
+            const auto id=qEnvironmentVariable("AMNEZIA_TEST_REVOCATION_SERVER");
+            const auto container=static_cast<DockerContainer>(qEnvironmentVariableIntValue("AMNEZIA_TEST_REVOCATION_CONTAINER"));
+            QJsonObject pending; QVERIFY(servers.pendingPeerRevocation(id,container,pending)); QVERIFY(!pending.isEmpty());
+            // Opening the list after an app restart automatically resumes it.
+            const bool tokenPending=qEnvironmentVariableIsSet("AMNEZIA_TEST_EXPECT_TOKEN_PENDING");
+            QCOMPARE(users.updateClients(id,container),tokenPending?ErrorCode::ConnectionUpdateTokenRevocationPending:ErrorCode::NoError);
+            QVERIFY(servers.pendingPeerRevocation(id,container,pending));
+            QCOMPARE(pending.isEmpty(),!tokenPending);
+            return;
+        }
         if (qEnvironmentVariableIsSet("AMNEZIA_TEST_RESUME_EXPORT_ORGANIZATION")) {
             SecureQSettings settings(qEnvironmentVariable("AMNEZIA_TEST_RESUME_EXPORT_ORGANIZATION"),"test",nullptr,false);
             SecureServersRepository servers(&settings); SecureAppSettingsRepository app(&settings);
@@ -661,7 +731,46 @@ private slots:
             for (int row = 0; row < currentTable.size(); ++row)
                 if (currentTable[row].toObject().value("clientId") == generated.value("client_pub_key")) targetRow = row;
             QVERIFY(targetRow >= 0);
-            QCOMPARE(users.revokeClient(id, targetRow, container), ErrorCode::NoError);
+            if (qEnvironmentVariable("AMNEZIA_PEER_TRANSACTIONS") == "enabled") {
+                const auto name=ContainerUtils::containerToString(container);
+                QCOMPARE(ssh.runScript(credentials,QString("sudo docker exec %1 touch /opt/amnezia/revocation-stop").arg(name)),ErrorCode::NoError);
+                QVERIFY(users.revokeClient(id,targetRow,container)!=ErrorCode::NoError);
+                QJsonObject pending;
+                QVERIFY(servers.pendingPeerRevocation(id,container,pending)); QVERIFY(!pending.isEmpty());
+                auto wrong=pending; wrong["binding"]=QString(64,'0');
+                QVERIFY(servers.compareAndSetPendingPeerRevocation(id,container,pending,wrong));
+                QVERIFY(users.resumePendingPeerRevocation(id,container)!=ErrorCode::NoError);
+                QJsonObject retained; QVERIFY(servers.pendingPeerRevocation(id,container,retained)); QVERIFY(retained==wrong);
+                QVERIFY(servers.compareAndSetPendingPeerRevocation(id,container,wrong,pending));
+                // Preserve an independent metadata addition during interruption.
+                auto parallel=table; parallel.append(QJsonObject{{"clientId","independent-metadata"},{"userData",QJsonObject{{"clientName","preserve"}}}});
+                QCOMPARE(ssh.uploadTextFileToContainer(container,credentials,QString::fromUtf8(QJsonDocument(parallel).toJson()),tablePath),ErrorCode::NoError);
+                QCOMPARE(ssh.runScript(credentials,QString("sudo docker exec %1 rm -f /opt/amnezia/revocation-stop /opt/amnezia/revocation-armed /opt/amnezia/revocation-blocked").arg(name)),ErrorCode::NoError);
+                QCOMPARE(ssh.runScript(credentials,QString("touch /tmp/revocation-reply-arm-%1").arg(name)),ErrorCode::NoError);
+                QProcess child; auto environment=QProcessEnvironment::systemEnvironment();
+                environment.insert("AMNEZIA_TEST_EXPECT_TOKEN_PENDING","1");
+                environment.insert("AMNEZIA_TEST_RESUME_REVOCATION",organization);
+                environment.insert("AMNEZIA_TEST_REVOCATION_SERVER",id);
+                environment.insert("AMNEZIA_TEST_REVOCATION_CONTAINER",QString::number(static_cast<int>(container)));
+                child.setProcessEnvironment(environment); child.start(QCoreApplication::applicationFilePath(),{"realAdminNewIPv6ProfileExport"});
+                QVERIFY(child.waitForFinished(30000)); QCOMPARE(child.exitStatus(),QProcess::NormalExit); QCOMPARE(child.exitCode(),0);
+                QString tokenLoss;
+                QCOMPARE(ssh.runScript(credentials,QString("cat /tmp/revocation-reply-lost-%1").arg(name),
+                    [&](const QString &data,libssh::Client &){tokenLoss+=data;return ErrorCode::NoError;}),ErrorCode::NoError);
+                QCOMPARE(tokenLoss,QString("1"));
+                updates.refresh(userId); QTRY_COMPARE_WITH_TIMEOUT(finished.count(),3,10000); QVERIFY(!finished[2][0].toBool());
+                environment.remove("AMNEZIA_TEST_EXPECT_TOKEN_PENDING"); child.setProcessEnvironment(environment);
+                child.start(QCoreApplication::applicationFilePath(),{"realAdminNewIPv6ProfileExport"});
+                QVERIFY(child.waitForFinished(30000)); QCOMPARE(child.exitStatus(),QProcess::NormalExit); QCOMPARE(child.exitCode(),0);
+                SecureQSettings refreshedSettings(organization,"test",nullptr,false);
+                SecureServersRepository refreshed(&refreshedSettings);
+                QVERIFY(refreshed.pendingPeerRevocation(id,container,retained)); QVERIFY(retained.isEmpty());
+                const auto saved=QJsonDocument::fromJson(ssh.getTextFileFromContainer(container,credentials,tablePath,readError)).array();
+                QCOMPARE(readError,ErrorCode::NoError); QCOMPARE(saved.size(),1);
+                QVERIFY(saved.first()==parallel.last());
+            } else {
+                QCOMPARE(users.revokeClient(id,targetRow,container),ErrorCode::NoError);
+            }
             if (qEnvironmentVariable("AMNEZIA_PEER_TRANSACTIONS") == "enabled") {
                 SshSession proof; ErrorCode observedTable=ErrorCode::NoError;
                 QCOMPARE(proof.getTextFileFromContainer(container,credentials,"/opt/amnezia/protocol-loss-client-table",observedTable),QByteArray("1"));

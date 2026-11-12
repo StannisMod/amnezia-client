@@ -41,6 +41,7 @@ signals:
     void adminConfigRevoked(const QString &serverId, DockerContainer container);
 
 public slots:
+    ErrorCode resumePendingPeerRevocation(const QString &serverId, DockerContainer container);
     ErrorCode updateClients(const QString &serverId, const DockerContainer container);
     ErrorCode appendClient(const QString &serverId, const QString &clientId, const QString &clientName, const DockerContainer container);
     ErrorCode renameClient(const QString &serverId, const int row, const QString &userName, const DockerContainer container, bool addTimeStamp = false);
@@ -48,6 +49,8 @@ public slots:
     ErrorCode revokeClient(const QString &serverId, const ContainerConfig &containerConfig, const DockerContainer container);
 
 private:
+    ErrorCode revokeManagedPeer(const QString &serverId, DockerContainer container, const QString &clientPublicKey,
+                                bool &handled);
     void rememberPendingUpdateRevocation(const QString &serverId, DockerContainer container, const QString &clientPublicKey);
     bool isClientExists(const QString &clientId, const QJsonArray &clientsTable);
     int clientIndexById(const QString &clientId, const QJsonArray &clientsTable);

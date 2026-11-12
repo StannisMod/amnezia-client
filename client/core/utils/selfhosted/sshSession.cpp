@@ -203,9 +203,10 @@ ErrorCode SshSession::protocolConfigTransaction(DockerContainer container, const
     return error;
 }
 
-ErrorCode SshSession::replaceLiveProtocolConfig(DockerContainer container, const ServerCredentials &credentials,
-                                               const QString &expected, const QString &candidate, bool &handled, bool reconcileCommitted, const QStringList &requiredFeatures)
+ErrorCode SshSession::inspectProtocolHelper(DockerContainer container, const ServerCredentials &credentials,
+                                            bool &handled, QJsonObject &capabilities)
 {
+    capabilities = {};
     handled = false;
     if (container != DockerContainer::WireGuard && container != DockerContainer::Awg2) return ErrorCode::NoError;
     QString capability;
@@ -219,9 +220,18 @@ ErrorCode SshSession::replaceLiveProtocolConfig(DockerContainer container, const
     if (capability.trimmed() == "blocked\namnezia_protocol_helper=ok") { handled = true; return ErrorCode::InternalError; }
     if (capability.trimmed() != "transaction\namnezia_protocol_helper=ok") return ErrorCode::InternalError;
     handled = true; // Every subsequent error stays on the transaction path.
-    QJsonObject capabilities;
+    capabilities = {};
     error = protocolConfigTransaction(container, credentials, { {"action", "capabilities"} }, capabilities);
     if (error != ErrorCode::NoError) return error;
+    return ErrorCode::NoError;
+}
+
+ErrorCode SshSession::replaceLiveProtocolConfig(DockerContainer container, const ServerCredentials &credentials,
+                                               const QString &expected, const QString &candidate, bool &handled, bool reconcileCommitted, const QStringList &requiredFeatures)
+{
+    QJsonObject capabilities;
+    auto error = inspectProtocolHelper(container,credentials,handled,capabilities);
+    if (error != ErrorCode::NoError || !handled) return error;
     if (!capabilities.value("features").toArray().contains("native-mutation-v1")) return ErrorCode::InternalError;
     for (const auto &feature : requiredFeatures) {
         if (!capabilities.value("features").toArray().contains(feature)) return ErrorCode::InternalError;

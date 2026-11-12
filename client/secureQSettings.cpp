@@ -24,7 +24,7 @@ namespace {
 }
 
 SecureQSettings::SecureQSettings(const QString &organization, const QString &application, QObject *parent, bool enableEncryption, QSettings::Format format)
-    : QObject { parent }, m_settings(format, QSettings::UserScope, organization, application, parent), encryptedKeys({ "Servers/serversList", "Conf/favoriteLocations", "Conf/proxyUrls/agw_state", "Conf/serverMigration", "Conf/pendingPeerExports" }), m_encryptionEnabled(enableEncryption)
+    : QObject { parent }, m_settings(format, QSettings::UserScope, organization, application, parent), encryptedKeys({ "Servers/serversList", "Conf/favoriteLocations", "Conf/proxyUrls/agw_state", "Conf/serverMigration", "Conf/pendingPeerExports", "Conf/pendingPeerRevocations" }), m_encryptionEnabled(enableEncryption)
 {
     bool encrypted = m_settings.value("Conf/encrypted").toBool();
 
@@ -122,7 +122,14 @@ bool SecureQSettings::compareAndSetDurable(const QString &key, const QVariant &e
     // setValue can refuse encryption when the keychain is unavailable.
     if (value(key) != replacement) return false;
     m_settings.sync();
-    return m_settings.status() == QSettings::NoError;
+    if (m_settings.status() == QSettings::NoError) return true;
+    // An unconfirmed write must not become a resumable operation merely because
+    // it is still visible in our cache. Restore the last accepted local view;
+    // the caller still receives failure even if this cleanup can be flushed.
+    if (expected.isValid()) setValue(key, expected);
+    else remove(key);
+    m_settings.sync();
+    return false;
 }
 
 void SecureQSettings::remove(const QString &key)

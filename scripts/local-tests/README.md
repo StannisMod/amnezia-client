@@ -399,8 +399,36 @@ the real UsersController revoke to complete for WG and AWG; another case checks
 stale-table refusal and preservation of independent metadata. Local rows are
 changed only after the metadata write succeeds. Legacy servers retain direct
 writes. This is not yet a durable transaction across token, peer and table:
-application-restart recovery, partial-revoke receipts and migration of all other
-metadata writers remain required.
+durable server receipts and migration of all other metadata writers remain
+required. Application restart recovery is described below.
+
+Managed WG/current-AWG revocation now persists a separate local context before
+its first server mutation. It binds the exact public key, original/candidate
+configuration and original client table to the administrator credentials,
+container and update-service metadata. The context is encrypted where secure
+settings encryption is enabled and excluded from backup, restore and access
+exports. A failed settings sync restores the previous local view rather than
+leaving an unconfirmed operation in the cache. Export and revocation contexts
+use independent namespaces and conditional durable writes.
+
+Opening the client list resumes a pending revocation. Native completion is
+verified through the existing exact file/runtime checks; metadata removal uses
+a fresh table and preserves independent entries. A modified target entry or
+conflicting native/file state is retained for reconciliation, never overwritten.
+The update token is revoked after verified peer/table removal; failed or lost
+token replies retain the context and return the existing pending-token status.
+A new app process retries the same identity even though the table row is gone.
+Only completion of every step clears the context. Clean legacy servers keep the
+legacy path, and an owned/pending helper cannot downgrade to it.
+
+The required real SSH test interrupts after an actual native removal, rejects
+a changed saved target binding, adds independent client metadata, then uses a
+second Qt process to resume through a deliberately lost metadata reply and a
+lost token-revocation reply. The token must actually reject the signed fetch;
+a third process completes the pending-token retry and clears the context. These
+are deterministic transport failures after effect, not OS process-kill tests.
+Durable terminal server receipts, recovery across later unrelated native edits,
+other metadata writers and the full migration coordinator remain outstanding.
 
 Guarded native rollback now snapshots the canonical candidate digest durably
 before replacing its file. Runtime must match the original or that verified

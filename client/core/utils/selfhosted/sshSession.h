@@ -28,6 +28,8 @@ public:
                                         libssh::ScpOverwriteMode overwriteMode = libssh::ScpOverwriteMode::ScpOverwriteExisting);
     ErrorCode protocolConfigTransaction(DockerContainer container, const ServerCredentials &credentials,
                                         const QJsonObject &request, QJsonObject &response);
+    ErrorCode inspectProtocolHelper(DockerContainer container, const ServerCredentials &credentials,
+                                    bool &handled, QJsonObject &capabilities);
     ErrorCode replaceLiveProtocolConfig(DockerContainer container, const ServerCredentials &credentials,
                                        const QString &expected, const QString &candidate, bool &handled, bool reconcileCommitted = false, const QStringList &requiredFeatures = {});
     QByteArray getTextFileFromContainer(DockerContainer container, const ServerCredentials &credentials, const QString &path,

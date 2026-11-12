@@ -458,6 +458,7 @@ void SecureServersRepository::setDefaultServer(const QString &serverId)
 
 namespace {
 constexpr auto pendingPeerExportsKey = "Conf/pendingPeerExports";
+constexpr auto pendingPeerRevocationsKey = "Conf/pendingPeerRevocations";
 bool decodePendingPeerExports(const QVariant &stored, QJsonObject &root)
 {
     if (!stored.isValid()) { root = {{"version",1},{"operations",QJsonObject{}}}; return true; }
@@ -483,10 +484,21 @@ QString pendingPeerExportId(const QString &id, DockerContainer container)
 
 bool SecureServersRepository::pendingPeerExport(const QString &serverId, DockerContainer container, QJsonObject &operation) const
 {
+    return pendingLocalPeerOperation(pendingPeerExportsKey,serverId,container,operation);
+}
+
+bool SecureServersRepository::pendingPeerRevocation(const QString &serverId, DockerContainer container, QJsonObject &operation) const
+{
+    return pendingLocalPeerOperation(pendingPeerRevocationsKey,serverId,container,operation);
+}
+
+bool SecureServersRepository::pendingLocalPeerOperation(const char *storageKey, const QString &serverId, DockerContainer container,
+                                                      QJsonObject &operation) const
+{
     operation={};
     if (!pendingPeerExportTarget(*this,serverId,container)) return false;
     QJsonObject root;
-    if (!decodePendingPeerExports(m_settings->value(pendingPeerExportsKey),root)) return false;
+    if (!decodePendingPeerExports(m_settings->value(storageKey),root)) return false;
     const auto entry=root.value("operations").toObject().value(pendingPeerExportId(serverId,container));
     if (!entry.isUndefined() && (!entry.isObject() || entry.toObject().isEmpty())) return false;
     operation=entry.toObject();
@@ -496,9 +508,22 @@ bool SecureServersRepository::pendingPeerExport(const QString &serverId, DockerC
 bool SecureServersRepository::compareAndSetPendingPeerExport(const QString &serverId, DockerContainer container,
                                                            const QJsonObject &expected, const QJsonObject &replacement)
 {
+    return compareAndSetLocalPeerOperation(pendingPeerExportsKey,serverId,container,expected,replacement);
+}
+
+bool SecureServersRepository::compareAndSetPendingPeerRevocation(const QString &serverId, DockerContainer container,
+                                                               const QJsonObject &expected, const QJsonObject &replacement)
+{
+    return compareAndSetLocalPeerOperation(pendingPeerRevocationsKey,serverId,container,expected,replacement);
+}
+
+bool SecureServersRepository::compareAndSetLocalPeerOperation(const char *storageKey, const QString &serverId, DockerContainer container,
+                                                           const QJsonObject &expected, const QJsonObject &replacement)
+{
     if (!pendingPeerExportTarget(*this,serverId,container)) return false;
-    if (QJsonDocument(replacement).toJson(QJsonDocument::Compact).size()>12*1024*1024) return false;
-    const auto stored=m_settings->value(pendingPeerExportsKey);
+    const auto maxRecordBytes=qstrcmp(storageKey,pendingPeerRevocationsKey)==0?16*1024*1024:12*1024*1024;
+    if (QJsonDocument(replacement).toJson(QJsonDocument::Compact).size()>maxRecordBytes) return false;
+    const auto stored=m_settings->value(storageKey);
     QJsonObject root;
     if (!decodePendingPeerExports(stored,root)) return false;
     auto operations=root.value("operations").toObject();
@@ -510,5 +535,5 @@ bool SecureServersRepository::compareAndSetPendingPeerExport(const QString &serv
     root["operations"]=operations;
     const auto bytes=QJsonDocument(root).toJson(QJsonDocument::Compact);
     if (bytes.size()>64*1024*1024) return false;
-    return m_settings->compareAndSetDurable(pendingPeerExportsKey,stored,bytes);
+    return m_settings->compareAndSetDurable(storageKey,stored,bytes);
 }

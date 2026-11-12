@@ -52,7 +52,7 @@ private:
     };
 
     QStringList m_fieldsExcludedFromBackup = {
-        "Conf/installationUuid", "Conf/proxyUrls/", "Conf/serverMigration", "Conf/pendingPeerExports",
+        "Conf/installationUuid", "Conf/proxyUrls/", "Conf/serverMigration", "Conf/pendingPeerExports", "Conf/pendingPeerRevocations",
     };
 
     mutable QByteArray m_key;

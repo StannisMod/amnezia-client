@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-"""Discard one successful idempotent issue reply in the disposable daemon only."""
+"""Discard selected successful admin replies in the disposable daemon only."""
 import json
 import os
 from pathlib import Path
@@ -7,7 +7,7 @@ import subprocess
 import sys
 
 real = '/usr/local/bin/docker.real'
-if not sys.argv[1:] or sys.argv[-1] != 'issue' or not Path('/run/amnezia-issue-loss-fixture').exists():
+if not sys.argv[1:] or sys.argv[-1] not in ('issue', 'revoke') or not Path('/run/amnezia-issue-loss-fixture').exists():
     os.execv(real, [real, *sys.argv[1:]])
 labels = json.loads(subprocess.check_output([real, 'info', '--format', '{{json .Labels}}']))
 assert 'amnezia.test-environment=disposable' in labels
@@ -19,6 +19,16 @@ sys.stderr.buffer.write(result.stderr)
 discard = False
 container = request.get('container')
 operation = request.get('operation')
+if sys.argv[-1] == 'revoke':
+    if result.returncode == 0 and container in ('amnezia-wireguard', 'amnezia-awg2'):
+        armed = Path('/tmp/revocation-reply-arm-' + container)
+        if armed.exists():
+            armed.unlink()
+            Path('/tmp/revocation-reply-lost-' + container).write_text('1')
+            discard = True
+    if not discard:
+        sys.stdout.buffer.write(result.stdout)
+    sys.exit(result.returncode)
 if result.returncode == 0 and operation and container in ('amnezia-wireguard', 'amnezia-awg2'):
     reply = json.loads(result.stdout)
     marker = Path('/tmp/issue-reply-loss-' + container)

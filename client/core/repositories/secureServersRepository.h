@@ -55,6 +55,10 @@ public:
                                        const QJsonObject &expected, const QJsonObject &replacement);
 
 
+    bool pendingPeerRevocation(const QString &serverId, DockerContainer container, QJsonObject &operation) const;
+    bool compareAndSetPendingPeerRevocation(const QString &serverId, DockerContainer container,
+                                           const QJsonObject &expected, const QJsonObject &replacement);
+
     QString nextAvailableServerName() const;
 
     void invalidateCache();
@@ -68,6 +72,10 @@ signals:
     void defaultServerChanged(const QString &defaultServerId);
 
 private:
+    bool pendingLocalPeerOperation(const char *storageKey, const QString &serverId, DockerContainer container,
+                                   QJsonObject &operation) const;
+    bool compareAndSetLocalPeerOperation(const char *storageKey, const QString &serverId, DockerContainer container,
+                                        const QJsonObject &expected, const QJsonObject &replacement);
     void loadFromStorage();
     void updateDefaultServerFromStorage();
     void persistDefaultServerFields();
