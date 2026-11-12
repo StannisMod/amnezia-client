@@ -210,7 +210,7 @@ ErrorCode SshSession::replaceLiveProtocolConfig(DockerContainer container, const
     if (container != DockerContainer::WireGuard && container != DockerContainer::Awg2) return ErrorCode::NoError;
     QString capability;
     auto error = runScript(credentials,
-        QString("container_id=$(sudo docker inspect -f '{{.Id}}' %1) && sudo docker exec \"$container_id\" sh -c 'if [ -x /opt/amnezia/config-helper ]; then printf transaction; elif [ -e %2 ] || [ -L %2 ]; then printf blocked; else printf legacy; fi' && printf '\\namnezia_protocol_helper=ok\\n'")
+        QString("container_id=$(sudo docker inspect -f '{{.Id}}' %1) && sudo docker exec \"$container_id\" sh -c 'if [ -x /opt/amnezia/config-helper ]; then printf transaction; else for marker in %2 /opt/amnezia/config-helper.amnezia-owner /opt/amnezia/config-helper.owner.amnezia-lock; do if [ -e \"$marker\" ] || [ -L \"$marker\" ]; then printf blocked; exit 0; fi; done; printf legacy; fi' && printf '\\namnezia_protocol_helper=ok\\n'")
             .arg(ContainerUtils::containerToString(container), container == DockerContainer::Awg2
                 ? "/opt/amnezia/awg/awg0.conf.amnezia-journal" : "/opt/amnezia/wireguard/wg0.conf.amnezia-journal"),
         [&](const QString &data, libssh::Client &) { if (capability.size() + data.size() > 65536) return ErrorCode::InternalError; capability += data; return ErrorCode::NoError; });

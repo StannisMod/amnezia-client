@@ -114,11 +114,17 @@ export AMNEZIA_PEER_TRANSACTIONS=enabled
 timeout 90 "$@" realAdminNewIPv6ProfileExport
 for kind in wireguard awg2; do
     docker exec "$fixture" docker exec "amnezia-$kind" mv /opt/amnezia/config-helper /opt/amnezia/config-helper.fixture-disabled
+    for marker in config-helper.amnezia-owner config-helper.owner.amnezia-lock; do
+        docker exec "$fixture" docker exec "amnezia-$kind" mv "/opt/amnezia/$marker" "/opt/amnezia/$marker.fixture-disabled"
+    done
 done
 export AMNEZIA_PEER_TRANSACTIONS=legacy
 timeout 90 "$@" realAdminNewIPv6ProfileExport
 for kind in wireguard awg2; do
     docker exec "$fixture" docker exec "amnezia-$kind" mv /opt/amnezia/config-helper.fixture-disabled /opt/amnezia/config-helper
+    for marker in config-helper.amnezia-owner config-helper.owner.amnezia-lock; do
+        docker exec "$fixture" docker exec "amnezia-$kind" mv "/opt/amnezia/$marker.fixture-disabled" "/opt/amnezia/$marker"
+    done
 done
 unset AMNEZIA_PEER_TRANSACTIONS
 docker exec -i "$fixture" sh -ec 'umask 077; cat > /tmp/config-transaction-acceptance.py' < "$repo/scripts/local-tests/config-transaction-acceptance.py"

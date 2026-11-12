@@ -296,6 +296,17 @@ private slots:
                 QCOMPARE(manager.protocolConfigTransaction(container, credentials, {
                     {"action", "rollback-live"}, {"operation", staged.value("operation")} }, restored), ErrorCode::NoError);
                 QVERIFY(QString::fromUtf8(manager.getTextFileFromContainer(container, credentials, configPath, read)) == before);
+                // No transaction is pending now. Ownership alone must still
+                // prevent downgrading to an uncoordinated legacy writer.
+                auto restoreOwnedHelper = qScopeGuard([&] { manager.runScript(credentials, restoreCommand); });
+                QCOMPARE(manager.runScript(credentials, QString("sudo docker exec %1 mv /opt/amnezia/config-helper /opt/amnezia/config-helper.fixture-hidden").arg(name)), ErrorCode::NoError);
+                handled = false;
+                QVERIFY(manager.replaceLiveProtocolConfig(container, credentials, before,
+                    before + "\n# blocked managed helper disappearance\n", handled) != ErrorCode::NoError);
+                QVERIFY(handled);
+                QVERIFY(QString::fromUtf8(manager.getTextFileFromContainer(container, credentials, configPath, read)) == before);
+                QCOMPARE(manager.runScript(credentials, restoreCommand), ErrorCode::NoError);
+                restoreOwnedHelper.dismiss();
             }
             const auto exported = exporter.generateConnectionConfig(id, static_cast<int>(container), "synthetic IPv6 peer", true);
             QCOMPARE(exported.errorCode, ErrorCode::NoError); QVERIFY(exported.config.startsWith("vpn://"));

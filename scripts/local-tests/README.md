@@ -99,6 +99,13 @@ existing executables are refused; upgrading relies on the private receipt rather
 than adopting an observed hash. Go tests cover interrupted publication on either
 side of rename, foreign replacement, stale expectations and pending transactions.
 This does not prove original TCP survival or close the legacy-writer bootstrap race.
+Managed-helper disappearance is tested separately after its transaction journal
+has been removed: the app must report a handled error and preserve the config.
+Ownership receipts and the installer lock marker prevent legacy fallback. The
+legacy compatibility phase hides both managed markers as well as the executable
+inside the disposable fixture, representing a genuinely unmanaged old server.
+Native state comparison preserves all peer associations/fields while ignoring
+only unspecified section/field enumeration order; stored config remains byte exact.
 
 
 After building the Linux Qt tests, run:
