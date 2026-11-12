@@ -179,6 +179,47 @@ func applyConfigTransactionRuntime(transaction *configTransaction, container str
 			return err
 		}
 	}
+	if !rollback && transaction.journal.NativeApplied {
+		if err := verifyProtocolCommit(transaction, container); err != nil {
+			return err
+		}
+		return verifyIPv6Commit(transaction, container)
+	}
+	if !rollback && transaction.journal.NativeWriteIntent {
+		native, err := captureNativeProtocol(container)
+		if err != nil {
+			return err
+		}
+		candidate, err := stripNativeProtocol(container, transaction.path)
+		if err != nil {
+			return err
+		}
+		applied, err := classifyInterruptedNative(transaction.journal.NativeOriginal, candidate, native)
+		if err != nil {
+			return err
+		}
+		// Address activation precedes the durable native intent. Do not recreate
+		// an address removed by another actor while this operation was absent.
+		if meta := transaction.journal.IPv6; meta != nil {
+			if meta.Ambiguous {
+				return errConfigConflict
+			}
+			present, err := protocolIPv6Present(container, meta.CIDR)
+			if err != nil {
+				return err
+			}
+			if !present {
+				return errConfigConflict
+			}
+		}
+		if applied {
+			transaction.journal.NativeApplied = true
+			if transaction.journal.IPv6 != nil {
+				transaction.journal.IPv6.Applied = true
+			}
+			return transaction.saveJournal() // Native already matches: no writer.
+		}
+	}
 	if !rollback {
 		// A staged live change spans separate helper invocations. Refuse a
 		// changed runtime before touching addresses or protocol configuration.
@@ -199,8 +240,10 @@ func applyConfigTransactionRuntime(transaction *configTransaction, container str
 				return errConfigConflict
 			}
 		}
-		if err := applyProtocolIPv6(transaction, container); err != nil {
-			return err
+		if !transaction.journal.NativeWriteIntent {
+			if err := applyProtocolIPv6(transaction, container); err != nil {
+				return err
+			}
 		}
 	}
 	if !rollback && !transaction.journal.NativeWriteIntent {
@@ -310,4 +353,28 @@ func sameQuickSettings(original, candidate []byte) bool {
 	a, okA := extract(original)
 	b, okB := extract(candidate)
 	return okA && okB && a == b
+}
+
+// Only the exact original or candidate native state is safe to reconcile. A
+// partial or foreign state retains its journal and must never be overwritten.
+func classifyInterruptedNative(original, candidate, actual []byte) (bool, error) {
+	old, err := canonicalNativeConfig(original)
+	if err != nil {
+		return false, err
+	}
+	next, err := canonicalNativeConfig(candidate)
+	if err != nil {
+		return false, err
+	}
+	current, err := canonicalNativeConfig(actual)
+	if err != nil {
+		return false, err
+	}
+	if current == next {
+		return true, nil
+	}
+	if current == old {
+		return false, nil
+	}
+	return false, errConfigConflict
 }

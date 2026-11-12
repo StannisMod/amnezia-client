@@ -88,3 +88,32 @@ func TestLiveMutationPreservesQuickOnlySettings(t *testing.T) {
 		t.Fatal("closed transaction accepted")
 	}
 }
+
+func TestInterruptedNativeClassification(t *testing.T) {
+	original := []byte("[Interface]\nPrivateKey = " + testKey('P') + "\n[Peer]\nPublicKey = " + testKey('A') + "\nAllowedIPs = 10.8.0.2/32\n")
+	candidate := []byte(strings.Replace(string(original), "10.8.0.2/32", "10.8.0.3/32", 1))
+	applied, err := classifyInterruptedNative(original, candidate, original)
+	if err != nil || applied {
+		t.Fatal("original native state not retryable")
+	}
+	roaming := append(append([]byte{}, candidate...), []byte("Endpoint = 127.0.0.1:19999\n")...)
+	applied, err = classifyInterruptedNative(original, candidate, roaming)
+	if err != nil || !applied {
+		t.Fatal("completed native state not recognized")
+	}
+	foreign := []byte(strings.Replace(string(original), "10.8.0.2/32", "10.8.0.4/32", 1))
+	if _, err := classifyInterruptedNative(original, candidate, foreign); !errors.Is(err, errConfigConflict) {
+		t.Fatal("foreign native state accepted")
+	}
+	partial := append(append([]byte{}, candidate...), []byte("PersistentKeepalive = 25\n")...)
+	if _, err := classifyInterruptedNative(original, candidate, partial); !errors.Is(err, errConfigConflict) {
+		t.Fatal("partial native state accepted")
+	}
+	multiCandidate := append(append([]byte{}, candidate...), []byte("PersistentKeepalive = 25\n")...)
+	if _, err := classifyInterruptedNative(original, multiCandidate, candidate); !errors.Is(err, errConfigConflict) {
+		t.Fatal("partially applied owned changes accepted")
+	}
+	if _, err := classifyInterruptedNative(original, candidate, []byte("invalid")); err == nil {
+		t.Fatal("invalid native state accepted")
+	}
+}

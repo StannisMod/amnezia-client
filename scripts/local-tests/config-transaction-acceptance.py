@@ -36,7 +36,7 @@ for container, binary, interface, path in (
     candidate = original + b'\n# private configuration transaction regression\n'
     peers = sorted(run('docker', 'exec', container, binary, 'show', interface, 'peers').stdout.splitlines())
 
-    def invoke(action, operation=None, expected=None, candidate=None, server_ipv6=None, ok=True, startup=False):
+    def invoke(action, operation=None, expected=None, candidate=None, server_ipv6=None, ok=True, startup=False, no_writer=False):
         request = dict(action=action, container=container)
         if operation is not None:
             request['operation'] = operation
@@ -46,7 +46,10 @@ for container, binary, interface, path in (
             request['candidate'] = base64.b64encode(candidate).decode()
         if server_ipv6 is not None:
             request['serverIpv6'] = server_ipv6
-        result = run('docker', 'exec', '-i', container, helper,
+        command = ['docker', 'exec']
+        if no_writer:
+            command += ['-e', 'PATH=/opt/amnezia/no-writer:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin']
+        result = run(*command, '-i', container, helper,
                      'startup-file-transaction' if startup else 'config-file-transaction',
                      data=json.dumps(request).encode(), ok=ok)
         if not ok:
@@ -88,6 +91,56 @@ for container, binary, interface, path in (
     added_ipv6 = b'fd77::abcd/128' if binary == 'wg' else b'fd88::abcd/128'
     assert original.count(ipv4) == 1
     live_candidate = original.replace(ipv4, ipv4 + b', ' + added_ipv6, 1)
+    # Model process interruption immediately before and after the native command.
+    # Journal edits are confined to this labelled disposable daemon; all native
+    # state changes still use the actual production helper and protocol stack.
+    tool_path = run('docker', 'exec', container, 'sh', '-c', 'command -v ' + binary).stdout.decode().strip()
+    assert tool_path.startswith('/') and all(c.isalnum() or c in '/_-' for c in tool_path)
+    run('docker', 'exec', container, 'mkdir', '-p', '/opt/amnezia/no-writer')
+    block_writer = ('#!/bin/sh\nif [ "$1" = syncconf ]; then touch /opt/amnezia/forbidden-recovery-writer; exit 89; fi\n'
+                    'exec ' + tool_path + ' "$@"\n').encode()
+    run('docker', 'exec', '-i', container, 'sh', '-ec',
+        'umask 077; cat > /opt/amnezia/no-writer/' + binary + '; chmod 700 /opt/amnezia/no-writer/' + binary,
+        data=block_writer)
+
+    def interrupted_flags():
+        edit = "import json,pathlib; p=pathlib.Path(" + repr(path + '.amnezia-journal') + "); j=json.loads(p.read_bytes()); j['nativeWriteIntent']=True; j['nativeApplied']=False; p.write_text(json.dumps(j))"
+        run('docker', 'exec', container, 'python3', '-c', edit)
+
+    def restore_baseline():
+        pending = invoke('stage-live', expected=live_candidate, candidate=original)
+        invoke('apply-commit', operation=pending['operation'])
+        assert allowed() == original_allowed
+
+    before_write = invoke('stage-live', expected=original, candidate=live_candidate)
+    interrupted_flags()
+    invoke('apply-commit', operation=before_write['operation'])
+    assert allowed() != original_allowed
+    restore_baseline()
+    after_write = invoke('stage-live', expected=original, candidate=live_candidate)
+    invoke('apply', operation=after_write['operation'])
+    applied_routes = allowed()
+    interrupted_flags()
+    invoke('apply-commit', operation=after_write['operation'], no_writer=True)
+    assert allowed() == applied_routes
+    assert run('docker', 'exec', container, 'test', '-e', '/opt/amnezia/forbidden-recovery-writer', ok=False).returncode
+    restore_baseline()
+    conflict = invoke('stage-live', expected=original, candidate=live_candidate)
+    interrupted_flags()
+    recovery_peer = base64.b64encode(b'B' * 32).decode()
+    recovery_routes = dict(original_allowed)[recovery_peer.encode()]
+    run('docker', 'exec', container, binary, 'set', interface, 'peer', recovery_peer,
+        'allowed-ips', ','.join(route.decode() for route in recovery_routes) + ',fd99::55/128')
+    foreign_routes = allowed()
+    invoke('apply-commit', operation=conflict['operation'], ok=False, no_writer=True)
+    assert allowed() == foreign_routes
+    assert run('docker', 'exec', container, 'test', '-e', '/opt/amnezia/forbidden-recovery-writer', ok=False).returncode
+    assert run('docker', 'exec', container, 'cat', path).stdout == live_candidate
+    run('docker', 'exec', container, binary, 'set', interface, 'peer', recovery_peer,
+        'allowed-ips', ','.join(route.decode() for route in recovery_routes))
+    invoke('apply-commit', operation=conflict['operation'])
+    restore_baseline()
+
     # Failure between persisted stage and native apply must recover both states.
     unapplied = invoke('stage', expected=original, candidate=live_candidate)
     assert allowed() == original_allowed
@@ -131,6 +184,8 @@ for container, binary, interface, path in (
     independently_changed = allowed()
     invoke('commit', operation=pending_live['operation'], ok=False)
     invoke('apply-commit', operation=pending_live['operation'], ok=False)
+    invoke('apply', operation=pending_live['operation'], ok=False, no_writer=True)
+    assert run('docker', 'exec', container, 'test', '-e', '/opt/amnezia/forbidden-recovery-writer', ok=False).returncode
     assert allowed() == independently_changed
     invoke('check-live', expected=live_candidate, ok=False)
     assert allowed() == independently_changed
@@ -252,6 +307,17 @@ for container, binary, interface, path in (
     run('docker', 'exec', container, binary, 'set', interface, 'peer', roaming_key, 'endpoint', '127.0.0.1:29222')
     applied = invoke('apply', operation=staged_ipv6['operation'])
     assert applied['ipv6Applied']
+    interrupted_ipv6 = "import json,pathlib; p=pathlib.Path(" + repr(path + '.amnezia-journal') + "); j=json.loads(p.read_bytes()); j['nativeApplied']=False; j['ipv6']['applied']=False; p.write_text(json.dumps(j))"
+    run('docker', 'exec', container, 'python3', '-c', interrupted_ipv6)
+    run('docker', 'exec', container, 'ip', '-6', 'addr', 'del', target, 'dev', interface)
+    invoke('apply', operation=staged_ipv6['operation'], ok=False, no_writer=True)
+    assert target.encode() not in addresses(), 'recovery recreated independently removed IPv6 address'
+    assert unrelated.encode() in addresses()
+    assert run('docker', 'exec', container, 'test', '-e', '/opt/amnezia/forbidden-recovery-writer', ok=False).returncode
+    run('docker', 'exec', container, 'ip', '-6', 'addr', 'add', target, 'dev', interface, 'nodad')
+    applied = invoke('apply', operation=staged_ipv6['operation'], no_writer=True)
+    assert applied['ipv6Applied'] and applied['nativeApplied']
+    assert run('docker', 'exec', container, 'test', '-e', '/opt/amnezia/forbidden-recovery-writer', ok=False).returncode
     invoke('prepare-forwarding', operation='0' * 64, ok=False)
     startup = run('docker', 'exec', container, 'cat', '/opt/amnezia/start.sh').stdout
     old_startup = b'#!/bin/bash\ntouch /opt/amnezia/forbidden-startup-body\nexit 87\n'

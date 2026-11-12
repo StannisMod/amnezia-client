@@ -438,6 +438,9 @@ private slots:
                 QJsonObject stagedStatus;
                 QCOMPARE(manager.protocolConfigTransaction(container,credentials,{{"action","status"}},stagedStatus),ErrorCode::NoError);
                 QVERIFY(!stagedStatus.value("nativeWriteIntent").toBool()); QVERIFY(!stagedStatus.value("nativeApplied").toBool());
+                // Model a crash after intent persistence but before native write.
+                const auto intentScript=QString("sudo docker exec %1 python3 -c 'import json,pathlib; p=pathlib.Path(\"%2.amnezia-journal\"); j=json.loads(p.read_bytes()); j[\"nativeWriteIntent\"]=True; p.write_text(json.dumps(j))'").arg(name,configPath);
+                QCOMPARE(manager.runScript(credentials,intentScript),ErrorCode::NoError);
                 auto confirmOwnership=[&](const QJsonObject &state) {
                     return reopened.compareAndSetPendingPeerExport(id,container,persisted,state);
                 };

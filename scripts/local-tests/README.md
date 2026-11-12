@@ -349,7 +349,22 @@ file hashes. If the stage reply is lost, it can recover the matching journal. If
 the apply-commit reply is lost, `check-live` confirms an exact committed file and
 native state under the lock; a pending journal is never reported as committed.
 Repeating an already-applied apply-commit verifies and commits without applying
-again. Errors on this path never fall back to direct file upload. An absent
+again. With `native-reconcile-v1`, an interrupted durable native-write intent
+can be classified under the existing lock: exact original runtime permits retry,
+exact candidate runtime records completion without another native writer, and
+partial/foreign runtime retains the journal and refuses. IPv6 address activation
+must still be present and unambiguous; recovery does not recreate a removed
+address. Plain repeated `apply` also verifies an already-applied state instead
+of overwriting later changes. Older helpers do not get the client's new recovery
+permission without advertising the capability.
+
+The real fixture models crash windows by changing only its private journal flags
+before/after actual WG/AWG application. A PATH-scoped writer sentinel makes any
+unexpected `syncconf` fail and leave a marker. Candidate reconciliation must
+succeed without that marker; foreign state must be refused without it. IPv6
+coverage removes/restores only a fixture-owned address and checks that recovery
+preserves the removal until explicitly restored. This is state-equivalent crash
+injection, not an actual process kill. Errors on this path never fall back to direct file upload. An absent
 helper with a pending journal is also refused; a clean old server without a
 helper retains the existing behavior.
 
