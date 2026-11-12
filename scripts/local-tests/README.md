@@ -151,6 +151,17 @@ or upgrading delivery. Helper installation does not restart the VPN. Unknown
 existing executables are refused; upgrading relies on the private receipt rather
 than adopting an observed hash. Go tests cover interrupted publication on either
 side of rename, foreign replacement, stale expectations and pending transactions.
+Owned deployment can also restore a missing executable or replace it while a
+known version 5/6 config/startup journal is pending. The candidate's shared reader
+validates the private journal, role, hashes and current file metadata under both
+configuration locks. Installation does not apply, roll back or rewrite that
+journal. Unknown formats, linked/foreign journals or inconsistent files refuse
+publication. A first-install intent alone is not proof of prior ownership; retry
+cannot adopt an independently created pending transaction. The native fixture
+stages a real `stage-live`, removes only the helper, restores it through the exact
+packaged installer and checks byte-identical journal, config, native state,
+process and addresses. Unknown format is tested with an existing and absent
+executable; the test then restores only its own known journal and finishes it.
 This does not prove original TCP survival or close the legacy-writer bootstrap race.
 Managed-helper disappearance is tested separately after its transaction journal
 has been removed: the app must report a handled error and preserve the config.

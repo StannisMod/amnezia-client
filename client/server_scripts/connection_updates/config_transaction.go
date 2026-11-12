@@ -211,23 +211,39 @@ func resumeConfigTransaction(path string) (*configTransaction, error) {
 			lock.Close()
 		}
 	}()
-	raw, info, err := readConfigFile(path+".amnezia-journal", 12<<20)
+	journal, err := readLockedConfigJournal(path)
 	if err != nil {
 		return nil, err
+	}
+
+	accepted = true
+	return &configTransaction{path, lock, journal}, nil
+}
+
+// Caller holds the matching configuration lock. Reading never changes a pending
+// operation, which lets a candidate helper prove format compatibility first.
+func readLockedConfigJournal(path string) (configJournal, error) {
+	raw, info, err := readConfigFile(path+".amnezia-journal", 12<<20)
+	if err != nil {
+		return configJournal{}, err
 	}
 	var journal configJournal
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
 	if decoder.Decode(&journal) != nil || decoder.Decode(new(any)) != io.EOF || (journal.Version != 5 && journal.Version != 6) || !configNativeJournalOK(journal) || !configIPv6JournalOK(journal.IPv6) || !configIPv6PlanMatches(journal) || !configOperationOK(journal.Operation) || len(journal.Original) > 4<<20 || journal.OriginalHash != configHash(journal.Original) || len(journal.CandidateHash) != 64 || journal.Mode & ^uint32(0777) != 0 || info.Mode().Perm() != 0600 || journal.UID < 0 || journal.GID < 0 {
-		return nil, errors.New("invalid configuration journal")
+		return configJournal{}, errors.New("invalid configuration journal")
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || stat.Nlink != 1 || int(stat.Uid) != os.Geteuid() || int(stat.Uid) != journal.UID || int(stat.Gid) != journal.GID {
+		return configJournal{}, errors.New("foreign configuration journal")
 	}
 	hash, err := hex.DecodeString(journal.CandidateHash)
 	if err != nil || hex.EncodeToString(hash) != journal.CandidateHash {
-		return nil, errors.New("invalid candidate digest")
+		return configJournal{}, errors.New("invalid candidate digest")
 	}
-	accepted = true
-	return &configTransaction{path, lock, journal}, nil
+	return journal, nil
 }
+
 func (transaction *configTransaction) close() {
 	if transaction.lock != nil {
 		transaction.lock.Close()
@@ -520,6 +536,10 @@ func configNativeJournalOK(journal configJournal) bool {
 // currently installed helper. expectedHash must come from the owned deployment
 // record; observing an arbitrary existing file does not establish ownership.
 func installConfigHelper(configPath, startupPath, target string, candidate []byte, expectedHash string) error {
+	return installConfigHelperCompatible(configPath, startupPath, target, candidate, expectedHash, false)
+}
+
+func installConfigHelperCompatible(configPath, startupPath, target string, candidate []byte, expectedHash string, ownedRecovery bool) error {
 	if len(candidate) == 0 || len(candidate) > 64<<20 || (expectedHash != "" && !configOperationOK(expectedHash)) {
 		return errors.New("invalid helper installation")
 	}
@@ -537,8 +557,27 @@ func installConfigHelper(configPath, startupPath, target string, candidate []byt
 		locks = append(locks, lock)
 	}
 	for _, path := range []string{configPath, startupPath} {
-		if _, err := os.Lstat(path + ".amnezia-journal"); !errors.Is(err, os.ErrNotExist) {
-			return errors.New("pending transaction prevents helper replacement")
+		if _, err := os.Lstat(path + ".amnezia-journal"); errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if !ownedRecovery {
+			return errors.New("unowned pending transaction prevents helper replacement")
+		}
+		journal, err := readLockedConfigJournal(path)
+		if err != nil {
+			return err
+		}
+		if path == startupPath && (len(journal.NativeOriginal) != 0 || journal.IPv6 != nil) {
+			return errors.New("unsupported startup journal")
+		}
+		data, info, err := readConfigFile(path, 4<<20)
+		if err != nil {
+			return err
+		}
+		stat, ok := info.Sys().(*syscall.Stat_t)
+		hash := configHash(data)
+		if !ok || stat.Nlink != 1 || int(stat.Uid) != journal.UID || int(stat.Gid) != journal.GID || uint32(info.Mode().Perm()) != journal.Mode || (hash != journal.OriginalHash && hash != journal.CandidateHash) {
+			return errConfigConflict
 		}
 	}
 	current, info, err := readConfigFile(target, 64<<20)
@@ -569,6 +608,9 @@ func installConfigHelper(configPath, startupPath, target string, candidate []byt
 // The receipt is written before publication, so a lost process/SSH session can
 // reconcile either side of the atomic rename without trusting an unknown file.
 func installOwnedConfigHelper(configPath, startupPath, target string, candidate []byte) error {
+	if len(candidate) == 0 || len(candidate) > 64<<20 {
+		return errors.New("invalid helper candidate")
+	}
 	lock, err := lockConfig(target + ".owner")
 	if err != nil {
 		return err
@@ -604,10 +646,16 @@ func installOwnedConfigHelper(configPath, startupPath, target string, candidate 
 		}
 	} else if !errors.Is(readErr, os.ErrNotExist) {
 		return readErr
-	} else if state.Installed != "" {
-		return errors.New("owned helper disappeared")
 	}
-	state = receipt{Version: 1, Installed: expected, Candidate: configHash(candidate)}
+	// A staged first-install receipt alone is not ownership of a journal that
+	// appeared independently. Require prior completed installation or the
+	// actual previously published candidate executable.
+	ownedRecovery := readErr == nil || state.Installed != ""
+	installed := expected
+	if errors.Is(readErr, os.ErrNotExist) {
+		installed = state.Installed
+	}
+	state = receipt{Version: 1, Installed: installed, Candidate: configHash(candidate)}
 	pending, err := json.Marshal(state)
 	if err != nil {
 		return err
@@ -615,7 +663,7 @@ func installOwnedConfigHelper(configPath, startupPath, target string, candidate 
 	if err := writeConfigAtomic(receiptPath, pending, 0600, os.Geteuid(), os.Getegid(), false); err != nil {
 		return err
 	}
-	if err := installConfigHelper(configPath, startupPath, target, candidate, expected); err != nil {
+	if err := installConfigHelperCompatible(configPath, startupPath, target, candidate, expected, ownedRecovery); err != nil {
 		return err
 	}
 	state.Installed = state.Candidate

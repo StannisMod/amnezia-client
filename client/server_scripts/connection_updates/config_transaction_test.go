@@ -524,3 +524,161 @@ func TestRollbackEvidenceValidationAndV5Upgrade(t *testing.T) {
 		t.Fatal("journal not upgraded durably")
 	}
 }
+
+func TestOwnedHelperRestorePreservesKnownPendingJournal(t *testing.T) {
+	path, original, candidate := transactionFixture(t)
+	dir := filepath.Dir(path)
+	target := filepath.Join(dir, "helper")
+	startup := filepath.Join(dir, "start.sh")
+	old, next := []byte("owned old helper"), []byte("verified replacement helper")
+	if err := installOwnedConfigHelper(path, startup, target, old); err != nil {
+		t.Fatal(err)
+	}
+	pending, err := beginConfigTransaction(path, original, candidate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending.close()
+	raw, err := os.ReadFile(path + ".amnezia-journal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(target); err != nil {
+		t.Fatal(err)
+	}
+	if err := installOwnedConfigHelper(path, startup, target, next); err != nil {
+		t.Fatal(err)
+	}
+	assertConfig(t, target, next)
+	assertConfig(t, path, candidate)
+	assertConfig(t, path+".amnezia-journal", raw)
+	var journal map[string]any
+	json.Unmarshal(raw, &journal)
+	journal["version"] = 99
+	unknown, _ := json.Marshal(journal)
+	if err := os.WriteFile(path+".amnezia-journal", unknown, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := installOwnedConfigHelper(path, startup, target, old); err == nil {
+		t.Fatal("unknown pending format replaced existing helper")
+	}
+	assertConfig(t, target, next)
+	assertConfig(t, path+".amnezia-journal", unknown)
+	if err := os.Remove(target); err != nil {
+		t.Fatal(err)
+	}
+	if err := installOwnedConfigHelper(path, startup, target, old); err == nil {
+		t.Fatal("unknown pending format adopted")
+	}
+	if _, err := os.Lstat(target); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("helper published over unknown journal")
+	}
+	assertConfig(t, path, candidate)
+	assertConfig(t, path+".amnezia-journal", unknown)
+	if err := os.WriteFile(path+".amnezia-journal", raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := installOwnedConfigHelper(path, startup, target, next); err != nil {
+		t.Fatal(err)
+	}
+	assertConfig(t, path+".amnezia-journal", raw)
+}
+
+func TestUnownedPendingJournalCannotBeAdoptedByRetry(t *testing.T) {
+	path, original, candidate := transactionFixture(t)
+	dir := filepath.Dir(path)
+	target := filepath.Join(dir, "helper")
+	startup := filepath.Join(dir, "start.sh")
+	pending, err := beginConfigTransaction(path, original, candidate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending.close()
+	raw, _ := os.ReadFile(path + ".amnezia-journal")
+	for i := 0; i < 2; i++ {
+		if err := installOwnedConfigHelper(path, startup, target, []byte("verified candidate")); err == nil {
+			t.Fatal("unowned journal adopted")
+		}
+		if _, err := os.Lstat(target); !errors.Is(err, os.ErrNotExist) {
+			t.Fatal("unowned helper published")
+		}
+		assertConfig(t, path, candidate)
+		assertConfig(t, path+".amnezia-journal", raw)
+	}
+}
+
+func TestHelperRestoreRejectsLinkedPendingJournal(t *testing.T) {
+	path, original, candidate := transactionFixture(t)
+	dir := filepath.Dir(path)
+	target := filepath.Join(dir, "helper")
+	startup := filepath.Join(dir, "start.sh")
+	if err := installOwnedConfigHelper(path, startup, target, []byte("owned helper")); err != nil {
+		t.Fatal(err)
+	}
+	pending, err := beginConfigTransaction(path, original, candidate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending.close()
+	journal := path + ".amnezia-journal"
+	other := filepath.Join(dir, "linked-journal")
+	if err := os.Link(journal, other); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(target); err != nil {
+		t.Fatal(err)
+	}
+	if err := installOwnedConfigHelper(path, startup, target, []byte("replacement")); err == nil {
+		t.Fatal("linked pending journal accepted")
+	}
+	if _, err := os.Lstat(target); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("helper published with linked journal")
+	}
+	if err := os.Remove(other); err != nil {
+		t.Fatal(err)
+	}
+	if err := installOwnedConfigHelper(path, startup, target, []byte("replacement")); err != nil {
+		t.Fatal(err)
+	}
+	assertConfig(t, path, candidate)
+}
+
+func TestOwnedHelperPreservesStartupJournalAndRejectsNativeRole(t *testing.T) {
+	path, _, _ := transactionFixture(t)
+	dir := filepath.Dir(path)
+	target := filepath.Join(dir, "helper")
+	startup := filepath.Join(dir, "start.sh")
+	if err := installOwnedConfigHelper(path, startup, target, []byte("first helper")); err != nil {
+		t.Fatal(err)
+	}
+	original, candidate := []byte("#!/bin/sh\n# original startup\n"), []byte("#!/bin/sh\n# staged startup\n")
+	if err := os.WriteFile(startup, original, 0700); err != nil {
+		t.Fatal(err)
+	}
+	pending, err := beginConfigTransaction(startup, original, candidate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending.close()
+	raw, _ := os.ReadFile(startup + ".amnezia-journal")
+	if err := installOwnedConfigHelper(path, startup, target, []byte("second helper")); err != nil {
+		t.Fatal(err)
+	}
+	assertConfig(t, startup, candidate)
+	assertConfig(t, startup+".amnezia-journal", raw)
+	pending, err = resumeConfigTransaction(startup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending.journal.NativeOriginal = []byte("native snapshot must not be in startup journal")
+	pending.journal.NativeHash = configHash(pending.journal.NativeOriginal)
+	if err := pending.saveJournal(); err != nil {
+		t.Fatal(err)
+	}
+	pending.close()
+	if err := installOwnedConfigHelper(path, startup, target, []byte("third helper")); err == nil {
+		t.Fatal("native startup journal accepted")
+	}
+	assertConfig(t, target, []byte("second helper"))
+	assertConfig(t, startup, candidate)
+}
