@@ -96,9 +96,7 @@ void UsersController::migration(const QByteArray &clientsTableString, QJsonArray
         QJsonObject client;
         client[configKey::clientId] = clientId;
 
-        QJsonObject userData;
-        userData[configKey::clientName] = clientsTableObj.value(clientId).toObject().value(configKey::clientName);
-        client[configKey::userData] = userData;
+        client[configKey::userData] = clientsTableObj.value(clientId).toObject();
 
         clientsTable.push_back(client);
     }
@@ -545,6 +543,7 @@ ErrorCode UsersController::updateClients(const QString &serverId, const DockerCo
         return error;
     }
 
+    const auto previousTable=m_clientsTable;
     m_clientsTable = QJsonDocument::fromJson(clientsTableString).array();
 
     const QString xrayVolumeUuid =
@@ -569,9 +568,15 @@ ErrorCode UsersController::updateClients(const QString &serverId, const DockerCo
 
         const QByteArray newClientsTableString = QJsonDocument(m_clientsTable).toJson();
         if (clientsTableString != newClientsTableString) {
-            error = sshSession.uploadTextFileToContainer(container, credentials, newClientsTableString, clientsTableFile);
-            if (error != ErrorCode::NoError) {
-                logger.error() << "Failed to upload the clientsTable file to the server";
+            bool managed=false;
+            error=sshSession.replaceClientTable(container,credentials,clientsTableString,newClientsTableString,managed,
+                !QJsonDocument::fromJson(clientsTableString).isArray());
+            if (error==ErrorCode::NoError && !managed)
+                error=sshSession.uploadTextFileToContainer(container,credentials,newClientsTableString,clientsTableFile);
+            if (error!=ErrorCode::NoError) {
+                m_clientsTable=previousTable; emit clientsUpdated(m_clientsTable);
+                logger.error()<<"Failed to conditionally migrate the clientsTable file";
+                return error;
             }
         }
     }
@@ -626,6 +631,42 @@ ErrorCode UsersController::updateClients(const QString &serverId, const DockerCo
 }
 
 
+ErrorCode UsersController::updateManagedClientMetadata(DockerContainer container, const ServerCredentials &credentials,
+                                                        const QString &clientId, const QJsonObject &patch, bool allowInsert,
+                                                        bool &handled, QJsonObject &client, bool &inserted)
+{
+    SshSession ssh; QJsonObject capabilities;
+    auto error=ssh.inspectProtocolHelper(container,credentials,handled,capabilities);
+    if (error!=ErrorCode::NoError || !handled) return error;
+    inserted=false;
+    if (clientId.isEmpty() || !capabilities.value("features").toArray().contains("client-table-cas-v1")) return ErrorCode::InternalError;
+    const auto path=QString("/opt/amnezia/%1/clientsTable").arg(ContainerUtils::containerTypeToString(container));
+    const auto expected=ssh.getTextFileFromContainer(container,credentials,path,error);
+    if (error!=ErrorCode::NoError) return error;
+    const auto document=QJsonDocument::fromJson(expected);
+    if (!document.isArray()) return ErrorCode::InternalError;
+    auto table=document.array(); int row=-1;
+    for (int i=0;i<table.size();++i) {
+        if (!table[i].isObject()) return ErrorCode::InternalError;
+        if (table[i].toObject().value(configKey::clientId).toString()!=clientId) continue;
+        if (row>=0) return ErrorCode::InternalError;
+        row=i;
+    }
+    if (row<0 && !allowInsert) return ErrorCode::InternalError;
+    client=row<0?QJsonObject{{configKey::clientId,clientId}}:table[row].toObject();
+    if (client.contains(configKey::userData) && !client.value(configKey::userData).isObject()) return ErrorCode::InternalError;
+    auto data=client.value(configKey::userData).toObject();
+    for (auto it=patch.begin();it!=patch.end();++it) data[it.key()]=it.value();
+    client[configKey::userData]=data;
+    inserted=row<0;
+    if (inserted) table.append(client); else table[row]=client;
+    bool transactional=false;
+    error=ssh.replaceClientTable(container,credentials,expected,QJsonDocument(table).toJson(),transactional);
+    if (error!=ErrorCode::NoError || !transactional) return error==ErrorCode::NoError?ErrorCode::InternalError:error;
+    m_clientsTable=table;
+    return ErrorCode::NoError;
+}
+
 ErrorCode UsersController::appendClient(const QString &serverId, const QString &clientId, const QString &clientName, const DockerContainer container)
 {
     ErrorCode error = ErrorCode::NoError;
@@ -651,6 +692,16 @@ ErrorCode UsersController::appendClient(const QString &serverId, const QString &
         }
     }
 
+    bool managed=false,inserted=false; QJsonObject managedClient;
+    error=updateManagedClientMetadata(container,credentials,clientId,{{configKey::clientName,clientName},
+        {configKey::creationDate,QDateTime::currentDateTime().toString()}},true,managed,managedClient,inserted);
+    if (managed || error!=ErrorCode::NoError) {
+        if (error==ErrorCode::NoError) {
+            if (inserted) emit clientAdded(managedClient);
+            emit clientsUpdated(m_clientsTable);
+        }
+        return error;
+    }
     int existingIndex = clientIndexById(clientId, m_clientsTable);
     if (existingIndex >= 0) {
         return renameClient(serverId, existingIndex, clientName, container, true);
@@ -663,9 +714,9 @@ ErrorCode UsersController::appendClient(const QString &serverId, const QString &
     userData[configKey::clientName] = clientName;
     userData[configKey::creationDate] = QDateTime::currentDateTime().toString();
     client[configKey::userData] = userData;
-    m_clientsTable.push_back(client);
+    auto updatedTable=m_clientsTable; updatedTable.push_back(client);
 
-    const QByteArray clientsTableString = QJsonDocument(m_clientsTable).toJson();
+    const QByteArray clientsTableString = QJsonDocument(updatedTable).toJson();
 
     QString clientsTableFile = QString("/opt/amnezia/%1/clientsTable");
     if (container == DockerContainer::OpenVpn) {
@@ -680,6 +731,7 @@ ErrorCode UsersController::appendClient(const QString &serverId, const QString &
         return error;
     }
 
+    m_clientsTable=updatedTable;
     emit clientAdded(client);
     emit clientsUpdated(m_clientsTable);
     return error;
@@ -702,6 +754,15 @@ ErrorCode UsersController::renameClient(const QString &serverId, const int row, 
         return ErrorCode::InternalError;
     }
 
+    const auto key=m_clientsTable.at(row).toObject().value(configKey::clientId).toString();
+    QJsonObject patch{{configKey::clientName,clientName}};
+    if (addTimeStamp) patch[configKey::creationDate]=QDateTime::currentDateTime().toString();
+    bool managed=false,inserted=false; QJsonObject renamed;
+    const auto managedError=updateManagedClientMetadata(container,credentials,key,patch,false,managed,renamed,inserted);
+    if (managed || managedError!=ErrorCode::NoError) {
+        if (managedError==ErrorCode::NoError) emit clientsUpdated(m_clientsTable);
+        return managedError;
+    }
     auto client = m_clientsTable.at(row).toObject();
     auto userData = client[configKey::userData].toObject();
     userData[configKey::clientName] = clientName;
@@ -710,9 +771,9 @@ ErrorCode UsersController::renameClient(const QString &serverId, const int row, 
     }
     client[configKey::userData] = userData;
 
-    m_clientsTable.replace(row, client);
+    auto updatedTable=m_clientsTable; updatedTable.replace(row,client);
 
-    const QByteArray clientsTableString = QJsonDocument(m_clientsTable).toJson();
+    const QByteArray clientsTableString = QJsonDocument(updatedTable).toJson();
 
     QString clientsTableFile = QString("/opt/amnezia/%1/clientsTable");
     if (container == DockerContainer::OpenVpn) {
@@ -727,6 +788,7 @@ ErrorCode UsersController::renameClient(const QString &serverId, const int row, 
         return error;
     }
 
+    m_clientsTable=updatedTable;
     if (addTimeStamp) {
         emit clientsUpdated(m_clientsTable);
     } else {

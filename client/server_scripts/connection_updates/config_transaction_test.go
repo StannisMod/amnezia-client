@@ -1119,3 +1119,71 @@ func TestOwnedHelperUpgradePreservesReceiptsAndRejectsUnknownFormat(t *testing.T
 	assertConfig(t, path+".amnezia-receipts", saved)
 	assertConfig(t, path, original)
 }
+
+func TestClientTableMigrationPreservesLegacyDataAndRejectsStaleOrLossyWrites(t *testing.T) {
+	for _, legacy := range [][]byte{[]byte(`{"peer":{"clientName":"old","custom":{"n":7,"flag":true},"creationDate":"keep"}}`), {}, []byte(`{}`)} {
+		path, _, _ := transactionFixture(t)
+		table := filepath.Join(filepath.Dir(path), "clientsTable")
+		if err := os.WriteFile(table, legacy, 0640); err != nil {
+			t.Fatal(err)
+		}
+		candidate := []byte(`[{"clientId":"peer","userData":{"creationDate":"keep","custom":{"flag":true,"n":7},"clientName":"old"}}]`)
+		invoke := func(action string, expected, replacement []byte) error {
+			raw, err := json.Marshal(configTransactionRequest{Action: action, Container: "amnezia-wireguard", Expected: expected, Candidate: replacement})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var output bytes.Buffer
+			return configTransactionCommand(bytes.NewReader(raw), &output, map[string]string{"amnezia-wireguard": path})
+		}
+		if len(legacy) > 2 {
+			for _, lossy := range [][]byte{[]byte(`[]`), []byte(`[{"clientId":"peer","userData":{"clientName":"old"}}]`), []byte(`[{"clientId":"peer","userData":{"creationDate":"changed","custom":{"flag":true,"n":7},"clientName":"old"}}]`)} {
+				if err := invoke("migrate-client-table", legacy, lossy); err == nil {
+					t.Fatal("legacy metadata loss accepted")
+				}
+				assertConfig(t, table, legacy)
+			}
+		}
+		if err := invoke("replace-client-table", legacy, candidate); err == nil {
+			t.Fatal("ordinary CAS silently migrated legacy metadata")
+		}
+		if err := invoke("migrate-client-table", legacy, candidate); err != nil {
+			t.Fatal(err)
+		}
+		assertConfig(t, table, candidate)
+		if err := invoke("check-client-table", candidate, nil); err != nil {
+			t.Fatal("migration reply could not be reconciled", err)
+		}
+		if err := invoke("migrate-client-table", legacy, candidate); !errors.Is(err, errConfigConflict) {
+			t.Fatal("stale migration accepted", err)
+		}
+		info, err := os.Stat(table)
+		if err != nil || info.Mode().Perm() != 0640 {
+			t.Fatal("migration changed mode", err)
+		}
+	}
+	for _, invalid := range [][]byte{[]byte(`null`), []byte(`{"peer":null}`), []byte(`{"peer":3}`), []byte(`{"":{}}`), []byte(`broken`)} {
+		if validLegacyClientTable(invalid) {
+			t.Fatal("malformed legacy table accepted")
+		}
+	}
+}
+
+func TestLegacyMigrationComparesNumbersWithoutRounding(t *testing.T) {
+	for _, pair := range [][2]string{{"1e3", "1000"}, {"1.0", "1"}, {"-0.00e100", "0"}, {"123.4500", "12345e-2"}, {"1e9223372036854775807", "10e9223372036854775806"}} {
+		if !equalMetadataJSON(json.Number(pair[0]), json.Number(pair[1])) {
+			t.Fatal("equivalent numeric value rejected", pair)
+		}
+	}
+	for _, pair := range [][2]string{{"9007199254740993", "9007199254740992"}, {"1.0000000000000001", "1"}, {"1e3", "1001"}, {"1e9223372036854775807", "1e-9223372036854775808"}} {
+		if equalMetadataJSON(json.Number(pair[0]), json.Number(pair[1])) {
+			t.Fatal("numeric data loss accepted", pair)
+		}
+	}
+	old := []byte(`{"peer":{"clientName":"old","custom":{"n":1e3,"large":9007199254740993}}}`)
+	good := []byte(`[{"clientId":"peer","userData":{"custom":{"large":9007199254740993,"n":1000},"clientName":"old"}}]`)
+	bad := bytes.Replace(good, []byte("9007199254740993"), []byte("9007199254740992"), 1)
+	if !clientTableMigrationPreserves(old, good) || clientTableMigrationPreserves(old, bad) {
+		t.Fatal("nested numeric migration guard is not exact")
+	}
+}

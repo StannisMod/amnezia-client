@@ -32,6 +32,8 @@ public:
                                     bool &handled, QJsonObject &capabilities);
     ErrorCode replaceLiveProtocolConfig(DockerContainer container, const ServerCredentials &credentials,
                                        const QString &expected, const QString &candidate, bool &handled, bool reconcileCommitted = false, const QStringList &requiredFeatures = {});
+    ErrorCode replaceClientTable(DockerContainer container, const ServerCredentials &credentials,
+                                 const QByteArray &expected, const QByteArray &candidate, bool &handled, bool migration = false);
     QByteArray getTextFileFromContainer(DockerContainer container, const ServerCredentials &credentials, const QString &path,
                                         ErrorCode &errorCode);
 

@@ -8,9 +8,11 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"math/big"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"unicode/utf8"
@@ -373,12 +375,12 @@ func configTransactionCommand(input io.Reader, output io.Writer, paths map[strin
 		if request.Operation != "" || len(request.Expected) != 0 || len(request.Candidate) != 0 || request.ServerIPv6 != "" {
 			return errors.New("unexpected capability fields")
 		}
-		return json.NewEncoder(output).Encode(map[string]any{"version": 1, "features": []string{"native-mutation-v1", "native-reconcile-v1", "native-rollback-guard-v1", "native-stage-restart-v1", "client-table-cas-v1", "native-receipt-v1"}})
+		return json.NewEncoder(output).Encode(map[string]any{"version": 1, "features": []string{"native-mutation-v1", "native-reconcile-v1", "native-rollback-guard-v1", "native-stage-restart-v1", "client-table-cas-v1", "native-receipt-v1", "client-table-migration-v1"}})
 	}
 	if request.Action == "prepare-receipt" || request.Action == "receipt-status" || request.Action == "check-revoked-peer" || request.Action == "ack-receipt" {
 		return configReceiptCommand(path, request, output)
 	}
-	if request.Action == "replace-client-table" || request.Action == "check-client-table" {
+	if request.Action == "replace-client-table" || request.Action == "check-client-table" || request.Action == "migrate-client-table" {
 		return clientTableTransaction(path, request, output)
 	}
 	if request.Action == "check-live" {
@@ -763,10 +765,11 @@ func installOwnedConfigHelper(configPath, startupPath, target string, candidate 
 // replace a table from a stale snapshot or mutate it during a pending peer edit.
 // This is a separate durable step; it does not claim atomicity with native state.
 func clientTableTransaction(configPath string, request configTransactionRequest, output io.Writer) error {
-	if request.Operation != "" || request.ServerIPv6 != "" || !validClientTable(request.Expected) {
+	migration := request.Action == "migrate-client-table"
+	if request.Operation != "" || request.ServerIPv6 != "" || !(validClientTable(request.Expected) || migration && validLegacyClientTable(request.Expected)) {
 		return errors.New("invalid client table request")
 	}
-	if request.Action == "replace-client-table" {
+	if request.Action == "replace-client-table" || migration {
 		if !validClientTable(request.Candidate) {
 			return errors.New("invalid replacement client table")
 		}
@@ -778,6 +781,9 @@ func clientTableTransaction(configPath string, request configTransactionRequest,
 		return err
 	}
 	defer lock.Close()
+	if _, err := readConfigReceipts(configPath); err != nil {
+		return err
+	}
 	if _, err := os.Lstat(configPath + ".amnezia-journal"); !errors.Is(err, os.ErrNotExist) {
 		return errors.New("configuration transaction is pending")
 	}
@@ -787,14 +793,17 @@ func clientTableTransaction(configPath string, request configTransactionRequest,
 		return err
 	}
 	stat, ok := info.Sys().(*syscall.Stat_t)
-	if !ok || stat.Nlink != 1 || int(stat.Uid) != os.Geteuid() || info.Mode().Perm()&0022 != 0 || !validClientTable(current) {
+	if !ok || stat.Nlink != 1 || int(stat.Uid) != os.Geteuid() || info.Mode().Perm()&0022 != 0 || !(validClientTable(current) || migration && validLegacyClientTable(current)) {
 		return errors.New("unsafe client table")
 	}
 	if !bytes.Equal(current, request.Expected) {
 		return errConfigConflict
 	}
+	if migration && !clientTableMigrationPreserves(current, request.Candidate) {
+		return errors.New("legacy client metadata would be lost")
+	}
 	result := current
-	if request.Action == "replace-client-table" && !bytes.Equal(current, request.Candidate) {
+	if (request.Action == "replace-client-table" || migration) && !bytes.Equal(current, request.Candidate) {
 		if err := writeConfigAtomic(path, request.Candidate, info.Mode(), int(stat.Uid), int(stat.Gid), false); err != nil {
 			return err
 		}
@@ -1075,4 +1084,145 @@ func receiptRemovedPeer(original, candidate []byte) (string, error) {
 		return "", errors.New("receipt does not revoke a peer")
 	}
 	return removed, nil
+}
+
+func validLegacyClientTable(raw []byte) bool {
+	if len(raw) > 4<<20 || !utf8.Valid(raw) {
+		return false
+	}
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return true
+	}
+	var entries map[string]json.RawMessage
+	if json.Unmarshal(raw, &entries) != nil || entries == nil {
+		return false
+	}
+	for key, value := range entries {
+		var object map[string]json.RawMessage
+		if key == "" || json.Unmarshal(value, &object) != nil || object == nil {
+			return false
+		}
+	}
+	return true
+}
+func clientTableMigrationPreserves(original, candidate []byte) bool {
+	if validClientTable(original) || len(bytes.TrimSpace(original)) == 0 {
+		return true
+	}
+	var old map[string]any
+	var next []map[string]any
+	decode := func(raw []byte, target any) bool {
+		decoder := json.NewDecoder(bytes.NewReader(raw))
+		decoder.UseNumber()
+		return decoder.Decode(target) == nil
+	}
+	if !decode(original, &old) || !decode(candidate, &next) {
+		return false
+	}
+	for key, userData := range old {
+		matches := 0
+		for _, entry := range next {
+			if entry["clientId"] == key {
+				matches++
+				if !equalMetadataJSON(entry["userData"], userData) {
+					return false
+				}
+			}
+		}
+		if matches != 1 {
+			return false
+		}
+	}
+	return true
+}
+
+// Compare JSON numbers exactly without expanding exponents or rounding through
+// float64. Serializer changes such as 1e3 -> 1000 must not block migration,
+// whereas loss of a low bit in a large integer must be rejected.
+func metadataNumber(raw string) (string, bool) {
+	negative := strings.HasPrefix(raw, "-")
+	if negative {
+		raw = raw[1:]
+	}
+	parts := strings.SplitN(strings.ToLower(raw), "e", 2)
+	mantissa := strings.SplitN(parts[0], ".", 2)
+	fraction := 0
+	digits := mantissa[0]
+	if len(mantissa) == 2 {
+		fraction = len(mantissa[1])
+		digits += mantissa[1]
+	}
+	digits = strings.TrimLeft(digits, "0")
+	if digits == "" {
+		return "0", true
+	}
+	trimmed := strings.TrimRight(digits, "0")
+	trailing := len(digits) - len(trimmed)
+	digits = trimmed
+	exponent := int64(0)
+	if len(parts) == 2 {
+		var err error
+		exponent, err = strconv.ParseInt(parts[1], 10, 64)
+		if err != nil {
+			return "", false
+		}
+	}
+	power := big.NewInt(exponent)
+	power.Add(power, big.NewInt(int64(trailing-fraction)))
+	sign := ""
+	if negative {
+		sign = "-"
+	}
+	return sign + digits + "e" + power.String(), true
+}
+func equalMetadataJSON(left, right any) bool {
+	switch a := left.(type) {
+	case map[string]any:
+		b, ok := right.(map[string]any)
+		if !ok || len(a) != len(b) {
+			return false
+		}
+		for key, value := range a {
+			other, exists := b[key]
+			if !exists || !equalMetadataJSON(value, other) {
+				return false
+			}
+		}
+		return true
+	case []any:
+		b, ok := right.([]any)
+		if !ok || len(a) != len(b) {
+			return false
+		}
+		for i, value := range a {
+			if !equalMetadataJSON(value, b[i]) {
+				return false
+			}
+		}
+		return true
+	case json.Number:
+		b, ok := right.(json.Number)
+		if !ok {
+			return false
+		}
+		if a == b {
+			return true
+		}
+		x, ok := metadataNumber(string(a))
+		if !ok {
+			return false
+		}
+		y, ok := metadataNumber(string(b))
+		return ok && x == y
+	case string:
+		b, ok := right.(string)
+		return ok && a == b
+	case bool:
+		b, ok := right.(bool)
+		return ok && a == b
+	case nil:
+		return right == nil
+	default:
+		return false
+	}
 }

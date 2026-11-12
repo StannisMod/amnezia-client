@@ -432,6 +432,34 @@ mutation during both receipt recovery and the final ACK retry. These are
 transport failures after effect, not OS process-kill tests. Other metadata
 writers and the full migration coordinator remain outstanding.
 
+Normal WG/current-AWG client-table migration, addition and rename now use the
+same conditional writer as revocation. Addition/upsert and rename read a fresh
+server array and patch only the selected key's user data. Other entries and
+unknown fields survive; the displayed row index is never used as the remote
+identity. Failed writes do not publish the attempted local changes. Managed
+rename emits a full model update so a changed server order cannot rename a
+stale row. Clean unmanaged servers and other protocols keep the legacy path.
+
+`client-table-migration-v1` adds `migrate-client-table` for a known legacy JSON
+object or an existing empty file. The helper verifies exact old bytes and
+preservation of every legacy entry and all its user data, including unknown
+nested fields. Numeric comparison preserves exact decimal values without
+float64 rounding or exponent expansion: 1e3 and 1000 compare equal, but loss of
+a bit in a large integer is rejected. Lossy/stale conversions, corrupt input
+and pending native journals are refused. The old migration dropped fields other than clientName;
+it now copies the complete object. Lost migration replies use the locked new
+array check. Unknown receipt formats also block metadata mutations.
+
+A separate required SSH case for WG and AWG migrates actual old metadata through
+the app with a lost success reply, reorders/changes another entry, renames from
+the stale displayed row and verifies preservation. It also loses the rename
+reply, refuses rename during a real staged native transaction, upserts twice
+without duplicates, and refuses corrupt old data without changing disk or the
+last accepted model. These steps leave the actual config/native state intact.
+This covers cooperating normal client-table writers; peer-scoped intent
+coordination with pending revocation, bootstrap, backend updates, archive/restore
+and other protocol writers still need the full migration coordinator.
+
 The server helper also advertises `native-receipt-v1`. A caller with a durable
 local operation ID can opt in with `prepare-receipt` before staging. The fixed
 sidecar store binds that ID to the original/candidate hashes under the protocol
@@ -445,7 +473,8 @@ consistent current file/native state and absence of the exact removed key. It
 can confirm removal after another peer's settings change without replaying the
 old configuration. A reintroduced key causes refusal. This check has no native
 writer; the required WG/AWG fixture uses a failing writer sentinel and verifies
-byte identity of the later file/native state. Wrong context, duplicate/ambiguous
+byte identity of the later file and equality of every native field/value,
+independent of the AWG peer serialization order. Wrong context, duplicate/ambiguous
 removals and pending receipts cannot establish completion.
 
 Receipts contain hashes and IDs, not configurations or private keys. They are

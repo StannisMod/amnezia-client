@@ -51,6 +51,9 @@ public slots:
 private:
     ErrorCode revokeManagedPeer(const QString &serverId, DockerContainer container, const QString &clientPublicKey,
                                 bool &handled);
+    ErrorCode updateManagedClientMetadata(DockerContainer container, const ServerCredentials &credentials,
+                                         const QString &clientId, const QJsonObject &userDataPatch, bool allowInsert,
+                                         bool &handled, QJsonObject &client, bool &inserted);
     void rememberPendingUpdateRevocation(const QString &serverId, DockerContainer container, const QString &clientPublicKey);
     bool isClientExists(const QString &clientId, const QJsonArray &clientsTable);
     int clientIndexById(const QString &clientId, const QJsonArray &clientsTable);

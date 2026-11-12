@@ -435,6 +435,82 @@ private slots:
             QCOMPARE(read,ErrorCode::NoError);
         }
     }
+    void realAdminManagedClientMetadata()
+    {
+        const auto host=qEnvironmentVariable("AMNEZIA_SSH_PROBE_HOST");
+        if (host.isEmpty()) QSKIP("Run scripts/local-tests/path-probe-ssh.sh with this test executable");
+        ServerCredentials credentials; credentials.hostName=host; credentials.port=qEnvironmentVariableIntValue("AMNEZIA_SSH_PROBE_PORT");
+        credentials.userName="root"; credentials.secretData="synthetic-probe-fixture";
+        for (const auto container:{DockerContainer::WireGuard,DockerContainer::Awg2}) {
+            SecureQSettings settings("Amnezia-Managed-Metadata-"+QUuid::createUuid().toString(),"test",nullptr,false);
+            SecureServersRepository servers(&settings);
+            auto administrator=profile(container==DockerContainer::Awg2); administrator.remove("connectionUpdates");
+            administrator["hostName"]=host; administrator["userName"]=credentials.userName;
+            administrator["password"]=credentials.secretData; administrator["port"]=credentials.port;
+            const auto id=servers.addServer({},administrator,serverConfigUtils::SelfHostedAdmin);
+            SshSession ssh; ErrorCode error=ErrorCode::NoError;
+            const auto name=ContainerUtils::containerToString(container);
+            const auto tablePath=QString("/opt/amnezia/%1/clientsTable").arg(ContainerUtils::containerTypeToString(container));
+            const QString configPath=container==DockerContainer::Awg2?"/opt/amnezia/awg/awg0.conf":"/opt/amnezia/wireguard/wg0.conf";
+            const auto config=ssh.getTextFileFromContainer(container,credentials,configPath,error); QCOMPARE(error,ErrorCode::NoError);
+            const auto baseline=ssh.getTextFileFromContainer(container,credentials,tablePath,error); QCOMPARE(error,ErrorCode::NoError);
+            const auto a=QString::fromLatin1(QByteArray(32,'A').toBase64()),b=QString::fromLatin1(QByteArray(32,'B').toBase64());
+            const auto y=QString::fromLatin1(QByteArray(32,'Y').toBase64());
+            const QJsonObject oldData{{"clientName","old A"},{"creationDate","keep"},{"number",1000},{"custom",QJsonObject{{"nested",QJsonArray{true,7}}}}};
+            auto legacy=QJsonDocument(QJsonObject{{a,oldData},{b,QJsonObject{{"clientName","old B"}}}}).toJson();
+            legacy.replace("\"number\": 1000","\"number\": 1e3"); QVERIFY(legacy.contains("1e3"));
+            QCOMPARE(ssh.uploadTextFileToContainer(container,credentials,QString::fromUtf8(legacy),tablePath),ErrorCode::NoError);
+            QCOMPARE(ssh.runScript(credentials,QString("sudo docker exec %1 rm -f /opt/amnezia/protocol-loss-client-table-migration").arg(name)),ErrorCode::NoError);
+            UsersController users(&servers); QSignalSpy listed(&users,&UsersController::clientsUpdated);
+            QCOMPARE(users.updateClients(id,container),ErrorCode::NoError); QVERIFY(!listed.isEmpty());
+            auto raw=ssh.getTextFileFromContainer(container,credentials,tablePath,error); QCOMPARE(error,ErrorCode::NoError);
+            auto table=QJsonDocument::fromJson(raw).array();
+            auto rowFor=[](const QJsonArray &entries,const QString &key){for (int i=0;i<entries.size();++i) if(entries[i].toObject().value("clientId")==key)return i;return -1;};
+            const auto aRow=rowFor(table,a),bRow=rowFor(table,b); QVERIFY(aRow>=0 && bRow>=0);
+            QVERIFY(table[aRow].toObject().value("userData").toObject()==oldData);
+            QCOMPARE(ssh.getTextFileFromContainer(container,credentials,"/opt/amnezia/protocol-loss-client-table-migration",error),QByteArray("1")); QCOMPARE(error,ErrorCode::NoError);
+            const auto stale=qvariant_cast<QJsonArray>(listed.last().first()); const auto staleRow=rowFor(stale,a); QVERIFY(staleRow>=0);
+            auto changedB=table[bRow].toObject(); changedB["external"]=QJsonObject{{"preserve",true}}; table[bRow]=changedB;
+            table.append(QJsonObject{{"clientId","independent metadata"},{"unknown",QJsonArray{1,2,3}}});
+            auto moved=table.takeAt(aRow); table.append(moved);
+            bool handled=false; auto parallel=QJsonDocument(table).toJson();
+            QCOMPARE(ssh.replaceClientTable(container,credentials,raw,parallel,handled),ErrorCode::NoError); QVERIFY(handled);
+            QCOMPARE(ssh.runScript(credentials,QString("sudo docker exec %1 rm -f /opt/amnezia/protocol-loss-client-table").arg(name)),ErrorCode::NoError);
+            QCOMPARE(users.renameClient(id,staleRow,"new A",container),ErrorCode::NoError);
+            raw=ssh.getTextFileFromContainer(container,credentials,tablePath,error); QCOMPARE(error,ErrorCode::NoError);
+            auto renamed=QJsonDocument::fromJson(raw).array();
+            QVERIFY(renamed[rowFor(renamed,b)]==changedB); QVERIFY(renamed[rowFor(renamed,"independent metadata")]==table[rowFor(table,"independent metadata")]);
+            auto expectedData=oldData; expectedData["clientName"]="new A";
+            QVERIFY(renamed[rowFor(renamed,a)].toObject().value("userData").toObject()==expectedData);
+            QCOMPARE(ssh.getTextFileFromContainer(container,credentials,"/opt/amnezia/protocol-loss-client-table",error),QByteArray("1")); QCOMPARE(error,ErrorCode::NoError);
+            QJsonObject pending;
+            QCOMPARE(ssh.protocolConfigTransaction(container,credentials,{{"action","stage-live"},{"expected",QString::fromLatin1(config.toBase64())},
+                {"candidate",QString::fromLatin1((config+"\n# metadata writer barrier\n").toBase64())}},pending),ErrorCode::NoError);
+            const auto currentView=qvariant_cast<QJsonArray>(listed.last().first()); const auto row=rowFor(currentView,a); QVERIFY(row>=0);
+            const auto signalsBefore=listed.count();
+            QVERIFY(users.renameClient(id,row,"blocked rename",container)!=ErrorCode::NoError); QCOMPARE(listed.count(),signalsBefore);
+            QVERIFY(ssh.getTextFileFromContainer(container,credentials,tablePath,error)==raw); QCOMPARE(error,ErrorCode::NoError);
+            QJsonObject rolledBack;
+            QCOMPARE(ssh.protocolConfigTransaction(container,credentials,{{"action","rollback-live"},{"operation",pending.value("operation")}},rolledBack),ErrorCode::NoError);
+            QCOMPARE(users.appendClient(id,y,"new metadata",container),ErrorCode::NoError);
+            QCOMPARE(users.appendClient(id,y,"updated metadata",container),ErrorCode::NoError);
+            raw=ssh.getTextFileFromContainer(container,credentials,tablePath,error); QCOMPARE(error,ErrorCode::NoError);
+            const auto appended=QJsonDocument::fromJson(raw).array(); int matches=0;
+            for (const auto &entry:appended) if(entry.toObject().value("clientId")==y) ++matches;
+            QCOMPARE(matches,1); QCOMPARE(appended[rowFor(appended,y)].toObject().value("userData").toObject().value("clientName").toString(),QString("updated metadata"));
+            QVERIFY(appended[rowFor(appended,b)]==changedB);
+            // Malformed old data must not be replaced with generated defaults.
+            const auto beforeCorruptView=qvariant_cast<QJsonArray>(listed.last().first());
+            QCOMPARE(ssh.uploadTextFileToContainer(container,credentials,"corrupt legacy metadata",tablePath),ErrorCode::NoError);
+            QVERIFY(users.updateClients(id,container)!=ErrorCode::NoError);
+            QVERIFY(qvariant_cast<QJsonArray>(listed.last().first())==beforeCorruptView);
+            QCOMPARE(ssh.getTextFileFromContainer(container,credentials,tablePath,error),QByteArray("corrupt legacy metadata")); QCOMPARE(error,ErrorCode::NoError);
+            QCOMPARE(ssh.uploadTextFileToContainer(container,credentials,QString::fromUtf8(baseline),tablePath),ErrorCode::NoError);
+            QJsonObject native;
+            QCOMPARE(ssh.protocolConfigTransaction(container,credentials,{{"action","check-live"},{"expected",QString::fromLatin1(config.toBase64())}},native),ErrorCode::NoError); QVERIFY(native.value("current").toBool());
+            settings.clearSettings();
+        }
+    }
     void realAdminV1RevocationContext()
     {
         const auto host=qEnvironmentVariable("AMNEZIA_SSH_PROBE_HOST");

@@ -179,7 +179,7 @@ ErrorCode SshSession::protocolConfigTransaction(DockerContainer container, const
 {
     if (container != DockerContainer::WireGuard && container != DockerContainer::Awg2) return ErrorCode::InternalError;
     const auto action = input.value("action").toString();
-    if (action != "capabilities" && action != "stage-live" && action != "apply-commit" && action != "status" && action != "rollback-live" && action != "check-live" && action != "discard-stage" && action != "replace-client-table" && action != "check-client-table" && action != "prepare-receipt" && action != "receipt-status" && action != "check-revoked-peer" && action != "ack-receipt") return ErrorCode::InternalError;
+    if (action != "capabilities" && action != "stage-live" && action != "apply-commit" && action != "status" && action != "rollback-live" && action != "check-live" && action != "discard-stage" && action != "replace-client-table" && action != "check-client-table" && action != "prepare-receipt" && action != "receipt-status" && action != "check-revoked-peer" && action != "ack-receipt" && action != "migrate-client-table") return ErrorCode::InternalError;
     auto request = input; request["container"] = ContainerUtils::containerToString(container);
     const auto folder = "/tmp/amnezia-protocol-request-" + QUuid::createUuid().toString(QUuid::Id128);
     auto error = runScript(credentials, "umask 077 && mkdir '" + folder + "'");
@@ -291,6 +291,28 @@ ErrorCode SshSession::replaceLiveProtocolConfig(DockerContainer container, const
         {"expected", QString::fromLatin1(replacement.toBase64())} }, current) == ErrorCode::NoError
         && current.value("current").toBool() && current.value("candidateHash") == candidateHash) return ErrorCode::NoError;
     return error == ErrorCode::NoError ? ErrorCode::InternalError : error;
+}
+
+ErrorCode SshSession::replaceClientTable(DockerContainer container, const ServerCredentials &credentials,
+                                       const QByteArray &expected, const QByteArray &candidate, bool &handled, bool migration)
+{
+    QJsonObject capabilities;
+    auto error=inspectProtocolHelper(container,credentials,handled,capabilities);
+    if (error!=ErrorCode::NoError || !handled) return error;
+    if (!capabilities.value("features").toArray().contains("client-table-cas-v1")
+        || (migration && !capabilities.value("features").toArray().contains("client-table-migration-v1"))
+        || expected.size()>4*1024*1024 || candidate.size()>4*1024*1024 || !QJsonDocument::fromJson(candidate).isArray())
+        return ErrorCode::InternalError;
+    const auto hash=QString::fromLatin1(QCryptographicHash::hash(candidate,QCryptographicHash::Sha256).toHex());
+    QJsonObject result;
+    error=protocolConfigTransaction(container,credentials,{{"action",migration?"migrate-client-table":"replace-client-table"},
+        {"expected",QString::fromLatin1(expected.toBase64())},{"candidate",QString::fromLatin1(candidate.toBase64())}},result);
+    if (error==ErrorCode::NoError && result.value("current").toBool() && result.value("candidateHash")==hash) return ErrorCode::NoError;
+    result={};
+    const auto check=protocolConfigTransaction(container,credentials,{{"action","check-client-table"},
+        {"expected",QString::fromLatin1(candidate.toBase64())}},result);
+    if (check==ErrorCode::NoError && result.value("current").toBool() && result.value("candidateHash")==hash) return ErrorCode::NoError;
+    return error==ErrorCode::NoError?ErrorCode::InternalError:error;
 }
 
 QByteArray SshSession::getTextFileFromContainer(DockerContainer container, const ServerCredentials &credentials, const QString &path,

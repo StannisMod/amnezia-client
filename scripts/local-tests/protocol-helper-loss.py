@@ -36,6 +36,8 @@ if result.returncode == 0 and request.get('action') == 'apply-commit':
         sys.exit(86)
 if result.returncode == 0 and request.get('action') == 'replace-client-table':
     discard = Path('/opt/amnezia/protocol-loss-client-table')
+if result.returncode == 0 and request.get('action') == 'migrate-client-table':
+    discard = Path('/opt/amnezia/protocol-loss-client-table-migration')
 if result.returncode == 0 and request.get('action') == 'ack-receipt':
     discard = Path('/opt/amnezia/protocol-loss-receipt-ack')
 if discard is not None and not discard.exists():
