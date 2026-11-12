@@ -3,22 +3,28 @@
 set -euo pipefail
 if [[ $# -eq 0 ]]; then echo 'Usage: path-probe-ssh.sh TEST_EXECUTABLE [runner arguments...]' >&2; exit 2; fi
 repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
+python3 "$repo/scripts/local-tests/test_docker_image_config_digest.py"
 if ! docker image inspect amnezia-local-vpn-tests >/dev/null 2>&1; then
     docker build --network host -t amnezia-local-vpn-tests -f "$repo/scripts/local-tests/Dockerfile.vpn" "$repo/scripts/local-tests"
 fi
 tool_image=$(docker image inspect -f '{{.Id}}' amnezia-local-vpn-tests)
-image_contents='{{json .RootFS.Layers}} {{json .Config}} {{.Os}} {{.Architecture}}'
-tool_contents=$(docker image inspect -f "$image_contents" "$tool_image")
+tool_os=$(docker image inspect -f '{{.Os}}' "$tool_image")
+tool_arch=$(docker image inspect -f '{{.Architecture}}' "$tool_image")
 snapshotter=${AMNEZIA_SSH_PROBE_CONTAINERD_SNAPSHOTTER:-true}
 [[ "$snapshotter" == true || "$snapshotter" == false ]] || { echo 'Invalid SSH fixture image store' >&2; exit 2; }
 echo "SSH fixture image: $tool_image"
 fixture="amnezia-probe-ssh-$RANDOM-$(date +%s)"
 network="$fixture-net"
+transfer_tag="$fixture-image"
+image_archive=$(mktemp)
 cleanup() {
     docker rm -f -v "$fixture" >/dev/null 2>&1 || true
     docker network rm "$network" >/dev/null 2>&1 || true
+    docker image rm "$transfer_tag" >/dev/null 2>&1 || true
+    rm -f "$image_archive"
 }
 trap cleanup EXIT
+docker image tag "$tool_image" "$transfer_tag"
 docker network create --internal "$network" >/dev/null
 docker run --pull=never -d --privileged --name "$fixture" --network "$network" -e DOCKER_TLS_CERTDIR= \
     "$tool_image" --host=unix:///var/run/docker.sock --feature "containerd-snapshotter=$snapshotter" --label amnezia.test-environment=disposable >/dev/null
@@ -31,13 +37,16 @@ if [[ "$ready" != true ]]; then docker logs "$fixture"; exit 1; fi
 # No registry access from the internal network: preload this local tool image.
 # Export the named reference as well: containerd-backed Docker can omit the
 # reference when exporting by config ID, leaving that ID unavailable to run.
-docker image save amnezia-local-vpn-tests | docker exec -i "$fixture" docker image load >/dev/null
-loaded_image=$(docker exec "$fixture" docker image inspect -f '{{.Id}}' amnezia-local-vpn-tests)
+docker image save "$transfer_tag" > "$image_archive"
+tool_config=$(python3 "$repo/scripts/local-tests/docker_image_config_digest.py" --os "$tool_os" --arch "$tool_arch" < "$image_archive")
+docker exec -i "$fixture" docker image load < "$image_archive" >/dev/null
+loaded_image=$(docker exec "$fixture" docker image inspect -f '{{.Id}}' "$transfer_tag")
 # Classic Docker identifies a config, containerd identifies a manifest/index.
-# Compare the ordered rootfs digests, runtime config and platform across stores,
-# then pin the destination daemon's immutable ID for its subsequent runs.
-loaded_contents=$(docker exec "$fixture" docker image inspect -f "$image_contents" "$loaded_image")
-[[ "$loaded_contents" == "$tool_contents" ]] || { echo 'SSH fixture image contents changed during transfer' >&2; exit 1; }
+# Inspect JSON also varies across engine API versions. Compare the actual
+# archived config, which includes runtime settings and ordered rootfs digests.
+loaded_config=$(docker exec "$fixture" docker image save "$transfer_tag" | python3 "$repo/scripts/local-tests/docker_image_config_digest.py" --os "$tool_os" --arch "$tool_arch")
+echo "SSH fixture config identity: $tool_config -> $loaded_config"
+[[ "$loaded_config" == "$tool_config" ]] || { echo 'SSH fixture archived config changed during transfer' >&2; exit 1; }
 echo "SSH fixture loaded image: $loaded_image (containerd=$snapshotter)"
 for kind in wireguard awg2; do
     iface=wg0; addresses='ip address add 10.77.0.9/24 dev wg0; ip address add fd77::1/64 dev wg0'
