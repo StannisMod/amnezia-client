@@ -36,7 +36,7 @@ for container, binary, interface, path in (
     candidate = original + b'\n# private configuration transaction regression\n'
     peers = sorted(run('docker', 'exec', container, binary, 'show', interface, 'peers').stdout.splitlines())
 
-    def invoke(action, operation=None, expected=None, candidate=None, server_ipv6=None, ok=True):
+    def invoke(action, operation=None, expected=None, candidate=None, server_ipv6=None, ok=True, startup=False):
         request = dict(action=action, container=container)
         if operation is not None:
             request['operation'] = operation
@@ -46,7 +46,8 @@ for container, binary, interface, path in (
             request['candidate'] = base64.b64encode(candidate).decode()
         if server_ipv6 is not None:
             request['serverIpv6'] = server_ipv6
-        result = run('docker', 'exec', '-i', container, helper, 'config-file-transaction',
+        result = run('docker', 'exec', '-i', container, helper,
+                     'startup-file-transaction' if startup else 'config-file-transaction',
                      data=json.dumps(request).encode(), ok=ok)
         if not ok:
             assert result.returncode and not result.stdout, 'invalid request was accepted'
@@ -215,7 +216,17 @@ for container, binary, interface, path in (
     run('docker', 'exec', '-i', container, 'sh', '-ec', 'cat > /opt/amnezia/start.sh', data=old_startup)
     invoke('prepare-forwarding', operation=staged_ipv6['operation'], ok=False)
     assert run('docker', 'exec', container, 'test', '-e', '/opt/amnezia/forbidden-startup-body', ok=False).returncode != 0
-    run('docker', 'exec', '-i', container, 'sh', '-ec', 'cat > /opt/amnezia/start.sh', data=startup)
+    upgrade = invoke('stage', expected=old_startup, candidate=startup, startup=True)
+    recovered_upgrade = invoke('status', startup=True)
+    assert recovered_upgrade['operation'] == upgrade['operation']
+    invoke('rollback', operation='0' * 64, startup=True, ok=False)
+    invoke('rollback', operation=upgrade['operation'], startup=True)
+    assert run('docker', 'exec', container, 'cat', '/opt/amnezia/start.sh').stdout == old_startup
+    upgrade = invoke('stage', expected=old_startup, candidate=startup, startup=True)
+    invoke('commit', operation=upgrade['operation'], startup=True)
+    assert run('docker', 'exec', container, 'cat', '/opt/amnezia/start.sh').stdout == startup
+    assert run('docker', 'exec', container, 'stat', '-c', '%a', '/opt/amnezia/start.sh').stdout.strip() == b'700'
+    assert run('docker', 'exec', container, 'test', '-e', '/opt/amnezia/forbidden-startup-body', ok=False).returncode != 0
     # No IPv6 default route yet: preparation must fail, retaining the journal.
     invoke('prepare-forwarding', operation=staged_ipv6['operation'], ok=False)
     run('docker', 'exec', container, 'ip', 'link', 'add', 'v6fixture0', 'type', 'dummy')

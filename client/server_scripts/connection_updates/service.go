@@ -648,6 +648,12 @@ func run() error {
 	if len(os.Args) > 1 {
 		command = os.Args[1]
 	}
+	if command == "startup-file-transaction" {
+		return startupTransactionCommand(os.Stdin, os.Stdout, map[string]string{
+			"amnezia-wireguard": "/opt/amnezia/start.sh",
+			"amnezia-awg2":      "/opt/amnezia/start.sh",
+		})
+	}
 	if command == "config-file-transaction" {
 		return configTransactionCommand(os.Stdin, os.Stdout, map[string]string{
 			"amnezia-wireguard": "/opt/amnezia/wireguard/wg0.conf",

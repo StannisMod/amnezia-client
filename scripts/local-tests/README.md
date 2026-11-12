@@ -182,3 +182,16 @@ of a compatible prefix on old servers remains part of the unfinished migration
 coordinator. The result means preparation succeeded at that invocation; it is not
 a durable Internet-readiness receipt. The ordinary SSH regression exercises old
 script rejection, missing-route failure and idempotent real WG/AWG preparation.
+
+`startup-file-transaction` provides stage/status/commit/rollback for the fixed
+`/opt/amnezia/start.sh` path in WG/AWG containers. A stage accepts only a known
+verified prefix followed by the exact old Bash script body; it rejects changing
+interpreter options, body edits, duplicate prefix installation and all live
+protocol actions. The existing durable private journal, exact-file precondition,
+operation nonce and conflict-preserving rollback apply. It never executes the
+startup file. The ordinary real SSH regression upgrades an old synthetic script,
+recovers the stage result, rolls back to exact old bytes, then commits the upgrade
+and prepares forwarding without executing the startup body. This supplies the
+maintenance capability; automatically coordinating it with migration, and
+ensuring IPv6 forwarding also runs after a future restart of old startup bodies,
+remain separate completion requirements.

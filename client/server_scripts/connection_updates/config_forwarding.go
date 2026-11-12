@@ -3,7 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -88,4 +90,47 @@ func prepareConfigForwarding(transaction *configTransaction, container string) e
 		return errors.New("cannot prepare live IPv6 forwarding")
 	}
 	return nil
+}
+
+// Startup migration changes only a verified prefix. The existing script body
+// remains byte-for-byte intact, and the normal file transaction retains backup.
+func startupCandidateOK(original, candidate []byte) bool {
+	if len(candidate) < forwardingPrefixSize || configHash(candidate[:forwardingPrefixSize]) != forwardingPrefixHash {
+		return false
+	}
+	if len(original) >= forwardingPrefixSize && configHash(original[:forwardingPrefixSize]) == forwardingPrefixHash {
+		return bytes.Equal(original, candidate)
+	}
+	newline := bytes.IndexByte(original, '\n')
+	if newline < 0 {
+		return false
+	}
+	header := string(original[:newline])
+	if header != "#!/bin/bash" {
+		return false
+	}
+	return bytes.Equal(candidate[forwardingPrefixSize:], original[newline+1:])
+}
+
+func startupTransactionCommand(input io.Reader, output io.Writer, paths map[string]string) error {
+	raw, err := io.ReadAll(io.LimitReader(input, (12<<20)+1))
+	if err != nil || len(raw) > 12<<20 {
+		return errors.New("invalid startup transaction request")
+	}
+	var request configTransactionRequest
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&request) != nil || decoder.Decode(new(any)) != io.EOF || request.ServerIPv6 != "" {
+		return errors.New("invalid startup transaction request")
+	}
+	switch request.Action {
+	case "stage":
+		if !startupCandidateOK(request.Expected, request.Candidate) {
+			return errors.New("startup migration must preserve existing body and use verified prefix")
+		}
+	case "status", "commit", "rollback":
+	default:
+		return errors.New("unsupported startup transaction action")
+	}
+	return configTransactionCommand(bytes.NewReader(raw), output, paths)
 }
