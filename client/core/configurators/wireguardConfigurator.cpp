@@ -1,5 +1,7 @@
 #include "wireguardConfigurator.h"
 
+#include <algorithm>
+
 #include <QDebug>
 #include <QJsonDocument>
 #include <QProcess>
@@ -80,22 +82,22 @@ WireguardConfigurator::ConnectionData WireguardConfigurator::genClientKeys()
 
 QList<QHostAddress> WireguardConfigurator::getIpsFromConf(const QString &input)
 {
-    QRegularExpression regex("AllowedIPs = (\\d+\\.\\d+\\.\\d+\\.\\d+)");
-    QRegularExpressionMatchIterator matchIterator = regex.globalMatch(input);
-
+    const QRegularExpression regex(QStringLiteral("(?m)^[\\t ]*AllowedIPs[\\t ]*=[\\t ]*([^\\r\\n#]*)"));
+    auto matchIterator = regex.globalMatch(input);
     QList<QHostAddress> ips;
-
     while (matchIterator.hasNext()) {
-        QRegularExpressionMatch match = matchIterator.next();
-        const QString address_string { match.captured(1) };
-        const QHostAddress address { address_string };
-        if (address.isNull()) {
-            qWarning() << "Couldn't recognize the ip address: " << address_string;
-        } else {
-            ips << address;
+        const auto routes = matchIterator.next().captured(1).split(',');
+        for (const auto &route : routes) {
+            const QHostAddress address(route.section('/', 0, 0).trimmed());
+            if (address.protocol() == QAbstractSocket::IPv4Protocol) ips << address;
         }
     }
 
+    // Native showconf does not promise peer order. Allocation uses the highest
+    // assigned IPv4, rather than the last peer returned by the protocol backend.
+    std::sort(ips.begin(), ips.end(), [](const QHostAddress &a, const QHostAddress &b) {
+        return a.toIPv4Address() < b.toIPv4Address();
+    });
     return ips;
 }
 

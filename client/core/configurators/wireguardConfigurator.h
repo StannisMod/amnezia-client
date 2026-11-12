@@ -42,6 +42,7 @@ public:
                                                             amnezia::ProtocolConfig protocolConfig) override;
 
     static ConnectionData genClientKeys();
+    static QList<QHostAddress> getIpsFromConf(const QString &input);
     static QString pathMtuProbeFromInterfaceConfig(const QString &configuration);
     static QString serverIPv4CidrFromInterfaceConfig(const QString &configuration);
     static QString serverIPv6CidrFromInterfaceConfig(const QString &configuration);
@@ -49,7 +50,6 @@ public:
     static QString clientIPv6FromInterfaceConfig(const QString &configuration, const QString &clientIPv4);
 
 private:
-    QList<QHostAddress> getIpsFromConf(const QString &input);
     ConnectionData prepareWireguardConfig(const amnezia::ServerCredentials &credentials, amnezia::DockerContainer container,
                                           const amnezia::WireGuardServerConfig* serverConfig,
                                           const amnezia::AwgServerConfig* awgServerConfig,

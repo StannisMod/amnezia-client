@@ -57,6 +57,29 @@ private:
     SecureQSettings *m_settings = nullptr;
 
 private slots:
+    void peerIPv4AllocationIgnoresNativeOrder()
+    {
+        const QStringList routes { "10.88.0.2", "10.88.0.10", "10.88.0.3" };
+        for (int first = 0; first < routes.size(); ++first) {
+            for (int second = 0; second < routes.size(); ++second) {
+                if (first == second) continue;
+                const auto third = 3 - first - second;
+                QString configuration;
+                for (const int index : {first, second, third})
+                    configuration += "[Peer]\nAllowedIPs = " + routes[index] + "/32\n";
+                const auto ips = WireguardConfigurator::getIpsFromConf(configuration);
+                QCOMPARE(ips.size(), 3);
+                QCOMPARE(ips.last(), QHostAddress("10.88.0.10"));
+                QVERIFY(!ips.contains(QHostAddress(ips.last().toIPv4Address() + 1)));
+                const auto mixed = WireguardConfigurator::getIpsFromConf(configuration
+                    + "  AllowedIPs\t= fd77::2/128, 10.88.0.20/32, 10.88.0.11/32 # peer\n"
+                      "# AllowedIPs = 10.88.0.99/32\n");
+                QCOMPARE(mixed.size(), 5);
+                QCOMPARE(mixed.last(), QHostAddress("10.88.0.20"));
+            }
+        }
+    }
+
     void testServerIPv6PrefixPersistsWithoutInventingLegacyAddresses()
     {
         QSet<QString> prefixes;
