@@ -14,6 +14,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -338,5 +339,129 @@ func TestLivePublicationRevokesRemovedPeersAtomically(t *testing.T) {
 		if rec.Container == a.Container && !rec.Revoked {
 			t.Fatal("empty live interface retained an active token")
 		}
+	}
+}
+
+func TestIdempotentIssueRecovery(t *testing.T) {
+	dir := t.TempDir()
+	mustAdmin(t, dir, "init", request{Host: "127.0.0.1"})
+	req := request{Operation: strings.Repeat("a", 64), Container: "amnezia-wireguard", ClientPublicKey: testKey('C'), Settings: testSettings("vpn.example.test"), PathMTUProbe: "10.8.0.1"}
+	first := mustAdmin(t, dir, "issue", req)
+	before, _ := os.ReadFile(filepath.Join(dir, "state.json"))
+	if bytes.Contains(before, []byte(first["token"].(string))) {
+		t.Fatal("plaintext token persisted")
+	}
+	reformatted := req
+	var settings any
+	json.Unmarshal(req.Settings, &settings)
+	reformatted.Settings, _ = json.MarshalIndent(settings, "", "  ")
+	second := mustAdmin(t, dir, "issue", reformatted)
+	if first["id"] != second["id"] || first["token"] != second["token"] || second["replayed"] != true {
+		t.Fatal("lost-response retry changed issuance")
+	}
+	after, _ := os.ReadFile(filepath.Join(dir, "state.json"))
+	if !bytes.Equal(before, after) {
+		t.Fatal("replay rewrote state")
+	}
+	var wait sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			out, err := admin(dir, "issue", req)
+			if err != nil || out["id"] != first["id"] || out["token"] != first["token"] {
+				t.Error("concurrent issue retry failed")
+			}
+		}()
+	}
+	wait.Wait()
+	saved, err := readState(dir)
+	if err != nil || len(saved.Records) != 1 {
+		t.Fatal("duplicate issued records")
+	}
+	for _, mutate := range []func(*request){func(r *request) { r.ClientPublicKey = testKey('D') }, func(r *request) {
+		r.Container = "amnezia-awg2"
+		r.Settings = json.RawMessage(`{"hostName":"vpn.example.test","port":51821,"server_pub_key":"` + testKey('P') + `","H1":"10-20"}`)
+	}, func(r *request) { r.PathMTUProbe = "10.8.0.2" }, func(r *request) { r.Settings = testSettings("other.example.test") }, func(r *request) { r.ClientIPv6 = map[string]string{r.ClientPublicKey: "fd77::2"} }} {
+		changed := req
+		mutate(&changed)
+		if _, err := admin(dir, "issue", changed); err == nil {
+			t.Fatal("changed issue request accepted")
+		}
+		current, _ := os.ReadFile(filepath.Join(dir, "state.json"))
+		if !bytes.Equal(before, current) {
+			t.Fatal("refused issue changed state")
+		}
+	}
+	changedState, err := readState(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recordID := first["id"].(string)
+	changedRecord := changedState.Records[recordID]
+	changedRecord.ClientPublicKey = testKey('D')
+	changedState.Records[recordID] = changedRecord
+	if err := writeState(dir, changedState); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin(dir, "issue", req); err == nil {
+		t.Fatal("replay accepted reassociated record")
+	}
+	if err := os.WriteFile(filepath.Join(dir, "state.json"), before, 0600); err != nil {
+		t.Fatal(err)
+	}
+	mustAdmin(t, dir, "publish", request{Container: req.Container, Settings: testSettings("updated.example.test"), PathMTUProbe: req.PathMTUProbe})
+	published, _ := os.ReadFile(filepath.Join(dir, "state.json"))
+	replayed := mustAdmin(t, dir, "issue", req)
+	if replayed["id"] != first["id"] || replayed["token"] != first["token"] {
+		t.Fatal("publication changed recovered credentials")
+	}
+	publishedAfterReplay, _ := os.ReadFile(filepath.Join(dir, "state.json"))
+	if !bytes.Equal(published, publishedAfterReplay) {
+		t.Fatal("issue replay rolled back published settings")
+	}
+	publishedState, err := readState(dir)
+	if err != nil || publishedState.Records[recordID].Revision != 2 {
+		t.Fatal("issue replay reset published revision")
+	}
+	mustAdmin(t, dir, "revoke", request{Container: req.Container, ClientPublicKey: req.ClientPublicKey})
+	revoked, _ := os.ReadFile(filepath.Join(dir, "state.json"))
+	if _, err := admin(dir, "issue", req); err == nil {
+		t.Fatal("replay resurrected revoked token")
+	}
+	current, _ := os.ReadFile(filepath.Join(dir, "state.json"))
+	if !bytes.Equal(revoked, current) {
+		t.Fatal("revoked replay changed state")
+	}
+}
+
+func TestIssueReceiptCorruptionAndLegacyAliases(t *testing.T) {
+	dir := t.TempDir()
+	mustAdmin(t, dir, "init", request{Host: "127.0.0.1"})
+	req := request{Container: "amnezia-wireguard", ClientPublicKey: testKey('C'), Settings: testSettings("vpn.example.test")}
+	a := mustAdmin(t, dir, "issue", req)
+	b := mustAdmin(t, dir, "issue", req)
+	if a["id"] == b["id"] || a["token"] == b["token"] {
+		t.Fatal("legacy separate aliases collapsed")
+	}
+	req.Operation = strings.Repeat("b", 64)
+	out := mustAdmin(t, dir, "issue", req)
+	saved, err := readState(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := saved.Records[out["id"].(string)]
+	record.TokenHash = strings.Repeat("0", 64)
+	saved.Records[record.ID] = record
+	raw, _ := json.Marshal(saved)
+	if err := os.WriteFile(filepath.Join(dir, "state.json"), raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin(dir, "issue", req); err == nil {
+		t.Fatal("corrupt token receipt accepted")
+	}
+	current, _ := os.ReadFile(filepath.Join(dir, "state.json"))
+	if !bytes.Equal(raw, current) {
+		t.Fatal("corrupt receipt overwritten")
 	}
 }

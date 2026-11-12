@@ -486,6 +486,12 @@ private slots:
                 SecureQSettings recoveredSettings(organization,"test",nullptr,false);
                 SecureServersRepository restarted(&recoveredSettings);
                 QJsonObject finished; QVERIFY(restarted.pendingPeerExport(id,container,finished)); QVERIFY(finished.isEmpty());
+                SshSession fault; QString receipt;
+                QCOMPARE(fault.runScript(credentials,QString("cat /tmp/issue-reply-loss-%1").arg(ContainerUtils::containerToString(container)),
+                    [&](const QString &data,libssh::Client &){receipt+=data;return ErrorCode::NoError;}),ErrorCode::NoError);
+                const auto replay=QJsonDocument::fromJson(receipt.toUtf8()).object();
+                QCOMPARE(replay.value("calls").toInt(),2); QVERIFY(replay.value("replayed").toBool());
+                QVERIFY(!replay.value("droppedId").toString().isEmpty()); QCOMPARE(replay.value("droppedId"),replay.value("replayedId"));
             } else exported=exporter.generateConnectionConfig(id,static_cast<int>(container),"synthetic IPv6 peer",true);
             QCOMPARE(exported.errorCode, ErrorCode::NoError); QVERIFY(exported.config.startsWith("vpn://"));
             const auto user = QJsonDocument::fromJson(qUncompress(QByteArray::fromBase64(exported.config.mid(6).toLatin1(), QByteArray::Base64UrlEncoding))).object();

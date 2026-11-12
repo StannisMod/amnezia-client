@@ -86,6 +86,8 @@ printf '{"host":"%s"}' "$auto_ip" | docker exec -i "$fixture" docker run --rm -i
     --mount type=volume,source=amnezia-connection-updates-state,target=/data amnezia-updates-ssh-tests init >/dev/null
 docker exec "$fixture" docker run -d --name amnezia-connection-updates -p 8443:8443 \
     --mount type=volume,source=amnezia-connection-updates-state,target=/data amnezia-updates-ssh-tests >/dev/null
+# Fault only the real administrative reply after successful durable issuance.
+docker exec -i "$fixture" sh -ec 'umask 077; cat > /tmp/issue-reply-loss.py; chmod 755 /tmp/issue-reply-loss.py; touch /run/amnezia-issue-loss-fixture; mv /usr/local/bin/docker /usr/local/bin/docker.real; ln -s /tmp/issue-reply-loss.py /usr/local/bin/docker' < "$repo/scripts/local-tests/issue-reply-loss.py"
 docker exec "$fixture" sh -ec 'ssh-keygen -A >/dev/null 2>&1; mkdir -p /run/sshd; echo root:synthetic-probe-fixture | chpasswd; /usr/sbin/sshd -p 2222 -o PermitRootLogin=yes -o PasswordAuthentication=yes -o KbdInteractiveAuthentication=no'
 export AMNEZIA_SSH_PROBE_HOST
 auto_ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$fixture")

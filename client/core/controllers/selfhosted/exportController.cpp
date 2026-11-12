@@ -77,6 +77,7 @@ ExportController::ExportResult ExportController::generateConnectionConfig(const 
         return result;
     }
     bool individualIPv6Supported = false;
+    bool idempotentIssueSupported = false;
     if (updatable) {
         QJsonObject info;
         result.errorCode = ConnectionUpdatesController::command(credentials, "info", {}, info);
@@ -87,6 +88,7 @@ ExportController::ExportResult ExportController::generateConnectionConfig(const 
             return result;
         }
         individualIPv6Supported = info.value("features").toArray().contains("client-ipv6-v1");
+        idempotentIssueSupported = info.value("features").toArray().contains("idempotent-issue-v1");
     }
     ContainerConfig containerConfig = adminConfig->containerConfig(container);
     const bool recoverablePeer=container==DockerContainer::WireGuard || container==DockerContainer::Awg2;
@@ -188,7 +190,19 @@ ExportController::ExportResult ExportController::generateConnectionConfig(const 
             }
             request["clientIpv6"] = individual;
         }
+        if (idempotentIssueSupported) {
+            const auto key=client.value(configKey::clientPubKey).toString();
+            if (pendingPeer.isEmpty() || pendingPeer.value("prepared").toObject().value("clientPubKey")!=key) {
+                result.errorCode=ErrorCode::InternalError; return result;
+            }
+            // All inputs survive a process restart in the pending peer context.
+            QByteArray operation("amnezia-export-issue-v1"); operation.append('\0');
+            operation+=pendingBinding.toLatin1(); operation.append('\0'); operation+=key.toLatin1();
+            request["operation"]=QString::fromLatin1(QCryptographicHash::hash(operation,QCryptographicHash::Sha256).toHex());
+        }
         result.errorCode = ConnectionUpdatesController::command(credentials, "issue", request, response);
+        if (result.errorCode!=ErrorCode::NoError && idempotentIssueSupported)
+            result.errorCode=ConnectionUpdatesController::command(credentials,"issue",request,response);
         if (result.errorCode != ErrorCode::NoError) return result;
         // Detect server identity changes; a reinstallation must be explicitly trusted.
         if (response.value("publicKey") != updateMetadata.value("publicKey") || response.value("certificate") != updateMetadata.value("certificate")) {

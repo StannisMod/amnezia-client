@@ -7,6 +7,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/elliptic"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -46,6 +47,8 @@ var hostLabel = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 var awgKeys = strings.Fields("Jc Jmin Jmax S1 S2 S3 S4 H1 H2 H3 H4 I1 I2 I3 I4 I5 HeaderProtectionKey ContentPaddingAddition RekeyAfterTime RekeyTimeout RejectAfterTime KeepaliveTimeout MaxHandshakeAttempts RandomTrailers DisableCookies")
 
 type record struct {
+	IssueOperation  string          `json:"issueOperation,omitempty"`
+	IssueDigest     string          `json:"issueDigest,omitempty"`
 	ClientIPv6      *string         `json:"clientIpv6,omitempty"`
 	PathMTUProbe    string          `json:"pathMtuProbe,omitempty"`
 	ID              string          `json:"id"`
@@ -233,6 +236,9 @@ func readState(dir string) (*state, error) {
 			return nil, errors.New("invalid path probe address")
 		}
 	}
+	if err := validateIssueReceipts(&s); err != nil {
+		return nil, err
+	}
 	if err := clientIPv6StateOK(&s); err != nil {
 		return nil, err
 	}
@@ -242,6 +248,9 @@ func readState(dir string) (*state, error) {
 	return &s, nil
 }
 func writeState(dir string, s *state) error {
+	if err := validateIssueReceipts(s); err != nil {
+		return err
+	}
 	if err := validateIPv6Publications(s); err != nil {
 		return err
 	}
@@ -323,7 +332,7 @@ func stateTag(s *state) string {
 	return hex.EncodeToString(digest[:])
 }
 func info(s *state) map[string]any {
-	return map[string]any{"version": 1, "stateTag": stateTag(s), "features": []string{"coverage-v1", "conditional-publication-v1", "awg3-header-protection-v1", "rollout-readiness-v1", "live-publication-v1", "path-mtu-probe-v1", "client-ipv6-v1", "conditional-client-ipv6-v1"}, "host": s.Host, "publicKey": []byte(ed25519.PrivateKey(s.SigningKey).Public().(ed25519.PublicKey)), "certificate": s.Certificate}
+	return map[string]any{"version": 1, "stateTag": stateTag(s), "features": []string{"coverage-v1", "conditional-publication-v1", "awg3-header-protection-v1", "rollout-readiness-v1", "live-publication-v1", "path-mtu-probe-v1", "client-ipv6-v1", "conditional-client-ipv6-v1", "idempotent-issue-v1"}, "host": s.Host, "publicKey": []byte(ed25519.PrivateKey(s.SigningKey).Public().(ed25519.PublicKey)), "certificate": s.Certificate}
 }
 func probe(s *state) error {
 	certificate, e := x509.ParseCertificate(s.Certificate)
@@ -402,6 +411,20 @@ func admin(dir, command string, req request) (map[string]any, error) {
 		if e = settingsOK(req.Settings, req.Container); e != nil {
 			return nil, e
 		}
+		var operationID, operationToken, operationDigest string
+		if req.Operation != "" {
+			operationID, operationToken, operationDigest, e = issueIdentity(s, req)
+			if e != nil {
+				return nil, e
+			}
+			if previous, exists := s.Records[operationID]; exists {
+				if previous.IssueOperation != req.Operation || previous.IssueDigest != operationDigest || previous.Revoked || previous.Container != req.Container || previous.ClientPublicKey != req.ClientPublicKey {
+					return nil, errors.New("issue operation conflict")
+				}
+				out["id"], out["token"], out["ok"], out["replayed"] = operationID, operationToken, true, true
+				return out, nil // No state rewrite or revision increment on replay.
+			}
+		}
 		id, e := randomHex(16)
 		if e != nil {
 			return nil, e
@@ -411,8 +434,18 @@ func admin(dir, command string, req request) (map[string]any, error) {
 			return nil, e
 		}
 		token := base64.RawURLEncoding.EncodeToString(tokenBytes)
+		if req.Operation != "" {
+			id, token = operationID, operationToken
+		}
 		hash := sha256.Sum256([]byte(token))
 		s.Records[id] = record{ID: id, TokenHash: hex.EncodeToString(hash[:]), ClientPublicKey: req.ClientPublicKey, Container: req.Container, Revision: 1, Settings: req.Settings, PathMTUProbe: req.PathMTUProbe}
+		if req.Operation != "" {
+			rec := s.Records[id]
+			rec.IssueOperation = req.Operation
+			rec.IssueDigest = operationDigest
+			s.Records[id] = rec
+		}
+
 		if address, exists := req.ClientIPv6[req.ClientPublicKey]; exists {
 			rec := s.Records[id]
 			rec.ClientIPv6 = &address
@@ -753,4 +786,52 @@ func main() {
 		fmt.Fprintln(os.Stderr, "connection updates: operation failed:", e)
 		os.Exit(1)
 	}
+}
+
+// Recover the bearer token without persisting it in plaintext. Operations are
+// scoped to this service identity; distinct domains separate IDs and tokens.
+func issueCredentials(key []byte, operation string) (string, string) {
+	derive := func(domain string) []byte {
+		mac := hmac.New(sha256.New, key)
+		mac.Write([]byte(domain + "\x00" + operation))
+		return mac.Sum(nil)
+	}
+	return hex.EncodeToString(derive("amnezia-issue-id-v1")[:16]), base64.RawURLEncoding.EncodeToString(derive("amnezia-issue-token-v1"))
+}
+func issueIdentity(s *state, req request) (string, string, string, error) {
+	if !configOperationOK(req.Operation) || req.Host != "" || req.ExpectedState != "" || len(req.ClientPublicKeys) != 0 {
+		return "", "", "", errors.New("invalid issue operation")
+	}
+	var settings any
+	if json.Unmarshal(req.Settings, &settings) != nil {
+		return "", "", "", errors.New("invalid issue settings")
+	}
+	canonical, err := json.Marshal(struct {
+		Container       string
+		ClientPublicKey string
+		Settings        any
+		PathMTUProbe    string
+		ClientIPv6      map[string]string `json:",omitempty"`
+	}{req.Container, req.ClientPublicKey, settings, req.PathMTUProbe, req.ClientIPv6})
+	if err != nil {
+		return "", "", "", err
+	}
+	id, token := issueCredentials(s.SigningKey, req.Operation)
+	return id, token, configHash(canonical), nil
+}
+func validateIssueReceipts(s *state) error {
+	for id, rec := range s.Records {
+		if rec.IssueOperation == "" && rec.IssueDigest == "" {
+			continue
+		}
+		if !configOperationOK(rec.IssueOperation) || !configOperationOK(rec.IssueDigest) {
+			return errors.New("invalid issue receipt")
+		}
+		expected, token := issueCredentials(s.SigningKey, rec.IssueOperation)
+		hash := sha256.Sum256([]byte(token))
+		if id != expected || rec.ID != expected || rec.TokenHash != hex.EncodeToString(hash[:]) {
+			return errors.New("inconsistent issue receipt")
+		}
+	}
+	return nil
 }

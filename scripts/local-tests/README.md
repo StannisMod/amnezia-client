@@ -109,9 +109,24 @@ repeats a completed operation, then makes delivery unavailable after the normal
 export adds its peer. A separate Qt process resumes that export from disk and
 must deliver the profile for the same public key. The legacy success path is
 also retained; interrupted legacy writes require a compatible managed helper
-before this recovery path can proceed. Idempotent signed issuance, durable final
-result acknowledgment, abandoned-operation cleanup and reconciliation with
-concurrent foreign configuration changes remain separate required work.
+before this recovery path can proceed. Normal updatable export now derives a
+stable issue-operation ID from that persisted context and uses it only when the
+service advertises `idempotent-issue-v1`. One bounded retry after a failed reply
+recovers the same ID/token; the service persists a request digest and token hash,
+not the plaintext token. Replays do not rewrite state, resurrect revoked tokens
+or roll back published settings. Legacy requests without an operation still
+create independent aliases.
+
+The disposable SSH daemon wraps only its own Docker CLI to discard the first
+successful idempotent issue reply after durable effect. A second response must
+be marked as a replay for the same subscription ID; subsequent actual signed
+HTTPS refresh must accept the recovered token. The wrapper checks the private
+Docker daemon's disposable label and records only operation/record IDs and call
+counts, never bearer tokens. This models reply loss, not an actual SSH socket
+failure. Concurrent Go replay tests also require one record and byte-identical
+state after retry. Durable final-result acknowledgment, idempotent existing-key
+invitation export, abandoned-operation cleanup and reconciliation with concurrent
+foreign configuration changes remain separate required work.
 
 
 The same required fixture runs the packaged `install.sh` helper deployment against
