@@ -305,6 +305,36 @@ private slots:
         QCOMPARE(client(restored, false).value("path_mtu_probe").toString(), "fd77::1");
         QCOMPARE(client(restored, false).value("allowed_ips"), c.value("allowed_ips"));
     }
+    void livePeerIPv6AssignmentsRequireUnambiguousKeyBinding()
+    {
+        const auto a = QString::fromLatin1(QByteArray(32, 'A').toBase64());
+        const auto b = QString::fromLatin1(QByteArray(32, 'B').toBase64());
+        const QString marker = "\namnezia_peer_addresses=ok\n";
+        QJsonObject result;
+        QVERIFY(connectionUpdates::parsePeerIPv6Assignments(a + "\t10.8.0.2/32 fd77::2/128\n" + b + "\t10.8.0.3/32\n" + marker, result));
+        QCOMPARE(result.value(a).toString(), "fd77::2"); QCOMPARE(result.value(b).toString(), "");
+        QVERIFY(connectionUpdates::parsePeerIPv6Assignments(a + "\t10.8.0.2/32, fd77::2/128\n" + marker, result));
+        QCOMPARE(result.value(a).toString(), "fd77::2");
+        QVERIFY(connectionUpdates::parsePeerIPv6Assignments(a + "\t(none)\n" + marker, result));
+        QCOMPARE(result.value(a).toString(), "");
+        const QStringList invalid {
+            a + "\tfd77::/64\n", a + "\t::/0\n", a + "\tfd77::2/128 fd77::3/128\n",
+            a + "\tfd77::2/128\n" + b + "\tfd77::2/128\n", a + "\tfd77::2/128\n" + a + "\t10.8.0.2/32\n",
+            "bad-key\tfd77::2/128\n", a + "\tfe80::2/128\n", a + "\t::ffff:192.0.2.1/128\n",
+            a + "\tfd77::2\n", a + "\tvpn.example.test/128\n", a + "\t\n", a + "\t10.8.0.2/999\n",
+            a + "\tFD77::2/128\n", a + " fd77::2/128\n", a + "\tfd77::2/128\textra\n"
+        };
+        for (const auto &body : invalid) {
+            QJsonObject unchanged { { "sentinel", true } };
+            QVERIFY2(!connectionUpdates::parsePeerIPv6Assignments(body + marker, unchanged), qPrintable(body));
+            QCOMPARE(unchanged, (QJsonObject { { "sentinel", true } }));
+        }
+        QJsonObject unchanged { { "sentinel", true } };
+        QVERIFY(!connectionUpdates::parsePeerIPv6Assignments(a + "\tfd77::2/128\n", unchanged));
+        QCOMPARE(unchanged.size(), 1);
+        QVERIFY(!connectionUpdates::parsePeerIPv6Assignments(QString(1024 * 1024, 'x') + marker, unchanged));
+        QVERIFY(connectionUpdates::parsePeerIPv6Assignments(marker, result)); QVERIFY(result.isEmpty());
+    }
     void goClientIPv6Interoperability()
     {
         QFile file(":/connection-updates/client-ipv6-interop.json"); QVERIFY(file.open(QIODevice::ReadOnly));

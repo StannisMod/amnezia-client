@@ -130,6 +130,37 @@ bool parsePeerList(const QString &output, QStringList &peers)
     for (const auto &key : values) if (decode(key, 32).isEmpty()) return false;
     peers = values; return true;
 }
+bool parsePeerIPv6Assignments(const QString &output, QJsonObject &assignments)
+{
+    const QString marker = "\namnezia_peer_addresses=ok\n";
+    if (output.size() > 1024 * 1024 || !output.endsWith(marker)) return false;
+    const auto body = output.left(output.size() - marker.size());
+    const auto lines = body.split('\n', Qt::SkipEmptyParts);
+    if (lines.size() > 4096) return false;
+    QJsonObject result; QStringList used;
+    for (const auto &line : lines) {
+        const auto fields = line.split('\t');
+        if (fields.size() != 2 || decode(fields[0], 32).isEmpty() || result.contains(fields[0])) return false;
+        QString address;
+        if (fields[1] != "(none)") {
+            const auto routes = fields[1].split(QRegularExpression("[,\\s]+"), Qt::SkipEmptyParts);
+            if (routes.isEmpty()) return false;
+            for (const auto &route : routes) {
+                const auto subnet = QHostAddress::parseSubnet(route);
+                const auto text = route.section('/', 0, 0); const QHostAddress ip(text);
+                if (!route.contains('/') || subnet.second < 0 || ip.isNull() || ip.toString() != text) return false;
+                if (ip.protocol() == QAbstractSocket::IPv6Protocol) {
+                    // A routed subnet does not identify the client's source address.
+                    if (subnet.second != 128 || !validClientIPv6(text) || !address.isEmpty() || used.contains(text)) return false;
+                    address = text;
+                }
+            }
+        }
+        if (!address.isEmpty()) used << address;
+        result[fields[0]] = address; // Explicit withdrawal for a live IPv4-only peer.
+    }
+    assignments = result; return true;
+}
 QJsonObject invitationMetadata(const QJsonObject &administratorMetadata)
 {
     QJsonObject result;

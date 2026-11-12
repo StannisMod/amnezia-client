@@ -26,6 +26,7 @@ public:
     Q_INVOKABLE void enableHeaderProtection(const QString &serverId, int container);
     static ErrorCode fetchPublicSettings(const ServerCredentials &credentials, DockerContainer container,
                                          const QString &host, QJsonObject &settings, QStringList *peers = nullptr, QString *pathMtuProbe = nullptr);
+    static ErrorCode fetchPeerIPv6Assignments(const ServerCredentials &credentials, DockerContainer container, QJsonObject &assignments);
     static ErrorCode fetchPathMtuProbeAddress(const ServerCredentials &credentials, DockerContainer container, QString &address);
     Q_INVOKABLE bool available(const QString &serverId) const;
     Q_INVOKABLE bool enabled(const QString &serverId) const;

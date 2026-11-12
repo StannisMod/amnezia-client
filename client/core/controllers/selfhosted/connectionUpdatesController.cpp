@@ -90,6 +90,21 @@ ErrorCode ConnectionUpdatesController::fetchPathMtuProbeAddress(const ServerCred
     if (error != ErrorCode::NoError) return error;
     return connectionUpdates::parsePathProbeAddress(output, iface, address) ? ErrorCode::NoError : ErrorCode::InternalError;
 }
+ErrorCode ConnectionUpdatesController::fetchPeerIPv6Assignments(const ServerCredentials &credentials, DockerContainer container, QJsonObject &assignments)
+{
+    if (container != DockerContainer::WireGuard && container != DockerContainer::Awg2) return ErrorCode::InternalError;
+    const bool awg = container == DockerContainer::Awg2;
+    SshSession ssh; QString output;
+    const auto error = ssh.runScript(credentials,
+        QString("sudo docker exec %1 %2 show %3 allowed-ips && printf '\\namnezia_peer_addresses=ok\\n'")
+            .arg(ContainerUtils::containerToString(container), awg ? "awg" : "wg", awg ? "awg0" : "wg0"),
+        [&](const QString &data, libssh::Client &) {
+            if (output.size() + data.size() > 1024 * 1024) return ErrorCode::InternalError;
+            output += data; return ErrorCode::NoError;
+        });
+    if (error != ErrorCode::NoError) return error;
+    return connectionUpdates::parsePeerIPv6Assignments(output, assignments) ? ErrorCode::NoError : ErrorCode::InternalError;
+}
 ErrorCode ConnectionUpdatesController::fetchPublicSettings(const ServerCredentials &credentials, DockerContainer container,
                                                            const QString &host, QJsonObject &settings, QStringList *peers, QString *pathMtuProbe)
 {
@@ -306,9 +321,17 @@ void ConnectionUpdatesController::administer(const QString &id, const QString &a
             QJsonObject settings; QStringList peers; QString probe;
             result.error = fetchPublicSettings(credentials, container, host, settings, &peers, &probe);
             if (result.error != ErrorCode::NoError) return result;
+            QJsonObject assignments;
+            result.error = fetchPeerIPv6Assignments(credentials, container, assignments);
+            if (result.error != ErrorCode::NoError) return result;
+            auto assignmentPeers = assignments.keys(); auto expectedPeers = peers;
+            assignmentPeers.sort(); expectedPeers.sort();
+            // Do not publish a mixed snapshot if peers changed between SSH reads.
+            if (assignmentPeers != expectedPeers) { result.error = ErrorCode::InternalError; return result; }
             request["settings"] = settings;
             request["pathMtuProbe"] = probe;
             request["clientPublicKeys"] = QJsonArray::fromStringList(peers);
+            request["clientIpv6"] = assignments;
         }
         const auto remoteAction = action == "publish" ? QString("publish-live") : action;
         result.error = command(credentials, remoteAction, request, result.metadata); return result;
