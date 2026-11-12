@@ -115,6 +115,8 @@ private slots:
             const auto startup = scriptData(ProtocolScriptType::container_startup, container);
             QVERIFY(startup.startsWith("#!/bin/bash\n"));
             QVERIFY(startup.contains("amnezia_enable_ipv6()"));
+            QVERIFY(startup.contains("--amnezia-prepare-ipv6-forwarding"));
+            QVERIFY(startup.contains("amnezia_enable_ipv6 \"$2\" required || exit 1"));
             QVERIFY(startup.contains("AMNEZIA_IPV6_FORWARDING_STATUS"));
         }
         QVERIFY(!scriptData(ProtocolScriptType::run_container, DockerContainer::OpenVpn).contains("AMNEZIA_IPV6_NETWORK_STATUS"));

@@ -7,9 +7,17 @@ amnezia_ipv6_rule() {
 amnezia_enable_ipv6() {
     amnezia_v6_tunnel=$1
     case "$amnezia_v6_tunnel" in wg0|awg0) ;; *) return 1 ;; esac
-    amnezia_v6_prefixes=$(ip -o -6 addr show dev "$amnezia_v6_tunnel" scope global | awk '{print $4}') || return 1
-    [ -n "$amnezia_v6_prefixes" ] || return 0
-    amnezia_v6_egress=$(ip -6 route show default | awk '{for(i=1;i<NF;i++) if($i=="dev"){print $(i+1);exit}}')
+    amnezia_v6_addresses=$(ip -o -6 addr show dev "$amnezia_v6_tunnel" scope global) || return 1
+    amnezia_v6_prefixes=$(printf '%s\n' "$amnezia_v6_addresses" | awk '{print $4}')
+    if [ -z "$amnezia_v6_prefixes" ]; then
+        if [ "${2:-}" = required ]; then
+            echo 'AMNEZIA_IPV6_FORWARDING_STATUS=no-tunnel-address' >&2
+            return 1
+        fi
+        return 0
+    fi
+    amnezia_v6_default=$(ip -6 route show default) || return 1
+    amnezia_v6_egress=$(printf '%s\n' "$amnezia_v6_default" | awk '{for(i=1;i<NF;i++) if($i=="dev"){print $(i+1);exit}}')
     if [ -z "$amnezia_v6_egress" ] || [ "$amnezia_v6_egress" = "$amnezia_v6_tunnel" ]; then
         echo 'AMNEZIA_IPV6_FORWARDING_STATUS=no-egress-route' >&2
         return 1
@@ -26,3 +34,11 @@ amnezia_enable_ipv6() {
     done
     echo 'AMNEZIA_IPV6_FORWARDING_STATUS=routes-prepared-egress-unverified'
 }
+
+# The packaged startup script can prepare live IPv6 forwarding without running
+# its tunnel teardown/startup body. Missing prerequisites are errors in this mode.
+if [ "${1:-}" = --amnezia-prepare-ipv6-forwarding ]; then
+    [ "$#" -eq 2 ] || exit 64
+    amnezia_enable_ipv6 "$2" required || exit 1
+    exit 0
+fi

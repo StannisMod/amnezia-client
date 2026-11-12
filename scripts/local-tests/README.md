@@ -159,3 +159,15 @@ Repeating attachment must preserve both network endpoints. These fixtures test
 container networking; they do not run an encrypted tunnel or prove Internet IPv6
 egress. The helper reports egress as unverified and never detaches automatically
 after a failed preservation check.
+
+The kernel IPv6 forwarding regression also invokes the maintenance branch of
+all three packaged startup scripts. On a script version that includes this
+branch, `bash /opt/amnezia/start.sh --amnezia-prepare-ipv6-forwarding wg0`
+(`awg0` for current AWG) prepares rules without running tunnel teardown/startup.
+The caller must verify that the installed script supports the branch before
+using it: an old startup script does not support this command. Invalid arguments
+and missing tunnel IPv6 must fail without adding rules. Repeated calls preserve
+foreign rules and the IPv4 firewall/routes; an original IPv4 TCP session stays
+open while actual IPv6 forwarding/NAT is verified against a local origin.
+This additive preparation does not provide a whole-operation rollback or prove
+Internet reachability; automatic migration still needs its coordinator.
