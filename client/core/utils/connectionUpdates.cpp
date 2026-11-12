@@ -161,6 +161,13 @@ bool parsePeerIPv6Assignments(const QString &output, QJsonObject &assignments)
     }
     assignments = result; return true;
 }
+bool individualIPv6Assignment(const QJsonObject &assignments, const QString &clientPublicKey, QJsonObject &assignment)
+{
+    if (decode(clientPublicKey, 32).isEmpty() || !assignments.contains(clientPublicKey)
+        || !validClientIPv6(assignments.value(clientPublicKey))) return false;
+    assignment = QJsonObject { { clientPublicKey, assignments.value(clientPublicKey) } };
+    return true;
+}
 QJsonObject invitationMetadata(const QJsonObject &administratorMetadata)
 {
     QJsonObject result;

@@ -166,3 +166,17 @@ func TestClientIPv6WireFixture(t *testing.T) {
 		t.Fatal("Go/Qt client IPv6 fixture changed", err)
 	}
 }
+
+func TestClientIPv6CapabilityAdvertised(t *testing.T) {
+	s, err := newState("updates.example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	features := info(s)["features"].([]string)
+	for _, feature := range features {
+		if feature == "client-ipv6-v1" {
+			return
+		}
+	}
+	t.Fatal("signed individual IPv6 delivery capability is missing")
+}

@@ -335,6 +335,26 @@ private slots:
         QVERIFY(!connectionUpdates::parsePeerIPv6Assignments(QString(1024 * 1024, 'x') + marker, unchanged));
         QVERIFY(connectionUpdates::parsePeerIPv6Assignments(marker, result)); QVERIFY(result.isEmpty());
     }
+    void exportedIPv6AssignmentContainsOnlyRequestedClient()
+    {
+        const auto a = QString::fromLatin1(QByteArray(32, 'A').toBase64());
+        const auto b = QString::fromLatin1(QByteArray(32, 'B').toBase64());
+        QJsonObject assignments { { a, "fd77::2" }, { b, "fd77::3" } }, selected;
+        QVERIFY(connectionUpdates::individualIPv6Assignment(assignments, a, selected));
+        QCOMPARE(selected, (QJsonObject { { a, "fd77::2" } }));
+        QVERIFY(connectionUpdates::individualIPv6Assignment(assignments, b, selected));
+        QCOMPARE(selected, (QJsonObject { { b, "fd77::3" } }));
+        assignments[a] = "";
+        QVERIFY(connectionUpdates::individualIPv6Assignment(assignments, a, selected));
+        QCOMPARE(selected, (QJsonObject { { a, "" } }));
+        for (const auto &key : { QString("bad"), QString::fromLatin1(QByteArray(32, 'C').toBase64()) }) {
+            QJsonObject output { { "sentinel", true } };
+            QVERIFY(!connectionUpdates::individualIPv6Assignment(assignments, key, output)); QCOMPARE(output.size(), 1);
+        }
+        assignments[a] = "fd77::/64";
+        QJsonObject output { { "sentinel", true } };
+        QVERIFY(!connectionUpdates::individualIPv6Assignment(assignments, a, output)); QCOMPARE(output.size(), 1);
+    }
     void goClientIPv6Interoperability()
     {
         QFile file(":/connection-updates/client-ipv6-interop.json"); QVERIFY(file.open(QIODevice::ReadOnly));

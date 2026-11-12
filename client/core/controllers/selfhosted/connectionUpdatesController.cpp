@@ -269,12 +269,14 @@ void ConnectionUpdatesController::administer(const QString &id, const QString &a
         }
         result.error = flushPendingRevocations(credentials, admin->connectionUpdates);
         if (result.error != ErrorCode::NoError) return result;
+        bool individualIPv6Supported = false;
         if (action == "publish") {
             QJsonObject info; result.error = command(credentials, "info", {}, info);
             if (result.error != ErrorCode::NoError) return result;
             if (info.value("publicKey") != admin->connectionUpdates.value("publicKey") || info.value("certificate") != admin->connectionUpdates.value("certificate")) {
                 result.error = ErrorCode::InternalError; return result;
             }
+            individualIPv6Supported = info.value("features").toArray().contains("client-ipv6-v1");
             if (!info.value("features").toArray().contains("live-publication-v1")) {
                 result.outcome = "upgrade_required"; return result;
             }
@@ -321,17 +323,19 @@ void ConnectionUpdatesController::administer(const QString &id, const QString &a
             QJsonObject settings; QStringList peers; QString probe;
             result.error = fetchPublicSettings(credentials, container, host, settings, &peers, &probe);
             if (result.error != ErrorCode::NoError) return result;
-            QJsonObject assignments;
-            result.error = fetchPeerIPv6Assignments(credentials, container, assignments);
-            if (result.error != ErrorCode::NoError) return result;
-            auto assignmentPeers = assignments.keys(); auto expectedPeers = peers;
-            assignmentPeers.sort(); expectedPeers.sort();
-            // Do not publish a mixed snapshot if peers changed between SSH reads.
-            if (assignmentPeers != expectedPeers) { result.error = ErrorCode::InternalError; return result; }
+            if (individualIPv6Supported) {
+                QJsonObject assignments;
+                result.error = fetchPeerIPv6Assignments(credentials, container, assignments);
+                if (result.error != ErrorCode::NoError) return result;
+                auto assignmentPeers = assignments.keys(); auto expectedPeers = peers;
+                assignmentPeers.sort(); expectedPeers.sort();
+                // Do not publish a mixed snapshot if peers changed between SSH reads.
+                if (assignmentPeers != expectedPeers) { result.error = ErrorCode::InternalError; return result; }
+                request["clientIpv6"] = assignments;
+            }
             request["settings"] = settings;
             request["pathMtuProbe"] = probe;
             request["clientPublicKeys"] = QJsonArray::fromStringList(peers);
-            request["clientIpv6"] = assignments;
         }
         const auto remoteAction = action == "publish" ? QString("publish-live") : action;
         result.error = command(credentials, remoteAction, request, result.metadata); return result;

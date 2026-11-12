@@ -74,6 +74,7 @@ ExportController::ExportResult ExportController::generateConnectionConfig(const 
         result.errorCode = ErrorCode::InternalError;
         return result;
     }
+    bool individualIPv6Supported = false;
     if (updatable) {
         QJsonObject info;
         result.errorCode = ConnectionUpdatesController::command(credentials, "info", {}, info);
@@ -83,6 +84,7 @@ ExportController::ExportResult ExportController::generateConnectionConfig(const 
             result.errorCode = ErrorCode::InternalError;
             return result;
         }
+        individualIPv6Supported = info.value("features").toArray().contains("client-ipv6-v1");
     }
     ContainerConfig containerConfig = adminConfig->containerConfig(container);
 
@@ -136,9 +138,18 @@ ExportController::ExportResult ExportController::generateConnectionConfig(const 
         QString probe;
         result.errorCode = ConnectionUpdatesController::fetchPathMtuProbeAddress(credentials, container, probe);
         if (result.errorCode != ErrorCode::NoError) return result;
-        const QJsonObject request { { "pathMtuProbe", probe }, { "container", ContainerUtils::containerToString(container) },
+        QJsonObject request { { "pathMtuProbe", probe }, { "container", ContainerUtils::containerToString(container) },
             { "clientPublicKey", client.value(configKey::clientPubKey) },
             { "settings", connectionUpdates::publicSettings(client, container == DockerContainer::Awg2) } };
+        if (individualIPv6Supported) {
+            QJsonObject assignments, individual;
+            result.errorCode = ConnectionUpdatesController::fetchPeerIPv6Assignments(credentials, container, assignments);
+            if (result.errorCode != ErrorCode::NoError) return result;
+            if (!connectionUpdates::individualIPv6Assignment(assignments, client.value(configKey::clientPubKey).toString(), individual)) {
+                result.errorCode = ErrorCode::InternalError; return result;
+            }
+            request["clientIpv6"] = individual;
+        }
         result.errorCode = ConnectionUpdatesController::command(credentials, "issue", request, response);
         if (result.errorCode != ErrorCode::NoError) return result;
         // Detect server identity changes; a reinstallation must be explicitly trusted.
@@ -182,8 +193,18 @@ ExportController::ExportResult ExportController::generateConnectionUpdates(const
     if (result.errorCode != ErrorCode::NoError) return result;
     if (!peers.contains(clientPublicKey)) { result.errorCode = ErrorCode::InternalError; return result; }
     QJsonObject response;
-    result.errorCode = ConnectionUpdatesController::command(admin->credentials(), "issue", {
-        { "pathMtuProbe", probe }, { "container", ContainerUtils::containerToString(container) }, { "clientPublicKey", clientPublicKey }, { "settings", settings } }, response);
+    QJsonObject request { { "pathMtuProbe", probe }, { "container", ContainerUtils::containerToString(container) },
+        { "clientPublicKey", clientPublicKey }, { "settings", settings } };
+    if (info.value("features").toArray().contains("client-ipv6-v1")) {
+        QJsonObject assignments, individual;
+        result.errorCode = ConnectionUpdatesController::fetchPeerIPv6Assignments(admin->credentials(), container, assignments);
+        if (result.errorCode != ErrorCode::NoError) return result;
+        if (!connectionUpdates::individualIPv6Assignment(assignments, clientPublicKey, individual)) {
+            result.errorCode = ErrorCode::InternalError; return result;
+        }
+        request["clientIpv6"] = individual;
+    }
+    result.errorCode = ConnectionUpdatesController::command(admin->credentials(), "issue", request, response);
     if (result.errorCode != ErrorCode::NoError) return result;
     if (response.value("publicKey") != admin->connectionUpdates.value("publicKey") || response.value("certificate") != admin->connectionUpdates.value("certificate")) {
         result.errorCode = ErrorCode::InternalError; return result;
