@@ -78,17 +78,18 @@ public:
         });
         socket->startServerEncryption();
     }
-    QJsonObject bootstrap() const
+    QJsonObject bootstrap(bool awg = false) const
     {
-        auto p = profile(); auto m = p["connectionUpdates"].toObject();
+        auto p = profile(awg); auto m = p["connectionUpdates"].toObject();
         m["url"] = QString("https://127.0.0.1:%1/v1/connections/%2").arg(serverPort()).arg(m["id"].toString());
         m["certificate"] = QString::fromLatin1(certificate.toDer().toBase64()); p["connectionUpdates"] = m; return p;
     }
-    void setUpdate(const QJsonObject &p)
+    void setUpdate(const QJsonObject &p, const QJsonObject &extensions = {})
     {
-        auto data = payload(p); const auto now = QDateTime::currentSecsSinceEpoch(); data["issuedAt"] = now; data["expiresAt"] = now + 600;
+        auto data = payload(p, p.value("defaultContainer").toString() == "amnezia-awg2"); const auto now = QDateTime::currentSecsSinceEpoch(); data["issuedAt"] = now; data["expiresAt"] = now + 600;
         if (advertiseAck) data["ackChallenge"] = QString::fromLatin1(publicKey(QByteArray(32, 'R'), EVP_PKEY_X25519).toBase64());
         if (!pathMtuProbe.isEmpty()) data["pathMtuProbe"] = pathMtuProbe;
+        for (auto it = extensions.begin(); it != extensions.end(); ++it) data[it.key()] = it.value();
         body = sign(data);
     }
 };
@@ -221,6 +222,42 @@ private slots:
         feed.delay = 100; const auto snapshot = *servers.serverJsonById(id); updates.refresh(id);
         auto renamed = snapshot; renamed["description"] = "Edited during request"; servers.editServer(id, renamed, serverConfigUtils::SelfHostedUser);
         QTRY_COMPARE(finished.count(), 2); QVERIFY(!finished[1][0].toBool()); QCOMPARE(*servers.serverJsonById(id), renamed);
+        settings.clearSettings();
+    }
+    void signedIPv6SurvivesRepositoryReload_data()
+    {
+        QTest::addColumn<bool>("awg"); QTest::newRow("wireguard") << false; QTest::newRow("awg") << true;
+    }
+    void signedIPv6SurvivesRepositoryReload()
+    {
+        QFETCH(bool, awg);
+        FeedServer feed; QVERIFY(feed.listen(QHostAddress::LocalHost)); const auto p = feed.bootstrap(awg);
+        feed.setUpdate(p, { { "clientIpv6", "fd77::2" } });
+        SecureQSettings settings("Amnezia-IPv6-Storage-" + QUuid::createUuid().toString(), "test", nullptr, false);
+        SecureServersRepository servers(&settings); SecureAppSettingsRepository app(&settings);
+        VpnConnection vpn(&servers, &app); ConnectionController connection(&servers, &app, &vpn);
+        const auto id = servers.addServer({}, p, serverConfigUtils::SelfHostedUser);
+        ConnectionUpdatesController updates(&servers, &connection); QSignalSpy finished(&updates, &ConnectionUpdatesController::finished);
+        updates.refresh(id); QTRY_COMPARE(finished.count(), 1); QVERIFY(finished[0][0].toBool());
+        auto typed = *servers.selfHostedUserConfig(id); typed.description = "IPv6 retained after edit";
+        servers.editServer(id, typed.toJson(), serverConfigUtils::SelfHostedUser); servers.invalidateCache();
+        const auto stored = *servers.serverJsonById(id);
+        QCOMPARE(client(stored, awg).value("client_ip").toString(), "10.8.0.2, fd77::2/128");
+        QVERIFY(client(stored, awg).value("config").toString().contains("Address = 10.8.0.2/32, fd77::2/128\n"));
+        QCOMPARE(stored.value("connectionUpdates").toObject().value("managedClientIpv6").toString(), "fd77::2");
+        for (const auto *key : { "client_priv_key", "client_pub_key", "psk_key", "mtu", "allowed_ips" })
+            QCOMPARE(client(stored, awg).value(key), client(p, awg).value(key));
+        // A correctly signed but invalid assignment must leave persistent storage intact.
+        feed.setUpdate(p, { { "revision", "2" }, { "clientIpv6", "fe80::2" } });
+        updates.refresh(id); QTRY_COMPARE(finished.count(), 2); QVERIFY(!finished[1][0].toBool());
+        servers.invalidateCache(); QCOMPARE(*servers.serverJsonById(id), stored);
+        feed.setUpdate(p, { { "revision", "3" }, { "clientIpv6", "" } });
+        updates.refresh(id); QTRY_COMPARE(finished.count(), 3); QVERIFY(finished[2][0].toBool());
+        servers.invalidateCache(); const auto withdrawn = *servers.serverJsonById(id);
+        QCOMPARE(client(withdrawn, awg).value("client_ip"), client(p, awg).value("client_ip"));
+        QVERIFY(!withdrawn.value("connectionUpdates").toObject().contains("managedClientIpv6"));
+        QCOMPARE(withdrawn.value("description").toString(), "IPv6 retained after edit");
+        QCOMPARE(client(withdrawn, awg).value("client_priv_key"), client(p, awg).value("client_priv_key"));
         settings.clearSettings();
     }
     void verifiedFetchConfirmsDeviceReadiness()
