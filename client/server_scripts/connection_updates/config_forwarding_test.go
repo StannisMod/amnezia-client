@@ -193,7 +193,7 @@ func TestKnownStartupBootUpgrade(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			call := []byte("\namnezia_enable_ipv6 " + spec.iface + " || exit 1\n")
+			call := []byte("\n" + startupBootCall(spec.iface) + "\n")
 			if bytes.Count(current, call) != 1 {
 				t.Fatal("canonical startup lacks unique post-up call")
 			}
@@ -203,6 +203,10 @@ func TestKnownStartupBootUpgrade(t *testing.T) {
 			deployedDesired := bytes.ReplaceAll(desired, []byte("$SERVER_IP_ADDRESS"), []byte("203.0.113.7"))
 			if !startupBootCandidateOK(deployedOld, deployedDesired, spec.container) {
 				t.Fatal("actual substituted startup prelude rejected")
+			}
+			fatalOld := bytes.Replace(current, call, []byte("\namnezia_enable_ipv6 "+spec.iface+" || exit 1\n"), 1)
+			if !startupBootCandidateOK(fatalOld, desired, spec.container) {
+				t.Fatal("fatal legacy boot call cannot be repaired")
 			}
 			if !startupBootCandidateOK(old, desired, spec.container) {
 				t.Fatal("known old startup rejected")
@@ -248,7 +252,7 @@ func TestBootForwardingRunsAfterTunnelUp(t *testing.T) {
 	}
 	prefix := append([]byte("#!/bin/bash\n"), resource...)
 	prefix = append(prefix, '\n')
-	call := []byte("\namnezia_enable_ipv6 wg0 || exit 1\n")
+	call := []byte("\n" + startupBootCall("wg0") + "\n")
 	old := bytes.Replace(current, call, nil, 1)
 	candidate := append(bytes.Clone(prefix), current[len("#!/bin/bash\n"):]...)
 	if !startupBootCandidateOK(old, candidate, "amnezia-wireguard") {

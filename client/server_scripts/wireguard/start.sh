@@ -11,7 +11,7 @@ wg-quick down /opt/amnezia/wireguard/wg0.conf
 # start daemons if configured
 if [ -f /opt/amnezia/wireguard/wg0.conf ]; then (wg-quick up /opt/amnezia/wireguard/wg0.conf); fi
 
-amnezia_enable_ipv6 wg0 || exit 1
+amnezia_enable_ipv6 wg0 || echo 'AMNEZIA_IPV6_FORWARDING_STATUS=boot-preparation-failed' >&2
 
 # Allow traffic on the TUN interface.
 iptables -A INPUT -i wg0 -j ACCEPT

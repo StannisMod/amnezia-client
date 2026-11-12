@@ -178,10 +178,16 @@ func startupBootCandidateOK(original, candidate []byte, container string) bool {
 	if !recognized {
 		return false
 	}
-	call := "amnezia_enable_ipv6 " + iface + " || exit 1"
+	call := startupBootCall(iface)
 	tail := body[end:]
 	if bytes.HasPrefix(tail, []byte("\n"+call+"\n")) {
 		return bytes.Equal(candidate[forwardingPrefixSize:], body)
+	}
+	legacyCall := "\namnezia_enable_ipv6 " + iface + " || exit 1\n"
+	if bytes.HasPrefix(tail, []byte(legacyCall)) {
+		replacement := append(bytes.Clone(body[:end]), []byte("\n"+call+"\n")...)
+		replacement = append(replacement, tail[len(legacyCall):]...)
+		return bytes.Equal(candidate[forwardingPrefixSize:], replacement)
 	}
 	if strings.Contains(string(body), call) {
 		return false
@@ -202,4 +208,8 @@ func canonicalStartupPrelude(raw []byte) []byte {
 		}
 	}
 	return []byte(strings.Join(lines, "\n"))
+}
+
+func startupBootCall(iface string) string {
+	return "amnezia_enable_ipv6 " + iface + " || echo 'AMNEZIA_IPV6_FORWARDING_STATUS=boot-preparation-failed' >&2"
 }

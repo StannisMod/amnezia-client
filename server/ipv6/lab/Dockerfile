@@ -16,6 +16,8 @@ RUN for kind in wireguard awg awg-legacy; do \
     done
 COPY server/ipv6/lab/run.sh /app/run.sh
 COPY server/ipv6/lab/test_forwarding.py /app/test_forwarding.py
+COPY server/ipv6/lab/test_boot.py /app/test_boot.py
+COPY server/ipv6/lab/run_boot.sh /app/run_boot.sh
 COPY server/ipv6/lab/run_encrypted.sh /app/run_encrypted.sh
 COPY --from=build /engine.test /app/engine.test
 ENTRYPOINT ["sh", "/app/run.sh"]

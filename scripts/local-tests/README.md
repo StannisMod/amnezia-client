@@ -207,3 +207,15 @@ maintenance-only upgrades, idempotence and execution order with local command
 doubles. The real SSH suite stages and rolls back the transformed actual
 startup templates. It does not restart the container, so full reboot acceptance
 and IPv4 availability when IPv6 preparation fails remain unfinished requirements.
+
+The IPv6 workflow also runs `run_boot.sh` for wireguard, awg and awg-legacy.
+These tests execute the actual packaged startup bodies and real kernel IPv4
+forwarding/NAT with IPv6 configured but no IPv6 default route. Tunnel quick
+commands and final supervisor/keepalive commands are explicit test doubles;
+this does not replace real tunnel/container restart acceptance. Startup must
+continue, report IPv6 preparation failure, install IPv4 forwarding, and allow
+both the original NAT-tracked TCP socket and a new TCP connection. A private
+negative control reinstating the old fatal exit fails this test. Boot candidate
+validation can also replace that exact old fatal call in recognized startup
+bodies without changing unrelated lines. Retrying IPv6 preparation when a
+previously missing route returns still needs the migration lifecycle coordinator.

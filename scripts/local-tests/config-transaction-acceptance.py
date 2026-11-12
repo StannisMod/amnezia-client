@@ -229,7 +229,7 @@ for container, binary, interface, path in (
     assert run('docker', 'exec', container, 'test', '-e', '/opt/amnezia/forbidden-startup-body', ok=False).returncode != 0
     # Upgrade the real known startup body as well as the maintenance capability.
     template = run('docker', 'exec', container, 'cat', '/opt/amnezia/fixture-startup-source.sh').stdout.replace(b'$SERVER_IP_ADDRESS', b'203.0.113.7')
-    boot_call = ('\namnezia_enable_ipv6 ' + interface + ' || exit 1\n').encode()
+    boot_call = ("\namnezia_enable_ipv6 " + interface + " || echo 'AMNEZIA_IPV6_FORWARDING_STATUS=boot-preparation-failed' >&2\n").encode()
     assert template.count(boot_call) == 1
     old_template = template.replace(boot_call, b'', 1)
     verified_prefix = startup[:startup.index(b'\ntouch /opt/amnezia/forbidden-startup-body') + 1]

@@ -55,6 +55,12 @@ jobs:
         run: docker build -f server/ipv6/lab/Dockerfile -t ipv6-egress-regression .
       - name: Verify kernel IPv6 TCP forwarding and scoped NAT
         run: docker run --rm --network none --privileged --pids-limit 128 --memory 256m ipv6-egress-regression | tee ipv6-egress-result.log
+      - name: Preserve IPv4 startup when IPv6 egress is unavailable
+        run: |
+          set -euo pipefail
+          for protocol in wireguard awg awg-legacy; do
+            docker run --rm --network none --privileged --pids-limit 128 --memory 256m --entrypoint sh ipv6-egress-regression /app/run_boot.sh "$protocol" | tee "ipv6-boot-$protocol.log"
+          done
       - name: Verify encrypted AWG and WG through Linux TUN and NAT66
         run: docker run --rm --network none --privileged --pids-limit 256 --memory 1g --entrypoint sh ipv6-egress-regression /app/run_encrypted.sh | tee ipv6-encrypted-egress.log
       - uses: actions/upload-artifact@v4
@@ -64,6 +70,7 @@ jobs:
           path: |
             ipv6-egress-result.log
             ipv6-encrypted-egress.log
+            ipv6-boot-*.log
   ownership:
     runs-on: ubuntu-latest
     steps:
