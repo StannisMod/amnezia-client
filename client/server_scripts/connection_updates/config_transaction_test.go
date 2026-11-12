@@ -942,3 +942,180 @@ func TestClientTableCASPreservesForeignDataAndMetadata(t *testing.T) {
 	}
 	assertConfig(t, table, after)
 }
+
+func TestNativeReceiptIsDurableBeforeJournalRemovalAndAckBound(t *testing.T) {
+	path, original, candidate := transactionFixture(t)
+	id := strings.Repeat("a", 64)
+	receipts := configReceipts{Version: 1, Records: map[string]configReceipt{id: {OriginalHash: configHash(original), CandidateHash: configHash(candidate), State: "pending"}}}
+	if err := writeConfigReceipts(path, receipts); err != nil {
+		t.Fatal(err)
+	}
+	txn, err := beginPreparedConfigTransaction(path, original, candidate, func(j *configJournal) error {
+		j.NativeOriginal = []byte("synthetic native snapshot")
+		j.NativeHash = configHash(j.NativeOriginal)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	txn.journal.NativeWriteIntent = true
+	txn.journal.NativeApplied = true
+	if err := txn.saveJournal(); err != nil {
+		t.Fatal(err)
+	}
+	// Deterministic interruption immediately after receipt publication, with the
+	// journal still present. This tests storage ordering, not native application.
+	if err := txn.completeReceipts(false); err != nil {
+		t.Fatal(err)
+	}
+	first, err := os.ReadFile(path + ".amnezia-receipts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	nativeOperation := txn.journal.Operation
+	txn.close()
+	loaded, err := readConfigReceipts(path)
+	if err != nil || loaded.Records[id].State != "committed" || loaded.Records[id].NativeOperation != nativeOperation {
+		t.Fatal("durable terminal outcome missing", err)
+	}
+	invoke := func(action, id string, expected, replacement []byte) error {
+		var output bytes.Buffer
+		return configReceiptCommand(path, configTransactionRequest{Action: action, Container: "amnezia-wireguard", Operation: id, Expected: expected, Candidate: replacement}, &output)
+	}
+	if err := invoke("ack-receipt", id, original, candidate); err == nil {
+		t.Fatal("receipt acknowledged while native transaction pending")
+	}
+	txn, err = resumeConfigTransaction(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := txn.finish(false); err != nil {
+		t.Fatal(err)
+	}
+	assertConfig(t, path+".amnezia-receipts", first)
+	if _, err := os.Lstat(path + ".amnezia-journal"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("completed journal remains")
+	}
+	if err := invoke("receipt-status", id, original, candidate); err != nil {
+		t.Fatal(err)
+	}
+	if err := invoke("ack-receipt", id, []byte("foreign expected"), candidate); err == nil {
+		t.Fatal("wrong receipt context accepted")
+	}
+	assertConfig(t, path+".amnezia-receipts", first)
+	if err := invoke("ack-receipt", id, original, candidate); err != nil {
+		t.Fatal(err)
+	}
+	if err := invoke("ack-receipt", id, original, candidate); err != nil {
+		t.Fatal("lost acknowledgment replay failed", err)
+	}
+	if err := invoke("receipt-status", id, original, candidate); err == nil {
+		t.Fatal("acknowledged receipt retained")
+	}
+}
+func TestNativeReceiptCapacityAndForeignStoreRefuseBeforeMutation(t *testing.T) {
+	path, original, candidate := transactionFixture(t)
+	records := map[string]configReceipt{}
+	for i := 0; i < maxConfigReceipts; i++ {
+		id := configHash([]byte{byte(i)})
+		records[id] = configReceipt{OriginalHash: configHash(original), CandidateHash: configHash(candidate), State: "pending"}
+	}
+	if err := writeConfigReceipts(path, configReceipts{Version: 1, Records: records}); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path + ".amnezia-receipts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	err = configReceiptCommand(path, configTransactionRequest{Action: "prepare-receipt", Container: "amnezia-wireguard", Operation: strings.Repeat("c", 64), Expected: original, Candidate: candidate}, &output)
+	if err == nil || !strings.Contains(err.Error(), "capacity") || output.Len() != 0 {
+		t.Fatal("receipt limit did not fail before native invocation", err)
+	}
+	assertConfig(t, path, original)
+	assertConfig(t, path+".amnezia-receipts", raw)
+	for _, bad := range []string{`{"version":99,"records":{}}`, `{"version":1,"records":null}`, `{"version":1,"records":{},"unknown":true}`} {
+		if err := os.WriteFile(path+".amnezia-receipts", []byte(bad), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if txn, err := beginConfigTransaction(path, original, candidate); err == nil {
+			txn.close()
+			t.Fatal("mutation accepted unknown receipt store")
+		}
+		assertConfig(t, path, original)
+	}
+	if err := os.WriteFile(path+".amnezia-receipts", raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(path+".amnezia-receipts", path+".foreign-receipt"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readConfigReceipts(path); err == nil {
+		t.Fatal("linked receipt store accepted")
+	}
+	assertConfig(t, path+".amnezia-receipts", raw)
+}
+func TestReceiptRemovedPeerRequiresOneUnambiguousKey(t *testing.T) {
+	header := "[Interface]\nPrivateKey = " + testKey('P') + "\n"
+	a := "[Peer]\nPublicKey = " + testKey('A') + " # key comment\nAllowedIPs = 10.8.0.2/32\n"
+	b := "[Peer]\nPublicKey = " + testKey('B') + "\nAllowedIPs = 10.8.0.3/32\n"
+	key, err := receiptRemovedPeer([]byte(header+a+b), []byte(header+b))
+	if err != nil || key != testKey('A') {
+		t.Fatal("exact revoked key not recognized", err)
+	}
+	for _, pair := range [][2]string{{header + a + b, header}, {header + a, header + b}, {header + a + a, header}, {header + a, header + a}} {
+		if _, err := receiptRemovedPeer([]byte(pair[0]), []byte(pair[1])); err == nil {
+			t.Fatal("ambiguous receipt removal accepted")
+		}
+	}
+}
+
+func TestOwnedHelperUpgradePreservesReceiptsAndRejectsUnknownFormat(t *testing.T) {
+	path, original, _ := transactionFixture(t)
+	target := filepath.Join(filepath.Dir(path), "helper")
+	startup := filepath.Join(filepath.Dir(path), "start.sh")
+	if err := installOwnedConfigHelper(path, startup, target, []byte("first helper")); err != nil {
+		t.Fatal(err)
+	}
+	id := strings.Repeat("a", 64)
+	receipts := configReceipts{Version: 1, Records: map[string]configReceipt{id: {OriginalHash: configHash(original), CandidateHash: configHash([]byte("candidate")), State: "committed", NativeOperation: strings.Repeat("b", 64)}}}
+	if err := writeConfigReceipts(path, receipts); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := os.ReadFile(path + ".amnezia-receipts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := installOwnedConfigHelper(path, startup, target, []byte("second helper")); err != nil {
+		t.Fatal(err)
+	}
+	assertConfig(t, path+".amnezia-receipts", saved)
+	assertConfig(t, path, original)
+	bad := []byte(`{"version":99,"records":{}}`)
+	if err := os.WriteFile(path+".amnezia-receipts", bad, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := installOwnedConfigHelper(path, startup, target, []byte("third helper")); err == nil {
+		t.Fatal("unknown receipt format upgraded")
+	}
+	assertConfig(t, target, []byte("second helper"))
+	assertConfig(t, path+".amnezia-receipts", bad)
+	if err := os.Remove(target); err != nil {
+		t.Fatal(err)
+	}
+	if err := installOwnedConfigHelper(path, startup, target, []byte("third helper")); err == nil {
+		t.Fatal("unknown receipts allowed missing-helper restoration")
+	}
+	if _, err := os.Lstat(target); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("helper published despite unknown receipts")
+	}
+	assertConfig(t, path+".amnezia-receipts", bad)
+	if err := os.WriteFile(path+".amnezia-receipts", saved, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := installOwnedConfigHelper(path, startup, target, []byte("third helper")); err != nil {
+		t.Fatal(err)
+	}
+	assertConfig(t, path+".amnezia-receipts", saved)
+	assertConfig(t, path, original)
+}

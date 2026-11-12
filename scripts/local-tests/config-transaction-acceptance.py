@@ -265,6 +265,62 @@ for container, binary, interface, path in (
     assert allowed() == original_allowed
     assert run('docker', 'exec', container, 'cat', path).stdout == original
     assert sorted(run('docker', 'exec', container, binary, 'show', interface, 'peers').stdout.splitlines()) == peers
+    # An opted-in receipt survives later cooperating edits without replaying an
+    # old full config. Only absence of the exact revoked key can be confirmed.
+    receipt_id = hashlib.sha256((container + '-receipt-removal').encode()).hexdigest()
+    receipt_blocks = re.split(rb'(?m)(?=^\[Peer\])', original)
+    removed_blocks = [block for block in receipt_blocks[1:]
+                      if re.search(rb'(?m)^PublicKey = ' + re.escape(peer_key.encode()) + rb'\s*$', block)]
+    assert len(removed_blocks) == 1
+    removed_config = b''.join(block for block in receipt_blocks if block not in removed_blocks)
+    prepared = invoke('prepare-receipt', operation=receipt_id, expected=original, candidate=removed_config)
+    assert prepared['state'] == 'pending'
+    assert invoke('prepare-receipt', operation=receipt_id, expected=original, candidate=removed_config)['state'] == 'pending'
+    invoke('prepare-receipt', operation=receipt_id, expected=original, candidate=removed_config + b'\n# wrong context\n', ok=False)
+    invoke('ack-receipt', operation=receipt_id, expected=original, candidate=removed_config, ok=False)
+    invoke('check-revoked-peer', operation=receipt_id, expected=original, candidate=removed_config, ok=False, no_writer=True)
+    removal = invoke('stage-live', expected=original, candidate=removed_config)
+    invoke('apply-commit', operation=removal['operation'])
+    terminal = invoke('receipt-status', operation=receipt_id, expected=original, candidate=removed_config)
+    assert terminal['state'] == 'committed' and terminal['nativeOperation'] == removal['operation']
+    check = invoke('check-revoked-peer', operation=receipt_id, expected=original, candidate=removed_config, no_writer=True)
+    assert check['revoked'] and check['clientPublicKey'] == peer_key
+    # Change a remaining peer through a separate real native transaction.
+    independent = re.split(rb'(?m)(?=^\[Peer\])', removed_config)
+    assert len(independent) > 1
+    independent[1] = re.sub(rb'(?m)^PersistentKeepalive = [^\n]*\n?', b'', independent[1]).rstrip(b'\n') + b'\nPersistentKeepalive = 17\n'
+    assert b'PresharedKey =' not in independent[1], 'fixture peer must start without a PSK'
+    independent[1] += b'PresharedKey = ' + base64.b64encode(b'Z' * 32) + b'\n'
+    independent_config = b''.join(independent)
+    separate = invoke('stage-live', expected=removed_config, candidate=independent_config)
+    invoke('apply-commit', operation=separate['operation'])
+    independent_native = run('docker', 'exec', container, binary, 'showconf', interface).stdout
+    invoke('check-live', expected=removed_config, ok=False)
+    check = invoke('check-revoked-peer', operation=receipt_id, expected=original, candidate=removed_config, no_writer=True)
+    assert check['revoked']
+    assert run('docker', 'exec', container, 'cat', path).stdout == independent_config
+    assert run('docker', 'exec', container, binary, 'showconf', interface).stdout == independent_native
+    assert run('docker', 'exec', container, 'test', '-e', '/opt/amnezia/forbidden-recovery-writer', ok=False).returncode
+    # Historical completion is not permission to delete a reintroduced peer.
+    restoration = invoke('stage-live', expected=independent_config, candidate=original)
+    invoke('apply-commit', operation=restoration['operation'])
+    invoke('check-revoked-peer', operation=receipt_id, expected=original, candidate=removed_config, ok=False, no_writer=True)
+    assert run('docker', 'exec', container, 'cat', path).stdout == original
+    assert invoke('ack-receipt', operation=receipt_id, expected=original, candidate=removed_config)['acknowledged']
+    assert invoke('ack-receipt', operation=receipt_id, expected=original, candidate=removed_config)['acknowledged']
+    invoke('receipt-status', operation=receipt_id, expected=original, candidate=removed_config, ok=False)
+    # A live rollback must replace a prior terminal/intent with rollback outcome.
+    rollback_receipt = hashlib.sha256((container + '-receipt-rollback').encode()).hexdigest()
+    invoke('prepare-receipt', operation=rollback_receipt, expected=original, candidate=removed_config)
+    removal = invoke('stage-live', expected=original, candidate=removed_config)
+    invoke('apply', operation=removal['operation'])
+    invoke('rollback-live', operation=removal['operation'])
+    assert invoke('receipt-status', operation=rollback_receipt, expected=original, candidate=removed_config)['state'] == 'rolled-back'
+    invoke('check-revoked-peer', operation=rollback_receipt, expected=original, candidate=removed_config, ok=False, no_writer=True)
+    invoke('ack-receipt', operation=rollback_receipt, expected=original, candidate=removed_config)
+    assert run('docker', 'exec', container, 'cat', path).stdout == original
+    assert sorted(run('docker', 'exec', container, binary, 'show', interface, 'peers').stdout.splitlines()) == peers
+    print(f'PASS: {container} durable terminal receipts preserve later native edits, reject reintroduced peers and retain rollback direction')
     print(f'PASS: {container} private journal, operation binding, rollback, commit, replay rejection, native apply and failure rollback; live peers preserved')
 
     # Construct an old IPv4-only app installation in this disposable namespace.

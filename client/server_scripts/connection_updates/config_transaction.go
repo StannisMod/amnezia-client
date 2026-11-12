@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"syscall"
 	"unicode/utf8"
 	"unsafe"
@@ -213,6 +214,9 @@ func beginPreparedConfigTransaction(path string, expected, candidate []byte, pre
 			lock.Close()
 		}
 	}()
+	if _, err := readConfigReceipts(path); err != nil {
+		return nil, err
+	}
 	original, info, err := readConfigFile(path, 4<<20)
 	if err != nil {
 		return nil, err
@@ -262,6 +266,9 @@ func resumeConfigTransaction(path string) (*configTransaction, error) {
 			lock.Close()
 		}
 	}()
+	if _, err := readConfigReceipts(path); err != nil {
+		return nil, err
+	}
 	journal, err := readLockedConfigJournal(path)
 	if err != nil {
 		return nil, err
@@ -323,6 +330,9 @@ func (transaction *configTransaction) finish(rollback bool) error {
 			return err
 		}
 	}
+	if err := transaction.completeReceipts(rollback); err != nil {
+		return err
+	}
 	if err = os.Remove(transaction.path + ".amnezia-journal"); err != nil {
 		return err
 	}
@@ -363,7 +373,10 @@ func configTransactionCommand(input io.Reader, output io.Writer, paths map[strin
 		if request.Operation != "" || len(request.Expected) != 0 || len(request.Candidate) != 0 || request.ServerIPv6 != "" {
 			return errors.New("unexpected capability fields")
 		}
-		return json.NewEncoder(output).Encode(map[string]any{"version": 1, "features": []string{"native-mutation-v1", "native-reconcile-v1", "native-rollback-guard-v1", "native-stage-restart-v1", "client-table-cas-v1"}})
+		return json.NewEncoder(output).Encode(map[string]any{"version": 1, "features": []string{"native-mutation-v1", "native-reconcile-v1", "native-rollback-guard-v1", "native-stage-restart-v1", "client-table-cas-v1", "native-receipt-v1"}})
+	}
+	if request.Action == "prepare-receipt" || request.Action == "receipt-status" || request.Action == "check-revoked-peer" || request.Action == "ack-receipt" {
+		return configReceiptCommand(path, request, output)
 	}
 	if request.Action == "replace-client-table" || request.Action == "check-client-table" {
 		return clientTableTransaction(path, request, output)
@@ -626,6 +639,9 @@ func installConfigHelperCompatible(configPath, startupPath, target string, candi
 		locks = append(locks, lock)
 	}
 	for _, path := range []string{configPath, startupPath} {
+		if _, err := readConfigReceipts(path); err != nil {
+			return err
+		}
 		if _, err := os.Lstat(path + ".amnezia-journal"); errors.Is(err, os.ErrNotExist) {
 			continue
 		}
@@ -801,4 +817,262 @@ func validClientTable(data []byte) bool {
 		}
 	}
 	return true
+}
+
+// Receipts are opt-in intents published before a live mutation. Completion is
+// durable before journal removal. Unacknowledged records are never evicted;
+// capacity exhaustion refuses new intents before any native/config change.
+type configReceipt struct {
+	OriginalHash    string `json:"originalHash"`
+	CandidateHash   string `json:"candidateHash"`
+	State           string `json:"state"`
+	NativeOperation string `json:"nativeOperation,omitempty"`
+}
+type configReceipts struct {
+	Version int                      `json:"version"`
+	Records map[string]configReceipt `json:"records"`
+}
+
+const maxConfigReceipts = 256
+
+func readConfigReceipts(path string) (configReceipts, error) {
+	empty := configReceipts{Version: 1, Records: map[string]configReceipt{}}
+	raw, info, err := readConfigFile(path+".amnezia-receipts", 2<<20)
+	if errors.Is(err, os.ErrNotExist) {
+		return empty, nil
+	}
+	if err != nil {
+		return empty, err
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || stat.Nlink != 1 || int(stat.Uid) != os.Geteuid() || info.Mode().Perm() != 0600 {
+		return empty, errors.New("unsafe configuration receipts")
+	}
+	var receipts configReceipts
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&receipts) != nil || decoder.Decode(new(any)) != io.EOF || receipts.Version != 1 || receipts.Records == nil || len(receipts.Records) > maxConfigReceipts {
+		return empty, errors.New("invalid configuration receipts")
+	}
+	for id, record := range receipts.Records {
+		if !configOperationOK(id) || !configOperationOK(record.OriginalHash) || !configOperationOK(record.CandidateHash) {
+			return empty, errors.New("invalid receipt identity")
+		}
+		switch record.State {
+		case "pending":
+			if record.NativeOperation != "" {
+				return empty, errors.New("invalid pending receipt")
+			}
+		case "committed", "rolled-back":
+			if !configOperationOK(record.NativeOperation) {
+				return empty, errors.New("invalid terminal receipt")
+			}
+		default:
+			return empty, errors.New("unknown receipt outcome")
+		}
+	}
+	return receipts, nil
+}
+func writeConfigReceipts(path string, receipts configReceipts) error {
+	raw, err := json.Marshal(receipts)
+	if err != nil {
+		return err
+	}
+	// The caller holds the configuration lock and has validated the old store.
+	_, err = os.Lstat(path + ".amnezia-receipts")
+	exclusive := errors.Is(err, os.ErrNotExist)
+	if err != nil && !exclusive {
+		return err
+	}
+	return writeConfigAtomic(path+".amnezia-receipts", raw, 0600, os.Geteuid(), os.Getegid(), exclusive)
+}
+func (transaction *configTransaction) completeReceipts(rollback bool) error {
+	if len(transaction.journal.NativeOriginal) == 0 {
+		return nil
+	}
+	receipts, err := readConfigReceipts(transaction.path)
+	if err != nil {
+		return err
+	}
+	changed := false
+	for id, record := range receipts.Records {
+		if record.OriginalHash != transaction.journal.OriginalHash || record.CandidateHash != transaction.journal.CandidateHash {
+			continue
+		}
+		if rollback {
+			// A discarded pre-native stage must retain its intent for the bounded
+			// restart. A persisted rollback direction invalidates a terminal commit.
+			if transaction.journal.NativeRollbackHash == "" {
+				continue
+			}
+			if record.State != "pending" && record.NativeOperation != transaction.journal.Operation {
+				continue
+			}
+			record.State = "rolled-back"
+		} else {
+			if !transaction.journal.NativeApplied || transaction.journal.NativeRollbackHash != "" {
+				return errors.New("native receipt lacks verified application")
+			}
+			if record.State != "pending" {
+				continue
+			}
+			record.State = "committed"
+		}
+		record.NativeOperation = transaction.journal.Operation
+		receipts.Records[id] = record
+		changed = true
+	}
+	if changed {
+		return writeConfigReceipts(transaction.path, receipts)
+	}
+	return nil
+}
+func configReceiptCommand(path string, request configTransactionRequest, output io.Writer) error {
+	if !configOperationOK(request.Operation) || request.ServerIPv6 != "" || len(request.Expected) == 0 || len(request.Expected) > 4<<20 || len(request.Candidate) == 0 || len(request.Candidate) > 4<<20 {
+		return errors.New("invalid receipt request")
+	}
+	lock, err := lockConfig(path)
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+	receipts, err := readConfigReceipts(path)
+	if err != nil {
+		return err
+	}
+	record, exists := receipts.Records[request.Operation]
+	originalHash, candidateHash := configHash(request.Expected), configHash(request.Candidate)
+	if exists && (record.OriginalHash != originalHash || record.CandidateHash != candidateHash) {
+		return errConfigConflict
+	}
+	if request.Action == "ack-receipt" {
+		if exists {
+			if record.State == "pending" {
+				return errors.New("cannot acknowledge pending receipt")
+			}
+			if _, err := os.Lstat(path + ".amnezia-journal"); !errors.Is(err, os.ErrNotExist) {
+				return errors.New("configuration transaction is pending")
+			}
+			delete(receipts.Records, request.Operation)
+			if err := writeConfigReceipts(path, receipts); err != nil {
+				return err
+			}
+		}
+		return json.NewEncoder(output).Encode(map[string]any{"version": 1, "acknowledged": true, "operation": request.Operation})
+	}
+	if !exists {
+		if request.Action != "prepare-receipt" {
+			return errors.New("unknown configuration receipt")
+		}
+		if len(receipts.Records) >= maxConfigReceipts {
+			return errors.New("configuration receipt capacity exhausted")
+		}
+		if _, err := os.Lstat(path + ".amnezia-journal"); !errors.Is(err, os.ErrNotExist) {
+			return errors.New("configuration transaction is pending")
+		}
+		current, info, err := readConfigFile(path, 4<<20)
+		if err != nil {
+			return err
+		}
+		stat, ok := info.Sys().(*syscall.Stat_t)
+		if !ok || stat.Nlink != 1 || int(stat.Uid) != os.Geteuid() || info.Mode().Perm()&0022 != 0 || !bytes.Equal(current, request.Expected) || !sameQuickSettings(request.Expected, request.Candidate) {
+			return errConfigConflict
+		}
+		native, err := captureNativeProtocol(request.Container)
+		if err != nil {
+			return err
+		}
+		if err := verifyNativeConfigBaseline(request.Container, path, native); err != nil {
+			return err
+		}
+		record = configReceipt{OriginalHash: originalHash, CandidateHash: candidateHash, State: "pending"}
+		receipts.Records[request.Operation] = record
+		if err := writeConfigReceipts(path, receipts); err != nil {
+			return err
+		}
+	}
+	if request.Action == "check-revoked-peer" {
+		if record.State != "committed" {
+			return errors.New("receipt is not committed")
+		}
+		if _, err := os.Lstat(path + ".amnezia-journal"); !errors.Is(err, os.ErrNotExist) {
+			return errors.New("configuration transaction is pending")
+		}
+		key, err := receiptRemovedPeer(request.Expected, request.Candidate)
+		if err != nil {
+			return err
+		}
+		_, info, err := readConfigFile(path, 4<<20)
+		if err != nil {
+			return err
+		}
+		stat, ok := info.Sys().(*syscall.Stat_t)
+		if !ok || stat.Nlink != 1 || int(stat.Uid) != os.Geteuid() || info.Mode().Perm()&0022 != 0 {
+			return errConfigConflict
+		}
+		native, err := captureNativeProtocol(request.Container)
+		if err != nil {
+			return err
+		}
+		if err := verifyNativeConfigBaseline(request.Container, path, native); err != nil {
+			return err
+		}
+		_, peers, err := iniInterface(native)
+		if err != nil {
+			return err
+		}
+		for _, peer := range peers {
+			if peer == key {
+				return errors.New("revoked peer is present again")
+			}
+		}
+		return json.NewEncoder(output).Encode(map[string]any{"version": 1, "operation": request.Operation, "committed": true, "revoked": true, "clientPublicKey": key, "originalHash": originalHash, "candidateHash": candidateHash})
+	}
+	return json.NewEncoder(output).Encode(map[string]any{"version": 1, "operation": request.Operation, "state": record.State, "nativeOperation": record.NativeOperation, "originalHash": originalHash, "candidateHash": candidateHash})
+}
+func receiptRemovedPeer(original, candidate []byte) (string, error) {
+	keys := func(raw []byte) (map[string]bool, error) {
+		lines := strings.Split(string(raw), "\n")
+		for i, line := range lines {
+			lines[i] = strings.SplitN(line, "#", 2)[0]
+		}
+		_, peers, err := iniInterface([]byte(strings.Join(lines, "\n")))
+		if err != nil {
+			return nil, err
+		}
+		result := map[string]bool{}
+		for _, key := range peers {
+			if result[key] {
+				return nil, errors.New("duplicate receipt peer")
+			}
+			result[key] = true
+		}
+		return result, nil
+	}
+	before, err := keys(original)
+	if err != nil {
+		return "", err
+	}
+	after, err := keys(candidate)
+	if err != nil {
+		return "", err
+	}
+	removed := ""
+	for key := range before {
+		if !after[key] {
+			if removed != "" {
+				return "", errors.New("ambiguous revoked peer")
+			}
+			removed = key
+		}
+	}
+	for key := range after {
+		if !before[key] {
+			return "", errors.New("receipt adds another peer")
+		}
+	}
+	if removed == "" {
+		return "", errors.New("receipt does not revoke a peer")
+	}
+	return removed, nil
 }

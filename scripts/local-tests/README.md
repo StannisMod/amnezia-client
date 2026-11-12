@@ -427,8 +427,45 @@ second Qt process to resume through a deliberately lost metadata reply and a
 lost token-revocation reply. The token must actually reject the signed fetch;
 a third process completes the pending-token retry and clears the context. These
 are deterministic transport failures after effect, not OS process-kill tests.
-Durable terminal server receipts, recovery across later unrelated native edits,
-other metadata writers and the full migration coordinator remain outstanding.
+Automatic terminal-receipt use across later unrelated native edits, other
+metadata writers and the full migration coordinator remain outstanding.
+
+The server helper also advertises `native-receipt-v1`. A caller with a durable
+local operation ID can opt in with `prepare-receipt` before staging. The fixed
+sidecar store binds that ID to the original/candidate hashes under the protocol
+lock. Verified native completion is recorded durably before the live journal is
+removed. A failed receipt publication retains the journal. `receipt-status`
+reports pending, committed or rolled-back; live rollback preserves its direction.
+A pre-native discarded stage retains the intent for a bounded stage restart.
+
+`check-revoked-peer` requires a committed matching receipt, no pending journal,
+consistent current file/native state and absence of the exact removed key. It
+can confirm removal after another peer's settings change without replaying the
+old configuration. A reintroduced key causes refusal. This check has no native
+writer; the required WG/AWG fixture uses a failing writer sentinel and verifies
+byte identity of the later file/native state. Wrong context, duplicate/ambiguous
+removals and pending receipts cannot establish completion.
+
+Receipts contain hashes and IDs, not configurations or private keys. They are
+owned, single-link, mode 0600, strictly versioned and bounded to 256 entries.
+Unacknowledged entries are never evicted: new intent preparation fails before
+mutation if capacity is exhausted. `ack-receipt` conditionally removes a terminal
+receipt and is idempotent after a lost acknowledgment reply. Helper upgrades
+preserve supported receipt bytes and refuse unknown or unsafe stores. These
+server primitives are tested, but automatic use by the client still requires a
+new durable context phase: save business completion before acknowledging the
+receipt, then clear the local context. Existing client revocation still uses the
+exact candidate check and does not yet consume receipts after unrelated edits.
+
+The receipt regression also covers restoring a peer keepalive from 17 and a
+nonzero PSK to their omitted defaults. The pinned `awg syncconf` retains either
+value when the new block omits the field; explicit zero values clear them.
+Native AWG snapshot writes materialize missing `PersistentKeepalive = 0` and a
+zero `PresharedKey` before synchronization, including rollback snapshots.
+Existing explicit settings and endpoints are preserved. Omitted AllowedIPs
+already clears routes, so no extra field is inserted. Canonical comparison
+treats a zero PSK as absent. The real WG/AWG receipt test must restore the
+original native state; the previous AWG implementation fails that restoration.
 
 Guarded native rollback now snapshots the canonical candidate digest durably
 before replacing its file. Runtime must match the original or that verified
