@@ -175,6 +175,7 @@ for container, binary, interface, path in (
     assert len(staged_ipv6['clientIpv6']) == len(legacy_peers)
     assert not staged_ipv6['ipv6AddressPreexisting'] and not staged_ipv6['ipv6Applied']
     invoke('commit', operation=staged_ipv6['operation'], ok=False)
+    invoke('prepare-forwarding', operation=staged_ipv6['operation'], ok=False)
     invoke('rollback', operation=staged_ipv6['operation'], ok=False)
     invoke('rollback-live', operation=staged_ipv6['operation'])
     assert target.encode() not in addresses() and unrelated.encode() in addresses()
@@ -208,6 +209,36 @@ for container, binary, interface, path in (
     run('docker', 'exec', container, binary, 'set', interface, 'peer', roaming_key, 'endpoint', '127.0.0.1:29222')
     applied = invoke('apply', operation=staged_ipv6['operation'])
     assert applied['ipv6Applied']
+    invoke('prepare-forwarding', operation='0' * 64, ok=False)
+    startup = run('docker', 'exec', container, 'cat', '/opt/amnezia/start.sh').stdout
+    old_startup = b'#!/bin/bash\ntouch /opt/amnezia/forbidden-startup-body\nexit 87\n'
+    run('docker', 'exec', '-i', container, 'sh', '-ec', 'cat > /opt/amnezia/start.sh', data=old_startup)
+    invoke('prepare-forwarding', operation=staged_ipv6['operation'], ok=False)
+    assert run('docker', 'exec', container, 'test', '-e', '/opt/amnezia/forbidden-startup-body', ok=False).returncode != 0
+    run('docker', 'exec', '-i', container, 'sh', '-ec', 'cat > /opt/amnezia/start.sh', data=startup)
+    # No IPv6 default route yet: preparation must fail, retaining the journal.
+    invoke('prepare-forwarding', operation=staged_ipv6['operation'], ok=False)
+    run('docker', 'exec', container, 'ip', 'link', 'add', 'v6fixture0', 'type', 'dummy')
+    run('docker', 'exec', container, 'ip', 'link', 'set', 'v6fixture0', 'up')
+    run('docker', 'exec', container, 'ip', '-6', 'addr', 'add', 'fd98::2/64', 'dev', 'v6fixture0', 'nodad')
+    run('docker', 'exec', container, 'ip', '-6', 'route', 'add', 'default', 'dev', 'v6fixture0')
+    try:
+        prepared_forwarding = invoke('prepare-forwarding', operation=staged_ipv6['operation'])
+    except RuntimeError as error:
+        # Only the known synthetic fixture prefix contains no configuration keys.
+        prefix = startup[:startup.index(b'\ntouch /opt/amnezia/forbidden-startup-body') + 1]
+        diagnostic = run('docker', 'exec', '-i', container, 'env', '-i',
+                         'PATH=/usr/sbin:/usr/bin:/sbin:/bin', 'LC_ALL=C',
+                         '/bin/bash', '-x', '-s', '--', '--amnezia-prepare-ipv6-forwarding', interface,
+                         data=prefix, ok=False)
+        raise RuntimeError('known forwarding prefix diagnostic: ' + diagnostic.stderr.decode(errors='replace')) from error
+    assert prepared_forwarding['ipv6ForwardingPrepared']
+    rules = run('docker', 'exec', container, 'ip6tables-save').stdout
+    assert invoke('prepare-forwarding', operation=staged_ipv6['operation'])['ipv6ForwardingPrepared']
+    # iptables-save includes changing timestamps; compare rule lines only.
+    after_rules = run('docker', 'exec', container, 'ip6tables-save').stdout
+    assert [line for line in rules.splitlines() if not line.startswith(b'#')] == [line for line in after_rules.splitlines() if not line.startswith(b'#')]
+    assert run('docker', 'exec', container, 'test', '-e', '/opt/amnezia/forbidden-startup-body', ok=False).returncode != 0
     assert target.encode() in addresses() and unrelated.encode() in addresses()
     actual_routes = dict(allowed())
     for key, address in staged_ipv6['clientIpv6'].items():

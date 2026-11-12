@@ -171,3 +171,14 @@ foreign rules and the IPv4 firewall/routes; an original IPv4 TCP session stays
 open while actual IPv6 forwarding/NAT is verified against a local origin.
 This additive preparation does not provide a whole-operation rollback or prove
 Internet reachability; automatic migration still needs its coordinator.
+
+The production transaction helper exposes `prepare-forwarding`, bound to the
+pending operation. It requires the IPv6 native configuration to be applied,
+checks the candidate file and actual native baseline, and verifies the installed
+startup prefix against the packaged shared resource hash. It executes only that
+verified prefix snapshot through Bash stdin with a fixed environment, never the
+installed startup body. Old/modified scripts are rejected; automatic installation
+of a compatible prefix on old servers remains part of the unfinished migration
+coordinator. The result means preparation succeeded at that invocation; it is not
+a durable Internet-readiness receipt. The ordinary SSH regression exercises old
+script rejection, missing-route failure and idempotent real WG/AWG preparation.

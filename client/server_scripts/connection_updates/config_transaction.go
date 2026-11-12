@@ -336,7 +336,7 @@ func configTransactionCommand(input io.Reader, output io.Writer, paths map[strin
 			if request.Operation != "" {
 				return errors.New("unexpected operation identifier")
 			}
-		case "commit", "rollback", "apply", "rollback-live":
+		case "commit", "rollback", "apply", "rollback-live", "prepare-forwarding":
 			if !configOperationOK(request.Operation) {
 				return errors.New("invalid operation identifier")
 			}
@@ -358,6 +358,11 @@ func configTransactionCommand(input io.Reader, output io.Writer, paths map[strin
 	}
 
 	switch request.Action {
+	case "prepare-forwarding":
+		if err := prepareConfigForwarding(transaction, request.Container); err != nil {
+			return err
+		}
+		result["ipv6ForwardingPrepared"] = true
 	case "apply", "rollback-live":
 		if err := applyConfigTransactionRuntime(transaction, request.Container, request.Action == "rollback-live"); err != nil {
 			return err
