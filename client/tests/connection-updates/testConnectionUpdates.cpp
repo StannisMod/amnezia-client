@@ -74,6 +74,72 @@ private slots:
         QCOMPARE(client(rejected, false).value("allowed_ips"), c.value("allowed_ips"));
         update["pathMtuProbe"] = 42; QVERIFY(!connectionUpdates::apply(original, sign(update), 2000000001, rejected));
     }
+    void signedClientIPv6Lifecycle_data() { keepsDeviceAndLocalSettings_data(); }
+    void signedClientIPv6Lifecycle()
+    {
+        QFETCH(bool, awg); const auto original = profile(awg); const auto before = client(original, awg);
+        auto update = payload(original, awg); update["clientIpv6"] = "fd77::2";
+        QJsonObject added; QVERIFY(connectionUpdates::apply(original, sign(update), 2000000001, added));
+        auto after = client(added, awg);
+        QCOMPARE(after.value("client_ip").toString(), "10.8.0.2, fd77::2/128");
+        QVERIFY(after.value("config").toString().contains("Address = 10.8.0.2/32, fd77::2/128\n"));
+        for (const auto *key : { "client_priv_key", "client_pub_key", "psk_key", "mtu", "allowed_ips" }) QCOMPARE(after.value(key), before.value(key));
+        QVERIFY(after.value("config").toString().contains("DNS = 192.0.2.53\n"));
+        QJsonObject repeated; QVERIFY(connectionUpdates::apply(added, sign(update), 2000000002, repeated));
+        QCOMPARE(client(repeated, awg), after);
+        auto changed = update; changed["clientIpv6"] = "fd77::3";
+        QJsonObject rejected { { "sentinel", true } };
+        QVERIFY(!connectionUpdates::apply(added, sign(changed), 2000000002, rejected)); QCOMPARE(rejected.size(), 1);
+        changed["revision"] = "2";
+        QJsonObject replaced; QVERIFY(connectionUpdates::apply(added, sign(changed), 2000000002, replaced));
+        QCOMPARE(client(replaced, awg).value("client_ip").toString(), "10.8.0.2, fd77::3/128");
+        auto legacy = payload(original, awg); legacy["revision"] = "3";
+        QJsonObject retained; QVERIFY(connectionUpdates::apply(replaced, sign(legacy), 2000000003, retained));
+        QCOMPARE(client(retained, awg), client(replaced, awg));
+        changed["revision"] = "4"; changed["clientIpv6"] = "";
+        QJsonObject withdrawn; QVERIFY(connectionUpdates::apply(retained, sign(changed), 2000000004, withdrawn));
+        QCOMPARE(client(withdrawn, awg).value("client_ip"), before.value("client_ip"));
+        QVERIFY(client(withdrawn, awg).value("config").toString().contains("Address = 10.8.0.2/32\n"));
+        QVERIFY(!withdrawn.value("connectionUpdates").toObject().contains("managedClientIpv6"));
+    }
+    void signedClientIPv6RespectsLocalConfiguration()
+    {
+        auto changeClient = [](QJsonObject p, const QJsonObject &c) {
+            auto containers = p["containers"].toArray(); auto container = containers[0].toObject();
+            auto proto = container["wireguard"].toObject();
+            proto["last_config"] = QString::fromUtf8(QJsonDocument(c).toJson(QJsonDocument::Compact));
+            container["wireguard"] = proto; containers[0] = container; p["containers"] = containers; return p;
+        };
+        const auto original = profile(); auto local = client(original, false);
+        local["client_ip"] = "10.8.0.2, fd77::2/128";
+        auto native = local["config"].toString(); native.replace("Address = 10.8.0.2/32", "Address = 10.8.0.2/32, fd77::2/128");
+        local["config"] = native; const auto preexisting = changeClient(original, local);
+        auto update = payload(original); update["clientIpv6"] = "fd77::2";
+        QJsonObject adopted; QVERIFY(connectionUpdates::apply(preexisting, sign(update), 2000000001, adopted));
+        QVERIFY(!adopted["connectionUpdates"].toObject().contains("managedClientIpv6"));
+        update["revision"] = "2"; update["clientIpv6"] = "";
+        QJsonObject withdrawn; QVERIFY(connectionUpdates::apply(adopted, sign(update), 2000000002, withdrawn));
+        QCOMPARE(client(withdrawn, false).value("client_ip"), local.value("client_ip"));
+        auto subnetLocal = local;
+        subnetLocal["client_ip"] = "10.8.0.2, fd77::2/64";
+        subnetLocal["config"] = native.replace("fd77::2/128", "fd77::2/64");
+        auto subnetUpdate = payload(original); subnetUpdate["clientIpv6"] = "fd77::2";
+        QJsonObject subnetResult;
+        QVERIFY(connectionUpdates::apply(changeClient(original, subnetLocal), sign(subnetUpdate), 2000000001, subnetResult));
+        QCOMPARE(client(subnetResult, false).value("client_ip"), subnetLocal.value("client_ip"));
+        QVERIFY(!subnetResult["connectionUpdates"].toObject().contains("managedClientIpv6"));
+        update["revision"] = "1"; update["clientIpv6"] = "fd77::3";
+        for (int scenario = 0; scenario < 4; ++scenario) {
+            auto bad = client(original, false);
+            if (scenario == 0) bad["mtu"] = "1200";
+            if (scenario == 1) bad["client_ip"] = "10.8.0.9";
+            if (scenario == 2) bad["config"] = bad["config"].toString() + "[Interface]\nAddress = 10.8.0.2/32\n";
+            if (scenario == 3) { auto config = bad["config"].toString(); config.remove("Address = 10.8.0.2/32\n"); bad["config"] = config; }
+            QJsonObject output { { "sentinel", true } };
+            QVERIFY(!connectionUpdates::apply(changeClient(original, bad), sign(update), 2000000001, output));
+            QCOMPARE(output, (QJsonObject { { "sentinel", true } }));
+        }
+    }
     void rejectsMalformedSignedClientIPv6_data() { keepsDeviceAndLocalSettings_data(); }
     void rejectsMalformedSignedClientIPv6()
     {

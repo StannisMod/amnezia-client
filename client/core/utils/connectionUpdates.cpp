@@ -304,6 +304,75 @@ bool mergePathProbe(const QJsonObject &profile, const QString &name, const QJson
     container[protoName] = proto; containers[found] = container;
     auto result = profile; result[configKey::containers] = containers; updated = result; return true;
 }
+namespace {
+bool mergeClientIPv6(QJsonObject &profile, QJsonObject &metadata, const QJsonValue &value)
+{
+    auto containers = profile.value(configKey::containers).toArray();
+    if (containers.size() != 1) return false;
+    auto container = containers[0].toObject();
+    const auto protoName = protocol(metadata.value("container").toString());
+    auto proto = container.value(protoName).toObject();
+    auto client = QJsonDocument::fromJson(proto.value(configKey::lastConfig).toString().toUtf8()).object();
+    const auto target = value.toString();
+    const auto previous = metadata.value("managedClientIpv6").toString();
+    if (!previous.isEmpty() && (!validClientIPv6(previous) || previous != metadata.value("clientIpv6").toString())) return false;
+    QStringList addresses, canonical, nativeAddresses;
+    auto parseAddresses = [](const QString &text, QStringList &entries, QStringList &normalized) {
+        for (const auto &part : text.split(',')) {
+            const auto entry = part.trimmed();
+            const auto ip = QHostAddress(entry.section('/', 0, 0));
+            const auto cidr = entry.contains('/') ? entry : entry + (ip.protocol() == QAbstractSocket::IPv6Protocol ? "/128" : "/32");
+            const auto subnet = QHostAddress::parseSubnet(cidr);
+            if (ip.isNull() || subnet.second < 0 || normalized.contains(ip.toString() + "/" + QString::number(subnet.second))) return false;
+            entries << entry;
+            normalized << ip.toString() + "/" + QString::number(subnet.second);
+        }
+        return !entries.isEmpty();
+    };
+    if (!parseAddresses(client.value(configKey::clientIp).toString(), addresses, canonical)) return false;
+    auto lines = client.value(configKey::config).toString().split('\n');
+    QString section; int addressLine = -1, interfaces = 0;
+    for (int i = 0; i < lines.size(); ++i) {
+        const auto line = lines[i].trimmed();
+        if (line.startsWith('[') && line.endsWith(']')) {
+            section = line.mid(1, line.size() - 2);
+            if (section == "Interface") ++interfaces;
+        } else if (section == "Interface" && line.section('=', 0, 0).trimmed() == "Address") {
+            if (addressLine >= 0 || !line.contains('=')) return false;
+            addressLine = i;
+            QStringList nativeEntries, nativeCanonical;
+            if (!parseAddresses(line.section('=', 1), nativeEntries, nativeCanonical) || nativeCanonical != canonical) return false;
+            nativeAddresses = nativeEntries;
+        }
+    }
+    if (interfaces != 1 || addressLine < 0) return false;
+    if (!previous.isEmpty()) {
+        const auto index = canonical.indexOf(previous + "/128");
+        if (index < 0) return false; // Local edits must not be overwritten implicitly.
+        addresses.removeAt(index); canonical.removeAt(index); nativeAddresses.removeAt(index);
+    }
+    QString managed;
+    bool alreadyPresent = false;
+    for (const auto &entry : canonical) alreadyPresent = alreadyPresent || entry.section('/', 0, 0) == target;
+    if (!target.isEmpty() && !alreadyPresent) {
+        bool ok = false; const auto mtu = client.value(configKey::mtu).toString().toInt(&ok);
+        if (ok && mtu < 1280) return false;
+        addresses << target + "/128"; nativeAddresses << target + "/128";
+        managed = target;
+    }
+    if (addresses.isEmpty()) return false;
+    // Existing local addresses are never claimed: withdrawal removes only our addition.
+    lines[addressLine] = "Address = " + nativeAddresses.join(", ");
+    client[configKey::clientIp] = addresses.join(", ");
+    client[configKey::config] = lines.join('\n');
+    proto[configKey::lastConfig] = QString::fromUtf8(QJsonDocument(client).toJson(QJsonDocument::Compact));
+    container[protoName] = proto; containers[0] = container; profile[configKey::containers] = containers;
+    metadata["clientIpv6"] = value;
+    if (managed.isEmpty()) metadata.remove("managedClientIpv6");
+    else metadata["managedClientIpv6"] = managed;
+    return true;
+}
+}
 bool apply(const QJsonObject &profile, const QByteArray &envelope, qint64 now, QJsonObject &updated)
 {
     if (envelope.size() > 65536 || !validateProfile(profile)) return false;
@@ -339,6 +408,7 @@ bool apply(const QJsonObject &profile, const QByteArray &envelope, qint64 now, Q
     QJsonObject result;
     if (!mergeServerSettings(profile, m.value("container").toString(), settings, false, result)) return false;
     auto metadata = m;
+    if (p.contains("clientIpv6") && !mergeClientIPv6(result, metadata, p.value("clientIpv6"))) return false;
     if (p.contains("pathMtuProbe")) {
         const auto target = p.value("pathMtuProbe");
         if (revisionText == m.value("revision").toString() && m.contains("pathMtuProbe") && target != m.value("pathMtuProbe")) return false;
