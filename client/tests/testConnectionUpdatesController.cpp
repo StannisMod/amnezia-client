@@ -17,6 +17,7 @@
 #include "core/controllers/selfhosted/connectionUpdatesController.h"
 #include "core/controllers/selfhosted/importController.h"
 #include "core/controllers/selfhosted/exportController.h"
+#include "core/controllers/selfhosted/usersController.h"
 #include "core/controllers/connectionController.h"
 #include "core/controllers/serversController.h"
 #include "ui/controllers/connectionUiController.h"
@@ -287,6 +288,41 @@ private slots:
             const auto withdrawn = client(*servers.serverJsonById(userId), awg);
             QCOMPARE(withdrawn.value("client_ip").toString(), generated.value("client_ip").toString().section(',', 0, 0).trimmed());
             QCOMPARE(withdrawn.value("client_priv_key"), generated.value("client_priv_key"));
+            // A key mentioned in an earlier Interface comment must not cause
+            // revocation to remove that section or another peer.
+            SshSession ssh; ErrorCode readError = ErrorCode::NoError;
+            const QString path = awg ? "/opt/amnezia/awg/awg0.conf" : "/opt/amnezia/wireguard/wg0.conf";
+            const auto original = QString::fromUtf8(ssh.getTextFileFromContainer(container, credentials, path, readError));
+            QCOMPARE(readError, ErrorCode::NoError);
+            auto misleading = original;
+            misleading.replace("[Interface]\n", "[Interface]\n# preserved comment mentioning " + generated.value("client_pub_key").toString() + "\n");
+            QVERIFY(misleading != original);
+            QCOMPARE(ssh.uploadTextFileToContainer(container, credentials, misleading, path), ErrorCode::NoError);
+            const auto tablePath = "/opt/amnezia/" + ContainerUtils::containerTypeToString(container) + "/clientsTable";
+            const QJsonArray table { QJsonObject { { "clientId", generated.value("client_pub_key") }, { "userData", QJsonObject { { "clientName", "synthetic peer" } } } } };
+            QCOMPARE(ssh.uploadTextFileToContainer(container, credentials, QString::fromUtf8(QJsonDocument(table).toJson()), tablePath), ErrorCode::NoError);
+            UsersController users(&servers); QSignalSpy listed(&users, &UsersController::clientsUpdated);
+            QCOMPARE(users.updateClients(id, container), ErrorCode::NoError);
+            QVERIFY(!listed.isEmpty());
+            const auto currentTable = qvariant_cast<QJsonArray>(listed.last().at(0));
+            int targetRow = -1;
+            for (int row = 0; row < currentTable.size(); ++row)
+                if (currentTable[row].toObject().value("clientId") == generated.value("client_pub_key")) targetRow = row;
+            QVERIFY(targetRow >= 0);
+            QCOMPARE(users.revokeClient(id, targetRow, container), ErrorCode::NoError);
+            QString expected;
+            QVERIFY(connectionUpdates::removePeerFromServerConfig(misleading, generated.value("client_pub_key").toString(), expected));
+            const auto actual = QString::fromUtf8(ssh.getTextFileFromContainer(container, credentials, path, readError));
+            QCOMPARE(readError, ErrorCode::NoError);
+            QVERIFY2(actual == expected, "server configuration differs from exact peer removal");
+            QVERIFY(actual.section("[Peer]", 0, 0) == misleading.section("[Peer]", 0, 0));
+            QJsonObject unchangedSettings;
+            QCOMPARE(ConnectionUpdatesController::fetchPublicSettings(credentials, container, host, unchangedSettings), ErrorCode::NoError);
+            QCOMPARE(unchangedSettings, live);
+            QJsonObject remaining;
+            QCOMPARE(ConnectionUpdatesController::fetchPeerIPv6Assignments(credentials, container, remaining), ErrorCode::NoError);
+            assignments.remove(generated.value("client_pub_key").toString());
+            QCOMPARE(remaining, assignments);
             settings.clearSettings();
         }
     }

@@ -110,6 +110,12 @@ HTTPS and verifies the assigned IPv6 while preserving its private key and routes
 It also creates a fresh peer through the normal configurator, verifies native
 live peer synchronization and the exported dual-stack profile, then confirms a
 signed withdrawal removes its managed IPv6 without changing the generated key.
+The same actual export case then revokes the fresh peer through UsersController.
+Its key is deliberately mentioned in an earlier Interface comment. Only the
+exact PublicKey peer may be removed; the Interface bytes, public server settings
+and all other native peer assignments must remain unchanged. This exercises the
+production revocation path, while transaction/locking coordination across all
+writers remains separate unfinished work.
 The production configuration helper is also exercised inside both containers:
 private journal creation, operation identifiers, stage/status/commit/rollback,
 rejection of unrelated or completed operations and preservation of live peer sets.

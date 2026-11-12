@@ -1,5 +1,6 @@
 #include "usersController.h"
 #include "connectionUpdatesController.h"
+#include "core/utils/connectionUpdates.h"
 
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -621,15 +622,11 @@ ErrorCode UsersController::revokeWireGuard(const int row, const DockerContainer 
     auto client = clientsTable.at(row).toObject();
     QString clientId = client.value(configKey::clientId).toString();
 
-    auto configSections = wireguardConfigString.split("[", Qt::SkipEmptyParts);
-    for (auto &section : configSections) {
-        if (section.contains(clientId)) {
-            configSections.removeOne(section);
-            break;
-        }
+    QString newWireGuardConfig;
+    if (!connectionUpdates::removePeerFromServerConfig(wireguardConfigString, clientId, newWireGuardConfig)) {
+        logger.error() << "Cannot identify a unique WireGuard peer in the server configuration";
+        return ErrorCode::InternalError;
     }
-    QString newWireGuardConfig = configSections.join("[");
-    newWireGuardConfig.insert(0, "[");
     error = sshSession->uploadTextFileToContainer(container, credentials, newWireGuardConfig, configPath);
     if (error != ErrorCode::NoError) {
         logger.error() << "Failed to upload the wg conf file to the server";
