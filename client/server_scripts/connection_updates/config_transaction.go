@@ -15,15 +15,23 @@ import (
 
 var errConfigConflict = errors.New("configuration changed during transaction")
 
+type configIPv6Journal struct {
+	CIDR       string `json:"cidr"`
+	WasPresent bool   `json:"wasPresent"`
+	AddIntent  bool   `json:"addIntent"`
+	Ambiguous  bool   `json:"ambiguous"`
+	Applied    bool   `json:"applied"`
+}
 type configJournal struct {
-	Version       int    `json:"version"`
-	Operation     string `json:"operation"`
-	Original      []byte `json:"original"`
-	OriginalHash  string `json:"originalHash"`
-	CandidateHash string `json:"candidateHash"`
-	Mode          uint32 `json:"mode"`
-	UID           int    `json:"uid"`
-	GID           int    `json:"gid"`
+	Version       int                `json:"version"`
+	Operation     string             `json:"operation"`
+	IPv6          *configIPv6Journal `json:"ipv6,omitempty"`
+	Original      []byte             `json:"original"`
+	OriginalHash  string             `json:"originalHash"`
+	CandidateHash string             `json:"candidateHash"`
+	Mode          uint32             `json:"mode"`
+	UID           int                `json:"uid"`
+	GID           int                `json:"gid"`
 }
 type configTransaction struct {
 	path    string
@@ -132,6 +140,9 @@ func writeConfigAtomic(path string, data []byte, mode os.FileMode, uid, gid int,
 	return syncConfigDirectory(path)
 }
 func beginConfigTransaction(path string, expected, candidate []byte) (*configTransaction, error) {
+	return beginPreparedConfigTransaction(path, expected, candidate, nil)
+}
+func beginPreparedConfigTransaction(path string, expected, candidate []byte, prepare func(*configJournal) error) (*configTransaction, error) {
 	if len(expected) > 4<<20 || len(candidate) > 4<<20 || len(candidate) == 0 {
 		return nil, errors.New("invalid configuration size")
 	}
@@ -160,7 +171,15 @@ func beginConfigTransaction(path string, expected, candidate []byte) (*configTra
 	if _, err := rand.Read(nonce); err != nil {
 		return nil, err
 	}
-	journal := configJournal{Version: 2, Operation: hex.EncodeToString(nonce), Original: original, OriginalHash: configHash(original), CandidateHash: configHash(candidate), Mode: uint32(info.Mode().Perm()), UID: int(stat.Uid), GID: int(stat.Gid)}
+	journal := configJournal{Version: 3, Operation: hex.EncodeToString(nonce), Original: original, OriginalHash: configHash(original), CandidateHash: configHash(candidate), Mode: uint32(info.Mode().Perm()), UID: int(stat.Uid), GID: int(stat.Gid)}
+	if prepare != nil {
+		if err := prepare(&journal); err != nil {
+			return nil, err
+		}
+	}
+	if !configIPv6JournalOK(journal.IPv6) || !configIPv6PlanMatches(journal) {
+		return nil, errors.New("invalid IPv6 journal plan")
+	}
 	raw, err := json.Marshal(journal)
 	if err != nil {
 		return nil, err
@@ -193,7 +212,7 @@ func resumeConfigTransaction(path string) (*configTransaction, error) {
 	var journal configJournal
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
-	if decoder.Decode(&journal) != nil || decoder.Decode(new(any)) != io.EOF || journal.Version != 2 || !configOperationOK(journal.Operation) || len(journal.Original) > 4<<20 || journal.OriginalHash != configHash(journal.Original) || len(journal.CandidateHash) != 64 || journal.Mode & ^uint32(0777) != 0 || info.Mode().Perm() != 0600 || journal.UID < 0 || journal.GID < 0 {
+	if decoder.Decode(&journal) != nil || decoder.Decode(new(any)) != io.EOF || journal.Version != 3 || !configIPv6JournalOK(journal.IPv6) || !configIPv6PlanMatches(journal) || !configOperationOK(journal.Operation) || len(journal.Original) > 4<<20 || journal.OriginalHash != configHash(journal.Original) || len(journal.CandidateHash) != 64 || journal.Mode & ^uint32(0777) != 0 || info.Mode().Perm() != 0600 || journal.UID < 0 || journal.GID < 0 {
 		return nil, errors.New("invalid configuration journal")
 	}
 	hash, err := hex.DecodeString(journal.CandidateHash)
@@ -243,11 +262,12 @@ func configOperationOK(value string) bool {
 }
 
 type configTransactionRequest struct {
-	Action    string `json:"action"`
-	Container string `json:"container"`
-	Operation string `json:"operation,omitempty"`
-	Expected  []byte `json:"expected,omitempty"`
-	Candidate []byte `json:"candidate,omitempty"`
+	Action     string `json:"action"`
+	Container  string `json:"container"`
+	Operation  string `json:"operation,omitempty"`
+	Expected   []byte `json:"expected,omitempty"`
+	Candidate  []byte `json:"candidate,omitempty"`
+	ServerIPv6 string `json:"serverIpv6,omitempty"`
 }
 
 // Only the root-owned helper command invokes this; no HTTP handler exposes it.
@@ -267,13 +287,34 @@ func configTransactionCommand(input io.Reader, output io.Writer, paths map[strin
 		return errors.New("unsupported configuration container")
 	}
 	var transaction *configTransaction
-	if request.Action == "stage" {
+	var assignments map[string]string
+	if request.Action == "stage-ipv6" {
+		if request.Operation != "" || len(request.Candidate) != 0 {
+			return errors.New("unexpected IPv6 stage fields")
+		}
+		plan, planError := planIPv6Config(request.Expected, request.ServerIPv6)
+		if planError != nil {
+			return planError
+		}
+		assignments = plan.Assignments
+		transaction, err = beginPreparedConfigTransaction(path, request.Expected, plan.Config, func(journal *configJournal) error {
+			present, err := protocolIPv6Present(request.Container, request.ServerIPv6)
+			if err != nil {
+				return err
+			}
+			journal.IPv6 = &configIPv6Journal{CIDR: request.ServerIPv6, WasPresent: present}
+			return nil
+		})
+	} else if request.Action == "stage" {
+		if request.ServerIPv6 != "" {
+			return errors.New("unexpected IPv6 stage field")
+		}
 		if request.Operation != "" {
 			return errors.New("unexpected operation identifier")
 		}
 		transaction, err = beginConfigTransaction(path, request.Expected, request.Candidate)
 	} else {
-		if len(request.Expected) != 0 || len(request.Candidate) != 0 {
+		if len(request.Expected) != 0 || len(request.Candidate) != 0 || request.ServerIPv6 != "" {
 			return errors.New("unexpected configuration data")
 		}
 		switch request.Action {
@@ -294,16 +335,28 @@ func configTransactionCommand(input io.Reader, output io.Writer, paths map[strin
 		return err
 	}
 	defer transaction.close()
-	if request.Action != "stage" && request.Action != "status" && request.Operation != transaction.journal.Operation {
+	if request.Action != "stage" && request.Action != "stage-ipv6" && request.Action != "status" && request.Operation != transaction.journal.Operation {
 		return errors.New("configuration operation mismatch")
 	}
 	result := map[string]any{"version": 1, "operation": transaction.journal.Operation, "originalHash": transaction.journal.OriginalHash, "candidateHash": transaction.journal.CandidateHash}
+	if assignments != nil {
+		result["clientIpv6"] = assignments
+	}
+
 	switch request.Action {
 	case "apply", "rollback-live":
 		if err := applyConfigTransactionRuntime(transaction, request.Container, request.Action == "rollback-live"); err != nil {
 			return err
 		}
 	case "commit", "rollback":
+		if transaction.journal.IPv6 != nil {
+			if request.Action == "rollback" {
+				return errors.New("IPv6 configuration requires live rollback")
+			}
+			if err := verifyIPv6Commit(transaction, request.Container); err != nil {
+				return err
+			}
+		}
 		if err := transaction.finish(request.Action == "rollback"); err != nil {
 			return err
 		}
@@ -321,5 +374,25 @@ func configTransactionCommand(input io.Reader, output io.Writer, paths map[strin
 		}
 		result["state"] = state
 	}
+	if transaction.journal.IPv6 != nil {
+		meta := transaction.journal.IPv6
+		result["serverIpv6"] = meta.CIDR
+		result["ipv6AddressPreexisting"] = meta.WasPresent
+		result["ipv6Applied"] = meta.Applied
+		result["ipv6AddressAmbiguous"] = meta.Ambiguous
+		plan, err := planIPv6Config(transaction.journal.Original, meta.CIDR)
+		if err != nil {
+			return err
+		}
+		result["clientIpv6"] = plan.Assignments
+	}
 	return json.NewEncoder(output).Encode(result)
+}
+
+func (transaction *configTransaction) saveJournal() error {
+	raw, err := json.Marshal(transaction.journal)
+	if err != nil {
+		return err
+	}
+	return writeConfigAtomic(transaction.path+".amnezia-journal", raw, 0600, transaction.journal.UID, transaction.journal.GID, false)
 }

@@ -116,8 +116,11 @@ rejection of unrelated or completed operations and preservation of live peer set
 The helper can apply the staged native protocol configuration with `syncconf`
 and restore both the original file and live peer routes with `rollback-live`.
 Tests cover rollback before apply, an actual route change, and recovery after a
-native parser rejects malformed input. Interface address management, egress
-verification and signed publication still require the migration coordinator. Its sidecar lock protects participating
+native parser rejects malformed input. An IPv4-only migration is planned and staged, then the actual server IPv6 and
+per-peer routes are applied together. Rollback removes only the address added by
+the operation and preserves preexisting and unrelated addresses. Commit is
+rejected before successful live application. Egress verification and signed
+publication still require the migration coordinator. Its sidecar lock protects participating
 writers; existing writers that ignore it still need integration.
 The existing asynchronous probe-profile migration remains covered. This validates
 management and signed delivery; it does not send encrypted user traffic or prove

@@ -3,6 +3,8 @@
 import base64
 import hashlib
 import json
+import re
+import ipaddress
 import subprocess
 
 
@@ -24,7 +26,7 @@ for container, binary, interface, path in (
     candidate = original + b'\n# private configuration transaction regression\n'
     peers = sorted(run('docker', 'exec', container, binary, 'show', interface, 'peers').stdout.splitlines())
 
-    def invoke(action, operation=None, expected=None, candidate=None, ok=True):
+    def invoke(action, operation=None, expected=None, candidate=None, server_ipv6=None, ok=True):
         request = dict(action=action, container=container)
         if operation is not None:
             request['operation'] = operation
@@ -32,6 +34,8 @@ for container, binary, interface, path in (
             request['expected'] = base64.b64encode(expected).decode()
         if candidate is not None:
             request['candidate'] = base64.b64encode(candidate).decode()
+        if server_ipv6 is not None:
+            request['serverIpv6'] = server_ipv6
         result = run('docker', 'exec', '-i', container, helper, 'config-file-transaction',
                      data=json.dumps(request).encode(), ok=ok)
         if not ok:
@@ -97,3 +101,75 @@ for container, binary, interface, path in (
     assert run('docker', 'exec', container, 'cat', path).stdout == original
     assert sorted(run('docker', 'exec', container, binary, 'show', interface, 'peers').stdout.splitlines()) == peers
     print(f'PASS: {container} private journal, operation binding, rollback, commit, replay rejection, native apply and failure rollback; live peers preserved')
+
+    # Construct an old IPv4-only app installation in this disposable namespace.
+    # The deliberately unassigned synthetic peer is outside that installation.
+    blocks = re.split(rb'(?m)(?=^\[Peer\])', original)
+    ipv4_server = b'10.77.0.9/24' if binary == 'wg' else b'10.88.0.9/24'
+    header = re.sub(rb'(?m)^Address = [^\n]*', b'Address = ' + ipv4_server, blocks[0])
+    legacy_peers = []
+    for block in blocks[1:]:
+        match = re.search(rb'(?m)^AllowedIPs = ([^\n]+)', block)
+        if match is None:
+            continue
+        ipv4_routes = [route.strip() for route in match[1].split(b',')
+                       if ipaddress.ip_network(route.strip().decode(), strict=False).version == 4]
+        assert ipv4_routes
+        legacy_peers.append(block[:match.start(1)] + b', '.join(ipv4_routes) + block[match.end(1):])
+    legacy = header + b''.join(legacy_peers)
+    assert len(legacy_peers) >= 2
+    setup = invoke('stage', expected=original, candidate=legacy)
+    invoke('apply', operation=setup['operation'])
+    invoke('commit', operation=setup['operation'])
+    if binary == 'awg':
+        run('docker', 'exec', container, 'ip', 'address', 'add', ipv4_server.decode(), 'dev', interface)
+    target = 'fd77::1/64' if binary == 'wg' else 'fd88::9/64'
+    unrelated = 'fd99::9/128'
+    run('docker', 'exec', container, 'ip', '-6', 'address', 'del', target, 'dev', interface)
+    run('docker', 'exec', container, 'ip', '-6', 'address', 'add', unrelated, 'dev', interface, 'nodad')
+
+    def addresses():
+        return run('docker', 'exec', container, 'ip', '-o', '-6', 'address', 'show', 'dev', interface).stdout
+
+    legacy_allowed = allowed()
+    public_key = run('docker', 'exec', container, binary, 'show', interface, 'public-key').stdout
+    staged_ipv6 = invoke('stage-ipv6', expected=legacy, server_ipv6=target)
+    assert len(staged_ipv6['clientIpv6']) == len(legacy_peers)
+    assert not staged_ipv6['ipv6AddressPreexisting'] and not staged_ipv6['ipv6Applied']
+    invoke('commit', operation=staged_ipv6['operation'], ok=False)
+    invoke('rollback', operation=staged_ipv6['operation'], ok=False)
+    invoke('rollback-live', operation=staged_ipv6['operation'])
+    assert target.encode() not in addresses() and unrelated.encode() in addresses()
+    assert allowed() == legacy_allowed
+
+    staged_ipv6 = invoke('stage-ipv6', expected=legacy, server_ipv6=target)
+    applied = invoke('apply', operation=staged_ipv6['operation'])
+    assert applied['ipv6Applied']
+    assert target.encode() in addresses() and unrelated.encode() in addresses()
+    actual_routes = dict(allowed())
+    for key, address in staged_ipv6['clientIpv6'].items():
+        assert (address + '/128').encode() in actual_routes[key.encode()]
+    recovered_status = invoke('status')
+    assert recovered_status['clientIpv6'] == staged_ipv6['clientIpv6']
+    invoke('rollback-live', operation=staged_ipv6['operation'])
+    assert target.encode() not in addresses() and unrelated.encode() in addresses()
+    assert allowed() == legacy_allowed
+    assert run('docker', 'exec', container, 'cat', path).stdout == legacy
+    assert run('docker', 'exec', container, binary, 'show', interface, 'public-key').stdout == public_key
+
+    # A preexisting address must survive the same apply/rollback sequence.
+    run('docker', 'exec', container, 'ip', '-6', 'address', 'add', target, 'dev', interface, 'nodad')
+    existing = invoke('stage-ipv6', expected=legacy, server_ipv6=target)
+    assert existing['ipv6AddressPreexisting']
+    invoke('apply', operation=existing['operation'])
+    invoke('rollback-live', operation=existing['operation'])
+    assert target.encode() in addresses() and unrelated.encode() in addresses()
+    restore = invoke('stage', expected=legacy, candidate=original)
+    invoke('apply', operation=restore['operation'])
+    invoke('commit', operation=restore['operation'])
+    run('docker', 'exec', container, 'ip', '-6', 'address', 'del', unrelated, 'dev', interface)
+    if binary == 'awg':
+        run('docker', 'exec', container, 'ip', 'address', 'del', ipv4_server.decode(), 'dev', interface)
+    assert run('docker', 'exec', container, 'cat', path).stdout == original
+    assert sorted(run('docker', 'exec', container, binary, 'show', interface, 'peers').stdout.splitlines()) == peers
+    print(f'PASS: {container} legacy IPv4 migration plan, actual IPv6 address/peer apply, owned rollback and preexisting address preservation')

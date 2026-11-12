@@ -66,13 +66,33 @@ func applyConfigTransactionRuntime(transaction *configTransaction, container str
 			return err
 		}
 	}
+	if !rollback {
+		if err := applyProtocolIPv6(transaction, container); err != nil {
+			return err
+		}
+	}
 	// Keep the lock AND durable journal until native synchronization succeeds.
 	// On any failure a later rollback-live retries the original configuration.
 	if err := syncNativeProtocol(container, transaction.path); err != nil {
 		return err
 	}
 	if rollback {
+		if err := rollbackProtocolIPv6(transaction, container); err != nil {
+			return err
+		}
+		if transaction.journal.IPv6 != nil {
+			transaction.journal.IPv6.Applied = false
+			if err := transaction.saveJournal(); err != nil {
+				return err
+			}
+		}
 		return transaction.finish(true)
+	}
+	if transaction.journal.IPv6 != nil {
+		transaction.journal.IPv6.Applied = true
+		if err := transaction.saveJournal(); err != nil {
+			return err
+		}
 	}
 	return nil
 }
