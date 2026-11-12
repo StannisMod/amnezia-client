@@ -195,3 +195,15 @@ and prepares forwarding without executing the startup body. This supplies the
 maintenance capability; automatically coordinating it with migration, and
 ensuring IPv6 forwarding also runs after a future restart of old startup bodies,
 remain separate completion requirements.
+
+Startup staging additionally permits one recognized boot transformation for
+known WG/current-AWG startup preludes: insert the existing IPv6 forwarding call
+immediately after the configured `*-quick up` block. It validates the complete
+prelude fingerprint, including the upstream AWG variant without the MTU stop
+block. Only the IP in the known commented ifconfig line is normalized for
+recognition; deployed body bytes are preserved. Unknown/custom/heredoc preludes
+and unrelated edits are rejected. Go regressions cover canonical/deployed inputs,
+maintenance-only upgrades, idempotence and execution order with local command
+doubles. The real SSH suite stages and rolls back the transformed actual
+startup templates. It does not restart the container, so full reboot acceptance
+and IPv4 availability when IPv6 preparation fails remain unfinished requirements.

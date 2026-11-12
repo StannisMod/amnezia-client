@@ -179,3 +179,112 @@ func TestStartupMigrationUsesDurableTransactionWithoutChangingBody(t *testing.T)
 	}
 	assertConfig(t, path, independent)
 }
+
+func TestKnownStartupBootUpgrade(t *testing.T) {
+	resource, err := os.ReadFile("../enable_ipv6_forwarding.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	prefix := append([]byte("#!/bin/bash\n"), resource...)
+	prefix = append(prefix, '\n')
+	for _, spec := range []struct{ container, kind, iface string }{{"amnezia-wireguard", "wireguard", "wg0"}, {"amnezia-awg2", "awg", "awg0"}} {
+		t.Run(spec.kind, func(t *testing.T) {
+			current, err := os.ReadFile("../" + spec.kind + "/start.sh")
+			if err != nil {
+				t.Fatal(err)
+			}
+			call := []byte("\namnezia_enable_ipv6 " + spec.iface + " || exit 1\n")
+			if bytes.Count(current, call) != 1 {
+				t.Fatal("canonical startup lacks unique post-up call")
+			}
+			old := bytes.Replace(current, call, nil, 1)
+			desired := append(bytes.Clone(prefix), current[len("#!/bin/bash\n"):]...)
+			deployedOld := bytes.ReplaceAll(old, []byte("$SERVER_IP_ADDRESS"), []byte("203.0.113.7"))
+			deployedDesired := bytes.ReplaceAll(desired, []byte("$SERVER_IP_ADDRESS"), []byte("203.0.113.7"))
+			if !startupBootCandidateOK(deployedOld, deployedDesired, spec.container) {
+				t.Fatal("actual substituted startup prelude rejected")
+			}
+			if !startupBootCandidateOK(old, desired, spec.container) {
+				t.Fatal("known old startup rejected")
+			}
+			maintenanceOnly := append(bytes.Clone(prefix), old[len("#!/bin/bash\n"):]...)
+			if !startupBootCandidateOK(maintenanceOnly, desired, spec.container) {
+				t.Fatal("maintenance-only upgrade cannot gain boot hook")
+			}
+			if !startupBootCandidateOK(desired, desired, spec.container) {
+				t.Fatal("boot upgrade not idempotent")
+			}
+			if startupBootCandidateOK(old, append(bytes.Clone(desired), []byte("changed body\n")...), spec.container) {
+				t.Fatal("unrelated body edit accepted")
+			}
+			disguised := bytes.Replace(old, []byte("echo \"Container startup\""), []byte("cat <<'EOF'\n"), 1)
+			if startupBootCandidateOK(disguised, desired, spec.container) {
+				t.Fatal("unknown/heredoc prelude accepted")
+			}
+			if startupBootCandidateOK(old, desired, "unsupported") {
+				t.Fatal("unsupported container accepted")
+			}
+			if spec.kind == "awg" {
+				start := bytes.Index(old, []byte("# Stop the route owner"))
+				end := bytes.Index(old[start:], []byte("# kill daemons")) + start
+				upstream := append(bytes.Clone(old[:start]), old[end:]...)
+				upstreamDesired := append(bytes.Clone(prefix), bytes.Replace(upstream[len("#!/bin/bash\n"):], []byte("if [ -f /opt/amnezia/awg/awg0.conf ]; then (awg-quick up /opt/amnezia/awg/awg0.conf); fi\n"), []byte("if [ -f /opt/amnezia/awg/awg0.conf ]; then (awg-quick up /opt/amnezia/awg/awg0.conf); fi\n"+string(call)), 1)...)
+				if !startupBootCandidateOK(upstream, upstreamDesired, spec.container) {
+					t.Fatal("upstream pre-supervisor startup rejected")
+				}
+			}
+		})
+	}
+}
+
+func TestBootForwardingRunsAfterTunnelUp(t *testing.T) {
+	resource, err := os.ReadFile("../enable_ipv6_forwarding.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, err := os.ReadFile("../wireguard/start.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	prefix := append([]byte("#!/bin/bash\n"), resource...)
+	prefix = append(prefix, '\n')
+	call := []byte("\namnezia_enable_ipv6 wg0 || exit 1\n")
+	old := bytes.Replace(current, call, nil, 1)
+	candidate := append(bytes.Clone(prefix), current[len("#!/bin/bash\n"):]...)
+	if !startupBootCandidateOK(old, candidate, "amnezia-wireguard") {
+		t.Fatal("boot candidate invalid")
+	}
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "up")
+	trace := filepath.Join(dir, "forwarding")
+	configuration := filepath.Join(dir, "wg0.conf")
+	if err := os.WriteFile(configuration, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	scripts := map[string]string{
+		"wg-quick":  "#!/bin/sh\nif [ \"$1\" = up ]; then printf up > \"$FWD_MARKER\"; fi\n",
+		"ip":        "#!/bin/sh\n[ -f \"$FWD_MARKER\" ] || exit 9\nif [ \"$1\" = -o ]; then printf '2: wg0 inet6 fd77::1/64 scope global\\n'; else printf 'default dev eth0\\n'; fi\n",
+		"sysctl":    "#!/bin/sh\n[ -f \"$FWD_MARKER\" ] || exit 9\nprintf prepared >> \"$FWD_TRACE\"\n",
+		"ip6tables": "#!/bin/sh\n[ -f \"$FWD_MARKER\" ] || exit 9\nexit 0\n",
+	}
+	for name, script := range scripts {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(script), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Execute through the inserted call only. The rest remains validated above;
+	// privileged network commands are replaced with explicit local test doubles.
+	end := bytes.LastIndex(candidate, call) + len(call)
+	program := bytes.ReplaceAll(candidate[:end], []byte("/opt/amnezia/wireguard/wg0.conf"), []byte(configuration))
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	command := protocolCommand(ctx, "/bin/bash", "-s")
+	command.Env = []string{"PATH=" + dir + ":/usr/bin:/bin", "FWD_MARKER=" + marker, "FWD_TRACE=" + trace}
+	command.Stdin = bytes.NewReader(program)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("boot sequence failed: %v: %s", err, output)
+	}
+	if data, err := os.ReadFile(trace); err != nil || string(data) != "prepared" {
+		t.Fatal("forwarding did not follow tunnel up", err)
+	}
+}

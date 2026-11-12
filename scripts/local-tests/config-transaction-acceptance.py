@@ -227,6 +227,20 @@ for container, binary, interface, path in (
     assert run('docker', 'exec', container, 'cat', '/opt/amnezia/start.sh').stdout == startup
     assert run('docker', 'exec', container, 'stat', '-c', '%a', '/opt/amnezia/start.sh').stdout.strip() == b'700'
     assert run('docker', 'exec', container, 'test', '-e', '/opt/amnezia/forbidden-startup-body', ok=False).returncode != 0
+    # Upgrade the real known startup body as well as the maintenance capability.
+    template = run('docker', 'exec', container, 'cat', '/opt/amnezia/fixture-startup-source.sh').stdout.replace(b'$SERVER_IP_ADDRESS', b'203.0.113.7')
+    boot_call = ('\namnezia_enable_ipv6 ' + interface + ' || exit 1\n').encode()
+    assert template.count(boot_call) == 1
+    old_template = template.replace(boot_call, b'', 1)
+    verified_prefix = startup[:startup.index(b'\ntouch /opt/amnezia/forbidden-startup-body') + 1]
+    boot_candidate = verified_prefix + template.split(b'\n', 1)[1]
+    run('docker', 'exec', '-i', container, 'sh', '-ec', 'cat > /opt/amnezia/start.sh', data=old_template)
+    boot_upgrade = invoke('stage', expected=old_template, candidate=boot_candidate, startup=True)
+    assert run('docker', 'exec', container, 'cat', '/opt/amnezia/start.sh').stdout == boot_candidate
+    invoke('rollback', operation=boot_upgrade['operation'], startup=True)
+    assert run('docker', 'exec', container, 'cat', '/opt/amnezia/start.sh').stdout == old_template
+    # Restore the dedicated non-executing fixture; no tunnel restart is performed.
+    run('docker', 'exec', '-i', container, 'sh', '-ec', 'cat > /opt/amnezia/start.sh', data=startup)
     # No IPv6 default route yet: preparation must fail, retaining the journal.
     invoke('prepare-forwarding', operation=staged_ipv6['operation'], ok=False)
     run('docker', 'exec', container, 'ip', 'link', 'add', 'v6fixture0', 'type', 'dummy')

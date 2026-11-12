@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -125,12 +127,79 @@ func startupTransactionCommand(input io.Reader, output io.Writer, paths map[stri
 	}
 	switch request.Action {
 	case "stage":
-		if !startupCandidateOK(request.Expected, request.Candidate) {
-			return errors.New("startup migration must preserve existing body and use verified prefix")
+		if !startupCandidateOK(request.Expected, request.Candidate) && !startupBootCandidateOK(request.Expected, request.Candidate, request.Container) {
+			return errors.New("startup migration requires a verified prefix and recognized body transformation")
 		}
 	case "status", "commit", "rollback":
 	default:
 		return errors.New("unsupported startup transaction action")
 	}
 	return configTransactionCommand(bytes.NewReader(raw), output, paths)
+}
+
+// Recognize the complete known prelude, not a substring that could occur inside
+// a comment, heredoc or custom shell construct. Only one post-up call is added.
+func startupBootCandidateOK(original, candidate []byte, container string) bool {
+	if len(candidate) < forwardingPrefixSize || configHash(candidate[:forwardingPrefixSize]) != forwardingPrefixHash {
+		return false
+	}
+	var body []byte
+	if len(original) >= forwardingPrefixSize && configHash(original[:forwardingPrefixSize]) == forwardingPrefixHash {
+		body = original[forwardingPrefixSize:]
+	} else {
+		if !bytes.HasPrefix(original, []byte("#!/bin/bash\n")) {
+			return false
+		}
+		body = original[len("#!/bin/bash\n"):]
+	}
+	var iface, anchor string
+	var hashes []string
+	switch container {
+	case "amnezia-wireguard":
+		iface = "wg0"
+		anchor = "if [ -f /opt/amnezia/wireguard/wg0.conf ]; then (wg-quick up /opt/amnezia/wireguard/wg0.conf); fi\n"
+		hashes = []string{"1e1cfdc1086bcbaf6713177312d712e5ede11fc50cb56af494608307221eea0a"}
+	case "amnezia-awg2":
+		iface = "awg0"
+		anchor = "if [ -f /opt/amnezia/awg/awg0.conf ]; then (awg-quick up /opt/amnezia/awg/awg0.conf); fi\n"
+		hashes = []string{"af19e3108f3f599ea969cf45fbaf66c6900d0cc9f7cc2db622e24e667722f7b4", "000d80cdd78d11a76f39a63b3dbf30d36a152805895375672f89ec860303359a"}
+	default:
+		return false
+	}
+	index := bytes.Index(body, []byte(anchor))
+	if index < 0 {
+		return false
+	}
+	end := index + len(anchor)
+	recognized := false
+	for _, hash := range hashes {
+		recognized = recognized || configHash(canonicalStartupPrelude(body[:end])) == hash
+	}
+	if !recognized {
+		return false
+	}
+	call := "amnezia_enable_ipv6 " + iface + " || exit 1"
+	tail := body[end:]
+	if bytes.HasPrefix(tail, []byte("\n"+call+"\n")) {
+		return bytes.Equal(candidate[forwardingPrefixSize:], body)
+	}
+	if strings.Contains(string(body), call) {
+		return false
+	}
+	replacement := append(bytes.Clone(body[:end]), []byte("\n"+call+"\n")...)
+	replacement = append(replacement, tail...)
+	return bytes.Equal(candidate[forwardingPrefixSize:], replacement)
+}
+
+func canonicalStartupPrelude(raw []byte) []byte {
+	lines := strings.Split(string(raw), "\n")
+	for i, line := range lines {
+		fields := strings.Fields(line)
+		if len(fields) == 6 && fields[0] == "#ifconfig" && fields[1] == "eth0:0" && fields[3] == "netmask" && fields[4] == "255.255.255.255" && fields[5] == "up" {
+			if _, err := netip.ParseAddr(fields[2]); err == nil {
+				lines[i] = "#ifconfig eth0:0 $SERVER_IP_ADDRESS netmask 255.255.255.255 up"
+			}
+		}
+	}
+	return []byte(strings.Join(lines, "\n"))
 }
