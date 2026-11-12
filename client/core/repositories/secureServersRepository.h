@@ -49,6 +49,11 @@ public:
     void setDefaultServer(const QString &serverId);
 
     void clearServers();
+    // Local operation secrets never enter serverJsonById/full-access exports.
+    bool pendingPeerExport(const QString &serverId, DockerContainer container, QJsonObject &operation) const;
+    bool compareAndSetPendingPeerExport(const QString &serverId, DockerContainer container,
+                                       const QJsonObject &expected, const QJsonObject &replacement);
+
 
     QString nextAvailableServerName() const;
 

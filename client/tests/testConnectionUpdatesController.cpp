@@ -8,6 +8,9 @@
 #include <QUuid>
 #include <QSemaphore>
 #include <QScopeGuard>
+#include <QTemporaryDir>
+#include <QProcess>
+#include <QFile>
 #include <atomic>
 #include <openssl/pem.h>
 #include <openssl/x509v3.h>
@@ -97,6 +100,72 @@ public:
 class TestConnectionUpdatesController : public QObject {
     Q_OBJECT
 private slots:
+    void pendingPeerExportSurvivesRepositoryRestartAndStaysLocal()
+    {
+        const QJsonObject pending{{"version",1},{"operation","synthetic-operation"},{"privateKey","synthetic-private-material"}};
+        if (qEnvironmentVariableIsSet("AMNEZIA_TEST_PENDING_READER")) {
+            SecureQSettings settings(qEnvironmentVariable("AMNEZIA_TEST_PENDING_READER"),"test",nullptr,false);
+            SecureServersRepository servers(&settings); QJsonObject current;
+            QVERIFY(servers.pendingPeerExport(qEnvironmentVariable("AMNEZIA_TEST_PENDING_SERVER"),DockerContainer::WireGuard,current));
+            QCOMPARE(current,pending); return;
+        }
+        const auto organization="Amnezia-Pending-Export-"+QUuid::createUuid().toString();
+        QString id;
+        {
+            SecureQSettings settings(organization,"test",nullptr,false);
+            SecureServersRepository servers(&settings);
+            auto administrator=profile(); administrator["userName"]="root";
+            administrator["password"]="synthetic-admin-secret"; administrator["port"]=22;
+            id=servers.addServer({},administrator,serverConfigUtils::SelfHostedAdmin);
+            QJsonObject current;
+            QVERIFY(servers.pendingPeerExport(id,DockerContainer::WireGuard,current)); QVERIFY(current.isEmpty());
+            QVERIFY(servers.compareAndSetPendingPeerExport(id,DockerContainer::WireGuard,{},pending));
+            // A separate process must see the data before either writer object
+            // is destroyed; destructor flushing cannot make this test pass.
+            QProcess reader; auto environment=QProcessEnvironment::systemEnvironment();
+            environment.insert("AMNEZIA_TEST_PENDING_READER",organization);
+            environment.insert("AMNEZIA_TEST_PENDING_SERVER",id); reader.setProcessEnvironment(environment);
+            reader.start(QCoreApplication::applicationFilePath(),{"pendingPeerExportSurvivesRepositoryRestartAndStaysLocal"});
+            QVERIFY(reader.waitForFinished(30000)); QCOMPARE(reader.exitStatus(),QProcess::NormalExit); QCOMPARE(reader.exitCode(),0);
+            QVERIFY(!servers.compareAndSetPendingPeerExport(id,DockerContainer::WireGuard,{},{{"different",true}}));
+            QVERIFY(!servers.compareAndSetPendingPeerExport(id,DockerContainer::Awg,{},pending));
+            QVERIFY(!settings.backupAppConfig().contains("synthetic-private-material"));
+            QVERIFY(!settings.backupAppConfig().contains("pendingPeerExports"));
+            QVERIFY(!QJsonDocument(*servers.serverJsonById(id)).toJson().contains("synthetic-private-material"));
+            ExportController exporter(&servers,nullptr);
+            const auto exported=exporter.generateFullAccessConfig(id);
+            const auto json=qUncompress(QByteArray::fromBase64(exported.config.mid(6).toLatin1(),QByteArray::Base64UrlEncoding));
+            QVERIFY(!json.contains("synthetic-private-material")); QVERIFY(!json.contains("pendingPeerExports"));
+        }
+        {
+            SecureQSettings settings(organization,"test",nullptr,false);
+            SecureServersRepository servers(&settings);
+            QJsonObject current;
+            QVERIFY(servers.pendingPeerExport(id,DockerContainer::WireGuard,current)); QCOMPARE(current,pending);
+            QVERIFY(servers.compareAndSetPendingPeerExport(id,DockerContainer::WireGuard,pending,{}));
+            QVERIFY(servers.pendingPeerExport(id,DockerContainer::WireGuard,current)); QVERIFY(current.isEmpty());
+            settings.setValue("Conf/pendingPeerExports",QByteArray("corrupt"));
+            QVERIFY(!servers.pendingPeerExport(id,DockerContainer::WireGuard,current));
+            QVERIFY(!servers.compareAndSetPendingPeerExport(id,DockerContainer::WireGuard,{},pending));
+            settings.clearSettings();
+        }
+    }
+    void durablePeerExportRejectsStorageFailure()
+    {
+        if (!qEnvironmentVariableIsSet("AMNEZIA_TEST_STORAGE_FAILURE_CHILD")) {
+            QProcess child; auto environment=QProcessEnvironment::systemEnvironment();
+            environment.insert("AMNEZIA_TEST_STORAGE_FAILURE_CHILD","1"); child.setProcessEnvironment(environment);
+            child.start(QCoreApplication::applicationFilePath(),{"durablePeerExportRejectsStorageFailure"});
+            QVERIFY(child.waitForFinished(30000)); QCOMPARE(child.exitStatus(),QProcess::NormalExit); QCOMPARE(child.exitCode(),0);
+            return;
+        }
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        const auto blocked=directory.path()+"/not-a-directory";
+        QFile file(blocked); QVERIFY(file.open(QIODevice::WriteOnly)); file.close();
+        QSettings::setPath(QSettings::IniFormat,QSettings::UserScope,blocked);
+        SecureQSettings settings("Amnezia-Durable-Failure-"+QUuid::createUuid().toString(),"test",nullptr,false,QSettings::IniFormat);
+        QVERIFY(!settings.compareAndSetDurable("Conf/pendingPeerExports",{},QByteArray("must-not-report-durable")));
+    }
     void oldAdministratorProfileNeedsProbeRefreshOnce()
     {
         SecureQSettings settings("Amnezia-Probe-" + QUuid::createUuid().toString(), "test", nullptr, false);

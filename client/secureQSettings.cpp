@@ -23,8 +23,8 @@ namespace {
     constexpr const char *keyChainName = CLIENT_KEYCHAIN_NAME_STR;
 }
 
-SecureQSettings::SecureQSettings(const QString &organization, const QString &application, QObject *parent, bool enableEncryption)
-    : QObject { parent }, m_settings(organization, application, parent), encryptedKeys({ "Servers/serversList", "Conf/favoriteLocations", "Conf/proxyUrls/agw_state", "Conf/serverMigration" }), m_encryptionEnabled(enableEncryption)
+SecureQSettings::SecureQSettings(const QString &organization, const QString &application, QObject *parent, bool enableEncryption, QSettings::Format format)
+    : QObject { parent }, m_settings(format, QSettings::UserScope, organization, application, parent), encryptedKeys({ "Servers/serversList", "Conf/favoriteLocations", "Conf/proxyUrls/agw_state", "Conf/serverMigration", "Conf/pendingPeerExports" }), m_encryptionEnabled(enableEncryption)
 {
     bool encrypted = m_settings.value("Conf/encrypted").toBool();
 
@@ -108,6 +108,21 @@ void SecureQSettings::setValue(const QString &key, const QVariant &value)
     }
 
     m_cache.insert(key, value);
+}
+
+bool SecureQSettings::compareAndSetDurable(const QString &key, const QVariant &expected, const QVariant &replacement)
+{
+    QMutexLocker locker(&m_mutex);
+    // Resolve keychain jobs before observing the CAS precondition: their
+    // nested event loop can otherwise allow another operation to run midway.
+    if (encryptionRequired() && encryptedKeys.contains(key)
+        && (getEncKey().isEmpty() || getEncIv().isEmpty())) return false;
+    if (value(key) != expected) return false;
+    setValue(key, replacement);
+    // setValue can refuse encryption when the keychain is unavailable.
+    if (value(key) != replacement) return false;
+    m_settings.sync();
+    return m_settings.status() == QSettings::NoError;
 }
 
 void SecureQSettings::remove(const QString &key)

@@ -89,6 +89,18 @@ rollback preserving the signed revision floor.
 
 ### Existing-profile probe address over SSH
 
+The ordinary connection-updates Qt target also checks local pending-export
+storage. A separate process reads the record before the writer is destroyed;
+stale replacements and malformed storage are refused. A child process uses an
+explicit INI backend with an impossible directory to verify write failure on
+all platforms without touching real settings. Pending secrets are excluded from
+backup/restore and full-access exports and follow the existing SecureQSettings
+encryption policy (Linux desktop currently disables that policy). The storage
+API is a prerequisite; it does not yet resume the export pipeline or reconcile
+server operations. Compare-and-set serialization covers one settings instance,
+not independent application processes.
+
+
 The same required fixture runs the packaged `install.sh` helper deployment against
 already running kernel WG and userspace AWG containers, twice. It checks immutable
 container identity, process/start time, native configuration, stored configuration,
