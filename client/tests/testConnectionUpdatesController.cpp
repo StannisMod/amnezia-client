@@ -180,6 +180,23 @@ private slots:
         QCOMPARE(migrated.value("password"), original.value("password"));
         settings.clearSettings();
     }
+    void realAdminPeerIPv6Read()
+    {
+        const auto host = qEnvironmentVariable("AMNEZIA_SSH_PROBE_HOST");
+        if (host.isEmpty()) QSKIP("Run scripts/local-tests/path-probe-ssh.sh with this test executable");
+        ServerCredentials credentials; credentials.hostName = host; credentials.port = qEnvironmentVariableIntValue("AMNEZIA_SSH_PROBE_PORT");
+        credentials.userName = "root"; credentials.secretData = "synthetic-probe-fixture";
+        QJsonObject assignments { { "sentinel", true } };
+        const auto error = ConnectionUpdatesController::fetchPeerIPv6Assignments(credentials, DockerContainer::WireGuard, assignments);
+        if (qEnvironmentVariable("AMNEZIA_SSH_PROBE_PHASE") != "present") {
+            QVERIFY(error != ErrorCode::NoError); QCOMPARE(assignments, (QJsonObject { { "sentinel", true } })); return;
+        }
+        QCOMPARE(error, ErrorCode::NoError);
+        const auto a = QString::fromLatin1(QByteArray(32, 'A').toBase64());
+        const auto b = QString::fromLatin1(QByteArray(32, 'B').toBase64());
+        const auto c = QString::fromLatin1(QByteArray(32, 'C').toBase64());
+        QCOMPARE(assignments, (QJsonObject { { a, "fd77::2" }, { b, "" }, { c, "" } }));
+    }
     void verifiedFetchAndPreservedStorage()
     {
         FeedServer feed; QVERIFY(feed.listen(QHostAddress::LocalHost)); auto p = feed.bootstrap(); feed.pathMtuProbe = "10.8.0.1"; feed.setUpdate(p);
