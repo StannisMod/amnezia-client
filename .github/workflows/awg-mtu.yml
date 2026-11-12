@@ -7,6 +7,7 @@ on:
       - client/server_scripts/enable_ipv6_forwarding.sh
       - client/server_scripts/prepare_ipv6_network.sh
       - client/tests/test_ipv6_network_prepare.py
+      - scripts/local-tests/Dockerfile.vpn
       - native/routing/**
       - client/server_scripts/awg/**
       - client/server_scripts/awg_legacy/**
@@ -19,6 +20,7 @@ on:
       - client/server_scripts/enable_ipv6_forwarding.sh
       - client/server_scripts/prepare_ipv6_network.sh
       - client/tests/test_ipv6_network_prepare.py
+      - scripts/local-tests/Dockerfile.vpn
       - native/routing/**
       - client/server_scripts/awg/**
       - client/server_scripts/awg_legacy/**
@@ -26,6 +28,22 @@ on:
 permissions:
   contents: read
 jobs:
+  ipv6-docker-preparation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v6
+        with: {python-version: '3.12'}
+      - name: Build disposable Docker host
+        run: docker build -t amnezia-local-vpn-tests -f scripts/local-tests/Dockerfile.vpn scripts/local-tests
+      - name: Verify production IPv6 bridge preparation on real Docker
+        run: python3 server/ipv6/lab/test_docker_prepare.py --report ipv6-docker-prepare.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ipv6-docker-prepare
+          path: ipv6-docker-prepare.json
   ipv6-forwarding:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
