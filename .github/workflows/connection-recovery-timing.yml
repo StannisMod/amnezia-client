@@ -1,5 +1,7 @@
 name: Connection recovery timing
 on:
+  push:
+    branches: [validation/connection-recovery-timing-native-20261112]
   workflow_dispatch:
 permissions:
   contents: read
