@@ -4,7 +4,7 @@ set -euo pipefail
 if [[ $# -eq 0 ]]; then echo 'Usage: path-probe-ssh.sh TEST_EXECUTABLE [runner arguments...]' >&2; exit 2; fi
 repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 python3 "$repo/scripts/local-tests/test_docker_image_config_digest.py"
-if ! docker run --pull=never --rm --network none --entrypoint sh amnezia-local-vpn-tests -ec 'command -v wg >/dev/null' >/dev/null 2>&1; then
+if ! docker run --pull=never --rm --network none --entrypoint sh amnezia-local-vpn-tests -ec 'command -v wg >/dev/null; command -v awg >/dev/null; command -v amneziawg-go >/dev/null' >/dev/null 2>&1; then
     docker build --network host -t amnezia-local-vpn-tests -f "$repo/scripts/local-tests/Dockerfile.vpn" "$repo/scripts/local-tests"
 fi
 tool_image=$(docker image inspect -f '{{.Id}}' amnezia-local-vpn-tests)
@@ -48,6 +48,7 @@ loaded_config=$(docker exec "$fixture" docker image save "$transfer_tag" | pytho
 echo "SSH fixture config identity: $tool_config -> $loaded_config"
 [[ "$loaded_config" == "$tool_config" ]] || { echo 'SSH fixture archived config changed during transfer' >&2; exit 1; }
 echo "SSH fixture loaded image: $loaded_image (containerd=$snapshotter)"
+docker exec "$fixture" sh -ec 'mkdir -p /dev/net; test -c /dev/net/tun || mknod /dev/net/tun c 10 200'
 for kind in wireguard awg2; do
     iface=wg0; addresses='ip address add 10.77.0.9/24 dev wg0; ip address add fd77::1/64 dev wg0'
     if [[ "$kind" == awg2 ]]; then iface=awg0; addresses='ip address add fd88::9/64 dev awg0'; fi
@@ -55,7 +56,10 @@ for kind in wireguard awg2; do
     if [[ "$kind" == wireguard ]]; then
         setup='ip link add wg0 type wireguard; umask 077; wg genkey > /tmp/private; a=$(printf AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA | base64); b=$(printf BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB | base64); c=$(printf CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC | base64); wg set wg0 private-key /tmp/private peer "$a" allowed-ips 10.77.0.2/32,fd77::2/128 peer "$b" allowed-ips 10.77.0.3/32 peer "$c" persistent-keepalive 25; rm /tmp/private'
     fi
-    docker exec "$fixture" docker run --pull=never -d --name "amnezia-$kind" --network none --cap-add NET_ADMIN \
+    if [[ "$kind" == awg2 ]]; then
+        setup='mkdir -p /dev/net; test -c /dev/net/tun || mknod /dev/net/tun c 10 200; amneziawg-go awg0; umask 077; awg genkey > /tmp/private; a=$(printf AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA | base64); b=$(printf BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB | base64); c=$(printf CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC | base64); awg set awg0 private-key /tmp/private peer "$a" allowed-ips 10.88.0.2/32,fd88::2/128 peer "$b" allowed-ips 10.88.0.3/32 peer "$c" persistent-keepalive 25; rm /tmp/private'
+    fi
+    docker exec "$fixture" docker run --pull=never -d --name "amnezia-$kind" --network none --cap-add NET_ADMIN --cap-add MKNOD --device /dev/net/tun \
         --sysctl net.ipv6.conf.all.disable_ipv6=0 --entrypoint sh "$loaded_image" -ec \
         "$setup; $addresses; ip link set $iface up; touch /ready; exec sleep 300" >/dev/null
     ready=false
@@ -75,10 +79,11 @@ export QT_QPA_PLATFORM=offscreen
 timeout 90 "$@" realAdminProbeAddressRead
 timeout 90 "$@" realAdminPeerIPv6Read
 docker exec "$fixture" docker exec amnezia-wireguard sh -ec 'a=$(printf AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA | base64); wg set wg0 peer "$a" allowed-ips fd77::/64'
+docker exec "$fixture" docker exec amnezia-awg2 sh -ec 'a=$(printf AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA | base64); awg set awg0 peer "$a" allowed-ips fd88::/64'
 export AMNEZIA_SSH_PROBE_PHASE=ambiguous
 timeout 90 "$@" realAdminPeerIPv6Read
-docker exec "$fixture" docker stop amnezia-wireguard >/dev/null
+docker exec "$fixture" docker stop amnezia-wireguard amnezia-awg2 >/dev/null
 export AMNEZIA_SSH_PROBE_PHASE=missing
 timeout 90 "$@" realAdminProbeAddressRead
 timeout 90 "$@" realAdminPeerIPv6Read
-echo 'PASS: real SSH, native WireGuard peer IPv6 discovery, ambiguous-address rejection, old admin probe migration and missing-container failures'
+echo 'PASS: real SSH, native WireGuard/AWG peer IPv6 discovery, ambiguous-address rejection, old admin probe migration and missing-container failures'
