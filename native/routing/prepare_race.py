@@ -26,14 +26,16 @@ def go(root, *args):
                           capture_output=True, check=True).stdout
 
 
-def prepare(parent):
-    root = Path(__file__).resolve().parent
-    spec = importlib.util.spec_from_file_location('routing_builddeps', root / 'internal/builddeps/verify.py')
+def prepare(parent, module=None):
+    routing = Path(__file__).resolve().parent
+    root = Path(module).resolve() if module is not None else routing
+    spec = importlib.util.spec_from_file_location('routing_builddeps', routing / 'internal/builddeps/verify.py')
     verifier = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(verifier)
-    verifier.check(root)
+    profile = verifier.check(root)
+    pinned = {**PINNED, 'gvisor.dev/gvisor': profile['upstream_version']}
     modules = []
-    for name, version in PINNED.items():
+    for name, version in pinned.items():
         resolved = json.loads(go(root, "list", "-mod=readonly", "-m", "-json", name))
         if resolved.get("Version") != version:
             raise RuntimeError(f"Review the race fix for changed dependency {name}")
@@ -72,8 +74,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True,
                         help="Parent for a new private temporary directory")
+    parser.add_argument("--module", type=Path,
+                        help="Verified desktop/Android or Apple main module (default: routing)")
     args = parser.parse_args()
     try:
-        print(prepare(args.output))
+        print(prepare(args.output, args.module))
     except subprocess.CalledProcessError as error:
         raise SystemExit(error.stdout + error.stderr) from error
