@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"syscall"
+	"unicode/utf8"
 )
 
 var errConfigConflict = errors.New("configuration changed during transaction")
@@ -23,15 +24,18 @@ type configIPv6Journal struct {
 	Applied    bool   `json:"applied"`
 }
 type configJournal struct {
-	Version       int                `json:"version"`
-	Operation     string             `json:"operation"`
-	IPv6          *configIPv6Journal `json:"ipv6,omitempty"`
-	Original      []byte             `json:"original"`
-	OriginalHash  string             `json:"originalHash"`
-	CandidateHash string             `json:"candidateHash"`
-	Mode          uint32             `json:"mode"`
-	UID           int                `json:"uid"`
-	GID           int                `json:"gid"`
+	Version        int                `json:"version"`
+	Operation      string             `json:"operation"`
+	IPv6           *configIPv6Journal `json:"ipv6,omitempty"`
+	NativeOriginal []byte             `json:"nativeOriginal,omitempty"`
+	NativeHash     string             `json:"nativeHash,omitempty"`
+	NativeApplied  bool               `json:"nativeApplied"`
+	Original       []byte             `json:"original"`
+	OriginalHash   string             `json:"originalHash"`
+	CandidateHash  string             `json:"candidateHash"`
+	Mode           uint32             `json:"mode"`
+	UID            int                `json:"uid"`
+	GID            int                `json:"gid"`
 }
 type configTransaction struct {
 	path    string
@@ -171,13 +175,13 @@ func beginPreparedConfigTransaction(path string, expected, candidate []byte, pre
 	if _, err := rand.Read(nonce); err != nil {
 		return nil, err
 	}
-	journal := configJournal{Version: 3, Operation: hex.EncodeToString(nonce), Original: original, OriginalHash: configHash(original), CandidateHash: configHash(candidate), Mode: uint32(info.Mode().Perm()), UID: int(stat.Uid), GID: int(stat.Gid)}
+	journal := configJournal{Version: 4, Operation: hex.EncodeToString(nonce), Original: original, OriginalHash: configHash(original), CandidateHash: configHash(candidate), Mode: uint32(info.Mode().Perm()), UID: int(stat.Uid), GID: int(stat.Gid)}
 	if prepare != nil {
 		if err := prepare(&journal); err != nil {
 			return nil, err
 		}
 	}
-	if !configIPv6JournalOK(journal.IPv6) || !configIPv6PlanMatches(journal) {
+	if !configNativeJournalOK(journal) || !configIPv6JournalOK(journal.IPv6) || !configIPv6PlanMatches(journal) {
 		return nil, errors.New("invalid IPv6 journal plan")
 	}
 	raw, err := json.Marshal(journal)
@@ -205,14 +209,14 @@ func resumeConfigTransaction(path string) (*configTransaction, error) {
 			lock.Close()
 		}
 	}()
-	raw, info, err := readConfigFile(path+".amnezia-journal", 8<<20)
+	raw, info, err := readConfigFile(path+".amnezia-journal", 12<<20)
 	if err != nil {
 		return nil, err
 	}
 	var journal configJournal
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
-	if decoder.Decode(&journal) != nil || decoder.Decode(new(any)) != io.EOF || journal.Version != 3 || !configIPv6JournalOK(journal.IPv6) || !configIPv6PlanMatches(journal) || !configOperationOK(journal.Operation) || len(journal.Original) > 4<<20 || journal.OriginalHash != configHash(journal.Original) || len(journal.CandidateHash) != 64 || journal.Mode & ^uint32(0777) != 0 || info.Mode().Perm() != 0600 || journal.UID < 0 || journal.GID < 0 {
+	if decoder.Decode(&journal) != nil || decoder.Decode(new(any)) != io.EOF || journal.Version != 4 || !configNativeJournalOK(journal) || !configIPv6JournalOK(journal.IPv6) || !configIPv6PlanMatches(journal) || !configOperationOK(journal.Operation) || len(journal.Original) > 4<<20 || journal.OriginalHash != configHash(journal.Original) || len(journal.CandidateHash) != 64 || journal.Mode & ^uint32(0777) != 0 || info.Mode().Perm() != 0600 || journal.UID < 0 || journal.GID < 0 {
 		return nil, errors.New("invalid configuration journal")
 	}
 	hash, err := hex.DecodeString(journal.CandidateHash)
@@ -302,6 +306,15 @@ func configTransactionCommand(input io.Reader, output io.Writer, paths map[strin
 			if err != nil {
 				return err
 			}
+			native, err := captureNativeProtocol(request.Container)
+			if err != nil {
+				return err
+			}
+			if err := verifyNativeConfigBaseline(request.Container, path, native); err != nil {
+				return err
+			}
+			journal.NativeOriginal = native
+			journal.NativeHash = configHash(native)
 			journal.IPv6 = &configIPv6Journal{CIDR: request.ServerIPv6, WasPresent: present}
 			return nil
 		})
@@ -338,7 +351,7 @@ func configTransactionCommand(input io.Reader, output io.Writer, paths map[strin
 	if request.Action != "stage" && request.Action != "stage-ipv6" && request.Action != "status" && request.Operation != transaction.journal.Operation {
 		return errors.New("configuration operation mismatch")
 	}
-	result := map[string]any{"version": 1, "operation": transaction.journal.Operation, "originalHash": transaction.journal.OriginalHash, "candidateHash": transaction.journal.CandidateHash}
+	result := map[string]any{"nativeApplied": transaction.journal.NativeApplied, "version": 1, "operation": transaction.journal.Operation, "originalHash": transaction.journal.OriginalHash, "candidateHash": transaction.journal.CandidateHash}
 	if assignments != nil {
 		result["clientIpv6"] = assignments
 	}
@@ -349,6 +362,14 @@ func configTransactionCommand(input io.Reader, output io.Writer, paths map[strin
 			return err
 		}
 	case "commit", "rollback":
+		if len(transaction.journal.NativeOriginal) != 0 {
+			if request.Action == "rollback" {
+				return errors.New("native snapshot requires live rollback")
+			}
+			if !transaction.journal.NativeApplied {
+				return errors.New("native configuration has not been applied")
+			}
+		}
 		if transaction.journal.IPv6 != nil {
 			if request.Action == "rollback" {
 				return errors.New("IPv6 configuration requires live rollback")
@@ -386,6 +407,7 @@ func configTransactionCommand(input io.Reader, output io.Writer, paths map[strin
 		}
 		result["clientIpv6"] = plan.Assignments
 	}
+	result["nativeApplied"] = transaction.journal.NativeApplied
 	return json.NewEncoder(output).Encode(result)
 }
 
@@ -395,4 +417,14 @@ func (transaction *configTransaction) saveJournal() error {
 		return err
 	}
 	return writeConfigAtomic(transaction.path+".amnezia-journal", raw, 0600, transaction.journal.UID, transaction.journal.GID, false)
+}
+
+func configNativeJournalOK(journal configJournal) bool {
+	if len(journal.NativeOriginal) == 0 {
+		return journal.NativeHash == "" && !journal.NativeApplied && journal.IPv6 == nil
+	}
+	if journal.IPv6 != nil && journal.NativeApplied != journal.IPv6.Applied {
+		return false
+	}
+	return len(journal.NativeOriginal) <= 4<<20 && utf8.Valid(journal.NativeOriginal) && journal.NativeHash == configHash(journal.NativeOriginal)
 }

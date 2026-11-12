@@ -40,6 +40,8 @@ func TestConfigIPv6JournalBindsAddressToExactMigrationPlan(t *testing.T) {
 	}
 	transaction, err := beginPreparedConfigTransaction(path, original, plan.Config, func(journal *configJournal) error {
 		journal.IPv6 = &configIPv6Journal{CIDR: "fd77::1/64", WasPresent: true}
+		journal.NativeOriginal = []byte("synthetic native configuration")
+		journal.NativeHash = configHash(journal.NativeOriginal)
 		return nil
 	})
 	if err != nil {

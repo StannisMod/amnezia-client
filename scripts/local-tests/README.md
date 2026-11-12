@@ -120,7 +120,11 @@ native parser rejects malformed input. An IPv4-only migration is planned and sta
 per-peer routes are applied together. Rollback removes only the address added by
 the operation and preserves preexisting and unrelated addresses. Commit is
 rejected before successful live application. Egress verification and signed
-publication still require the migration coordinator. Its sidecar lock protects participating
+publication still require the migration coordinator. The durable journal also
+backs up the actual native configuration. IPv6 staging rejects stale on-disk
+identities, and rollback can restore the working protocol even when the old file
+is invalid. Dynamic peer endpoints are omitted from the backup so roaming to a
+new outer address is preserved during rollback. Its sidecar lock protects participating
 writers; existing writers that ignore it still need integration.
 The existing asynchronous probe-profile migration remains covered. This validates
 management and signed delivery; it does not send encrypted user traffic or prove

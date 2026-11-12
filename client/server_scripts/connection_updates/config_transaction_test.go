@@ -262,3 +262,46 @@ func TestConfigTransactionCommandBindsOperation(t *testing.T) {
 	}
 	assertConfig(t, path, candidate)
 }
+
+func TestNativeSnapshotIntegrityAndPrivateJournal(t *testing.T) {
+	path, original, candidate := transactionFixture(t)
+	native := []byte("synthetic native protocol baseline\n")
+	transaction, err := beginPreparedConfigTransaction(path, original, candidate, func(journal *configJournal) error {
+		journal.NativeOriginal = native
+		journal.NativeHash = configHash(native)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	transaction.close()
+	resumed, err := resumeConfigTransaction(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(resumed.journal.NativeOriginal, native) {
+		t.Fatal("native snapshot lost")
+	}
+	resumed.close()
+	raw, err := os.ReadFile(path + ".amnezia-journal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var journal configJournal
+	if err := json.Unmarshal(raw, &journal); err != nil {
+		t.Fatal(err)
+	}
+	journal.NativeOriginal = []byte("different native configuration\n")
+	raw, err = json.Marshal(journal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path+".amnezia-journal", raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if resumed, err := resumeConfigTransaction(path); err == nil {
+		resumed.close()
+		t.Fatal("corrupt native snapshot accepted")
+	}
+	assertConfig(t, path, candidate)
+}

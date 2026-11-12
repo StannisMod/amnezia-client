@@ -132,7 +132,35 @@ for container, binary, interface, path in (
         return run('docker', 'exec', container, 'ip', '-o', '-6', 'address', 'show', 'dev', interface).stdout
 
     legacy_allowed = allowed()
-    public_key = run('docker', 'exec', container, binary, 'show', interface, 'public-key').stdout
+    legacy_identity = run('docker', 'exec', container, binary, 'show', interface, 'public-key').stdout
+    # IPv6 migration must refuse a stale on-disk identity before any live change.
+    stale_disk = re.sub(rb'(?m)^PrivateKey = [^\n]*', b'PrivateKey = ' + base64.b64encode(b'Z' * 32), legacy)
+    stale = invoke('stage', expected=legacy, candidate=stale_disk)
+    invoke('commit', operation=stale['operation'])
+    invoke('stage-ipv6', expected=stale_disk, server_ipv6=target, ok=False)
+    assert allowed() == legacy_allowed
+    assert run('docker', 'exec', container, binary, 'show', interface, 'public-key').stdout == legacy_identity
+    assert run('docker', 'exec', container, 'cat', path).stdout == stale_disk
+    restore_disk = invoke('stage', expected=stale_disk, candidate=legacy)
+    invoke('commit', operation=restore_disk['operation'])
+
+    # Even if the original file is invalid, generic live rollback must restore
+    # the actual previous runtime, rather than try parsing that invalid file.
+    invalid_disk = legacy + b'\nNotAProtocolField = stale-on-disk-edit\n'
+    stale = invoke('stage', expected=legacy, candidate=invalid_disk)
+    invoke('commit', operation=stale['operation'])
+    changed_runtime = legacy.replace(ipv4, ipv4 + b', ' + added_ipv6, 1)
+    repair = invoke('stage', expected=invalid_disk, candidate=changed_runtime)
+    invoke('apply', operation=repair['operation'])
+    assert allowed() != legacy_allowed
+    invoke('rollback-live', operation=repair['operation'])
+    assert allowed() == legacy_allowed
+    assert run('docker', 'exec', container, 'cat', path).stdout == invalid_disk
+    restore_disk = invoke('stage', expected=invalid_disk, candidate=legacy)
+    invoke('commit', operation=restore_disk['operation'])
+
+    public_key = legacy_identity
+    assert run('docker', 'exec', container, binary, 'show', interface, 'public-key').stdout == public_key
     staged_ipv6 = invoke('stage-ipv6', expected=legacy, server_ipv6=target)
     assert len(staged_ipv6['clientIpv6']) == len(legacy_peers)
     assert not staged_ipv6['ipv6AddressPreexisting'] and not staged_ipv6['ipv6Applied']
@@ -142,7 +170,12 @@ for container, binary, interface, path in (
     assert target.encode() not in addresses() and unrelated.encode() in addresses()
     assert allowed() == legacy_allowed
 
+    # Change a real peer's endpoint after snapshotting. Both apply and rollback
+    # must preserve the newly learned outer address.
+    roaming_key = base64.b64encode(b'B' * 32).decode()
+    run('docker', 'exec', container, binary, 'set', interface, 'peer', roaming_key, 'endpoint', '127.0.0.1:29111')
     staged_ipv6 = invoke('stage-ipv6', expected=legacy, server_ipv6=target)
+    run('docker', 'exec', container, binary, 'set', interface, 'peer', roaming_key, 'endpoint', '127.0.0.1:29222')
     applied = invoke('apply', operation=staged_ipv6['operation'])
     assert applied['ipv6Applied']
     assert target.encode() in addresses() and unrelated.encode() in addresses()
@@ -156,6 +189,8 @@ for container, binary, interface, path in (
     assert allowed() == legacy_allowed
     assert run('docker', 'exec', container, 'cat', path).stdout == legacy
     assert run('docker', 'exec', container, binary, 'show', interface, 'public-key').stdout == public_key
+    endpoints = dict(line.split(b'\t', 1) for line in run('docker', 'exec', container, binary, 'show', interface, 'endpoints').stdout.splitlines())
+    assert endpoints[roaming_key.encode()] == b'127.0.0.1:29222', 'rollback reset an authenticated roaming endpoint'
 
     # A preexisting address must survive the same apply/rollback sequence.
     run('docker', 'exec', container, 'ip', '-6', 'address', 'add', target, 'dev', interface, 'nodad')
@@ -172,4 +207,4 @@ for container, binary, interface, path in (
         run('docker', 'exec', container, 'ip', 'address', 'del', ipv4_server.decode(), 'dev', interface)
     assert run('docker', 'exec', container, 'cat', path).stdout == original
     assert sorted(run('docker', 'exec', container, binary, 'show', interface, 'peers').stdout.splitlines()) == peers
-    print(f'PASS: {container} legacy IPv4 migration plan, actual IPv6 address/peer apply, owned rollback and preexisting address preservation')
+    print(f'PASS: {container} legacy migration, native snapshot rollback, stale identity rejection, roaming preservation and IPv6 address ownership')
