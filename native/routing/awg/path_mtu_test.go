@@ -51,7 +51,11 @@ func TestMaturePathMTUAndTCPRecoveryWorkersRetainTCP(t *testing.T) {
 	testLinkedUploadMTU(t, true, true)
 }
 
-func testLinkedUploadMTU(t *testing.T, matureWorker, earlyRepair bool) {
+func TestMaturePathMTURecoveryCompletionExcludesObserverPause(t *testing.T) {
+	testLinkedUploadMTU(t, true, true, 300*time.Millisecond)
+}
+
+func testLinkedUploadMTU(t *testing.T, matureWorker, earlyRepair bool, observerPause ...time.Duration) {
 	_, a, err := NewFlowTUN([]netip.Addr{netip.MustParseAddr("10.77.0.1")}, 1420)
 	if err != nil {
 		t.Fatal(err)
@@ -111,6 +115,13 @@ func testLinkedUploadMTU(t *testing.T, matureWorker, earlyRepair bool) {
 				time.Sleep(10 * time.Millisecond)
 			}
 			return fmt.Errorf("mature MTU worker did not react within 9s; TCP timeouts=%d", lastTimeouts)
+		}, func() error {
+			// Model a delayed test observer after the receiver finished, without
+			// delaying the TCP sender, receiver, recovery worker or packets.
+			if len(observerPause) != 0 {
+				time.Sleep(observerPause[0])
+			}
+			return nil
 		})
 		if earlyRepair && afterMTU > 250*time.Millisecond {
 			t.Fatalf("verified MTU update waited too long for old TCP: %s", afterMTU)
@@ -124,6 +135,8 @@ func testRetainedUploadMTU(t *testing.T, a, b *FlowStack, filter *atomic.Bool, d
 	t.Helper()
 	var received atomic.Int64
 	var corrupted atomic.Bool
+	firstPayload := make(chan time.Time, 1)
+	completedPayload := make(chan time.Time, 1)
 	listener, err := b.ListenTCPAddrPort(netip.MustParseAddrPort("10.77.0.2:18081"))
 	if err != nil {
 		t.Fatal(err)
@@ -155,6 +168,12 @@ func testRetainedUploadMTU(t *testing.T, a, b *FlowStack, filter *atomic.Bool, d
 		for {
 			n, err := server.Read(buf)
 			base := received.Load()
+			if n > 0 && base >= 6 {
+				select {
+				case firstPayload <- time.Now():
+				default:
+				}
+			}
 			for i, value := range buf[:n] {
 				want := byte(0)
 				if base+int64(i) < 6 {
@@ -164,7 +183,9 @@ func testRetainedUploadMTU(t *testing.T, a, b *FlowStack, filter *atomic.Bool, d
 					corrupted.Store(true)
 				}
 			}
-			received.Add(int64(n))
+			if total := received.Add(int64(n)); n > 0 && total == 256*1024+6 {
+				completedPayload <- time.Now()
+			}
 			if err != nil {
 				return
 			}
@@ -210,8 +231,31 @@ func testRetainedUploadMTU(t *testing.T, a, b *FlowStack, filter *atomic.Bool, d
 	if corrupted.Load() {
 		t.Fatal("retained upload payload corrupted")
 	}
-	t.Logf("same TCP transferred complete payload after client MTU reduction in %s; from confirmed MTU=%s; original oversized packets dropped=%d", time.Since(repairStarted), time.Since(afterRegulation), dropped.Load())
-	return time.Since(afterRegulation)
+	if len(regulate) > 1 {
+		if err := regulate[1](); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Timestamp actual byte receipt/validation, not the polling goroutine's
+	// scheduling or synchronous test logging. Keep the full-payload bound.
+	var completedAt time.Time
+	select {
+	case completedAt = <-completedPayload:
+	case <-ctx.Done():
+		t.Fatal("completed payload missing its receipt timestamp")
+	}
+	firstAt := <-firstPayload
+	firstLatency := firstAt.Sub(afterRegulation)
+	completionLatency := completedAt.Sub(afterRegulation)
+	if firstLatency < 0 {
+		firstLatency = 0
+	}
+	if completionLatency < 0 {
+		completionLatency = 0
+	}
+	observerDelay := time.Since(completedAt)
+	t.Logf("same TCP transferred complete payload after client MTU reduction in %s; from confirmed MTU=%s; first resumed byte=%s; completion observer delay=%s; original oversized packets dropped=%d", completedAt.Sub(repairStarted), completionLatency, firstLatency, observerDelay, dropped.Load())
+	return completionLatency
 }
 
 type mtuLossConn struct {

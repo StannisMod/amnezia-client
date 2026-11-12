@@ -1,0 +1,73 @@
+name: Connection recovery timing
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  windows-mtu-timing:
+    runs-on: windows-2022
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+        working-directory: native/routing
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v6
+        with: {python-version: '3.12'}
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: native/routing/go.mod
+          cache-dependency-path: native/routing/go.sum
+      - name: Download and verify pinned dependencies
+        run: |
+          go mod download
+          go mod verify
+          python internal/builddeps/verify.py --module . --output tcp-dependency.json
+          python internal/builddeps/test_verify.py
+      - name: Measure full-payload recovery and observer isolation
+        run: |
+          set -o pipefail
+          race_mod=$(python prepare_race.py --output "$RUNNER_TEMP")
+          go test -mod=readonly -modfile="$race_mod" -tags with_gvisor,amnezia_race_dependency -race -count=10 -timeout=6m -run '^TestMaturePathMTU(AndTCPRecoveryWorkersRetainTCP|RecoveryCompletionExcludesObserverPause)$' -json ./awg | tee recovery-timing.jsonl
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-recovery-timing-${{ github.sha }}
+          path: |
+            native/routing/tcp-dependency.json
+            native/routing/recovery-timing.jsonl
+  apple-mtu-timing:
+    runs-on: macos-15-intel
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with: {submodules: recursive}
+      - uses: actions/setup-python@v6
+        with: {python-version: '3.12'}
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: native/routing/go.mod
+          cache-dependency-path: native/routing/applebridge/module.sum
+      - name: Measure recovery with the production Apple dependency
+        shell: bash
+        env:
+          GOTOOLCHAIN: local
+          GOTELEMETRY: 'off'
+        run: |
+          set -euo pipefail
+          module="$RUNNER_TEMP/apple-timing-module"
+          mkdir -p "$module"
+          cp native/routing/applebridge/module.mod "$module/go.mod"
+          cp native/routing/applebridge/module.sum "$module/go.sum"
+          (cd "$module" && go mod edit "-replace=github.com/StannisMod/amnezia-client/native/routing=$GITHUB_WORKSPACE/native/routing")
+          python3 native/routing/internal/builddeps/verify.py --module "$module" --scope apple --output apple-timing-dependency.json
+          race_mod=$(python3 native/routing/prepare_race.py --module "$module" --output "$RUNNER_TEMP")
+          (cd "$module" && go test -mod=readonly -modfile="$race_mod" -tags with_gvisor,amnezia_gvisor_2026,amnezia_apple_bridge,amnezia_race_dependency -race -count=10 -timeout=6m -run '^TestMaturePathMTU(AndTCPRecoveryWorkersRetainTCP|RecoveryCompletionExcludesObserverPause)$' -json github.com/StannisMod/amnezia-client/native/routing/awg) | tee apple-recovery-timing.jsonl
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: apple-recovery-timing-${{ github.sha }}
+          path: |
+            apple-timing-dependency.json
+            apple-recovery-timing.jsonl
