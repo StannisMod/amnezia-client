@@ -113,8 +113,11 @@ signed withdrawal removes its managed IPv6 without changing the generated key.
 The production configuration helper is also exercised inside both containers:
 private journal creation, operation identifiers, stage/status/commit/rollback,
 rejection of unrelated or completed operations and preservation of live peer sets.
-The helper only changes the configuration file; live protocol application and
-signed publication are separate steps. Its sidecar lock protects participating
+The helper can apply the staged native protocol configuration with `syncconf`
+and restore both the original file and live peer routes with `rollback-live`.
+Tests cover rollback before apply, an actual route change, and recovery after a
+native parser rejects malformed input. Interface address management, egress
+verification and signed publication still require the migration coordinator. Its sidecar lock protects participating
 writers; existing writers that ignore it still need integration.
 The existing asynchronous probe-profile migration remains covered. This validates
 management and signed delivery; it does not send encrypted user traffic or prove

@@ -1,6 +1,6 @@
 FROM golang:1.27.1 AS build
 WORKDIR /src
-COPY go.mod service.go rollout.go readiness.go ipv6_migration.go config_transaction.go ./
+COPY go.mod service.go rollout.go readiness.go ipv6_migration.go config_transaction.go config_runtime.go ./
 RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /updates .
 FROM scratch
 COPY --from=build /updates /updates

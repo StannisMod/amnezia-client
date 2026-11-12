@@ -60,5 +60,40 @@ for container, binary, interface, path in (
     restore = invoke('stage', expected=candidate, candidate=original)
     invoke('commit', operation=restore['operation'])
     assert run('docker', 'exec', container, 'cat', path).stdout == original
+    def allowed():
+        lines = run('docker', 'exec', container, binary, 'show', interface, 'allowed-ips').stdout.splitlines()
+        peers_and_routes = []
+        for line in lines:
+            key, routes = line.split(b'\t', 1)
+            peers_and_routes.append((key, tuple(sorted(routes.replace(b',', b' ').split()))))
+        return sorted(peers_and_routes)
+
+    original_allowed = allowed()
+    ipv4 = b'10.77.0.3/32' if binary == 'wg' else b'10.88.0.3/32'
+    added_ipv6 = b'fd77::abcd/128' if binary == 'wg' else b'fd88::abcd/128'
+    assert original.count(ipv4) == 1
+    live_candidate = original.replace(ipv4, ipv4 + b', ' + added_ipv6, 1)
+    # Failure between persisted stage and native apply must recover both states.
+    unapplied = invoke('stage', expected=original, candidate=live_candidate)
+    assert allowed() == original_allowed
+    invoke('rollback-live', operation=unapplied['operation'])
+    assert allowed() == original_allowed
+    assert run('docker', 'exec', container, 'cat', path).stdout == original
+    live = invoke('stage', expected=original, candidate=live_candidate)
+    invoke('apply', operation='0' * 64, ok=False)
+    assert allowed() == original_allowed
+    invoke('apply', operation=live['operation'])
+    assert allowed() != original_allowed
+    assert any(added_ipv6 in routes for _, routes in allowed())
+    invoke('rollback-live', operation=live['operation'])
+    assert allowed() == original_allowed
+    assert run('docker', 'exec', container, 'cat', path).stdout == original
+    # The native parser really rejects this candidate; the durable journal survives.
+    invalid = invoke('stage', expected=original, candidate=original + b'\nNotAProtocolField = invalid\n')
+    invoke('apply', operation=invalid['operation'], ok=False)
+    assert invoke('status')['operation'] == invalid['operation']
+    invoke('rollback-live', operation=invalid['operation'])
+    assert allowed() == original_allowed
+    assert run('docker', 'exec', container, 'cat', path).stdout == original
     assert sorted(run('docker', 'exec', container, binary, 'show', interface, 'peers').stdout.splitlines()) == peers
-    print(f'PASS: {container} private journal, operation binding, rollback, commit, replay rejection; live peers unchanged')
+    print(f'PASS: {container} private journal, operation binding, rollback, commit, replay rejection, native apply and failure rollback; live peers preserved')

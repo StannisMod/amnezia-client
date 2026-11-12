@@ -281,7 +281,7 @@ func configTransactionCommand(input io.Reader, output io.Writer, paths map[strin
 			if request.Operation != "" {
 				return errors.New("unexpected operation identifier")
 			}
-		case "commit", "rollback":
+		case "commit", "rollback", "apply", "rollback-live":
 			if !configOperationOK(request.Operation) {
 				return errors.New("invalid operation identifier")
 			}
@@ -299,6 +299,10 @@ func configTransactionCommand(input io.Reader, output io.Writer, paths map[strin
 	}
 	result := map[string]any{"version": 1, "operation": transaction.journal.Operation, "originalHash": transaction.journal.OriginalHash, "candidateHash": transaction.journal.CandidateHash}
 	switch request.Action {
+	case "apply", "rollback-live":
+		if err := applyConfigTransactionRuntime(transaction, request.Container, request.Action == "rollback-live"); err != nil {
+			return err
+		}
 	case "commit", "rollback":
 		if err := transaction.finish(request.Action == "rollback"); err != nil {
 			return err
