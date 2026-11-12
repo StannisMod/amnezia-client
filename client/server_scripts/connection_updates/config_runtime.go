@@ -51,6 +51,9 @@ func syncNativeProtocolBytes(container string, configuration []byte) error {
 	if err != nil {
 		return err
 	}
+	if container == "amnezia-awg2" {
+		configuration = explicitAWGPeerDefaults(configuration)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	command := protocolCommand(ctx, binary, "syncconf", iface, "/dev/stdin")
@@ -103,6 +106,9 @@ func canonicalNativeConfig(raw []byte) (string, error) {
 		field := strings.SplitN(line, "=", 2)
 		if len(field) == 2 {
 			key, value := strings.TrimSpace(field[0]), strings.TrimSpace(field[1])
+			if key == "PresharedKey" && value == zeroPresharedKey {
+				continue
+			}
 			if key == "AllowedIPs" {
 				routes := []string{}
 				for _, route := range strings.Split(value, ",") {
@@ -462,4 +468,49 @@ func prepareNativeRollback(transaction *configTransaction, container, fileHash s
 		return false, errConfigConflict
 	}
 	return true, nil
+}
+
+const zeroPresharedKey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+
+// awg syncconf retains a nonzero keepalive or PSK when a new full peer snapshot
+// omits the field. Materialize those zero defaults, but retain absent endpoints
+// for authenticated roaming. AllowedIPs already clears on omission.
+func explicitAWGPeerDefaults(configuration []byte) []byte {
+	lines := strings.Split(string(configuration), "\n")
+	result := make([]string, 0, len(lines)+8)
+	peer, keepalive, psk, changed := false, false, false, false
+	flush := func() {
+		if peer {
+			if !keepalive {
+				result = append(result, "PersistentKeepalive = 0")
+				changed = true
+			}
+			if !psk {
+				result = append(result, "PresharedKey = "+zeroPresharedKey)
+				changed = true
+			}
+		}
+	}
+	for _, line := range lines {
+		field := strings.TrimSpace(strings.SplitN(line, "#", 2)[0])
+		if strings.HasPrefix(field, "[") {
+			flush()
+			peer = field == "[Peer]"
+			keepalive = false
+			psk = false
+		}
+		key := strings.TrimSpace(strings.SplitN(field, "=", 2)[0])
+		if peer && key == "PersistentKeepalive" {
+			keepalive = true
+		}
+		if peer && key == "PresharedKey" {
+			psk = true
+		}
+		result = append(result, line)
+	}
+	flush()
+	if !changed {
+		return configuration
+	}
+	return []byte(strings.Join(result, "\n") + "\n")
 }

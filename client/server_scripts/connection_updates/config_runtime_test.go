@@ -117,3 +117,41 @@ func TestInterruptedNativeClassification(t *testing.T) {
 		t.Fatal("invalid native state accepted")
 	}
 }
+
+func TestAWGPeerDefaultsAreExplicitWithoutChangingRoaming(t *testing.T) {
+	header := "[Interface]\nPrivateKey = " + testKey('P') + "\n"
+	a := "[Peer]\nPublicKey = " + testKey('A') + "\nAllowedIPs = 10.8.0.2/32\nEndpoint = 127.0.0.1:29999\n"
+	b := "[Peer]\nPublicKey = " + testKey('B') + "\nAllowedIPs = 10.8.0.3/32\nPersistentKeepalive = 17 # preserve setting\n"
+	original := []byte(header + a + b)
+	explicit := explicitAWGPeerDefaults(original)
+	if strings.Count(string(explicit), "PersistentKeepalive = 0") != 1 || !strings.Contains(string(explicit), "PersistentKeepalive = 17 # preserve setting") || !strings.Contains(string(explicit), "Endpoint = 127.0.0.1:29999") {
+		t.Fatal("keepalive normalization changed unrelated settings")
+	}
+	before, err := canonicalNativeConfig(original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := canonicalNativeConfig(explicit)
+	if err != nil || before != after {
+		t.Fatal("explicit zero changed snapshot meaning", err)
+	}
+	if string(explicitAWGPeerDefaults(explicit)) != string(explicit) {
+		t.Fatal("normalization is not idempotent")
+	}
+	both := header + b + "PresharedKey = " + testKey('Z') + "\n"
+	if string(explicitAWGPeerDefaults([]byte(both))) != both {
+		t.Fatal("explicit peer settings rewritten")
+	}
+	if strings.Count(string(explicit), "PresharedKey = "+zeroPresharedKey) != 2 {
+		t.Fatal("missing PSKs not reset")
+	}
+	zero := []byte(header + b + "PresharedKey = " + zeroPresharedKey + "\n")
+	if string(explicitAWGPeerDefaults(zero)) != string(zero) {
+		t.Fatal("explicit zero PSK rewritten")
+	}
+
+	tail := explicitAWGPeerDefaults([]byte(header + a))
+	if strings.Count(string(tail), "PersistentKeepalive = 0") != 1 {
+		t.Fatal("last peer default not materialized")
+	}
+}
