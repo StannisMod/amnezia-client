@@ -319,14 +319,32 @@ func configTransactionCommand(input io.Reader, output io.Writer, paths map[strin
 			journal.IPv6 = &configIPv6Journal{CIDR: request.ServerIPv6, WasPresent: present}
 			return nil
 		})
-	} else if request.Action == "stage" {
+	} else if request.Action == "stage" || request.Action == "stage-live" {
 		if request.ServerIPv6 != "" {
 			return errors.New("unexpected IPv6 stage field")
 		}
 		if request.Operation != "" {
 			return errors.New("unexpected operation identifier")
 		}
-		transaction, err = beginConfigTransaction(path, request.Expected, request.Candidate)
+		if request.Action == "stage-live" {
+			if !sameQuickSettings(request.Expected, request.Candidate) {
+				return errors.New("live protocol mutation cannot change quick-only settings")
+			}
+			transaction, err = beginPreparedConfigTransaction(path, request.Expected, request.Candidate, func(journal *configJournal) error {
+				native, err := captureNativeProtocol(request.Container)
+				if err != nil {
+					return err
+				}
+				if err := verifyNativeConfigBaseline(request.Container, path, native); err != nil {
+					return err
+				}
+				journal.NativeOriginal = native
+				journal.NativeHash = configHash(native)
+				return nil
+			})
+		} else {
+			transaction, err = beginConfigTransaction(path, request.Expected, request.Candidate)
+		}
 	} else {
 		if len(request.Expected) != 0 || len(request.Candidate) != 0 || request.ServerIPv6 != "" {
 			return errors.New("unexpected configuration data")
@@ -336,7 +354,7 @@ func configTransactionCommand(input io.Reader, output io.Writer, paths map[strin
 			if request.Operation != "" {
 				return errors.New("unexpected operation identifier")
 			}
-		case "commit", "rollback", "apply", "rollback-live", "prepare-forwarding":
+		case "commit", "rollback", "apply", "apply-commit", "rollback-live", "prepare-forwarding":
 			if !configOperationOK(request.Operation) {
 				return errors.New("invalid operation identifier")
 			}
@@ -349,7 +367,7 @@ func configTransactionCommand(input io.Reader, output io.Writer, paths map[strin
 		return err
 	}
 	defer transaction.close()
-	if request.Action != "stage" && request.Action != "stage-ipv6" && request.Action != "status" && request.Operation != transaction.journal.Operation {
+	if request.Action != "stage" && request.Action != "stage-live" && request.Action != "stage-ipv6" && request.Action != "status" && request.Operation != transaction.journal.Operation {
 		return errors.New("configuration operation mismatch")
 	}
 	result := map[string]any{"nativeApplied": transaction.journal.NativeApplied, "version": 1, "operation": transaction.journal.Operation, "originalHash": transaction.journal.OriginalHash, "candidateHash": transaction.journal.CandidateHash}
@@ -363,11 +381,27 @@ func configTransactionCommand(input io.Reader, output io.Writer, paths map[strin
 			return err
 		}
 		result["ipv6ForwardingPrepared"] = true
-	case "apply", "rollback-live":
+	case "apply", "apply-commit", "rollback-live":
 		if err := applyConfigTransactionRuntime(transaction, request.Container, request.Action == "rollback-live"); err != nil {
 			return err
 		}
+		if request.Action == "apply-commit" {
+			if err := verifyProtocolCommit(transaction, request.Container); err != nil {
+				return err
+			}
+			if err := verifyIPv6Commit(transaction, request.Container); err != nil {
+				return err
+			}
+			if err := transaction.finish(false); err != nil {
+				return err
+			}
+		}
 	case "commit", "rollback":
+		if request.Action == "commit" {
+			if err := verifyProtocolCommit(transaction, request.Container); err != nil {
+				return err
+			}
+		}
 		if len(transaction.journal.NativeOriginal) != 0 {
 			if request.Action == "rollback" {
 				return errors.New("native snapshot requires live rollback")

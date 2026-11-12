@@ -103,9 +103,47 @@ for container, binary, interface, path in (
     invoke('rollback-live', operation=live['operation'])
     assert allowed() == original_allowed
     assert run('docker', 'exec', container, 'cat', path).stdout == original
+    # Strict normal peer mutation: reject concurrent native edits both before
+    # application and after a successful apply, without overwriting those edits.
+    peer_key = base64.b64encode(b'B' * 32).decode()
+    routes_before = dict(original_allowed)[peer_key.encode()]
+    invoke('stage-live', expected=original,
+           candidate=original.replace(b'Address = ', b'Address = fd66::1/64, ', 1), ok=False)
+    assert run('docker', 'exec', container, 'cat', path).stdout == original
+    assert allowed() == original_allowed
+    pending_live = invoke('stage-live', expected=original, candidate=live_candidate)
+    run('docker', 'exec', container, binary, 'set', interface, 'peer', peer_key,
+        'allowed-ips', ','.join(route.decode() for route in routes_before) + ',fd99::55/128')
+    independently_changed = allowed()
+    invoke('apply-commit', operation=pending_live['operation'], ok=False)
+    assert allowed() == independently_changed
+    invoke('rollback-live', operation=pending_live['operation'])
+    assert allowed() == independently_changed
+    run('docker', 'exec', container, binary, 'set', interface, 'peer', peer_key,
+        'allowed-ips', ','.join(route.decode() for route in routes_before))
+    assert allowed() == original_allowed
+    pending_live = invoke('stage-live', expected=original, candidate=live_candidate)
+    invoke('apply', operation=pending_live['operation'])
+    applied_routes = allowed()
+    peer_routes = dict(applied_routes)[peer_key.encode()]
+    run('docker', 'exec', container, binary, 'set', interface, 'peer', peer_key,
+        'allowed-ips', ','.join(route.decode() for route in peer_routes) + ',fd99::55/128')
+    independently_changed = allowed()
+    invoke('commit', operation=pending_live['operation'], ok=False)
+    assert allowed() == independently_changed
+    assert invoke('status')['operation'] == pending_live['operation']
+    run('docker', 'exec', container, binary, 'set', interface, 'peer', peer_key,
+        'allowed-ips', ','.join(route.decode() for route in peer_routes))
+    invoke('commit', operation=pending_live['operation'])
+    restore_live = invoke('stage-live', expected=live_candidate, candidate=original)
+    invoke('apply-commit', operation='0' * 64, ok=False)
+    invoke('apply-commit', operation=restore_live['operation'])
+    invoke('status', ok=False)
+    assert allowed() == original_allowed
+    assert run('docker', 'exec', container, 'cat', path).stdout == original
     # The native parser really rejects this candidate; the durable journal survives.
     invalid = invoke('stage', expected=original, candidate=original + b'\nNotAProtocolField = invalid\n')
-    invoke('apply', operation=invalid['operation'], ok=False)
+    invoke('apply-commit', operation=invalid['operation'], ok=False)
     assert invoke('status')['operation'] == invalid['operation']
     invoke('rollback-live', operation=invalid['operation'])
     assert allowed() == original_allowed

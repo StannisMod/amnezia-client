@@ -180,9 +180,9 @@ func applyConfigTransactionRuntime(transaction *configTransaction, container str
 		}
 	}
 	if !rollback {
-		// A staged IPv6 migration spans separate helper invocations. Refuse a
+		// A staged live change spans separate helper invocations. Refuse a
 		// changed runtime before touching addresses or protocol configuration.
-		if transaction.journal.IPv6 != nil && !transaction.journal.NativeWriteIntent {
+		if !transaction.journal.NativeWriteIntent {
 			native, err := captureNativeProtocol(container)
 			if err != nil {
 				return err
@@ -244,4 +244,70 @@ func applyConfigTransactionRuntime(transaction *configTransaction, container str
 		return err
 	}
 	return nil
+}
+
+// A previous successful apply is not evidence that native state is still the
+// candidate. Preserve the journal if another writer changed keys or routes.
+func verifyProtocolCommit(transaction *configTransaction, container string) error {
+	if transaction.lock == nil {
+		return errors.New("closed configuration transaction")
+	}
+	if len(transaction.journal.NativeOriginal) == 0 {
+		return nil
+	}
+	if !transaction.journal.NativeApplied {
+		return errors.New("native configuration has not been applied")
+	}
+	native, err := captureNativeProtocol(container)
+	if err != nil {
+		return err
+	}
+	return verifyNativeConfigBaseline(container, transaction.path, native)
+}
+
+// syncconf does not apply quick-only interface settings or execute hooks. Normal
+// live mutations must preserve those lines; address migration has its own actor.
+func sameQuickSettings(original, candidate []byte) bool {
+	extract := func(raw []byte) (string, bool) {
+		section := ""
+		interfaces := 0
+		values := []string{}
+		for _, rawLine := range strings.Split(string(raw), "\n") {
+			line := strings.TrimSpace(strings.SplitN(rawLine, "#", 2)[0])
+			if line == "" {
+				continue
+			}
+			if strings.HasPrefix(line, "[") {
+				if line != "[Interface]" && line != "[Peer]" {
+					return "", false
+				}
+				section = line
+				if line == "[Interface]" {
+					interfaces++
+					if interfaces != 1 {
+						return "", false
+					}
+				}
+				if line == "[Peer]" && interfaces != 1 {
+					return "", false
+				}
+				continue
+			}
+			field := strings.SplitN(line, "=", 2)
+			if len(field) != 2 || section == "" {
+				return "", false
+			}
+			if section != "[Interface]" {
+				continue
+			}
+			switch strings.TrimSpace(field[0]) {
+			case "Address", "MTU", "DNS", "Table", "PreUp", "PostUp", "PreDown", "PostDown", "SaveConfig":
+				values = append(values, strings.TrimSpace(rawLine))
+			}
+		}
+		return strings.Join(values, "\n"), interfaces == 1
+	}
+	a, okA := extract(original)
+	b, okB := extract(candidate)
+	return okA && okB && a == b
 }

@@ -253,3 +253,19 @@ one. Unknown function definitions are refused rather than left to shadow the new
 functions. The ordinary signed-service suite checks fingerprints, mixed prefixes,
 body preservation and combined boot-hook repair. The required SSH regression
 performs real stage/rollback/commit of the historical file for WG and AWG.
+
+Normal native protocol mutations can use `stage-live` followed by operation-bound
+`apply-commit`. Staging captures the native baseline under the file lock and
+requires it to agree with the original file. Applying rechecks the snapshot;
+commit rechecks the actual native candidate before clearing the journal. A
+separate earlier `apply` does not bypass that commit check. Concurrent native
+key/route edits cause refusal with the journal retained. The combined operation
+holds the lock through synchronization and commit; failed synchronization stays
+recoverable through the existing live rollback.
+
+This path preserves quick-only settings (Address, MTU, DNS, Table and hooks),
+which syncconf does not apply. IPv6 address migration uses its separate actor.
+The real WG/AWG regression injects native route edits before apply and before
+commit, verifies refusal/preservation, then checks successful apply-commit and
+failed-parser recovery. Client-side creation/revocation still need to be wired
+to these transactions; this does not yet establish cooperation by all writers.

@@ -68,3 +68,23 @@ func TestNativeBaselineCanonicalizesRoutesDefaultsAndRoaming(t *testing.T) {
 		t.Fatal("server identity mismatch hidden", err)
 	}
 }
+
+func TestLiveMutationPreservesQuickOnlySettings(t *testing.T) {
+	original := "[Interface]\nPrivateKey = old\nAddress = 10.77.0.1/24\nMTU = 1280\nDNS = 10.77.0.1\nTable = auto\nPreUp = echo pre\nPostUp = echo first\nPostUp = echo second\nPreDown = echo before\nPostDown = echo after\nSaveConfig = false\n[Peer]\nPublicKey = peer\nAllowedIPs = 10.77.0.2/32\n"
+	nativeOnly := strings.Replace(strings.Replace(original, "PrivateKey = old", "PrivateKey = new", 1), "10.77.0.2/32", "10.77.0.3/32", 1)
+	if !sameQuickSettings([]byte(original), []byte(nativeOnly)) {
+		t.Fatal("native mutation rejected")
+	}
+	for _, key := range []string{"Address", "MTU", "DNS", "Table", "PreUp", "PostUp", "PreDown", "PostDown", "SaveConfig"} {
+		changed := strings.Replace(original, key+" = ", key+" = changed ", 1)
+		if sameQuickSettings([]byte(original), []byte(changed)) {
+			t.Fatal("unapplied quick setting accepted", key)
+		}
+	}
+	if sameQuickSettings([]byte(original), []byte(original+"[Interface]\n")) {
+		t.Fatal("duplicate interface accepted")
+	}
+	if err := verifyProtocolCommit(&configTransaction{}, "amnezia-wireguard"); err == nil {
+		t.Fatal("closed transaction accepted")
+	}
+}
