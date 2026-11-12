@@ -1281,3 +1281,39 @@ func TestOwnedHelperRestorePreservesPeerMetadataIntent(t *testing.T) {
 	assertConfig(t, path, original)
 	assertConfig(t, path+".amnezia-receipts", raw)
 }
+
+func TestReceiptQuickHooksDoNotChangePeerIdentity(t *testing.T) {
+	header := "[Interface]\nPrivateKey = " + testKey('P') + "\n"
+	hooks := "Address = 10.8.0.1/24\nDNS = 10.8.0.1\nMTU = 1280\nPostUp = echo first\nPostUp = echo second # preserved in file\nPreDown = echo third\nPreDown = echo fourth\n"
+	a := "[Peer]\nPublicKey = " + testKey('A') + "\nAllowedIPs = 10.8.0.2/32\n"
+	b := "[Peer]\nPublicKey = " + testKey('B') + "\nAllowedIPs = 10.8.0.3/32\n"
+	original := []byte(header + hooks + a + b)
+	copyOriginal := append([]byte(nil), original...)
+	key, err := receiptRemovedPeer(original, []byte(header+hooks+b))
+	if err != nil || key != testKey('A') {
+		t.Fatal("valid repeated quick hooks prevented revocation", err)
+	}
+	native, err := receiptNativeConfig(original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actual, err := canonicalNativeConfig(native)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected, err := canonicalNativeConfig([]byte(header + a + b))
+	if err != nil || actual != expected || !bytes.Equal(original, copyOriginal) {
+		t.Fatal("quick projection changed native identity or source bytes", err)
+	}
+	for _, invalid := range []string{
+		header + "PrivateKey = " + testKey('P') + "\n" + a,
+		header + a + "PublicKey = " + testKey('B') + "\n",
+		header + "[Peer]\nAllowedIPs = 10.8.0.2/32\n",
+		"MTU = 1280\n" + header + a,
+		header + "[Unknown]\nPostUp = echo ignored\n" + a,
+	} {
+		if _, err := receiptNativeConfig([]byte(invalid)); err == nil {
+			t.Fatal("malformed configuration accepted")
+		}
+	}
+}

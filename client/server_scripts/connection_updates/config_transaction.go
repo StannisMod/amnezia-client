@@ -1009,7 +1009,11 @@ func configReceiptCommand(path string, request configTransactionRequest, output 
 		if err != nil {
 			return err
 		}
-		canonical, err := canonicalNativeConfig(request.Expected)
+		native, err := receiptNativeConfig(request.Expected)
+		if err != nil {
+			return err
+		}
+		canonical, err := canonicalNativeConfig(native)
 		if err != nil {
 			return err
 		}
@@ -1134,13 +1138,77 @@ func configReceiptCommand(path string, request configTransactionRequest, output 
 	}
 	return json.NewEncoder(output).Encode(map[string]any{"version": 1, "operation": request.Operation, "state": record.State, "nativeOperation": record.NativeOperation, "originalHash": originalHash, "candidateHash": candidateHash, "targetKey": record.TargetKey, "targetMetadataHash": record.TargetMetadataHash})
 }
+
+// receiptNativeConfig projects wg-quick configuration into native settings.
+// Repeated quick hooks are valid and must not be parsed as duplicate native
+// interface fields. Never execute hooks to inspect a revocation intent.
+func receiptNativeConfig(raw []byte) ([]byte, error) {
+	if len(raw) > 4<<20 || !utf8.Valid(raw) {
+		return nil, errors.New("invalid receipt configuration")
+	}
+	section := ""
+	lines := []string{}
+	peerFields := map[string]bool{}
+	peer := false
+	finishPeer := func() error {
+		if peer && !peerFields["PublicKey"] {
+			return errors.New("missing receipt peer identity")
+		}
+		return nil
+	}
+	for _, rawLine := range strings.Split(string(raw), "\n") {
+		line := strings.TrimSpace(strings.SplitN(rawLine, "#", 2)[0])
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "[") {
+			if err := finishPeer(); err != nil {
+				return nil, err
+			}
+			section = line
+			peer = section == "[Peer]"
+			peerFields = map[string]bool{}
+		} else {
+			pair := strings.SplitN(line, "=", 2)
+			if len(pair) != 2 {
+				return nil, errors.New("invalid receipt configuration")
+			}
+			key := strings.TrimSpace(pair[0])
+			if section == "" {
+				return nil, errors.New("receipt setting outside section")
+			}
+			if section == "[Interface]" {
+				switch key {
+				case "Address", "DNS", "MTU", "Table", "PreUp", "PostUp", "PreDown", "PostDown", "SaveConfig":
+					continue
+				}
+			}
+			if peer {
+				if key == "PublicKey" && peerFields[key] {
+					return nil, errors.New("duplicate receipt peer setting")
+				}
+				peerFields[key] = true
+			}
+		}
+		lines = append(lines, line)
+	}
+	if err := finishPeer(); err != nil {
+		return nil, err
+	}
+	native := []byte(strings.Join(lines, "\n"))
+	if _, _, err := iniInterface(native); err != nil {
+		return nil, err
+	}
+	return native, nil
+}
+
 func receiptRemovedPeer(original, candidate []byte) (string, error) {
 	keys := func(raw []byte) (map[string]bool, error) {
-		lines := strings.Split(string(raw), "\n")
-		for i, line := range lines {
-			lines[i] = strings.SplitN(line, "#", 2)[0]
+		native, err := receiptNativeConfig(raw)
+		if err != nil {
+			return nil, err
 		}
-		_, peers, err := iniInterface([]byte(strings.Join(lines, "\n")))
+		_, peers, err := iniInterface(native)
 		if err != nil {
 			return nil, err
 		}

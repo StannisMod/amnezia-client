@@ -334,6 +334,22 @@ for container, binary, interface, path in (
     assert sorted(run('docker', 'exec', container, binary, 'show', interface, 'peers').stdout.splitlines()) == peers
     print(f'PASS: {container} durable terminal receipts preserve later native edits, reject reintroduced peers and retain rollback direction')
     # Metadata intents reserve one public key, never the whole client table.
+    # wg-quick allows repeated interface hooks; inspection must not run them.
+    baseline_original, baseline_removed = original, removed_config
+    hooks = (b'PostUp = touch /opt/amnezia/forbidden-receipt-hook\n'
+             b'PostUp = touch /opt/amnezia/forbidden-receipt-hook\n'
+             b'PreDown = touch /opt/amnezia/forbidden-receipt-hook\n'
+             b'PreDown = touch /opt/amnezia/forbidden-receipt-hook\n')
+    original = original.replace(b'[Interface]\n', b'[Interface]\n' + hooks, 1)
+    removed_config = removed_config.replace(b'[Interface]\n', b'[Interface]\n' + hooks, 1)
+    invoke('stage-live', expected=baseline_original, candidate=original, ok=False)
+    assert run('docker', 'exec', container, 'cat', path).stdout == baseline_original
+    # Add quick-only settings directly to this disposable fixture, without
+    # restarting the interface or weakening the production live-write guard.
+    run('docker', 'exec', '-i', container, 'sh', '-ec', 'cat > ' + path, data=original)
+    invoke('check-live', expected=original)
+    stripped = run('docker', 'exec', container, binary + '-quick', 'strip', path).stdout
+    assert b'PostUp' not in stripped and b'PreDown' not in stripped
     table_path = path.rsplit('/', 1)[0] + '/clientsTable'
     old_table = run('docker', 'exec', container, 'cat', table_path).stdout
     target_entry = dict(clientId=peer_key, userData=dict(clientName='reserved', n=1000))
@@ -386,6 +402,12 @@ for container, binary, interface, path in (
     write_fixture_table(old_table)
     assert run('docker', 'exec', container, 'cat', path).stdout == original
     assert sorted(run('docker', 'exec', container, binary, 'show', interface, 'peers').stdout.splitlines()) == peers
+    assert run('docker', 'exec', container, 'test', '-e', '/opt/amnezia/forbidden-receipt-hook', ok=False).returncode
+    run('docker', 'exec', '-i', container, 'sh', '-ec', 'cat > ' + path, data=baseline_original)
+    invoke('check-live', expected=baseline_original)
+    original, removed_config = baseline_original, baseline_removed
+    assert run('docker', 'exec', container, 'cat', path).stdout == original
+    print(f'PASS: {container} repeated quick hooks accepted without executing hooks; exact baseline restored')
     print(f'PASS: {container} peer metadata intent preserves other clients and requires committed owner removal')
     print(f'PASS: {container} private journal, operation binding, rollback, commit, replay rejection, native apply and failure rollback; live peers preserved')
 
