@@ -7,6 +7,8 @@
 #include <QJsonArray>
 #include <QDateTime>
 #include <QCryptographicHash>
+#include <QUuid>
+#include <QRegularExpression>
 
 #include "core/utils/containerEnum.h"
 #include "core/utils/containers/containerUtils.h"
@@ -408,6 +410,11 @@ ErrorCode UsersController::revokeManagedPeer(const QString &serverId, DockerCont
         if (!document.isArray() || uniqueRow(document.array(),clientPublicKey)<0) return ErrorCode::InternalError;
         operation={{"version",1},{"binding",binding},{"clientPublicKey",clientPublicKey},
             {"original",original},{"candidate",candidate},{"table",QString::fromLatin1(table.toBase64())}};
+        if (capabilities.value("features").toArray().contains("native-receipt-v1")) {
+            operation["version"]=2;
+            operation["receipt"]=QUuid::createUuid().toString(QUuid::Id128)+QUuid::createUuid().toString(QUuid::Id128);
+            operation["phase"]="active";
+        }
         if (!m_serversRepository->compareAndSetPendingPeerRevocation(serverId,container,{},operation)) return ErrorCode::InternalError;
     }
     const auto key=operation.value("clientPublicKey").toString();
@@ -417,15 +424,59 @@ ErrorCode UsersController::revokeManagedPeer(const QString &serverId, DockerCont
     const auto tableEncoded=operation.value("table").toString().toLatin1();
     const auto originalTable=QByteArray::fromBase64(tableEncoded);
     const auto originalDocument=QJsonDocument::fromJson(originalTable);
-    if (operation.size()!=6 || operation.value("version")!=1 || operation.value("binding")!=binding
+    const bool withReceipt=operation.value("version")==2;
+    const auto receipt=operation.value("receipt").toString();
+    const auto phase=operation.value("phase").toString();
+    static const QRegularExpression receiptId("^[a-f0-9]{64}$");
+    if ((withReceipt ? operation.size()!=8 || !receiptId.match(receipt).hasMatch() || (phase!="active" && phase!="done")
+                     : operation.size()!=6 || operation.value("version")!=1)
+        || operation.value("binding")!=binding
         || original.toUtf8().size()>4*1024*1024 || originalTable.size()>4*1024*1024
         || originalTable.toBase64()!=tableEncoded || !originalDocument.isArray()
         || uniqueRow(originalDocument.array(),key)<0
         || !connectionUpdates::removePeerFromServerConfig(original,key,verifiedCandidate) || verifiedCandidate!=candidate)
         return ErrorCode::InternalError;
-    bool transactional=false;
-    error=ssh.replaceLiveProtocolConfig(container,credentials,original,candidate,transactional,true,{"client-table-cas-v1"});
-    if (error!=ErrorCode::NoError || !transactional) return error==ErrorCode::NoError?ErrorCode::InternalError:error;
+    if (withReceipt && !capabilities.value("features").toArray().contains("native-receipt-v1")) return ErrorCode::InternalError;
+    auto receiptCall=[&](const QString &action,QJsonObject &response) {
+        response={};
+        return ssh.protocolConfigTransaction(container,credentials,{{"action",action},{"operation",receipt},
+            {"expected",QString::fromLatin1(original.toUtf8().toBase64())},
+            {"candidate",QString::fromLatin1(candidate.toUtf8().toBase64())}},response);
+    };
+    auto acknowledge=[&]() {
+        QJsonObject result;
+        const auto acknowledgment=receiptCall("ack-receipt",result);
+        if (acknowledgment!=ErrorCode::NoError || !result.value("acknowledged").toBool() || result.value("operation")!=receipt)
+            return acknowledgment==ErrorCode::NoError?ErrorCode::InternalError:acknowledgment;
+        return m_serversRepository->compareAndSetPendingPeerRevocation(serverId,container,operation,{})
+            ?ErrorCode::NoError:ErrorCode::InternalError;
+    };
+    // Business completion is already durable. A lost ACK may have removed the
+    // server receipt; do not replay native/table/token operations on that retry.
+    if (withReceipt && phase=="done") return acknowledge();
+    bool nativeCompleted=false;
+    if (withReceipt) {
+        QJsonObject prepared;
+        error=receiptCall("prepare-receipt",prepared);
+        const auto originalHash=QString::fromLatin1(QCryptographicHash::hash(original.toUtf8(),QCryptographicHash::Sha256).toHex());
+        const auto candidateHash=QString::fromLatin1(QCryptographicHash::hash(candidate.toUtf8(),QCryptographicHash::Sha256).toHex());
+        if (error!=ErrorCode::NoError || prepared.value("operation")!=receipt || prepared.value("originalHash")!=originalHash
+            || prepared.value("candidateHash")!=candidateHash) return error==ErrorCode::NoError?ErrorCode::InternalError:error;
+        if (prepared.value("state")=="committed") nativeCompleted=true;
+        else if (prepared.value("state")!="pending") return ErrorCode::InternalError;
+    }
+    if (!nativeCompleted) {
+        bool transactional=false;
+        error=ssh.replaceLiveProtocolConfig(container,credentials,original,candidate,transactional,true,{"client-table-cas-v1"});
+        if (error!=ErrorCode::NoError || !transactional) return error==ErrorCode::NoError?ErrorCode::InternalError:error;
+    }
+    if (withReceipt) {
+        QJsonObject verified;
+        error=receiptCall("check-revoked-peer",verified);
+        if (error!=ErrorCode::NoError || !verified.value("committed").toBool() || !verified.value("revoked").toBool()
+            || verified.value("operation")!=receipt || verified.value("clientPublicKey")!=key)
+            return error==ErrorCode::NoError?ErrorCode::InternalError:error;
+    }
     // Preserve independent metadata edits. A changed target entry is a conflict;
     // an absent entry already satisfies removal after verified native completion.
     const auto current=ssh.getTextFileFromContainer(container,credentials,tablePath,error);
@@ -454,6 +505,12 @@ ErrorCode UsersController::revokeManagedPeer(const QString &serverId, DockerCont
         error=ConnectionUpdatesController::command(credentials,"revoke",{{"container",ContainerUtils::containerToString(container)},
             {"clientPublicKey",key}},result);
         if (error!=ErrorCode::NoError || !result.value("ok").toBool()) return ErrorCode::ConnectionUpdateTokenRevocationPending;
+    }
+    if (withReceipt) {
+        auto completed=operation; completed["phase"]="done";
+        if (!m_serversRepository->compareAndSetPendingPeerRevocation(serverId,container,operation,completed)) return ErrorCode::InternalError;
+        operation=completed;
+        return acknowledge();
     }
     if (!m_serversRepository->compareAndSetPendingPeerRevocation(serverId,container,operation,{})) return ErrorCode::InternalError;
     return ErrorCode::NoError;

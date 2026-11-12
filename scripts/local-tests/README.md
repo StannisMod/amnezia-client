@@ -421,14 +421,16 @@ A new app process retries the same identity even though the table row is gone.
 Only completion of every step clears the context. Clean legacy servers keep the
 legacy path, and an owned/pending helper cannot downgrade to it.
 
-The required real SSH test interrupts after an actual native removal, rejects
-a changed saved target binding, adds independent client metadata, then uses a
-second Qt process to resume through a deliberately lost metadata reply and a
-lost token-revocation reply. The token must actually reject the signed fetch;
-a third process completes the pending-token retry and clears the context. These
-are deterministic transport failures after effect, not OS process-kill tests.
-Automatic terminal-receipt use across later unrelated native edits, other
-metadata writers and the full migration coordinator remain outstanding.
+The required real SSH test interrupts after actual native removal, rejects a
+changed saved target binding, and adds independent client metadata and a later
+native peer edit. Fresh Qt processes resume through lost metadata and token
+replies; the revoked token must actually reject the signed fetch. Another
+process finishes the business steps but loses the receipt ACK after server-side
+deletion. A further native edit must survive the last process, which retries
+only the ACK and clears the local context. A fixture sentinel forbids native
+mutation during both receipt recovery and the final ACK retry. These are
+transport failures after effect, not OS process-kill tests. Other metadata
+writers and the full migration coordinator remain outstanding.
 
 The server helper also advertises `native-receipt-v1`. A caller with a durable
 local operation ID can opt in with `prepare-receipt` before staging. The fixed
@@ -452,10 +454,16 @@ Unacknowledged entries are never evicted: new intent preparation fails before
 mutation if capacity is exhausted. `ack-receipt` conditionally removes a terminal
 receipt and is idempotent after a lost acknowledgment reply. Helper upgrades
 preserve supported receipt bytes and refuse unknown or unsafe stores. These
-server primitives are tested, but automatic use by the client still requires a
-new durable context phase: save business completion before acknowledging the
-receipt, then clear the local context. Existing client revocation still uses the
-exact candidate check and does not yet consume receipts after unrelated edits.
+server primitives are consumed by new client revocation contexts (version 2)
+when the helper advertises the feature. The client persists the receipt ID and
+active phase before preparing the server intent. A committed receipt uses the
+read-only revoked-key check instead of replaying the old configuration. After
+peer, table and token completion, the client durably saves the done phase before
+ACK. A done retry performs only idempotent ACK and local cleanup, even when the
+server receipt is already gone and other peers have changed again. Existing
+version-1 contexts remain supported through exact candidate verification, and
+helpers without receipts still create version-1 contexts. A separate required
+WG/AWG test resumes an old context after native completion without a receipt.
 
 The receipt regression also covers restoring a peer keepalive from 17 and a
 nonzero PSK to their omitted defaults. The pinned `awg syncconf` retains either

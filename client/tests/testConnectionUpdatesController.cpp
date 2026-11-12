@@ -435,6 +435,51 @@ private slots:
             QCOMPARE(read,ErrorCode::NoError);
         }
     }
+    void realAdminV1RevocationContext()
+    {
+        const auto host=qEnvironmentVariable("AMNEZIA_SSH_PROBE_HOST");
+        if (host.isEmpty()) QSKIP("Run scripts/local-tests/path-probe-ssh.sh with this test executable");
+        ServerCredentials credentials; credentials.hostName=host; credentials.port=qEnvironmentVariableIntValue("AMNEZIA_SSH_PROBE_PORT");
+        credentials.userName="root"; credentials.secretData="synthetic-probe-fixture";
+        for (const auto container:{DockerContainer::WireGuard,DockerContainer::Awg2}) {
+            SecureQSettings settings("Amnezia-V1-Revoke-"+QUuid::createUuid().toString(),"test",nullptr,false);
+            SecureServersRepository servers(&settings);
+            auto administrator=profile(container==DockerContainer::Awg2); administrator.remove("connectionUpdates");
+            administrator["hostName"]=host; administrator["userName"]=credentials.userName;
+            administrator["password"]=credentials.secretData; administrator["port"]=credentials.port;
+            const auto id=servers.addServer({},administrator,serverConfigUtils::SelfHostedAdmin);
+            SshSession ssh; ErrorCode error=ErrorCode::NoError;
+            const QString path=container==DockerContainer::Awg2?"/opt/amnezia/awg/awg0.conf":"/opt/amnezia/wireguard/wg0.conf";
+            const auto baseline=QString::fromUtf8(ssh.getTextFileFromContainer(container,credentials,path,error)); QCOMPARE(error,ErrorCode::NoError);
+            const auto key=QString::fromLatin1(QByteArray(32,'V').toBase64()); QVERIFY(!baseline.contains(key));
+            const auto withPeer=baseline+"\n[Peer]\nPublicKey = "+key+"\nAllowedIPs = 10.251.0.250/32\n";
+            QString candidate; QVERIFY(connectionUpdates::removePeerFromServerConfig(withPeer,key,candidate));
+            bool handled=false;
+            QCOMPARE(ssh.replaceLiveProtocolConfig(container,credentials,baseline,withPeer,handled),ErrorCode::NoError); QVERIFY(handled);
+            const auto tablePath=QString("/opt/amnezia/%1/clientsTable").arg(ContainerUtils::containerTypeToString(container));
+            const auto baselineTable=ssh.getTextFileFromContainer(container,credentials,tablePath,error); QCOMPARE(error,ErrorCode::NoError);
+            auto table=QJsonDocument::fromJson(baselineTable).array(); table.append(QJsonObject{{"clientId",key}});
+            const auto originalTable=QJsonDocument(table).toJson();
+            QJsonObject receipt;
+            QCOMPARE(ssh.protocolConfigTransaction(container,credentials,{{"action","replace-client-table"},
+                {"expected",QString::fromLatin1(baselineTable.toBase64())},{"candidate",QString::fromLatin1(originalTable.toBase64())}},receipt),ErrorCode::NoError);
+            const QJsonObject target{{"host",credentials.hostName},{"port",credentials.port},{"user",credentials.userName},
+                {"secret",credentials.secretData},{"container",ContainerUtils::containerToString(container)},{"updates",QJsonObject{}}};
+            const auto binding=QString::fromLatin1(QCryptographicHash::hash(QJsonDocument(target).toJson(QJsonDocument::Compact),QCryptographicHash::Sha256).toHex());
+            const QJsonObject pending{{"version",1},{"binding",binding},{"clientPublicKey",key},{"original",withPeer},
+                {"candidate",candidate},{"table",QString::fromLatin1(originalTable.toBase64())}};
+            QVERIFY(servers.compareAndSetPendingPeerRevocation(id,container,{},pending));
+            handled=false;
+            QCOMPARE(ssh.replaceLiveProtocolConfig(container,credentials,withPeer,candidate,handled),ErrorCode::NoError); QVERIFY(handled);
+            UsersController users(&servers); QCOMPARE(users.updateClients(id,container),ErrorCode::NoError);
+            QJsonObject current; QVERIFY(servers.pendingPeerRevocation(id,container,current)); QVERIFY(current.isEmpty());
+            QVERIFY(QJsonDocument::fromJson(ssh.getTextFileFromContainer(container,credentials,tablePath,error)).array()==QJsonDocument::fromJson(baselineTable).array());
+            QCOMPARE(error,ErrorCode::NoError);
+            handled=false;
+            QCOMPARE(ssh.replaceLiveProtocolConfig(container,credentials,candidate,baseline,handled),ErrorCode::NoError); QVERIFY(handled);
+            settings.clearSettings();
+        }
+    }
     void realAdminNewIPv6ProfileExport()
     {
         if (qEnvironmentVariableIsSet("AMNEZIA_TEST_RESUME_REVOCATION")) {
@@ -445,9 +490,12 @@ private slots:
             QJsonObject pending; QVERIFY(servers.pendingPeerRevocation(id,container,pending)); QVERIFY(!pending.isEmpty());
             // Opening the list after an app restart automatically resumes it.
             const bool tokenPending=qEnvironmentVariableIsSet("AMNEZIA_TEST_EXPECT_TOKEN_PENDING");
-            QCOMPARE(users.updateClients(id,container),tokenPending?ErrorCode::ConnectionUpdateTokenRevocationPending:ErrorCode::NoError);
+            const bool ackPending=qEnvironmentVariableIsSet("AMNEZIA_TEST_EXPECT_ACK_PENDING");
+            QCOMPARE(users.updateClients(id,container),tokenPending?ErrorCode::ConnectionUpdateTokenRevocationPending
+                :ackPending?ErrorCode::InternalError:ErrorCode::NoError);
             QVERIFY(servers.pendingPeerRevocation(id,container,pending));
-            QCOMPARE(pending.isEmpty(),!tokenPending);
+            QCOMPARE(pending.isEmpty(),!tokenPending && !ackPending);
+            if (ackPending) QCOMPARE(pending.value("phase").toString(),QString("done"));
             return;
         }
         if (qEnvironmentVariableIsSet("AMNEZIA_TEST_RESUME_EXPORT_ORGANIZATION")) {
@@ -731,12 +779,17 @@ private slots:
             for (int row = 0; row < currentTable.size(); ++row)
                 if (currentTable[row].toObject().value("clientId") == generated.value("client_pub_key")) targetRow = row;
             QVERIFY(targetRow >= 0);
+            QString expected;
+            QVERIFY(connectionUpdates::removePeerFromServerConfig(misleading,generated.value("client_pub_key").toString(),expected));
+            const auto removalBaseline=expected;
             if (qEnvironmentVariable("AMNEZIA_PEER_TRANSACTIONS") == "enabled") {
                 const auto name=ContainerUtils::containerToString(container);
                 QCOMPARE(ssh.runScript(credentials,QString("sudo docker exec %1 touch /opt/amnezia/revocation-stop").arg(name)),ErrorCode::NoError);
                 QVERIFY(users.revokeClient(id,targetRow,container)!=ErrorCode::NoError);
                 QJsonObject pending;
                 QVERIFY(servers.pendingPeerRevocation(id,container,pending)); QVERIFY(!pending.isEmpty());
+                QCOMPARE(pending.value("version").toInt(),2); QCOMPARE(pending.value("phase").toString(),QString("active"));
+                QVERIFY(QRegularExpression("^[a-f0-9]{64}$").match(pending.value("receipt").toString()).hasMatch());
                 auto wrong=pending; wrong["binding"]=QString(64,'0');
                 QVERIFY(servers.compareAndSetPendingPeerRevocation(id,container,pending,wrong));
                 QVERIFY(users.resumePendingPeerRevocation(id,container)!=ErrorCode::NoError);
@@ -746,6 +799,14 @@ private slots:
                 auto parallel=table; parallel.append(QJsonObject{{"clientId","independent-metadata"},{"userData",QJsonObject{{"clientName","preserve"}}}});
                 QCOMPARE(ssh.uploadTextFileToContainer(container,credentials,QString::fromUtf8(QJsonDocument(parallel).toJson()),tablePath),ErrorCode::NoError);
                 QCOMPARE(ssh.runScript(credentials,QString("sudo docker exec %1 rm -f /opt/amnezia/revocation-stop /opt/amnezia/revocation-armed /opt/amnezia/revocation-blocked").arg(name)),ErrorCode::NoError);
+                // A later native peer edit must survive receipt-based recovery.
+                auto changed=expected.split("[Peer]"); QVERIFY(changed.size()>1);
+                changed[1].remove(QRegularExpression("(?m)^PersistentKeepalive[^\n]*\n?"));
+                changed[1]="\n"+changed[1].trimmed()+"\nPersistentKeepalive = 17\n";
+                expected=changed.join("[Peer]");
+                bool handled=false;
+                QCOMPARE(ssh.replaceLiveProtocolConfig(container,credentials,removalBaseline,expected,handled),ErrorCode::NoError); QVERIFY(handled);
+                QCOMPARE(ssh.runScript(credentials,QString("sudo docker exec %1 touch /opt/amnezia/receipt-recovery-deny-writer").arg(name)),ErrorCode::NoError);
                 QCOMPARE(ssh.runScript(credentials,QString("touch /tmp/revocation-reply-arm-%1").arg(name)),ErrorCode::NoError);
                 QProcess child; auto environment=QProcessEnvironment::systemEnvironment();
                 environment.insert("AMNEZIA_TEST_EXPECT_TOKEN_PENDING","1");
@@ -753,15 +814,33 @@ private slots:
                 environment.insert("AMNEZIA_TEST_REVOCATION_SERVER",id);
                 environment.insert("AMNEZIA_TEST_REVOCATION_CONTAINER",QString::number(static_cast<int>(container)));
                 child.setProcessEnvironment(environment); child.start(QCoreApplication::applicationFilePath(),{"realAdminNewIPv6ProfileExport"});
-                QVERIFY(child.waitForFinished(30000)); QCOMPARE(child.exitStatus(),QProcess::NormalExit); QCOMPARE(child.exitCode(),0);
+                QVERIFY(child.waitForFinished(30000)); QCOMPARE(child.exitStatus(),QProcess::NormalExit); QVERIFY2(child.exitCode()==0,child.readAllStandardOutput().right(6000).constData());
                 QString tokenLoss;
                 QCOMPARE(ssh.runScript(credentials,QString("cat /tmp/revocation-reply-lost-%1").arg(name),
                     [&](const QString &data,libssh::Client &){tokenLoss+=data;return ErrorCode::NoError;}),ErrorCode::NoError);
                 QCOMPARE(tokenLoss,QString("1"));
                 updates.refresh(userId); QTRY_COMPARE_WITH_TIMEOUT(finished.count(),3,10000); QVERIFY(!finished[2][0].toBool());
-                environment.remove("AMNEZIA_TEST_EXPECT_TOKEN_PENDING"); child.setProcessEnvironment(environment);
+                environment.remove("AMNEZIA_TEST_EXPECT_TOKEN_PENDING"); environment.insert("AMNEZIA_TEST_EXPECT_ACK_PENDING","1");
+                child.setProcessEnvironment(environment);
                 child.start(QCoreApplication::applicationFilePath(),{"realAdminNewIPv6ProfileExport"});
-                QVERIFY(child.waitForFinished(30000)); QCOMPARE(child.exitStatus(),QProcess::NormalExit); QCOMPARE(child.exitCode(),0);
+                QVERIFY(child.waitForFinished(30000)); QCOMPARE(child.exitStatus(),QProcess::NormalExit); QVERIFY2(child.exitCode()==0,child.readAllStandardOutput().right(6000).constData());
+                QCOMPARE(ssh.getTextFileFromContainer(container,credentials,"/opt/amnezia/protocol-loss-receipt-ack",readError),QByteArray("1"));
+                QCOMPARE(readError,ErrorCode::NoError);
+                QCOMPARE(ssh.runScript(credentials,QString("sudo docker exec %1 rm /opt/amnezia/receipt-recovery-deny-writer").arg(name)),ErrorCode::NoError);
+                const auto beforeAckEdit=expected;
+                expected.replace("PersistentKeepalive = 17","PersistentKeepalive = 23");
+                handled=false;
+                // Use the exact pre-edit bytes; the receipt itself is gone now.
+                QCOMPARE(ssh.replaceLiveProtocolConfig(container,credentials,beforeAckEdit,expected,handled),ErrorCode::NoError); QVERIFY(handled);
+                QCOMPARE(ssh.runScript(credentials,QString("sudo docker exec %1 touch /opt/amnezia/receipt-recovery-deny-writer").arg(name)),ErrorCode::NoError);
+                environment.remove("AMNEZIA_TEST_EXPECT_ACK_PENDING"); child.setProcessEnvironment(environment);
+                child.start(QCoreApplication::applicationFilePath(),{"realAdminNewIPv6ProfileExport"});
+                QVERIFY(child.waitForFinished(30000)); QCOMPARE(child.exitStatus(),QProcess::NormalExit); QVERIFY2(child.exitCode()==0,child.readAllStandardOutput().right(6000).constData());
+                QString forbidden;
+                QCOMPARE(ssh.runScript(credentials,QString("sudo docker exec %1 sh -c 'test ! -e /opt/amnezia/receipt-recovery-forbidden-writer && printf clean'").arg(name),
+                    [&](const QString &data,libssh::Client &){forbidden+=data;return ErrorCode::NoError;}),ErrorCode::NoError);
+                QCOMPARE(forbidden,QString("clean"));
+                QCOMPARE(ssh.runScript(credentials,QString("sudo docker exec %1 rm /opt/amnezia/receipt-recovery-deny-writer").arg(name)),ErrorCode::NoError);
                 SecureQSettings refreshedSettings(organization,"test",nullptr,false);
                 SecureServersRepository refreshed(&refreshedSettings);
                 QVERIFY(refreshed.pendingPeerRevocation(id,container,retained)); QVERIFY(retained.isEmpty());
@@ -776,8 +855,6 @@ private slots:
                 QCOMPARE(proof.getTextFileFromContainer(container,credentials,"/opt/amnezia/protocol-loss-client-table",observedTable),QByteArray("1"));
                 QCOMPARE(observedTable,ErrorCode::NoError);
             }
-            QString expected;
-            QVERIFY(connectionUpdates::removePeerFromServerConfig(misleading, generated.value("client_pub_key").toString(), expected));
             const auto actual = QString::fromUtf8(ssh.getTextFileFromContainer(container, credentials, path, readError));
             QCOMPARE(readError, ErrorCode::NoError);
             QVERIFY2(actual == expected, "server configuration differs from exact peer removal");
@@ -789,6 +866,10 @@ private slots:
             QCOMPARE(ConnectionUpdatesController::fetchPeerIPv6Assignments(credentials, container, remaining), ErrorCode::NoError);
             assignments.remove(generated.value("client_pub_key").toString());
             QCOMPARE(remaining, assignments);
+            if (actual!=removalBaseline) {
+                bool handled=false;
+                QCOMPARE(ssh.replaceLiveProtocolConfig(container,credentials,actual,removalBaseline,handled),ErrorCode::NoError); QVERIFY(handled);
+            }
             settings.clearSettings();
         }
     }

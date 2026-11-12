@@ -179,7 +179,7 @@ ErrorCode SshSession::protocolConfigTransaction(DockerContainer container, const
 {
     if (container != DockerContainer::WireGuard && container != DockerContainer::Awg2) return ErrorCode::InternalError;
     const auto action = input.value("action").toString();
-    if (action != "capabilities" && action != "stage-live" && action != "apply-commit" && action != "status" && action != "rollback-live" && action != "check-live" && action != "discard-stage" && action != "replace-client-table" && action != "check-client-table") return ErrorCode::InternalError;
+    if (action != "capabilities" && action != "stage-live" && action != "apply-commit" && action != "status" && action != "rollback-live" && action != "check-live" && action != "discard-stage" && action != "replace-client-table" && action != "check-client-table" && action != "prepare-receipt" && action != "receipt-status" && action != "check-revoked-peer" && action != "ack-receipt") return ErrorCode::InternalError;
     auto request = input; request["container"] = ContainerUtils::containerToString(container);
     const auto folder = "/tmp/amnezia-protocol-request-" + QUuid::createUuid().toString(QUuid::Id128);
     auto error = runScript(credentials, "umask 077 && mkdir '" + folder + "'");
