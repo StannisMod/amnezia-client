@@ -17,6 +17,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -33,7 +34,24 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-type recoveryPacketLink struct{ net.Conn }
+type recoveryWriteGate struct{ entered, resume chan struct{} }
+type recoveryPacketLink struct {
+	net.Conn
+	gate        atomic.Pointer[recoveryWriteGate]
+	writeErrors atomic.Uint32
+}
+
+func (link *recoveryPacketLink) Write(packet []byte) (int, error) {
+	if gate := link.gate.Swap(nil); gate != nil {
+		close(gate.entered)
+		<-gate.resume
+	}
+	n, err := link.Conn.Write(packet)
+	if err != nil {
+		link.writeErrors.Add(1)
+	}
+	return n, err
+}
 
 // The actual mobile Session, native packet FD and encrypted transport stay alive
 // while the protected UDP endpoint, DNS generation and source port are replaced.
@@ -185,7 +203,7 @@ func TestMobileRecoveryKeepsInteractiveAndDelayedMediaTCP(t *testing.T) {
 					}
 					defer packets.Close()
 					var appLink atomic.Pointer[recoveryPacketLink]
-					appLink.Store(&recoveryPacketLink{packets})
+					appLink.Store(&recoveryPacketLink{Conn: packets})
 					var deny atomic.Bool
 					var released, protected atomic.Int32
 					platform, e := New(pair[0], Hooks{Protect: func(fd int) error {
@@ -226,7 +244,14 @@ func TestMobileRecoveryKeepsInteractiveAndDelayedMediaTCP(t *testing.T) {
 							if e != nil {
 								return
 							}
-							if _, e = appLink.Load().Write(buf[:sizes[0]]); e != nil {
+							link := appLink.Load()
+							if _, e = link.Write(buf[:sizes[0]]); e != nil {
+								// A packet already selected for the retired capture can
+								// be lost. Keep forwarding later stack retransmissions.
+								// Failure of the current capture must still stop output.
+								if appLink.Load() != link {
+									continue
+								}
 								return
 							}
 						}
@@ -354,9 +379,25 @@ func TestMobileRecoveryKeepsInteractiveAndDelayedMediaTCP(t *testing.T) {
 					beforeCore := session.core
 					descriptor := platform.capture.(*packetDescriptor)
 					for i := 0; i < 2; i++ {
-						next, newApp := capturePair(t)
 						old := appLink.Load()
-						appLink.Store(&recoveryPacketLink{newApp})
+						resume := func() {}
+						var queued chan error
+						pending := []byte("original-stream-packet-at-capture-retirement")
+						if i == 0 {
+							gate := &recoveryWriteGate{entered: make(chan struct{}), resume: make(chan struct{})}
+							resume = sync.OnceFunc(func() { close(gate.resume) })
+							defer resume()
+							old.gate.Store(gate)
+							queued = make(chan error, 1)
+							go func() { _, err := interactive.Write(pending); queued <- err }()
+							select {
+							case <-gate.entered:
+							case <-time.After(3 * time.Second):
+								t.Fatal("application output did not reach retirement gate")
+							}
+						}
+						next, newApp := capturePair(t)
+						appLink.Store(&recoveryPacketLink{Conn: newApp})
 						if i == 0 {
 							descriptor.file.Close()
 							<-descriptor.done
@@ -369,6 +410,22 @@ func TestMobileRecoveryKeepsInteractiveAndDelayedMediaTCP(t *testing.T) {
 						}
 						pumpInput(newApp)
 						old.Close()
+						resume()
+						if queued != nil {
+							if err := <-queued; err != nil {
+								t.Fatal(err)
+							}
+							received := make([]byte, len(pending))
+							if _, err := io.ReadFull(interactive, received); err != nil {
+								t.Fatalf("packet queued before capture retirement: %v", err)
+							}
+							if !bytes.Equal(received, pending) {
+								t.Fatal("queued original TCP stream corrupted")
+							}
+							if old.writeErrors.Load() == 0 {
+								t.Fatal("retired capture write error was not exercised")
+							}
+						}
 						exchange(interactive, []byte("interactive-after-capture-handover"))
 						exchange(media, []byte("media-after-capture-handover"))
 						if session.core != beforeCore || platform.capture != descriptor || released.Load() != 0 {
