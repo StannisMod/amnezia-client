@@ -58,6 +58,21 @@ bool validPathProbe(const QJsonValue &value)
         || (address.protocol() == QAbstractSocket::IPv6Protocol && mapped)) return false;
     return true;
 }
+// This signed extension is an individual address, never a route or hostname.
+bool validClientIPv6(const QJsonValue &value)
+{
+    if (!value.isString()) return false;
+    const auto text = value.toString();
+    if (text.isEmpty()) return true; // Explicit withdrawal; omission is different.
+    if (!validPathProbe(value)) return false;
+    const QHostAddress address(text);
+    if (address.protocol() != QAbstractSocket::IPv6Protocol) return false;
+    // QHostAddress accepts obsolete IPv4-compatible addresses; the publisher does not.
+    const auto bytes = address.toIPv6Address();
+    bool compatible = true;
+    for (int i = 0; i < 12; ++i) compatible = compatible && bytes[i] == 0;
+    return !compatible;
+}
 bool usablePathProbe(const QJsonValue &value, const QJsonObject &client)
 {
     if (!validPathProbe(value)) return false;
@@ -311,6 +326,12 @@ bool apply(const QJsonObject &profile, const QByteArray &envelope, qint64 now, Q
         || issued < m.value("issuedAt").toInteger(0)) return false;
     bool ok; const auto revisionText = p.value("revision").toString(); const auto revision = revisionText.toULongLong(&ok);
     if (!ok || revision == 0 || QString::number(revision) != revisionText || revision < m.value("revision").toString().toULongLong()) return false;
+    if (p.contains("clientIpv6")) {
+        const auto address = p.value("clientIpv6");
+        if (!validClientIPv6(address)) return false;
+        if (revisionText == m.value("revision").toString() && m.contains("clientIpv6")
+            && address != m.value("clientIpv6")) return false;
+    }
     const auto settings = p.value("settings").toObject(); const bool awg = m.value("container") != "amnezia-wireguard";
     if (!validSettings(settings, awg)) return false;
     const auto hash = QString::fromLatin1(QCryptographicHash::hash(QJsonDocument(settings).toJson(QJsonDocument::Compact), QCryptographicHash::Sha256).toHex());

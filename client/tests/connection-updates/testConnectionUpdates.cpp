@@ -74,6 +74,22 @@ private slots:
         QCOMPARE(client(rejected, false).value("allowed_ips"), c.value("allowed_ips"));
         update["pathMtuProbe"] = 42; QVERIFY(!connectionUpdates::apply(original, sign(update), 2000000001, rejected));
     }
+    void rejectsMalformedSignedClientIPv6_data() { keepsDeviceAndLocalSettings_data(); }
+    void rejectsMalformedSignedClientIPv6()
+    {
+        QFETCH(bool, awg); const auto original = profile(awg);
+        const QList<QJsonValue> invalid { QJsonValue(), QJsonValue(42), QJsonValue(true),
+            QJsonArray { "fd77::2" }, "10.8.0.2", "::", "::1", "::2", "::ffff:192.0.2.1",
+            "fe80::2", "ff02::2", "fd77::2/128", "fd77::2%eth0", "FD77::2", "fd77:0::2",
+            "fd77::2\n", "vpn.example.test" };
+        for (const auto &address : invalid) {
+            auto update = payload(original, awg); update["clientIpv6"] = address;
+            QJsonObject output { { "sentinel", true } };
+            QVERIFY2(!connectionUpdates::apply(original, sign(update), 2000000001, output),
+                     qPrintable(QJsonDocument(QJsonArray { address }).toJson(QJsonDocument::Compact)));
+            QCOMPARE(output, (QJsonObject { { "sentinel", true } }));
+        }
+    }
     void rejectsInvalidUpdates()
     {
         const auto original = profile(); const auto good = payload(original);
