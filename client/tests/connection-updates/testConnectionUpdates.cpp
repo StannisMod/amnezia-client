@@ -285,6 +285,36 @@ private slots:
         QCOMPARE(client(migrated, false).value("path_mtu_probe").toString(), "10.8.0.1");
         QCOMPARE(client(migrated, false).value("client_priv_key"), client(original, false).value("client_priv_key"));
     }
+    void signedIPv6WithdrawalRevalidatesCachedProbe()
+    {
+        auto original = profile(); auto c = client(original, false);
+        c["allowed_ips"] = QJsonArray { "0.0.0.0/0", "::/0" };
+        auto containers = original["containers"].toArray(); auto container = containers[0].toObject();
+        auto proto = container["wireguard"].toObject();
+        proto["last_config"] = QString::fromUtf8(QJsonDocument(c).toJson(QJsonDocument::Compact));
+        container["wireguard"] = proto; containers[0] = container; original["containers"] = containers;
+        auto update = payload(original); update["clientIpv6"] = "fd77::2"; update["pathMtuProbe"] = "fd77::1";
+        QJsonObject migrated; QVERIFY(connectionUpdates::apply(original, sign(update), 2000000001, migrated));
+        QCOMPARE(client(migrated, false).value("path_mtu_probe").toString(), "fd77::1");
+        update.remove("pathMtuProbe"); update["clientIpv6"] = ""; update["revision"] = "2";
+        QJsonObject withdrawn; QVERIFY(connectionUpdates::apply(migrated, sign(update), 2000000002, withdrawn));
+        QVERIFY(!client(withdrawn, false).contains("path_mtu_probe"));
+        // Keep authenticated metadata so a later compatible address can restore the target.
+        update["clientIpv6"] = "fd77::3"; update["revision"] = "3";
+        QJsonObject restored; QVERIFY(connectionUpdates::apply(withdrawn, sign(update), 2000000003, restored));
+        QCOMPARE(client(restored, false).value("path_mtu_probe").toString(), "fd77::1");
+        QCOMPARE(client(restored, false).value("allowed_ips"), c.value("allowed_ips"));
+    }
+    void goClientIPv6Interoperability()
+    {
+        QFile file(":/connection-updates/client-ipv6-interop.json"); QVERIFY(file.open(QIODevice::ReadOnly));
+        const auto fixture = QJsonDocument::fromJson(file.readAll()).object(); const auto original = profile();
+        QJsonObject migrated;
+        QVERIFY(connectionUpdates::apply(original, QJsonDocument(fixture["envelope"].toObject()).toJson(), 2000000001, migrated));
+        QCOMPARE(client(migrated, false).value("client_ip").toString(), "10.8.0.2, fd77::2/128");
+        QCOMPARE(client(migrated, false).value("client_priv_key"), client(original, false).value("client_priv_key"));
+        QCOMPARE(client(migrated, false).value("allowed_ips"), client(original, false).value("allowed_ips"));
+    }
     void goInteroperability()
     {
         QFile file(QStringLiteral(":/connection-updates/interop.json")); QVERIFY(file.open(QIODevice::ReadOnly));

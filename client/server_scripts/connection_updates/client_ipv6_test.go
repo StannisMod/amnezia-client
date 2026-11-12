@@ -127,3 +127,42 @@ func TestClientIPv6RejectsInvalidOrCollidingAssignmentsAtomically(t *testing.T) 
 		t.Fatal("corrupt saved assignment accepted")
 	}
 }
+
+func TestClientIPv6WireFixture(t *testing.T) {
+	original, err := os.ReadFile("../../tests/connection-updates/interop.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var base struct {
+		Envelope envelope `json:"envelope"`
+	}
+	if err := json.Unmarshal(original, &base); err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(base.Envelope.Payload, &fields); err != nil {
+		t.Fatal(err)
+	}
+	fields["clientIpv6"], _ = json.Marshal("fd77::2")
+	raw, err := json.Marshal(fields)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{'S'}, 32))
+	fixture := map[string]any{"publicKey": []byte(key.Public().(ed25519.PublicKey)), "envelope": envelope{raw, ed25519.Sign(key, raw)}}
+	expected, err := json.MarshalIndent(fixture, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected = append(expected, '\n')
+	path := "../../tests/connection-updates/client-ipv6-interop.json"
+	if os.Getenv("UPDATE_FIXTURE") == "1" {
+		if err := os.WriteFile(path, expected, 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	actual, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(actual, expected) {
+		t.Fatal("Go/Qt client IPv6 fixture changed", err)
+	}
+}

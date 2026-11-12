@@ -417,6 +417,11 @@ bool apply(const QJsonObject &profile, const QByteArray &envelope, qint64 now, Q
         result = withProbe;
         metadata["pathMtuProbe"] = target;
     }
+    if (p.contains("clientIpv6") && !p.contains("pathMtuProbe") && metadata.contains("pathMtuProbe")) {
+        QJsonObject withProbe;
+        if (!mergePathProbe(result, m.value("container").toString(), metadata.value("pathMtuProbe"), withProbe)) return false;
+        result = withProbe;
+    }
     metadata["revision"] = revisionText; metadata["issuedAt"] = issued; metadata["settingsHash"] = hash;
     result[metadataKey] = metadata;
     updated = result; return true;
