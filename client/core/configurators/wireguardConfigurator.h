@@ -3,6 +3,8 @@
 
 #include <QHostAddress>
 #include <QObject>
+#include <QJsonObject>
+#include <functional>
 #include <QProcessEnvironment>
 
 #include "configuratorBase.h"
@@ -41,6 +43,8 @@ public:
     amnezia::ProtocolConfig processConfigWithExportSettings(const amnezia::ExportSettings &settings,
                                                             amnezia::ProtocolConfig protocolConfig) override;
 
+    // The caller must durably own this context before allowing a server write.
+    void setPendingPeerExport(const QJsonObject &state, std::function<bool(const QJsonObject &)> persist);
     static ConnectionData genClientKeys();
     static QList<QHostAddress> getIpsFromConf(const QString &input);
     static QString pathMtuProbeFromInterfaceConfig(const QString &configuration);
@@ -56,6 +60,8 @@ private:
                                           const amnezia::DnsSettings &dnsSettings,
                                           amnezia::ErrorCode &errorCode);
 
+    QJsonObject m_pendingPeerExport;
+    std::function<bool(const QJsonObject &)> m_persistPendingPeerExport;
     bool m_isAwg;
     QString m_serverConfigPath;
     QString m_serverPublicKeyPath;

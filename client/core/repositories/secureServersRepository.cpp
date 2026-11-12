@@ -488,7 +488,7 @@ bool SecureServersRepository::pendingPeerExport(const QString &serverId, DockerC
     QJsonObject root;
     if (!decodePendingPeerExports(m_settings->value(pendingPeerExportsKey),root)) return false;
     const auto entry=root.value("operations").toObject().value(pendingPeerExportId(serverId,container));
-    if (!entry.isUndefined() && !entry.isObject()) return false;
+    if (!entry.isUndefined() && (!entry.isObject() || entry.toObject().isEmpty())) return false;
     operation=entry.toObject();
     return true;
 }
@@ -504,7 +504,7 @@ bool SecureServersRepository::compareAndSetPendingPeerExport(const QString &serv
     auto operations=root.value("operations").toObject();
     const auto key=pendingPeerExportId(serverId,container);
     const auto current=operations.value(key);
-    if ((!current.isUndefined() && !current.isObject()) || current.toObject()!=expected) return false;
+    if ((!current.isUndefined() && (!current.isObject() || current.toObject().isEmpty())) || current.toObject()!=expected) return false;
     if (replacement.isEmpty()) operations.remove(key); else operations[key]=replacement;
     if (operations.size()>16) return false;
     root["operations"]=operations;

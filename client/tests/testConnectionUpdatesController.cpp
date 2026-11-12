@@ -26,6 +26,7 @@
 #include "ui/controllers/connectionUiController.h"
 #include "vpnConnection.h"
 #include "secureQSettings.h"
+#include "core/configurators/wireguardConfigurator.h"
 
 using namespace amnezia;
 using namespace connectionUpdateTestFixtures;
@@ -144,6 +145,10 @@ private slots:
             QVERIFY(servers.pendingPeerExport(id,DockerContainer::WireGuard,current)); QCOMPARE(current,pending);
             QVERIFY(servers.compareAndSetPendingPeerExport(id,DockerContainer::WireGuard,pending,{}));
             QVERIFY(servers.pendingPeerExport(id,DockerContainer::WireGuard,current)); QVERIFY(current.isEmpty());
+            const QJsonObject emptyRecord{{"version",1},{"operations",QJsonObject{{id+":amnezia-wireguard",QJsonObject{}}}}};
+            settings.setValue("Conf/pendingPeerExports",QJsonDocument(emptyRecord).toJson(QJsonDocument::Compact));
+            QVERIFY(!servers.pendingPeerExport(id,DockerContainer::WireGuard,current));
+            QVERIFY(!servers.compareAndSetPendingPeerExport(id,DockerContainer::WireGuard,{},pending));
             settings.setValue("Conf/pendingPeerExports",QByteArray("corrupt"));
             QVERIFY(!servers.pendingPeerExport(id,DockerContainer::WireGuard,current));
             QVERIFY(!servers.compareAndSetPendingPeerExport(id,DockerContainer::WireGuard,{},pending));
@@ -313,6 +318,16 @@ private slots:
     }
     void realAdminNewIPv6ProfileExport()
     {
+        if (qEnvironmentVariableIsSet("AMNEZIA_TEST_RESUME_EXPORT_ORGANIZATION")) {
+            SecureQSettings settings(qEnvironmentVariable("AMNEZIA_TEST_RESUME_EXPORT_ORGANIZATION"),"test",nullptr,false);
+            SecureServersRepository servers(&settings); SecureAppSettingsRepository app(&settings);
+            ExportController exporter(&servers,&app);
+            const auto result=exporter.generateConnectionConfig(qEnvironmentVariable("AMNEZIA_TEST_RESUME_EXPORT_SERVER"),
+                qEnvironmentVariableIntValue("AMNEZIA_TEST_RESUME_EXPORT_CONTAINER"),"synthetic IPv6 peer",true);
+            QCOMPARE(result.errorCode,ErrorCode::NoError); QVERIFY(!result.config.isEmpty());
+            QVERIFY(settings.compareAndSetDurable("Conf/testRecoveredExport",{},result.config));
+            return;
+        }
         const auto host = qEnvironmentVariable("AMNEZIA_SSH_PROBE_HOST");
         if (host.isEmpty()) QSKIP("Run scripts/local-tests/path-probe-ssh.sh with this test executable");
         ServerCredentials credentials; credentials.hostName = host; credentials.port = qEnvironmentVariableIntValue("AMNEZIA_SSH_PROBE_PORT");
@@ -326,7 +341,8 @@ private slots:
             QJsonObject synchronized;
             QVERIFY(connectionUpdates::mergeServerSettings(administrator, awg ? "amnezia-awg2" : "amnezia-wireguard", live, true, synchronized));
             auto metadata = info; metadata["url"] = QString("https://%1:8443").arg(host); synchronized["connectionUpdates"] = metadata;
-            SecureQSettings settings("Amnezia-IPv6-New-Export-" + QUuid::createUuid().toString(), "test", nullptr, false);
+            const auto organization="Amnezia-IPv6-New-Export-"+QUuid::createUuid().toString();
+            SecureQSettings settings(organization,"test",nullptr,false);
             SecureServersRepository servers(&settings); SecureAppSettingsRepository app(&settings);
             const auto id = servers.addServer({}, synchronized, serverConfigUtils::SelfHostedAdmin);
             ExportController exporter(&servers, &app);
@@ -376,10 +392,107 @@ private slots:
                 QVERIFY(QString::fromUtf8(manager.getTextFileFromContainer(container, credentials, configPath, read)) == before);
                 QCOMPARE(manager.runScript(credentials, restoreCommand), ErrorCode::NoError);
                 restoreOwnedHelper.dismiss();
+                const auto config=servers.selfHostedAdminConfig(id)->containerConfig(container);
+                const DnsSettings dns{"192.0.2.53","192.0.2.54"};
+                QJsonObject checkpoint;
+                WireguardConfigurator interrupted(&manager,awg);
+                interrupted.setPendingPeerExport({},[&](const QJsonObject &state) {
+                    if (!servers.compareAndSetPendingPeerExport(id,container,{},state)) return false;
+                    checkpoint=state;
+                    // Model interruption after durable preparation, before any write.
+                    return false;
+                });
+                ErrorCode interruptedError=ErrorCode::NoError;
+                interrupted.createConfig(credentials,container,config,dns,interruptedError);
+                QVERIFY(interruptedError!=ErrorCode::NoError); QVERIFY(!checkpoint.isEmpty());
+                QVERIFY(QString::fromUtf8(manager.getTextFileFromContainer(container, credentials, configPath, read)) == before);
+                SecureServersRepository reopened(&settings); QJsonObject persisted;
+                QVERIFY(reopened.pendingPeerExport(id,container,persisted));
+                QVERIFY(persisted==checkpoint);
+                const auto serialized=QJsonDocument::fromJson(QJsonDocument(persisted).toJson()).object();
+                // Stop after server staging as well: the first successful stage
+                // response is discarded by the disposable transport fixture.
+                QJsonObject lostStage;
+                QVERIFY(manager.protocolConfigTransaction(container,credentials,{{"action","stage-live"},
+                    {"expected",QString::fromLatin1(serialized.value("expected").toString().toUtf8().toBase64())},
+                    {"candidate",QString::fromLatin1(serialized.value("candidate").toString().toUtf8().toBase64())}},lostStage)!=ErrorCode::NoError);
+                QJsonObject stagedStatus;
+                QCOMPARE(manager.protocolConfigTransaction(container,credentials,{{"action","status"}},stagedStatus),ErrorCode::NoError);
+                QVERIFY(!stagedStatus.value("nativeWriteIntent").toBool()); QVERIFY(!stagedStatus.value("nativeApplied").toBool());
+                auto confirmOwnership=[&](const QJsonObject &state) {
+                    return reopened.compareAndSetPendingPeerExport(id,container,persisted,state);
+                };
+                WireguardConfigurator resumed(&manager,awg);
+                resumed.setPendingPeerExport(serialized,confirmOwnership);
+                ErrorCode resumedError=ErrorCode::NoError;
+                const auto recovered=resumed.createConfig(credentials,container,config,dns,resumedError);
+                QCOMPARE(resumedError,ErrorCode::NoError);
+                QVERIFY(recovered.clientId()==persisted.value("clientPubKey").toString());
+                const auto afterCreate=QString::fromUtf8(manager.getTextFileFromContainer(container,credentials,configPath,read));
+                WireguardConfigurator committedRetry(&manager,awg);
+                committedRetry.setPendingPeerExport(serialized,confirmOwnership);
+                const auto repeated=committedRetry.createConfig(credentials,container,config,dns,resumedError);
+                QCOMPARE(resumedError,ErrorCode::NoError); QVERIFY(repeated.clientId()==recovered.clientId());
+                QVERIFY(repeated.getClientConfigJson()==recovered.getClientConfigJson());
+                QVERIFY(QString::fromUtf8(manager.getTextFileFromContainer(container,credentials,configPath,read))==afterCreate);
+                auto corrupt=serialized; corrupt["clientPubKey"]=QString::fromLatin1(QByteArray(32,'X').toBase64());
+                WireguardConfigurator invalid(&manager,awg); invalid.setPendingPeerExport(corrupt,confirmOwnership);
+                invalid.createConfig(credentials,container,config,dns,resumedError);
+                QVERIFY(resumedError!=ErrorCode::NoError);
+                QJsonObject stillOwned; QVERIFY(reopened.pendingPeerExport(id,container,stillOwned)); QVERIFY(stillOwned==persisted);
+                QVERIFY(QString::fromUtf8(manager.getTextFileFromContainer(container,credentials,configPath,read))==afterCreate);
+                QString removed; QVERIFY(connectionUpdates::removePeerFromServerConfig(afterCreate,recovered.clientId(),removed));
+                QVERIFY(removed==before);
+                handled=false;
+                QCOMPARE(manager.replaceLiveProtocolConfig(container,credentials,afterCreate,removed,handled),ErrorCode::NoError); QVERIFY(handled);
+                QVERIFY(reopened.compareAndSetPendingPeerExport(id,container,persisted,{}));
+                // Keep the existing export loss checks independent of this resume test.
+                QCOMPARE(manager.runScript(credentials,QString("sudo docker exec %1 rm -f /opt/amnezia/protocol-loss-stage /opt/amnezia/protocol-loss-commit").arg(name)),ErrorCode::NoError);
             }
-            const auto exported = exporter.generateConnectionConfig(id, static_cast<int>(container), "synthetic IPv6 peer", true);
+            ExportController::ExportResult exported;
+            QString recoveredExportKey;
+            if (qEnvironmentVariable("AMNEZIA_PEER_TRANSACTIONS")=="enabled") {
+                SshSession failDelivery; bool hidden=false;
+                auto restoreDelivery=qScopeGuard([&] { if (hidden) failDelivery.runScript(credentials,
+                    "sudo docker rename amnezia-connection-updates.fixture-hidden amnezia-connection-updates"); });
+                const auto hook=connect(&exporter,&ExportController::appendClientRequested,&exporter,[&] {
+                    hidden=failDelivery.runScript(credentials,
+                        "sudo docker rename amnezia-connection-updates amnezia-connection-updates.fixture-hidden")==ErrorCode::NoError;
+                });
+                const auto interrupted=exporter.generateConnectionConfig(id,static_cast<int>(container),"synthetic IPv6 peer",true);
+                disconnect(hook); QVERIFY(hidden); QVERIFY(interrupted.errorCode!=ErrorCode::NoError); QVERIFY(interrupted.config.isEmpty());
+                QJsonObject pending; QVERIFY(servers.pendingPeerExport(id,container,pending)); QVERIFY(!pending.isEmpty());
+                recoveredExportKey=pending.value("prepared").toObject().value("clientPubKey").toString(); QVERIFY(!recoveredExportKey.isEmpty());
+                QCOMPARE(failDelivery.runScript(credentials,"sudo docker rename amnezia-connection-updates.fixture-hidden amnezia-connection-updates"),ErrorCode::NoError);
+                hidden=false; restoreDelivery.dismiss();
+                // A local client preference change must not invalidate server identity.
+                auto changedAdministrator=*servers.selfHostedAdminConfig(id);
+                auto changedContainer=changedAdministrator.containerConfig(container);
+                auto changedClient=changedContainer.protocolConfig.getClientConfigJson(); changedClient["mtu"]="1300";
+                changedContainer.protocolConfig.setClientConfigJson(changedClient);
+                changedAdministrator.containers[container]=changedContainer;
+                servers.editServer(id,changedAdministrator.toJson(),serverConfigUtils::SelfHostedAdmin);
+                QVERIFY(servers.compareAndSetPendingPeerExport(id,container,pending,pending));
+                QProcess restartedProcess; auto environment=QProcessEnvironment::systemEnvironment();
+                environment.insert("AMNEZIA_TEST_RESUME_EXPORT_ORGANIZATION",organization);
+                environment.insert("AMNEZIA_TEST_RESUME_EXPORT_SERVER",id);
+                environment.insert("AMNEZIA_TEST_RESUME_EXPORT_CONTAINER",QString::number(static_cast<int>(container)));
+                restartedProcess.setProcessEnvironment(environment);
+                restartedProcess.start(QCoreApplication::applicationFilePath(),{"realAdminNewIPv6ProfileExport"});
+                QVERIFY(restartedProcess.waitForFinished(30000)); QCOMPARE(restartedProcess.exitStatus(),QProcess::NormalExit);
+                QCOMPARE(restartedProcess.exitCode(),0);
+                QSettings disk(organization,"test"); disk.sync();
+                exported.config=disk.value("Conf/testRecoveredExport").toString();
+                SecureQSettings recoveredSettings(organization,"test",nullptr,false);
+                SecureServersRepository restarted(&recoveredSettings);
+                QJsonObject finished; QVERIFY(restarted.pendingPeerExport(id,container,finished)); QVERIFY(finished.isEmpty());
+            } else exported=exporter.generateConnectionConfig(id,static_cast<int>(container),"synthetic IPv6 peer",true);
             QCOMPARE(exported.errorCode, ErrorCode::NoError); QVERIFY(exported.config.startsWith("vpn://"));
             const auto user = QJsonDocument::fromJson(qUncompress(QByteArray::fromBase64(exported.config.mid(6).toLatin1(), QByteArray::Base64UrlEncoding))).object();
+            if (!recoveredExportKey.isEmpty()) {
+                QVERIFY(user.value("connectionUpdates").toObject().value("clientPublicKey").toString()==recoveredExportKey);
+                QCOMPARE(client(user,awg).value("mtu").toString(),QString("1300"));
+            }
             if (qEnvironmentVariable("AMNEZIA_PEER_TRANSACTIONS") == "enabled") {
                 SshSession verified; ErrorCode observed = ErrorCode::NoError;
                 QCOMPARE(verified.getTextFileFromContainer(container, credentials, "/opt/amnezia/protocol-loss-stage", observed), QByteArray("1"));

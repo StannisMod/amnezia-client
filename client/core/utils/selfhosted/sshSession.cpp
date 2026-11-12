@@ -204,7 +204,7 @@ ErrorCode SshSession::protocolConfigTransaction(DockerContainer container, const
 }
 
 ErrorCode SshSession::replaceLiveProtocolConfig(DockerContainer container, const ServerCredentials &credentials,
-                                               const QString &expected, const QString &candidate, bool &handled)
+                                               const QString &expected, const QString &candidate, bool &handled, bool reconcileCommitted)
 {
     handled = false;
     if (container != DockerContainer::WireGuard && container != DockerContainer::Awg2) return ErrorCode::NoError;
@@ -227,6 +227,12 @@ ErrorCode SshSession::replaceLiveProtocolConfig(DockerContainer container, const
     if (original.isEmpty() || original.size() > 4*1024*1024 || replacement.isEmpty() || replacement.size() > 4*1024*1024) return ErrorCode::InternalError;
     const auto originalHash = QString::fromLatin1(QCryptographicHash::hash(original, QCryptographicHash::Sha256).toHex());
     const auto candidateHash = QString::fromLatin1(QCryptographicHash::hash(replacement, QCryptographicHash::Sha256).toHex());
+    if (reconcileCommitted) {
+        QJsonObject current;
+        if (protocolConfigTransaction(container, credentials, { {"action", "check-live"},
+            {"expected", QString::fromLatin1(replacement.toBase64())} }, current) == ErrorCode::NoError
+            && current.value("current").toBool() && current.value("candidateHash") == candidateHash) return ErrorCode::NoError;
+    }
     QJsonObject staged;
     error = protocolConfigTransaction(container, credentials, { {"action", "stage-live"},
         {"expected", QString::fromLatin1(original.toBase64())}, {"candidate", QString::fromLatin1(replacement.toBase64())} }, staged);

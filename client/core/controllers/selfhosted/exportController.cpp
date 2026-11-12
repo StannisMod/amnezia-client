@@ -6,6 +6,8 @@
 
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QCryptographicHash>
+#include "core/configurators/wireguardConfigurator.h"
 
 #include "core/configurators/configuratorBase.h"
 #include "core/utils/selfhosted/sshSession.h"
@@ -87,6 +89,24 @@ ExportController::ExportResult ExportController::generateConnectionConfig(const 
         individualIPv6Supported = info.value("features").toArray().contains("client-ipv6-v1");
     }
     ContainerConfig containerConfig = adminConfig->containerConfig(container);
+    const bool recoverablePeer=container==DockerContainer::WireGuard || container==DockerContainer::Awg2;
+    QJsonObject pendingPeer;
+    QString pendingBinding;
+    if (recoverablePeer) {
+        auto serverIdentity=containerConfig;
+        serverIdentity.protocolConfig.clearClientConfig();
+        const QJsonObject binding{{"host",credentials.hostName},{"sshPort",credentials.port},{"sshUser",credentials.userName},
+            {"container",serverIdentity.toJson()},{"deliveryKey",updateMetadata.value("publicKey")},
+            {"deliveryCertificate",updateMetadata.value("certificate")}};
+        pendingBinding=QString::fromLatin1(QCryptographicHash::hash(QJsonDocument(binding).toJson(QJsonDocument::Compact),QCryptographicHash::Sha256).toHex());
+        if (!m_serversRepository->pendingPeerExport(serverId,container,pendingPeer)
+            || (!pendingPeer.isEmpty() && (pendingPeer.size()!=5 || pendingPeer.value("version")!=1
+                || pendingPeer.value("clientName")!=clientName || pendingPeer.value("updatable")!=updatable
+                || pendingPeer.value("binding")!=pendingBinding || !pendingPeer.value("prepared").isObject()
+                || pendingPeer.value("prepared").toObject().isEmpty()))) {
+            result.errorCode=ErrorCode::InternalError; return result;
+        }
+    }
 
     if (ContainerUtils::containerService(container) != ServiceType::Other) {
         SshSession sshSession;
@@ -98,6 +118,16 @@ ExportController::ExportResult ExportController::generateConnectionConfig(const 
         };
 
         auto configurator = ConfiguratorBase::create(protocol, &sshSession);
+        if (recoverablePeer) {
+            auto *wireguard=qobject_cast<WireguardConfigurator *>(configurator.data());
+            if (!wireguard) { result.errorCode=ErrorCode::InternalError; return result; }
+            wireguard->setPendingPeerExport(pendingPeer.value("prepared").toObject(),[&](const QJsonObject &prepared) {
+                const QJsonObject next{{"version",1},{"clientName",clientName},{"updatable",updatable},
+                    {"binding",pendingBinding},{"prepared",prepared}};
+                if (!m_serversRepository->compareAndSetPendingPeerExport(serverId,container,pendingPeer,next)) return false;
+                pendingPeer=next; return true;
+            });
+        }
         ProtocolConfig newProtocolConfig = configurator->createConfig(credentials, container, containerConfig, dnsSettings, result.errorCode);
         if (result.errorCode != ErrorCode::NoError) {
             return result;
@@ -181,6 +211,10 @@ ExportController::ExportResult ExportController::generateConnectionConfig(const 
     compressedConfig = qCompress(compressedConfig, 8);
     result.config = generateVpnUrl(compressedConfig);
     result.qrCodes = generateQrCodesFromConfig(compressedConfig);
+    if (recoverablePeer && !pendingPeer.isEmpty()
+        && !m_serversRepository->compareAndSetPendingPeerExport(serverId,container,pendingPeer,{})) {
+        result.config.clear(); result.qrCodes.clear(); result.errorCode=ErrorCode::InternalError;
+    }
 
     return result;
 }

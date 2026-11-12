@@ -1,6 +1,7 @@
 #include "wireguardConfigurator.h"
 
 #include <algorithm>
+#include <utility>
 
 #include <QDebug>
 #include <QJsonDocument>
@@ -47,6 +48,34 @@ WireguardConfigurator::WireguardConfigurator(SshSession* sshSession, bool isAwg,
 
     m_protocolName = m_isAwg ? configKey::awg : configKey::wireguard;
     m_defaultPort = m_isAwg ? protocols::awg::defaultPort : protocols::wireguard::defaultPort;
+}
+
+void WireguardConfigurator::setPendingPeerExport(const QJsonObject &state, std::function<bool(const QJsonObject &)> persist)
+{
+    m_pendingPeerExport = state;
+    m_persistPendingPeerExport = std::move(persist);
+}
+
+namespace {
+QString pendingPeerCandidate(QString original, const WireguardConfigurator::ConnectionData &data)
+{
+    if (!original.endsWith('\n')) original += '\n';
+    auto addresses=data.clientIP+"/32";
+    if (!data.clientIPv6.isEmpty()) addresses+=", "+data.clientIPv6+"/128";
+    return original+QString("[Peer]\nPublicKey = %1\nPresharedKey = %2\nAllowedIPs = %3\n\n")
+        .arg(data.clientPubKey,data.pskKey,addresses);
+}
+bool pendingPeerKeyPair(const QString &privateKey, const QString &publicKey)
+{
+    const auto raw=QByteArray::fromBase64(privateKey.toLatin1());
+    if (raw.size()!=32 || QString::fromLatin1(raw.toBase64())!=privateKey) return false;
+    auto *key=EVP_PKEY_new_raw_private_key(EVP_PKEY_X25519,nullptr,reinterpret_cast<const unsigned char *>(raw.constData()),raw.size());
+    if (!key) return false;
+    QByteArray derived(32,'\0'); size_t size=32;
+    const bool ok=EVP_PKEY_get_raw_public_key(key,reinterpret_cast<unsigned char *>(derived.data()),&size)==1;
+    EVP_PKEY_free(key);
+    return ok && size==32 && QString::fromLatin1(derived.toBase64())==publicKey;
+}
 }
 
 WireguardConfigurator::ConnectionData WireguardConfigurator::genClientKeys()
@@ -191,7 +220,37 @@ WireguardConfigurator::ConnectionData WireguardConfigurator::prepareWireguardCon
                                                                                     const DnsSettings &dnsSettings,
                                                                                     ErrorCode &errorCode)
 {
-    WireguardConfigurator::ConnectionData connData = WireguardConfigurator::genClientKeys();
+    const auto serverSettings=serverConfig?serverConfig->toJson():awgServerConfig?awgServerConfig->toJson():QJsonObject{};
+    WireguardConfigurator::ConnectionData connData;
+    if (!m_pendingPeerExport.isEmpty()) {
+        const auto &state=m_pendingPeerExport;
+        connData={state.value("clientPrivKey").toString(),state.value("clientPubKey").toString(),
+            state.value("clientIP").toString(),state.value("pathMtuProbe").toString(),state.value("clientIPv6").toString(),
+            state.value("serverPubKey").toString(),state.value("pskKey").toString(),state.value("host").toString(),state.value("port").toString()};
+        const auto original=state.value("expected").toString(), candidate=state.value("candidate").toString();
+        const auto port=serverConfig && !serverConfig->port.isEmpty()?serverConfig->port:
+            awgServerConfig && !awgServerConfig->port.isEmpty()?awgServerConfig->port:m_defaultPort;
+        if (state.size()!=16 || state.value("version")!=1
+            || state.value("serverSettings")!=serverSettings
+            || state.value("container")!=ContainerUtils::containerToString(container)
+            || state.value("sshPort")!=credentials.port || state.value("sshUser")!=credentials.userName || original.isEmpty() || original.toUtf8().size()>4*1024*1024
+            || candidate.toUtf8().size()>4*1024*1024 || !pendingPeerKeyPair(connData.clientPrivKey,connData.clientPubKey)
+            || QHostAddress(connData.clientIP).protocol()!=QAbstractSocket::IPv4Protocol
+            || connData.pathMtuProbe!=pathMtuProbeFromInterfaceConfig(original)
+            || connData.clientIPv6!=clientIPv6FromInterfaceConfig(original,connData.clientIP)
+            || QByteArray::fromBase64(connData.pskKey.toLatin1()).size()!=32
+            || QByteArray::fromBase64(connData.serverPubKey.toLatin1()).size()!=32
+            || connData.host!=credentials.hostName || connData.port!=port
+            || candidate!=pendingPeerCandidate(original,connData)
+            || !m_persistPendingPeerExport || !m_persistPendingPeerExport(state)) {
+            errorCode=ErrorCode::InternalError; return connData;
+        }
+        bool handled=false;
+        errorCode=m_sshSession->replaceLiveProtocolConfig(container,credentials,original,candidate,handled,true);
+        if (errorCode==ErrorCode::NoError && !handled) errorCode=ErrorCode::InternalError;
+        return connData;
+    }
+    connData = WireguardConfigurator::genClientKeys();
     connData.host = credentials.hostName;
     
     QString portStr = m_defaultPort;
@@ -271,6 +330,15 @@ WireguardConfigurator::ConnectionData WireguardConfigurator::prepareWireguardCon
     auto candidate = originalConfig;
     if (!candidate.endsWith('\n')) candidate += '\n';
     candidate += configPart;
+    if (m_persistPendingPeerExport) {
+        const QJsonObject state{{"version",1},{"serverSettings",serverSettings},{"container",ContainerUtils::containerToString(container)},
+            {"sshPort",credentials.port},{"sshUser",credentials.userName},{"expected",originalConfig},{"candidate",candidate},
+            {"clientPrivKey",connData.clientPrivKey},{"clientPubKey",connData.clientPubKey},{"clientIP",connData.clientIP},
+            {"pathMtuProbe",connData.pathMtuProbe},{"clientIPv6",connData.clientIPv6},{"serverPubKey",connData.serverPubKey},
+            {"pskKey",connData.pskKey},{"host",connData.host},{"port",connData.port}};
+        if (!m_persistPendingPeerExport(state)) { errorCode=ErrorCode::InternalError; return connData; }
+        m_pendingPeerExport=state;
+    }
     bool transactional = false;
     errorCode = m_sshSession->replaceLiveProtocolConfig(container, credentials, originalConfig, candidate, transactional);
     if (errorCode != ErrorCode::NoError || transactional) return connData;

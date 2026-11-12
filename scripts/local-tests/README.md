@@ -95,10 +95,23 @@ stale replacements and malformed storage are refused. A child process uses an
 explicit INI backend with an impossible directory to verify write failure on
 all platforms without touching real settings. Pending secrets are excluded from
 backup/restore and full-access exports and follow the existing SecureQSettings
-encryption policy (Linux desktop currently disables that policy). The storage
-API is a prerequisite; it does not yet resume the export pipeline or reconcile
-server operations. Compare-and-set serialization covers one settings instance,
-not independent application processes.
+encryption policy (Linux desktop currently disables that policy). Compare-and-set
+serialization covers one settings instance, not independent application processes.
+
+Normal WG/current-AWG profile export now persists prepared peer keys, addresses,
+PSK and exact expected/candidate configurations before its first server write.
+A retry uses the same context, bound to the target and server parameters. It
+reconciles a staged transaction or verifies an already committed native/file
+state instead of generating another key. Malformed/empty contexts, mismatched
+key pairs and unrelated configuration changes fail without a new peer. The
+required native fixture stops after preparation and after server staging,
+repeats a completed operation, then makes delivery unavailable after the normal
+export adds its peer. A separate Qt process resumes that export from disk and
+must deliver the profile for the same public key. The legacy success path is
+also retained; interrupted legacy writes require a compatible managed helper
+before this recovery path can proceed. Idempotent signed issuance, durable final
+result acknowledgment, abandoned-operation cleanup and reconciliation with
+concurrent foreign configuration changes remain separate required work.
 
 
 The same required fixture runs the packaged `install.sh` helper deployment against
