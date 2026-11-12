@@ -8,8 +8,8 @@ import subprocess
 import sys
 
 assert os.environ.get('AMNEZIA_PROTOCOL_LOSS_FIXTURE') == 'disposable'
-raw = sys.stdin.buffer.read((12 << 20) + 1)
-assert len(raw) <= 12 << 20
+raw = sys.stdin.buffer.read((16 << 20) + 1)
+assert len(raw) <= 16 << 20
 request = json.loads(raw)
 blocked = Path('/opt/amnezia/revocation-blocked')
 armed = Path('/opt/amnezia/revocation-armed')

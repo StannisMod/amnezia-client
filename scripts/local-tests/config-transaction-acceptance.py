@@ -43,7 +43,7 @@ for container, binary, interface, path in (
     candidate = original + b'\n# private configuration transaction regression\n'
     peers = sorted(run('docker', 'exec', container, binary, 'show', interface, 'peers').stdout.splitlines())
 
-    def invoke(action, operation=None, expected=None, candidate=None, server_ipv6=None, ok=True, startup=False, no_writer=False, after_writer=False):
+    def invoke(action, operation=None, expected=None, candidate=None, server_ipv6=None, ok=True, startup=False, no_writer=False, after_writer=False, entry=None):
         request = dict(action=action, container=container)
         if operation is not None:
             request['operation'] = operation
@@ -53,6 +53,8 @@ for container, binary, interface, path in (
             request['candidate'] = base64.b64encode(candidate).decode()
         if server_ipv6 is not None:
             request['serverIpv6'] = server_ipv6
+        if entry is not None:
+            request['expectedEntry'] = entry
         command = ['docker', 'exec']
         if no_writer or after_writer:
             folder = 'no-writer' if no_writer else 'after-writer'
@@ -331,6 +333,60 @@ for container, binary, interface, path in (
     assert run('docker', 'exec', container, 'cat', path).stdout == original
     assert sorted(run('docker', 'exec', container, binary, 'show', interface, 'peers').stdout.splitlines()) == peers
     print(f'PASS: {container} durable terminal receipts preserve later native edits, reject reintroduced peers and retain rollback direction')
+    # Metadata intents reserve one public key, never the whole client table.
+    table_path = path.rsplit('/', 1)[0] + '/clientsTable'
+    old_table = run('docker', 'exec', container, 'cat', table_path).stdout
+    target_entry = dict(clientId=peer_key, userData=dict(clientName='reserved', n=1000))
+    other_entry = dict(clientId='other metadata', userData=dict(clientName='editable'))
+    def write_fixture_table(raw):
+        run('docker', 'exec', '-i', container, 'sh', '-ec', 'cat > ' + table_path, data=raw)
+    reserved_table = json.dumps([target_entry, other_entry]).encode().replace(b'"n": 1000', b'"n": 1e3')
+    write_fixture_table(reserved_table)
+    intent_id = hashlib.sha256((container + '-metadata-intent').encode()).hexdigest()
+    prepared = invoke('prepare-peer-metadata', operation=intent_id, expected=original, candidate=removed_config, entry=target_entry)
+    assert prepared['targetKey'] == peer_key and len(prepared['targetMetadataHash']) == 64
+    receipt_bytes = run('docker', 'exec', container, 'cat', path + '.amnezia-receipts').stdout
+    store = json.loads(receipt_bytes)
+    assert store['version'] == 2 and store['records'][intent_id]['targetKey'] == peer_key
+    assert b'reserved' not in receipt_bytes, 'receipt copied private metadata instead of its digest'
+    invoke('prepare-peer-metadata', operation='f' * 64, expected=original, candidate=removed_config, entry=target_entry, ok=False)
+    assert run('docker', 'exec', container, 'cat', path + '.amnezia-receipts').stdout == receipt_bytes
+    wrong_entry = dict(target_entry, userData=dict(clientName='wrong'))
+    invoke('prepare-peer-metadata', operation=intent_id, expected=original, candidate=removed_config, entry=wrong_entry, ok=False)
+    renamed = json.dumps([dict(target_entry, userData=dict(clientName='forbidden')), other_entry]).encode()
+    invoke('replace-client-table', expected=reserved_table, candidate=renamed, ok=False)
+    assert run('docker', 'exec', container, 'cat', table_path).stdout == reserved_table
+    changed_other = dict(other_entry, userData=dict(clientName='changed independently', extra=True))
+    changed_table = json.dumps([target_entry, changed_other]).encode()
+    invoke('replace-client-table', expected=reserved_table, candidate=changed_table)
+    removed_table = json.dumps([changed_other]).encode()
+    invoke('replace-client-table', operation=intent_id, expected=changed_table, candidate=removed_table, ok=False)
+    removal = invoke('stage-live', expected=original, candidate=removed_config)
+    invoke('apply-commit', operation=removal['operation'])
+    assert invoke('check-revoked-peer', operation=intent_id, expected=original, candidate=removed_config, no_writer=True)['revoked']
+    reintroduced = invoke('stage-live', expected=removed_config, candidate=original)
+    invoke('apply-commit', operation=reintroduced['operation'])
+    invoke('replace-client-table', operation=intent_id, expected=changed_table, candidate=removed_table, ok=False, no_writer=True)
+    assert run('docker', 'exec', container, 'cat', table_path).stdout == changed_table
+    removed_again = invoke('stage-live', expected=original, candidate=removed_config)
+    invoke('apply-commit', operation=removed_again['operation'])
+    # Independently changed target metadata is preserved even from its owner.
+    write_fixture_table(renamed)
+    invoke('replace-client-table', operation=intent_id, expected=renamed, candidate=removed_table, ok=False, no_writer=True)
+    assert run('docker', 'exec', container, 'cat', table_path).stdout == renamed
+    write_fixture_table(changed_table)  # Restore only the fixture's injected edit.
+    invoke('replace-client-table', operation=intent_id, expected=changed_table, candidate=removed_table, no_writer=True)
+    assert run('docker', 'exec', container, 'cat', table_path).stdout == removed_table
+    invoke('replace-client-table', expected=removed_table, candidate=changed_table, ok=False)
+    invoke('replace-client-table', operation=intent_id, expected=removed_table, candidate=changed_table, ok=False)
+    assert invoke('ack-receipt', operation=intent_id, expected=original, candidate=removed_config)['acknowledged']
+    invoke('replace-client-table', expected=removed_table, candidate=changed_table)
+    restoration = invoke('stage-live', expected=removed_config, candidate=original)
+    invoke('apply-commit', operation=restoration['operation'])
+    write_fixture_table(old_table)
+    assert run('docker', 'exec', container, 'cat', path).stdout == original
+    assert sorted(run('docker', 'exec', container, binary, 'show', interface, 'peers').stdout.splitlines()) == peers
+    print(f'PASS: {container} peer metadata intent preserves other clients and requires committed owner removal')
     print(f'PASS: {container} private journal, operation binding, rollback, commit, replay rejection, native apply and failure rollback; live peers preserved')
 
     # Construct an old IPv4-only app installation in this disposable namespace.

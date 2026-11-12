@@ -347,18 +347,19 @@ func configOperationOK(value string) bool {
 }
 
 type configTransactionRequest struct {
-	Action     string `json:"action"`
-	Container  string `json:"container"`
-	Operation  string `json:"operation,omitempty"`
-	Expected   []byte `json:"expected,omitempty"`
-	Candidate  []byte `json:"candidate,omitempty"`
-	ServerIPv6 string `json:"serverIpv6,omitempty"`
+	ExpectedEntry json.RawMessage `json:"expectedEntry,omitempty"`
+	Action        string          `json:"action"`
+	Container     string          `json:"container"`
+	Operation     string          `json:"operation,omitempty"`
+	Expected      []byte          `json:"expected,omitempty"`
+	Candidate     []byte          `json:"candidate,omitempty"`
+	ServerIPv6    string          `json:"serverIpv6,omitempty"`
 }
 
 // Only the root-owned helper command invokes this; no HTTP handler exposes it.
 func configTransactionCommand(input io.Reader, output io.Writer, paths map[string]string) error {
-	raw, err := io.ReadAll(io.LimitReader(input, (12<<20)+1))
-	if err != nil || len(raw) > 12<<20 {
+	raw, err := io.ReadAll(io.LimitReader(input, (16<<20)+1))
+	if err != nil || len(raw) > 16<<20 {
 		return errors.New("invalid configuration transaction request")
 	}
 	var request configTransactionRequest
@@ -366,6 +367,9 @@ func configTransactionCommand(input io.Reader, output io.Writer, paths map[strin
 	decoder.DisallowUnknownFields()
 	if decoder.Decode(&request) != nil || decoder.Decode(new(any)) != io.EOF {
 		return errors.New("invalid configuration transaction request")
+	}
+	if request.Action != "prepare-peer-metadata" && (len(request.ExpectedEntry) != 0 || len(raw) > 12<<20) {
+		return errors.New("unexpected peer metadata")
 	}
 	path, exists := paths[request.Container]
 	if !exists {
@@ -375,9 +379,9 @@ func configTransactionCommand(input io.Reader, output io.Writer, paths map[strin
 		if request.Operation != "" || len(request.Expected) != 0 || len(request.Candidate) != 0 || request.ServerIPv6 != "" {
 			return errors.New("unexpected capability fields")
 		}
-		return json.NewEncoder(output).Encode(map[string]any{"version": 1, "features": []string{"native-mutation-v1", "native-reconcile-v1", "native-rollback-guard-v1", "native-stage-restart-v1", "client-table-cas-v1", "native-receipt-v1", "client-table-migration-v1"}})
+		return json.NewEncoder(output).Encode(map[string]any{"version": 1, "features": []string{"native-mutation-v1", "native-reconcile-v1", "native-rollback-guard-v1", "native-stage-restart-v1", "client-table-cas-v1", "native-receipt-v1", "client-table-migration-v1", "peer-metadata-intent-v1"}})
 	}
-	if request.Action == "prepare-receipt" || request.Action == "receipt-status" || request.Action == "check-revoked-peer" || request.Action == "ack-receipt" {
+	if request.Action == "prepare-receipt" || request.Action == "prepare-peer-metadata" || request.Action == "receipt-status" || request.Action == "check-revoked-peer" || request.Action == "ack-receipt" {
 		return configReceiptCommand(path, request, output)
 	}
 	if request.Action == "replace-client-table" || request.Action == "check-client-table" || request.Action == "migrate-client-table" {
@@ -766,7 +770,7 @@ func installOwnedConfigHelper(configPath, startupPath, target string, candidate 
 // This is a separate durable step; it does not claim atomicity with native state.
 func clientTableTransaction(configPath string, request configTransactionRequest, output io.Writer) error {
 	migration := request.Action == "migrate-client-table"
-	if request.Operation != "" || request.ServerIPv6 != "" || !(validClientTable(request.Expected) || migration && validLegacyClientTable(request.Expected)) {
+	if (request.Operation != "" && (!configOperationOK(request.Operation) || request.Action != "replace-client-table")) || request.ServerIPv6 != "" || !(validClientTable(request.Expected) || migration && validLegacyClientTable(request.Expected)) {
 		return errors.New("invalid client table request")
 	}
 	if request.Action == "replace-client-table" || migration {
@@ -781,9 +785,17 @@ func clientTableTransaction(configPath string, request configTransactionRequest,
 		return err
 	}
 	defer lock.Close()
-	if _, err := readConfigReceipts(configPath); err != nil {
+	receipts, err := readConfigReceipts(configPath)
+	if err != nil {
 		return err
 	}
+	if request.Operation != "" {
+		owner, exists := receipts.Records[request.Operation]
+		if !exists || owner.TargetKey == "" || owner.State != "committed" {
+			return errors.New("metadata operation is not committed")
+		}
+	}
+
 	if _, err := os.Lstat(configPath + ".amnezia-journal"); !errors.Is(err, os.ErrNotExist) {
 		return errors.New("configuration transaction is pending")
 	}
@@ -801,6 +813,11 @@ func clientTableTransaction(configPath string, request configTransactionRequest,
 	}
 	if migration && !clientTableMigrationPreserves(current, request.Candidate) {
 		return errors.New("legacy client metadata would be lost")
+	}
+	if request.Action != "check-client-table" {
+		if err := guardPeerMetadata(configPath, request, receipts, current); err != nil {
+			return err
+		}
 	}
 	result := current
 	if (request.Action == "replace-client-table" || migration) && !bytes.Equal(current, request.Candidate) {
@@ -832,10 +849,13 @@ func validClientTable(data []byte) bool {
 // durable before journal removal. Unacknowledged records are never evicted;
 // capacity exhaustion refuses new intents before any native/config change.
 type configReceipt struct {
-	OriginalHash    string `json:"originalHash"`
-	CandidateHash   string `json:"candidateHash"`
-	State           string `json:"state"`
-	NativeOperation string `json:"nativeOperation,omitempty"`
+	TargetKey          string `json:"targetKey,omitempty"`
+	TargetMetadataHash string `json:"targetMetadataHash,omitempty"`
+	TargetPeerHash     string `json:"targetPeerHash,omitempty"`
+	OriginalHash       string `json:"originalHash"`
+	CandidateHash      string `json:"candidateHash"`
+	State              string `json:"state"`
+	NativeOperation    string `json:"nativeOperation,omitempty"`
 }
 type configReceipts struct {
 	Version int                      `json:"version"`
@@ -860,12 +880,19 @@ func readConfigReceipts(path string) (configReceipts, error) {
 	var receipts configReceipts
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
-	if decoder.Decode(&receipts) != nil || decoder.Decode(new(any)) != io.EOF || receipts.Version != 1 || receipts.Records == nil || len(receipts.Records) > maxConfigReceipts {
+	if decoder.Decode(&receipts) != nil || decoder.Decode(new(any)) != io.EOF || (receipts.Version != 1 && receipts.Version != 2) || receipts.Records == nil || len(receipts.Records) > maxConfigReceipts {
 		return empty, errors.New("invalid configuration receipts")
 	}
 	for id, record := range receipts.Records {
 		if !configOperationOK(id) || !configOperationOK(record.OriginalHash) || !configOperationOK(record.CandidateHash) {
 			return empty, errors.New("invalid receipt identity")
+		}
+		if record.TargetKey != "" {
+			if receipts.Version != 2 || !keyOK(record.TargetKey) || !configOperationOK(record.TargetMetadataHash) || !configOperationOK(record.TargetPeerHash) {
+				return empty, errors.New("invalid peer metadata intent")
+			}
+		} else if record.TargetMetadataHash != "" || record.TargetPeerHash != "" {
+			return empty, errors.New("incomplete peer metadata intent")
 		}
 		switch record.State {
 		case "pending":
@@ -883,6 +910,13 @@ func readConfigReceipts(path string) (configReceipts, error) {
 	return receipts, nil
 }
 func writeConfigReceipts(path string, receipts configReceipts) error {
+	receipts.Version = 1
+	for _, record := range receipts.Records {
+		if record.TargetKey != "" {
+			receipts.Version = 2
+			break
+		}
+	}
 	raw, err := json.Marshal(receipts)
 	if err != nil {
 		return err
@@ -954,6 +988,45 @@ func configReceiptCommand(path string, request configTransactionRequest, output 
 	if exists && (record.OriginalHash != originalHash || record.CandidateHash != candidateHash) {
 		return errConfigConflict
 	}
+	var targetKey, metadataHash, peerHash string
+	if request.Action == "prepare-peer-metadata" {
+		if len(request.ExpectedEntry) == 0 || len(request.ExpectedEntry) > 4<<20 {
+			return errors.New("invalid expected peer metadata")
+		}
+		targetKey, err = receiptRemovedPeer(request.Expected, request.Candidate)
+		if err != nil {
+			return err
+		}
+		entry, err := decodeMetadataJSON(request.ExpectedEntry)
+		if err != nil {
+			return err
+		}
+		object, ok := entry.(map[string]any)
+		if !ok || object["clientId"] != targetKey {
+			return errors.New("peer metadata identity mismatch")
+		}
+		metadataHash, err = metadataDigest(entry)
+		if err != nil {
+			return err
+		}
+		canonical, err := canonicalNativeConfig(request.Expected)
+		if err != nil {
+			return err
+		}
+		var fields []string
+		for _, line := range strings.Split(canonical, "\n") {
+			if strings.HasPrefix(line, targetKey+"|") {
+				fields = append(fields, line)
+			}
+		}
+		if len(fields) == 0 {
+			return errors.New("missing expected peer")
+		}
+		peerHash = configHash([]byte(strings.Join(fields, "\n")))
+		if exists && (record.TargetKey != targetKey || record.TargetMetadataHash != metadataHash || record.TargetPeerHash != peerHash) {
+			return errConfigConflict
+		}
+	}
 	if request.Action == "ack-receipt" {
 		if exists {
 			if record.State == "pending" {
@@ -970,7 +1043,7 @@ func configReceiptCommand(path string, request configTransactionRequest, output 
 		return json.NewEncoder(output).Encode(map[string]any{"version": 1, "acknowledged": true, "operation": request.Operation})
 	}
 	if !exists {
-		if request.Action != "prepare-receipt" {
+		if request.Action != "prepare-receipt" && request.Action != "prepare-peer-metadata" {
 			return errors.New("unknown configuration receipt")
 		}
 		if len(receipts.Records) >= maxConfigReceipts {
@@ -994,7 +1067,29 @@ func configReceiptCommand(path string, request configTransactionRequest, output 
 		if err := verifyNativeConfigBaseline(request.Container, path, native); err != nil {
 			return err
 		}
-		record = configReceipt{OriginalHash: originalHash, CandidateHash: candidateHash, State: "pending"}
+		if targetKey != "" {
+			for id, other := range receipts.Records {
+				if id != request.Operation && other.TargetKey == targetKey {
+					return errors.New("peer metadata is reserved")
+				}
+			}
+			entries, err := readOwnedMetadataEntries(path)
+			if err != nil {
+				return err
+			}
+			selected := metadataEntriesFor(entries, targetKey)
+			if len(selected) != 1 {
+				return errors.New("peer metadata is missing or ambiguous")
+			}
+			actualHash, err := metadataDigest(selected[0])
+			if err != nil {
+				return err
+			}
+			if actualHash != metadataHash {
+				return errConfigConflict
+			}
+		}
+		record = configReceipt{OriginalHash: originalHash, CandidateHash: candidateHash, State: "pending", TargetKey: targetKey, TargetMetadataHash: metadataHash, TargetPeerHash: peerHash}
 		receipts.Records[request.Operation] = record
 		if err := writeConfigReceipts(path, receipts); err != nil {
 			return err
@@ -1037,7 +1132,7 @@ func configReceiptCommand(path string, request configTransactionRequest, output 
 		}
 		return json.NewEncoder(output).Encode(map[string]any{"version": 1, "operation": request.Operation, "committed": true, "revoked": true, "clientPublicKey": key, "originalHash": originalHash, "candidateHash": candidateHash})
 	}
-	return json.NewEncoder(output).Encode(map[string]any{"version": 1, "operation": request.Operation, "state": record.State, "nativeOperation": record.NativeOperation, "originalHash": originalHash, "candidateHash": candidateHash})
+	return json.NewEncoder(output).Encode(map[string]any{"version": 1, "operation": request.Operation, "state": record.State, "nativeOperation": record.NativeOperation, "originalHash": originalHash, "candidateHash": candidateHash, "targetKey": record.TargetKey, "targetMetadataHash": record.TargetMetadataHash})
 }
 func receiptRemovedPeer(original, candidate []byte) (string, error) {
 	keys := func(raw []byte) (map[string]bool, error) {
@@ -1225,4 +1320,139 @@ func equalMetadataJSON(left, right any) bool {
 	default:
 		return false
 	}
+}
+
+func decodeMetadataJSON(raw []byte) (any, error) {
+	var value any
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	if err := decoder.Decode(&value); err != nil {
+		return nil, err
+	}
+	if decoder.Decode(new(any)) != io.EOF {
+		return nil, errors.New("invalid metadata value")
+	}
+	return value, nil
+}
+func normalizedMetadata(value any) (any, error) {
+	switch data := value.(type) {
+	case json.Number:
+		number, ok := metadataNumber(string(data))
+		if !ok {
+			return nil, errors.New("unsupported metadata number")
+		}
+		return json.Number(number), nil
+	case map[string]any:
+		result := map[string]any{}
+		for key, item := range data {
+			next, err := normalizedMetadata(item)
+			if err != nil {
+				return nil, err
+			}
+			result[key] = next
+		}
+		return result, nil
+	case []any:
+		result := make([]any, len(data))
+		for i, item := range data {
+			next, err := normalizedMetadata(item)
+			if err != nil {
+				return nil, err
+			}
+			result[i] = next
+		}
+		return result, nil
+	default:
+		return value, nil
+	}
+}
+func metadataDigest(value any) (string, error) {
+	normalized, err := normalizedMetadata(value)
+	if err != nil {
+		return "", err
+	}
+	raw, err := json.Marshal(normalized)
+	if err != nil {
+		return "", err
+	}
+	return configHash(raw), nil
+}
+func metadataEntriesFor(value any, key string) []any {
+	result := []any{}
+	switch entries := value.(type) {
+	case []any:
+		for _, entry := range entries {
+			if object, ok := entry.(map[string]any); ok && object["clientId"] == key {
+				result = append(result, entry)
+			}
+		}
+	case map[string]any:
+		if data, exists := entries[key]; exists {
+			result = append(result, map[string]any{"clientId": key, "userData": data})
+		}
+	}
+	return result
+}
+func readOwnedMetadataEntries(configPath string) (any, error) {
+	raw, info, err := readConfigFile(filepath.Join(filepath.Dir(configPath), "clientsTable"), 4<<20)
+	if err != nil {
+		return nil, err
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || stat.Nlink != 1 || int(stat.Uid) != os.Geteuid() || info.Mode().Perm()&0022 != 0 || !validClientTable(raw) {
+		return nil, errors.New("unsafe peer metadata")
+	}
+	return decodeMetadataJSON(raw)
+}
+func guardPeerMetadata(path string, request configTransactionRequest, receipts configReceipts, current []byte) error {
+	var before, after any
+	loaded := false
+	for id, record := range receipts.Records {
+		if record.TargetKey == "" {
+			continue
+		}
+		if !loaded {
+			var err error
+			before, err = decodeMetadataJSON(current)
+			if err != nil {
+				return err
+			}
+			after, err = decodeMetadataJSON(request.Candidate)
+			if err != nil {
+				return err
+			}
+			loaded = true
+		}
+		old, next := metadataEntriesFor(before, record.TargetKey), metadataEntriesFor(after, record.TargetKey)
+		if equalMetadataJSON(old, next) {
+			continue
+		}
+		if id != request.Operation || record.State != "committed" || len(old) != 1 || len(next) != 0 {
+			return errors.New("peer metadata is reserved")
+		}
+		digest, err := metadataDigest(old[0])
+		if err != nil {
+			return err
+		}
+		if digest != record.TargetMetadataHash {
+			return errConfigConflict
+		}
+		native, err := captureNativeProtocol(request.Container)
+		if err != nil {
+			return err
+		}
+		if err := verifyNativeConfigBaseline(request.Container, path, native); err != nil {
+			return err
+		}
+		_, peers, err := iniInterface(native)
+		if err != nil {
+			return err
+		}
+		for _, key := range peers {
+			if key == record.TargetKey {
+				return errors.New("revoked peer is present again")
+			}
+		}
+	}
+	return nil
 }

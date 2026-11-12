@@ -1187,3 +1187,97 @@ func TestLegacyMigrationComparesNumbersWithoutRounding(t *testing.T) {
 		t.Fatal("nested numeric migration guard is not exact")
 	}
 }
+
+func TestPeerMetadataIntentGuardsOnlyReservedEntry(t *testing.T) {
+	path, _, _ := transactionFixture(t)
+	key := testKey('B')
+	id := strings.Repeat("a", 64)
+	initial := []byte(`[{"clientId":"` + key + `","userData":{"name":"reserved","n":1e3}},{"clientId":"other","userData":{"name":"old"}}]`)
+	entry, err := decodeMetadataJSON([]byte(`{"clientId":"` + key + `","userData":{"n":1000,"name":"reserved"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest, err := metadataDigest(entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipts := configReceipts{Version: 1, Records: map[string]configReceipt{id: {OriginalHash: strings.Repeat("b", 64), CandidateHash: strings.Repeat("c", 64), State: "pending", TargetKey: key, TargetMetadataHash: digest, TargetPeerHash: strings.Repeat("d", 64)}}}
+	if err := writeConfigReceipts(path, receipts); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := readConfigReceipts(path)
+	if err != nil || loaded.Version != 2 || loaded.Records[id].TargetKey != key {
+		t.Fatal("peer identity not durably recorded", err)
+	}
+	unchanged := bytes.Replace(initial, []byte(`"name":"old"`), []byte(`"name":"new"`), 1)
+	if err := guardPeerMetadata(path, configTransactionRequest{Action: "replace-client-table", Candidate: unchanged}, loaded, initial); err != nil {
+		t.Fatal("unrelated metadata blocked", err)
+	}
+	changed := bytes.Replace(initial, []byte(`"name":"reserved"`), []byte(`"name":"foreign"`), 1)
+	for _, operation := range []string{"", strings.Repeat("f", 64), id} {
+		if err := guardPeerMetadata(path, configTransactionRequest{Action: "replace-client-table", Operation: operation, Candidate: changed}, loaded, initial); err == nil {
+			t.Fatal("reserved metadata renamed")
+		}
+	}
+	removed := []byte(`[{"clientId":"other","userData":{"name":"old"}}]`)
+	if err := guardPeerMetadata(path, configTransactionRequest{Action: "replace-client-table", Operation: id, Candidate: removed}, loaded, initial); err == nil {
+		t.Fatal("pending intent deleted metadata")
+	}
+	committed := loaded.Records[id]
+	committed.State = "committed"
+	committed.NativeOperation = strings.Repeat("e", 64)
+	loaded.Records[id] = committed
+	if err := guardPeerMetadata(path, configTransactionRequest{Action: "replace-client-table", Operation: id, Candidate: removed}, loaded, changed); !errors.Is(err, errConfigConflict) {
+		t.Fatal("foreign target edit not protected", err)
+	}
+	if err := guardPeerMetadata(path, configTransactionRequest{Action: "replace-client-table", Candidate: initial}, loaded, removed); err == nil {
+		t.Fatal("reserved metadata resurrected")
+	}
+	// Older formats must never silently contain the new intent fields.
+	raw, err := json.Marshal(loaded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw = bytes.Replace(raw, []byte(`"version":2`), []byte(`"version":1`), 1)
+	if err := os.WriteFile(path+".amnezia-receipts", raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readConfigReceipts(path); err == nil {
+		t.Fatal("new intent accepted in old format")
+	}
+}
+func TestExpectedMetadataEntryIsNotAcceptedByUnrelatedActions(t *testing.T) {
+	path, _, _ := transactionFixture(t)
+	raw, _ := json.Marshal(configTransactionRequest{Action: "capabilities", Container: "amnezia-wireguard", ExpectedEntry: json.RawMessage(`{}`)})
+	var output bytes.Buffer
+	if err := configTransactionCommand(bytes.NewReader(raw), &output, map[string]string{"amnezia-wireguard": path}); err == nil || output.Len() != 0 {
+		t.Fatal("unexpected entry accepted")
+	}
+}
+
+func TestOwnedHelperRestorePreservesPeerMetadataIntent(t *testing.T) {
+	path, original, candidate := transactionFixture(t)
+	target := filepath.Join(filepath.Dir(path), "helper")
+	startup := filepath.Join(filepath.Dir(path), "start.sh")
+	if err := installOwnedConfigHelper(path, startup, target, []byte("first helper")); err != nil {
+		t.Fatal(err)
+	}
+	id := strings.Repeat("a", 64)
+	record := configReceipt{OriginalHash: configHash(original), CandidateHash: configHash(candidate), State: "pending", TargetKey: testKey('B'), TargetMetadataHash: strings.Repeat("b", 64), TargetPeerHash: strings.Repeat("c", 64)}
+	if err := writeConfigReceipts(path, configReceipts{Version: 2, Records: map[string]configReceipt{id: record}}); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path + ".amnezia-receipts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(target); err != nil {
+		t.Fatal(err)
+	}
+	if err := installOwnedConfigHelper(path, startup, target, []byte("second helper")); err != nil {
+		t.Fatal(err)
+	}
+	assertConfig(t, target, []byte("second helper"))
+	assertConfig(t, path, original)
+	assertConfig(t, path+".amnezia-receipts", raw)
+}

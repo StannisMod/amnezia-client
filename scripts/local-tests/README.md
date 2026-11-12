@@ -521,6 +521,30 @@ already clears routes, so no extra field is inserted. Canonical comparison
 treats a zero PSK as absent. The real WG/AWG receipt test must restore the
 original native state; the previous AWG implementation fails that restoration.
 
+The optional `peer-metadata-intent-v1` server primitive adds
+`prepare-peer-metadata`. It binds the operation to the removed public key, an
+exact semantic digest of the expected client entry and a peer fingerprint.
+Receipt format 2 contains only this identity and hashes; format 1 remains
+readable. Preparing another intent for that key is refused until terminal ACK.
+Expected-entry changes are rejected before the intent is published. The new
+request alone permits a bounded extra entry (16 MiB total); unrelated actions
+retain their 12 MiB bound and reject the extra field.
+
+While the intent exists, conditional metadata writers can edit other clients
+but cannot rename, delete or reintroduce the reserved entry. Only a matching
+committed operation may remove it, after checking the initial metadata digest,
+current file/native agreement and actual absence of the peer. Independently
+changed target data or a reintroduced native peer causes refusal. ACK releases
+the entry reservation. The required WG/AWG fixture exercises these cases through
+the real helper, including a different client's successful edit while reserved,
+foreign target data preservation and owner removal under a no-writer sentinel.
+Owned helper restoration also preserves the format-2 intent bytes.
+
+This primitive is not enabled automatically by the client yet. Full native
+peer-scoped mutation/rebasing, orphan cancellation/completion and the client
+coordinator still need integration; this entry reservation alone does not lock
+native peer configuration. Existing clients continue using generic receipts.
+
 Guarded native rollback now snapshots the canonical candidate digest durably
 before replacing its file. Runtime must match the original or that verified
 candidate; foreign native edits cause refusal before any file/native rewrite.
