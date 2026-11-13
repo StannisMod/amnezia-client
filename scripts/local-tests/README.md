@@ -17,7 +17,10 @@ built from pinned source commits in `client/tests/protocol-update/Dockerfile.awg
 The second command builds the Linux application, service and Qt regression tests
 with Go 1.27.1 and Qt 6.10.1, then runs the regression suite. It downloads SDKs
 and Conan dependencies on the first run. Initialize the pinned Linux submodules
-before building:
+before building. Full application builds use Ubuntu 22.04 and a separate
+`amnezia-local-full-build-ubuntu22` cache: binaries or Conan libraries built on
+Ubuntu 24.04 can require GLIBC 2.38 and cannot be reused for Ubuntu 22.04.
+Custom native dependencies are built from source:
 
 ```sh
 git submodule update --init --depth 1 client/3rd/SortFilterProxyModel client/3rd/qtkeychain

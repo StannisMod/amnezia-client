@@ -83,17 +83,19 @@ AMNEZIA_PROXY_ROUTE_TEST=isolated-docker AMNEZIA_PROXY_DIRECT_DEVICE=amnproxytes
                 *(['--diagnose-capture-mark'] if args.diagnose_capture_mark else []),
                 *([] if args.helper or args.service else ['--require-notices']), timeout=1000)
     finally:
-        report.parent.mkdir(parents=True, exist_ok=True)
-        # Preserve PID 1 output even if systemd never reached journald.
-        with report.with_suffix('.boot.log').open('w') as log:
-            subprocess.run(['docker', 'logs', name], stdout=log, stderr=subprocess.STDOUT, timeout=30, check=False)
-        # Copy diagnostics even when acceptance, its watchdog or the container fails.
-        subprocess.run(['docker', 'cp', name + ':/artifacts/.', str(report.parent)], timeout=30, check=False)
-        with report.with_suffix('.journal.log').open('w') as log:
-            subprocess.run(['docker', 'exec', name, 'journalctl', '--no-pager', '-u', 'AmneziaVPN', '-u', 'systemd-resolved'],
-                           stdout=log, stderr=subprocess.STDOUT, timeout=30, check=False)
-        subprocess.run(['docker', 'rm', '--force', name], timeout=30, check=False)
-        subprocess.run(['docker', 'image', 'rm', image], timeout=30, check=False)
+        try:
+            report.parent.mkdir(parents=True, exist_ok=True)
+            # Preserve PID 1 output even if systemd never reached journald.
+            with report.with_suffix('.boot.log').open('w') as log:
+                subprocess.run(['docker', 'logs', name], stdout=log, stderr=subprocess.STDOUT, timeout=30, check=False)
+            # Copy diagnostics even when acceptance, its watchdog or the container fails.
+            subprocess.run(['docker', 'cp', name + ':/artifacts/.', str(report.parent)], timeout=30, check=False)
+            with report.with_suffix('.journal.log').open('w') as log:
+                subprocess.run(['docker', 'exec', name, 'journalctl', '--no-pager', '-u', 'AmneziaVPN', '-u', 'systemd-resolved'],
+                               stdout=log, stderr=subprocess.STDOUT, timeout=30, check=False)
+        finally:
+            subprocess.run(['docker', 'rm', '--force', name], timeout=30, check=False)
+            subprocess.run(['docker', 'image', 'rm', image], timeout=30, check=False)
 
 
 if __name__ == '__main__':
