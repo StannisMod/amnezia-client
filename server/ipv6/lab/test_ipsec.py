@@ -42,6 +42,16 @@ def wait_file(path):
         time.sleep(.1)
 
 
+def wait_startup(log):
+    deadline = time.monotonic() + 10
+    while 'AMNEZIA_IPSEC_STARTUP=completed' not in (root / log).read_text():
+        assert time.monotonic() < deadline, 'startup did not finish'
+        assert all(p.poll() is None for p in processes), 'startup exited'
+        time.sleep(.1)
+    output = (root / log).read_text()
+    assert 'failed to add' not in output, output
+
+
 def ipv4_configuration():
     # iptables-save includes wall-clock comments and live chain counters even
     # without -c. Compare every rule/policy while excluding those changing stats.
@@ -165,10 +175,8 @@ try:
 ''')
     startup = ['bash', '-ec', '. "$1"; . "$2"', 'sh',
                '/src/client/server_scripts/ipsec/enable_ipv6.sh', '/src/client/server_scripts/ipsec/start.sh']
-    loaded = run(*startup)
-    (root / 'pluto.log').write_text(loaded)
-    print(loaded, flush=True)
-    assert 'failed to add' not in loaded, 'Libreswan rejected the actual connection'
+    spawn(startup, 'pluto.log')
+    wait_startup('pluto.log')
     wait_file('/run/pluto/pluto.ctl')
     server_pid = Path('/run/pluto/pluto.pid').read_text()
     assert stored_connection.read_text() == expected_connection, 'startup did not migrate the existing IPv4 connection'
@@ -260,7 +268,8 @@ print('ORIGINAL_DUAL_TCP_RETAINED',flush=True)
 
     expect('TCP_UDP_READY', 10)
     print('PASS: IPv4/IPv6 TCP+UDP reach separate origin through XFRM-only forwarding and NAT', flush=True)
-    run(*startup)
+    spawn(startup, 'warm-startup.log')
+    wait_startup('warm-startup.log')
     assert Path('/run/pluto/pluto.pid').read_text() == server_pid, 'warm startup restarted active IPsec daemon'
     gua = "import socket;s=socket.create_connection(('2001:db8:88::1',18081),3);assert s.recv(64).strip()==b'fd88::2'"
     run('ip', 'netns', 'exec', names[0], 'python3', '-c', gua)

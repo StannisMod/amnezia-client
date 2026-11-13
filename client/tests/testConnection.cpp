@@ -135,6 +135,7 @@ private slots:
         QVERIFY(image.open(QIODevice::ReadOnly));
         const auto dockerfile = image.readAll();
         QVERIFY(dockerfile.contains("FROM hwdsl2/ipsec-vpn-server@sha256:"));
+        QVERIFY(dockerfile.contains("\"dumb-init\", \"/opt/amnezia/start.sh\""));
         QVERIFY(dockerfile.contains("CMD []")); // Never inherit the identity-generating installer.
         QFile helper(":/server_scripts/ipsec/enable_ipv6.sh");
         QVERIFY(helper.open(QIODevice::ReadOnly));

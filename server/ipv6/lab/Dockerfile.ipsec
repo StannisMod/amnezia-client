@@ -7,5 +7,3 @@ COPY server/ipv6/lab/run_ipsec.sh /app/run_ipsec.sh
 COPY client/server_scripts/ipsec/configure_container.sh /src/client/server_scripts/ipsec/configure_container.sh
 COPY client/server_scripts/ipsec/enable_ipv6.sh /src/client/server_scripts/ipsec/enable_ipv6.sh
 COPY client/server_scripts/ipsec/start.sh /src/client/server_scripts/ipsec/start.sh
-ENTRYPOINT ["dumb-init", "tail", "-f", "/dev/null"]
-CMD []

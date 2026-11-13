@@ -6,6 +6,9 @@ if [ -f /etc/ipsec.conf ]; then
     if ! pidof pluto >/dev/null; then
         amnezia_ipsec_migrate_ipv6_config /etc/ipsec.d/ikev2.conf || exit 1
         mkdir -p /run/pluto
+        # /run is not a tmpfs in the managed container. A Docker restart can
+        # retain this lock file after its process has already been destroyed.
+        rm -f /run/pluto/pluto.pid /var/run/pluto/pluto.pid
         ipsec pluto --config /etc/ipsec.conf || exit 1
         ipsec addconn --autoall --config /etc/ipsec.conf
     fi
@@ -14,3 +17,5 @@ if [ -f /etc/ipsec.conf ]; then
         /usr/sbin/xl2tpd -c /etc/xl2tpd/xl2tpd.conf
     fi
 fi
+echo 'AMNEZIA_IPSEC_STARTUP=completed'
+exec tail -f /dev/null

@@ -81,6 +81,7 @@ jobs:
           docker run --rm --network none --cap-drop ALL --mount "type=bind,src=$PWD/client/server_scripts/ipsec/enable_ipv6.sh,dst=/helper.sh,readonly" --entrypoint sh "$ipsec_old_image" -ec '. /helper.sh; amnezia_ipsec_prepare_ipv6; test "$IPSEC_IKEV2_SUBNETS" = 0.0.0.0/0; test "$IPSEC_IKEV2_POOL" = 192.168.43.10-192.168.43.250'
           python3 server/ipv6/lab/test_ipsec_identity.py --old-image "$ipsec_old_image" --new-image "$ipsec_new_image" --report ipv6-ipsec-identities.json
           docker build -f client/server_scripts/ipsec/Dockerfile -t amnezia-ipsec-server-under-test:local .
+          python3 server/ipv6/lab/test_ipsec_restart.py --image amnezia-ipsec-server-under-test:local --report ipv6-ipsec-restart.json
           docker build -f server/ipv6/lab/Dockerfile.ipsec -t ipv6-ipsec-regression .
           docker run --rm --network none --privileged --pids-limit 128 --memory 256m --entrypoint sh ipv6-ipsec-regression /app/run_ipsec.sh | tee ipv6-ipsec-egress.log
       - uses: actions/upload-artifact@v4
@@ -93,6 +94,7 @@ jobs:
             ipv6-openvpn-egress.log
             ipv6-ipsec-egress.log
             ipv6-ipsec-identities.json
+            ipv6-ipsec-restart.json
             ipv6-boot-*.log
   ownership:
     runs-on: ubuntu-latest
