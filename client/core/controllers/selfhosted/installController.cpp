@@ -17,6 +17,7 @@
 #include <QtConcurrent>
 
 #include "core/configurators/configuratorBase.h"
+#include "core/configurators/openVpnConfigurator.h"
 #include "core/configurators/xrayConfigurator.h"
 #include "core/models/protocols/xrayProtocolConfig.h"
 #include "core/utils/containerEnum.h"
@@ -387,6 +388,12 @@ ErrorCode InstallController::updateServerConfig(const QString &serverId, DockerC
     }
 
     if (errorCode == ErrorCode::NoError) {
+        if (container == DockerContainer::OpenVpn && newConfig.protocolConfig.hasClientConfig()) {
+            OpenVpnConfigurator configurator(&sshSession);
+            const auto capabilityError = configurator.refreshIpv6Capability(credentials, container, newConfig.protocolConfig);
+            if (capabilityError != ErrorCode::NoError)
+                qWarning() << "OpenVPN update completed, IPv6 capability refresh unavailable:" << static_cast<int>(capabilityError);
+        }
         if (container == DockerContainer::MtProxy) {
             MtProxyInstaller::uploadClientSettingsSnapshot(sshSession, credentials, container, newConfig);
         } else if (container == DockerContainer::Telemt) {
@@ -850,6 +857,21 @@ ErrorCode InstallController::startupContainerWorker(const ServerCredentials &cre
     amnezia::ScriptVars protocolVars = amnezia::genProtocolVarsForContainer(container, config);
     baseVars.append(protocolVars);
     ErrorCode e = ErrorCode::NoError;
+    if (container == DockerContainer::OpenVpn) {
+        // Existing images predate the IPv6 forwarding tools. Prepare them only
+        // during this already-requested startup/update, never on connection.
+        QString readiness;
+        e = sshSession.runScript(credentials, sshSession.replaceVars(
+            "sudo docker exec $CONTAINER_NAME sh -ec '"
+            "if ! command -v ip >/dev/null || ! command -v ip6tables >/dev/null; then "
+            "apk add --no-cache iproute2 iptables ip6tables; fi; "
+            "command -v ip >/dev/null; command -v ip6tables >/dev/null; "
+            "echo AMNEZIA_OPENVPN_IPV6_TOOLS_READY'", baseVars),
+            [&readiness](const QString &data, libssh::Client &) { readiness += data; return ErrorCode::NoError; });
+        if (e != ErrorCode::NoError) return e;
+        if (!readiness.split('\n').contains("AMNEZIA_OPENVPN_IPV6_TOOLS_READY"))
+            return ErrorCode::ServerDockerFailedError;
+    }
     if (ContainerUtils::isAwgContainer(container)) {
         QMap<QString, QByteArray> files;
         QByteArray contents;

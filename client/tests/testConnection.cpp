@@ -15,6 +15,7 @@
 #include "version.h"
 #include "core/utils/networkUtilities.h"
 #include "core/configurators/openVpnConfigurator.h"
+#include "core/utils/selfhosted/scriptsRegistry.h"
 
 using namespace amnezia;
 using namespace amnezia::test;
@@ -112,6 +113,9 @@ private slots:
 #endif
     void openVpnIpv6ProfileAndExport()
     {
+        const auto startup = scriptData(ProtocolScriptType::container_startup, DockerContainer::OpenVpn);
+        QVERIFY(startup.contains("amnezia_prepare_openvpn_ipv6()"));
+        QVERIFY(startup.contains("amnezia_prepare_openvpn_ipv6 /opt/amnezia/openvpn/server.conf"));
         QVERIFY(NetworkUtilities::checkIpSubnetFormat("fd00::/8"));
         QVERIFY(NetworkUtilities::checkIpSubnetFormat("64:ff9b::/96"));
         QVERIFY(NetworkUtilities::checkIpSubnetFormat("2001:db8::1"));
@@ -125,6 +129,21 @@ private slots:
         profile = OpenVpnProtocolConfig::fromJson(profile.toJson());
         QVERIFY(profile.clientConfig->ipv6Tunnel);
         OpenVpnConfigurator configurator(nullptr);
+        auto legacy = profile;
+        legacy.clientConfig->ipv6Tunnel = false;
+        legacy.clientConfig->clientId = "existing-client";
+        legacy.clientConfig->nativeConfig += "<key>\nUNCHANGED-PRIVATE-KEY\n</key>\n";
+        ProtocolConfig cached = legacy;
+        auto refreshed = legacy;
+        refreshed.clientConfig->ipv6Tunnel = true;
+        OpenVpnConfigurator::applyObservedIpv6Capability(cached,
+            "server-ipv6 fd6e:a81b:704f:1101::/64\n",
+            "fd6ea81b704f11010000000000000001 00000003 40 00 80 tun0\n");
+        QCOMPARE(cached.toJson(), ProtocolConfig(refreshed).toJson());
+        OpenVpnConfigurator::applyObservedIpv6Capability(cached, "server 10.66.0.0 255.255.255.0\n", "");
+        QCOMPARE(cached.toJson(), ProtocolConfig(legacy).toJson());
+        QVERIFY(configurator.refreshIpv6Capability({}, DockerContainer::OpenVpn, cached) != ErrorCode::NoError);
+        QCOMPARE(cached.toJson(), ProtocolConfig(legacy).toJson());
         ConnectionSettings settings{{"1.1.1.1", "8.8.8.8"}, false, {false, RouteMode::VpnAllSites, {}}};
         const auto captured = [](const QString &config, const QString &ip) {
             for (const auto &line : config.split('\n')) {

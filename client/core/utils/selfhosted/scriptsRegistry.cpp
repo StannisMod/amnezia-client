@@ -124,6 +124,11 @@ QString amnezia::scriptData(amnezia::ProtocolScriptType type, DockerContainer co
         if (!ipv6.open(QIODevice::ReadOnly) || !data.startsWith("#!")) return {};
         data.insert(data.indexOf('\n') + 1, ipv6.readAll() + "\n");
     }
+    if (type == ProtocolScriptType::container_startup && container == DockerContainer::OpenVpn) {
+        QFile migration(":/server_scripts/openvpn/migrate_ipv6.sh");
+        if (!migration.open(QIODevice::ReadOnly)) return {};
+        data.insert(data.indexOf('\n') + 1, migration.readAll() + "\n");
+    }
     return data;
 }
 

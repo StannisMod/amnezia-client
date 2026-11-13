@@ -60,6 +60,7 @@
         <file>openvpn/Dockerfile</file>
         <file>openvpn/run_container.sh</file>
         <file>openvpn/start.sh</file>
+        <file>openvpn/migrate_ipv6.sh</file>
         <file>openvpn/template.ovpn</file>
         <file>prepare_host.sh</file>
         <file>prepare_ipv6_network.sh</file>

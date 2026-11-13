@@ -90,7 +90,27 @@ try:
     run('bash', str(source_root/'client/server_scripts/openvpn/configure_container.sh'), env=env)
     config = (root/'server.conf').read_text().replace('dh /opt/amnezia/openvpn/dh.pem', 'dh none')
     config = config.replace('group nobody', 'group nogroup').replace('crl-verify /opt/amnezia/openvpn/crl.pem', '')
-    (root/'server.conf').write_text(config)
+    # Exercise migration of an existing IPv4 server, not just the fresh template.
+    legacy = '\n'.join(line for line in config.split('\n') if not line.startswith('server-ipv6 '))
+    (root/'server.conf').write_text(legacy)
+    (root/'server.conf').chmod(0o600)
+    identities = {path:hashlib.sha256(path.read_bytes()).hexdigest()
+                  for path in root.iterdir() if path.suffix in ('.key','.crt')}
+    migration = source_root/'client/server_scripts/openvpn/migrate_ipv6.sh'
+    migrate = ['bash','-ec','. "$1"; amnezia_prepare_openvpn_ipv6 "$2"','sh',str(migration),str(root/'server.conf')]
+    run(*migrate)
+    migrated = (root/'server.conf').read_bytes()
+    assert migrated.startswith(legacy.encode()) and migrated.count(b'\nserver-ipv6 ')==1
+    assert (root/'server.conf').stat().st_mode & 0o777 == 0o600
+    run(*migrate)
+    assert (root/'server.conf').read_bytes()==migrated,'IPv6 migration is not idempotent'
+    assert all(hashlib.sha256(path.read_bytes()).hexdigest()==value for path,value in identities.items()),'migration changed existing identity'
+    custom = root/'custom.conf'
+    custom.write_text('server 10.77.0.0 255.255.255.0\nserver-ipv6 fd77::/64 # administrator pool\n')
+    custom_before = custom.read_bytes()
+    run(*migrate[:-1],str(custom))
+    assert custom.read_bytes()==custom_before,'migration replaced administrator IPv6 pool'
+    print('PASS: existing IPv4 server migrated idempotently; identities, permissions and custom IPv6 pool preserved',flush=True)
     (root/'client.conf').write_text(f'''{native_policy}
 dev tun0
 proto udp

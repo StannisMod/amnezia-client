@@ -143,20 +143,36 @@ ProtocolConfig OpenVpnConfigurator::createConfig(const ServerCredentials &creden
     clientConfig.nativeConfig = config;
     clientConfig.clientId = connData.clientId;
     clientConfig.blockOutsideDns = false;
+    protocolConfig.setClientConfig(clientConfig);
+    ProtocolConfig result = protocolConfig;
+    // Capability discovery is best effort; failed SSH must not discard a
+    // successfully issued profile. An unobserved new profile remains IPv4-only.
+    refreshIpv6Capability(credentials, container, result);
+    return result;
+}
+
+void OpenVpnConfigurator::applyObservedIpv6Capability(ProtocolConfig &profile,
+                                                       const QString &serverConfig, const QString &kernelAddresses)
+{
+    auto *openVpn = profile.as<OpenVpnProtocolConfig>();
+    if (openVpn && openVpn->clientConfig)
+        openVpn->clientConfig->ipv6Tunnel = openVpnIpv6::activeServerTunnel(serverConfig, kernelAddresses);
+}
+
+ErrorCode OpenVpnConfigurator::refreshIpv6Capability(const ServerCredentials &credentials,
+                                                      DockerContainer container, ProtocolConfig &profile)
+{
+    const auto *openVpn = profile.as<OpenVpnProtocolConfig>();
+    if (!openVpn || !openVpn->clientConfig || !m_sshSession) return ErrorCode::InternalError;
     ErrorCode capabilityError = ErrorCode::NoError;
     const auto serverText = m_sshSession->getTextFileFromContainer(container, credentials,
         "/opt/amnezia/openvpn/server.conf", capabilityError);
-    if (capabilityError == ErrorCode::NoError) {
-        const auto addresses = m_sshSession->getTextFileFromContainer(container, credentials,
-            "/proc/net/if_inet6", capabilityError);
-        if (capabilityError == ErrorCode::NoError)
-            clientConfig.ipv6Tunnel = openVpnIpv6::activeServerTunnel(serverText, addresses);
-    }
-
-    
-    protocolConfig.setClientConfig(clientConfig);
-    
-    return protocolConfig;
+    if (capabilityError != ErrorCode::NoError) return capabilityError;
+    const auto addresses = m_sshSession->getTextFileFromContainer(container, credentials,
+        "/proc/net/if_inet6", capabilityError);
+    if (capabilityError != ErrorCode::NoError) return capabilityError;
+    applyObservedIpv6Capability(profile, serverText, addresses);
+    return ErrorCode::NoError;
 }
 
 ProtocolConfig OpenVpnConfigurator::processConfigWithLocalSettings(const ConnectionSettings &settings,

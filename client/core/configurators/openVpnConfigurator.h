@@ -38,6 +38,13 @@ public:
 
     static ConnectionData createCertRequest();
 
+    // Refresh a cached profile after an explicit server update without issuing
+    // a new certificate or replacing the existing native config/client ID.
+    amnezia::ErrorCode refreshIpv6Capability(const amnezia::ServerCredentials &credentials,
+                                            amnezia::DockerContainer container, amnezia::ProtocolConfig &profile);
+    static void applyObservedIpv6Capability(amnezia::ProtocolConfig &profile,
+                                            const QString &serverConfig, const QString &kernelAddresses);
+
 private:
     ConnectionData prepareOpenVpnConfig(const amnezia::ServerCredentials &credentials, amnezia::DockerContainer container,
                                        const amnezia::DnsSettings &dnsSettings,
