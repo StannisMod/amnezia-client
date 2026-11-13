@@ -8,6 +8,8 @@
 #include <QString>
 #include <QTemporaryDir>
 #include <QTemporaryFile>
+#include <QElapsedTimer>
+#include <QThread>
 #if defined(Q_OS_ANDROID) || defined(Q_OS_IOS)
     #include <QGuiApplication>
 #else
@@ -151,28 +153,45 @@ ProtocolConfig OpenVpnConfigurator::createConfig(const ServerCredentials &creden
     return result;
 }
 
-void OpenVpnConfigurator::applyObservedIpv6Capability(ProtocolConfig &profile,
+bool OpenVpnConfigurator::applyObservedIpv6Capability(ProtocolConfig &profile,
                                                        const QString &serverConfig, const QString &kernelAddresses)
 {
     auto *openVpn = profile.as<OpenVpnProtocolConfig>();
-    if (openVpn && openVpn->clientConfig)
-        openVpn->clientConfig->ipv6Tunnel = openVpnIpv6::activeServerTunnel(serverConfig, kernelAddresses);
+    if (!openVpn || !openVpn->clientConfig) return false;
+    const bool active = openVpnIpv6::activeServerTunnel(serverConfig, kernelAddresses);
+    // A configured pool without a ready address is an inconclusive observation
+    // during startup/DAD, not evidence that this server is IPv4-only.
+    if (!active && openVpnIpv6::serverPoolDirective().match(serverConfig).hasMatch()) return false;
+    openVpn->clientConfig->ipv6Tunnel = active;
+    return true;
 }
 
 ErrorCode OpenVpnConfigurator::refreshIpv6Capability(const ServerCredentials &credentials,
-                                                      DockerContainer container, ProtocolConfig &profile)
+                                                      DockerContainer container, ProtocolConfig &profile, bool waitForTunnel)
 {
     const auto *openVpn = profile.as<OpenVpnProtocolConfig>();
-    if (!openVpn || !openVpn->clientConfig || !m_sshSession) return ErrorCode::InternalError;
+    if (!openVpn || !openVpn->clientConfig) return ErrorCode::InternalError;
     ErrorCode capabilityError = ErrorCode::NoError;
-    const auto serverText = m_sshSession->getTextFileFromContainer(container, credentials,
+    const auto serverText = readCapabilityFile(credentials, container,
         "/opt/amnezia/openvpn/server.conf", capabilityError);
     if (capabilityError != ErrorCode::NoError) return capabilityError;
-    const auto addresses = m_sshSession->getTextFileFromContainer(container, credentials,
-        "/proc/net/if_inet6", capabilityError);
-    if (capabilityError != ErrorCode::NoError) return capabilityError;
-    applyObservedIpv6Capability(profile, serverText, addresses);
-    return ErrorCode::NoError;
+    QElapsedTimer elapsed;
+    elapsed.start();
+    for (;;) {
+        const auto addresses = readCapabilityFile(credentials, container,
+            "/proc/net/if_inet6", capabilityError);
+        if (capabilityError != ErrorCode::NoError) return capabilityError;
+        if (applyObservedIpv6Capability(profile, serverText, addresses)) return ErrorCode::NoError;
+        if (!waitForTunnel || elapsed.elapsed() >= 5000) return ErrorCode::ProtocolUpdateOutcomeUnknown;
+        QThread::msleep(250);
+    }
+}
+
+QByteArray OpenVpnConfigurator::readCapabilityFile(const ServerCredentials &credentials,
+                                                    DockerContainer container, const QString &path, ErrorCode &error)
+{
+    if (!m_sshSession) { error = ErrorCode::InternalError; return {}; }
+    return m_sshSession->getTextFileFromContainer(container, credentials, path, error);
 }
 
 ProtocolConfig OpenVpnConfigurator::processConfigWithLocalSettings(const ConnectionSettings &settings,

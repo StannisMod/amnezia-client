@@ -10,11 +10,14 @@ inline QRegularExpression captureBlock()
     return QRegularExpression("^# amnezia-ipv6-capture-begin\\n.*?^# amnezia-ipv6-capture-end[ \\t]*(?:\\n|$)",
         QRegularExpression::MultilineOption | QRegularExpression::DotMatchesEverythingOption);
 }
+inline QRegularExpression serverPoolDirective()
+{
+    return QRegularExpression("^[ \\t]*(?:--)?server-ipv6[ \\t]+([^\\s#]+)[ \\t]*(?:#.*)?$",
+                                       QRegularExpression::MultilineOption);
+}
 inline bool activeServerTunnel(const QString &config, const QString &kernelAddresses)
 {
-    const QRegularExpression directive("^[ \\t]*server-ipv6[ \\t]+([^\\s#]+)[ \\t]*(?:#.*)?$",
-                                       QRegularExpression::MultilineOption);
-    const auto match = directive.match(config);
+    const auto match = serverPoolDirective().match(config);
     if (!match.hasMatch()) return false;
     const auto subnet = QHostAddress::parseSubnet(match.captured(1));
     if (subnet.first.protocol() != QAbstractSocket::IPv6Protocol || subnet.second < 64 || subnet.second > 112) return false;

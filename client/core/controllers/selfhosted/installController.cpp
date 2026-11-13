@@ -390,7 +390,7 @@ ErrorCode InstallController::updateServerConfig(const QString &serverId, DockerC
     if (errorCode == ErrorCode::NoError) {
         if (container == DockerContainer::OpenVpn && newConfig.protocolConfig.hasClientConfig()) {
             OpenVpnConfigurator configurator(&sshSession);
-            const auto capabilityError = configurator.refreshIpv6Capability(credentials, container, newConfig.protocolConfig);
+            const auto capabilityError = configurator.refreshIpv6Capability(credentials, container, newConfig.protocolConfig, true);
             if (capabilityError != ErrorCode::NoError)
                 qWarning() << "OpenVPN update completed, IPv6 capability refresh unavailable:" << static_cast<int>(capabilityError);
         }

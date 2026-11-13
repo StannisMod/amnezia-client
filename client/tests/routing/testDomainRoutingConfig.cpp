@@ -16,6 +16,7 @@ private slots:
         const QString config = "server-ipv6 fd6e:a81b:704f:1101::/64\n";
         const QString row = "fd6ea81b704f11010000000000000001 00000003 40 00 80 tun0\n";
         QVERIFY(amnezia::openVpnIpv6::activeServerTunnel(config, row));
+        QVERIFY(amnezia::openVpnIpv6::activeServerTunnel("\t--" + config.trimmed() + " # managed\n", row));
         QVERIFY(!amnezia::openVpnIpv6::activeServerTunnel("# " + config, row));
         QVERIFY(!amnezia::openVpnIpv6::activeServerTunnel(config, QString(row).replace("tun0", "eth0")));
         QVERIFY(!amnezia::openVpnIpv6::activeServerTunnel(config, QString(row).replace(" 80 ", " 40 ")));

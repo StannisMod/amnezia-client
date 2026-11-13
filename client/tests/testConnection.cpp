@@ -20,6 +20,24 @@
 using namespace amnezia;
 using namespace amnezia::test;
 
+class OpenVpnCapabilityReader : public OpenVpnConfigurator {
+public:
+    OpenVpnCapabilityReader() : OpenVpnConfigurator(nullptr) {}
+    int addressReads = 0;
+    bool neverReady = false;
+    bool failRead = false;
+protected:
+    QByteArray readCapabilityFile(const ServerCredentials &, DockerContainer, const QString &path, ErrorCode &error) override
+    {
+        error = failRead ? ErrorCode::SshScpFailureError : ErrorCode::NoError;
+        if (failRead) return {};
+        if (path.endsWith("server.conf")) return "server-ipv6 fd6e:a81b:704f:1101::/64\n";
+        ++addressReads;
+        if (neverReady || addressReads < 3) return {}; // Interface has not appeared yet.
+        return "fd6ea81b704f11010000000000000001 00000003 40 00 80 tun0\n";
+    }
+};
+
 #if defined(Q_OS_LINUX) && !defined(Q_OS_ANDROID)
 class RefreshProtocol : public VpnProtocol {
 public:
@@ -111,6 +129,29 @@ private slots:
         settings.clearSettings();
     }
 #endif
+    void openVpnCapabilityWaitsForTunnel()
+    {
+        OpenVpnProtocolConfig original;
+        OpenVpnClientConfig client;
+        client.clientId = "existing-client";
+        client.nativeConfig = "client\n<key>\nKEEP-THIS-KEY\n</key>\n";
+        original.setClientConfig(client);
+        ProtocolConfig cached = original;
+        OpenVpnCapabilityReader reader;
+        QCOMPARE(reader.refreshIpv6Capability({}, DockerContainer::OpenVpn, cached, true), ErrorCode::NoError);
+        QCOMPARE(reader.addressReads, 3);
+        original.clientConfig->ipv6Tunnel = true;
+        QCOMPARE(cached.toJson(), ProtocolConfig(original).toJson());
+        const auto before = cached.toJson();
+        reader.neverReady = true;
+        reader.addressReads = 0;
+        QCOMPARE(reader.refreshIpv6Capability({}, DockerContainer::OpenVpn, cached, true), ErrorCode::ProtocolUpdateOutcomeUnknown);
+        QVERIFY(reader.addressReads > 1 && reader.addressReads <= 22);
+        QCOMPARE(cached.toJson(), before);
+        reader.failRead = true;
+        QCOMPARE(reader.refreshIpv6Capability({}, DockerContainer::OpenVpn, cached, true), ErrorCode::SshScpFailureError);
+        QCOMPARE(cached.toJson(), before);
+    }
     void openVpnIpv6ProfileAndExport()
     {
         const auto startup = scriptData(ProtocolScriptType::container_startup, DockerContainer::OpenVpn);
@@ -139,6 +180,9 @@ private slots:
         OpenVpnConfigurator::applyObservedIpv6Capability(cached,
             "server-ipv6 fd6e:a81b:704f:1101::/64\n",
             "fd6ea81b704f11010000000000000001 00000003 40 00 80 tun0\n");
+        QCOMPARE(cached.toJson(), ProtocolConfig(refreshed).toJson());
+        QVERIFY(!OpenVpnConfigurator::applyObservedIpv6Capability(cached,
+            "server-ipv6 fd6e:a81b:704f:1101::/64\n", ""));
         QCOMPARE(cached.toJson(), ProtocolConfig(refreshed).toJson());
         OpenVpnConfigurator::applyObservedIpv6Capability(cached, "server 10.66.0.0 255.255.255.0\n", "");
         QCOMPARE(cached.toJson(), ProtocolConfig(legacy).toJson());
