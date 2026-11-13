@@ -101,6 +101,20 @@ print('ORIGINAL_TCP_RETAINED',flush=True)
     processes.append(observer)
     assert select.select([observer.stdout], [], [], 5)[0] and observer.stdout.readline().strip()=='READY', 'original IPv4 TCP setup failed'
     before4=run('ip','-4','route','show','table','all')+run('iptables','-S')+run('iptables','-t','nat','-S')
+    run('ip', '-6', 'route', 'delete', 'default')
+    missing = subprocess.run(['bash', '-ec', '. /src/client/server_scripts/enable_ipv6_forwarding.sh; amnezia_enable_ipv6 tun0 required'],
+                             text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=10)
+    assert missing.returncode == 1 and 'no-egress-route' in missing.stdout, missing.stdout
+    run('ip', '-n', names[0], '-6', 'route', 'add', '2001:db8:6666::1/128', 'dev', 'tun0')
+    unavailable = """import errno,socket,time
+start=time.monotonic()
+try:socket.create_connection(('2001:db8:6666::1',443),3)
+except OSError as e:assert e.errno in (errno.ENETUNREACH,errno.EHOSTUNREACH),repr(e)
+else:raise AssertionError('IPv4-only server unexpectedly reached IPv6 origin')
+assert time.monotonic()-start<1.5,'missing IPv6 route caused a TCP timeout'
+"""
+    run('ip','netns','exec',names[0],'python3','-c',unavailable)
+    run('ip', '-6', 'route', 'add', 'default', 'via', 'fd88::1', 'dev', 'uplink0')
     run('bash', '-ec', '. /src/client/server_scripts/enable_ipv6_forwarding.sh; amnezia_enable_ipv6 tun0 required')
     assert before4==run('ip','-4','route','show','table','all')+run('iptables','-S')+run('iptables','-t','nat','-S'), 'IPv6 preparation changed IPv4 state'
     observer.stdin.write('continue\n');observer.stdin.flush()
@@ -121,7 +135,7 @@ while True:
     run('ip', '-n', names[0], '-6', 'route', 'add', 'fd88::/64', 'dev', 'tun0')
     probe = "import socket,time;time.sleep(.1);s=socket.create_connection(('fd88::1',18081),3);assert s.recv(64)==b'OPENVPN_IPV6_ORIGIN';u=socket.socket(socket.AF_INET6,socket.SOCK_DGRAM);u.settimeout(3);u.sendto(b'OPENVPN_IPV6_UDP',('fd88::1',18081));assert u.recv(64)==b'OPENVPN_IPV6_UDP'"
     run('ip', 'netns', 'exec', names[0], 'python3', '-c', probe)
-    print('PASS: real OpenVPN TLS forwards IPv6 TCP/UDP, retains two original IPv4 TCP sockets and IPv4 routes/firewall', flush=True)
+    print('PASS: real OpenVPN TLS forwards IPv6 TCP/UDP, retains two original IPv4 TCP sockets and IPv4 state; missing egress fails fast', flush=True)
 finally:
     for process in reversed(processes): process.terminate()
     for process in reversed(processes):

@@ -239,6 +239,12 @@ void VpnConnection::addSitesRoutes(const QString &gw, amnezia::RouteMode mode)
         }
     }
     ips.removeDuplicates();
+    // These legacy IPC helpers install IPv4 routes. IPv6 capture is configured
+    // by the protocol; keep IPv6 rules in the shared profile/site list.
+    ips.removeIf([](const QString &value) {
+        return QHostAddress::parseSubnet(value).first.protocol() != QAbstractSocket::IPv4Protocol;
+    });
+
 
     IpcClient::withInterface([&](QSharedPointer<IpcInterfaceReplica> iface) {
         iface->routeAddList(gw, ips);

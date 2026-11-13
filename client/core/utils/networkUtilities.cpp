@@ -162,19 +162,18 @@ bool NetworkUtilities::checkIPv4Format(const QString &ip)
 
 bool NetworkUtilities::checkIpSubnetFormat(const QString &ip)
 {
-    if (!ip.contains("/"))
-        return checkIPv4Format(ip);
-
-    QStringList parts = ip.split("/");
-    if (parts.size() != 2)
-        return false;
-
-    bool ok;
-    int subnet = parts.at(1).toInt(&ok);
-    if (subnet >= 0 && subnet <= 32 && ok)
-        return checkIPv4Format(parts.at(0));
-    else
-        return false;
+    if (!ip.contains('/')) {
+        const QHostAddress address(ip);
+        return checkIPv4Format(ip) || (address.protocol() == QAbstractSocket::IPv6Protocol && address.scopeId().isEmpty());
+    }
+    const auto parts = ip.split('/');
+    if (parts.size() != 2) return false;
+    bool valid;
+    const int prefix = parts[1].toInt(&valid);
+    if (!valid || prefix < 0) return false;
+    const QHostAddress address(parts[0]);
+    if (address.protocol() == QAbstractSocket::IPv6Protocol) return address.scopeId().isEmpty() && prefix <= 128;
+    return prefix <= 32 && checkIPv4Format(parts[0]);
 }
 
 // static

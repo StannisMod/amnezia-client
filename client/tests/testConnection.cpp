@@ -12,6 +12,7 @@
 #include "secureQSettings.h"
 #include "core/utils/utilities.h"
 #include "version.h"
+#include "core/utils/networkUtilities.h"
 #include "core/configurators/openVpnConfigurator.h"
 
 using namespace amnezia;
@@ -28,6 +29,11 @@ private:
 private slots:
     void openVpnIpv6ProfileAndExport()
     {
+        QVERIFY(NetworkUtilities::checkIpSubnetFormat("fd00::/8"));
+        QVERIFY(NetworkUtilities::checkIpSubnetFormat("64:ff9b::/96"));
+        QVERIFY(NetworkUtilities::checkIpSubnetFormat("2001:db8::1"));
+        QVERIFY(!NetworkUtilities::checkIpSubnetFormat("::/129"));
+        QVERIFY(!NetworkUtilities::checkIpSubnetFormat("fe80::1%eth0/64"));
         OpenVpnProtocolConfig profile;
         OpenVpnClientConfig client;
         client.nativeConfig = "client\nremote 198.51.100.1 1194\n";
