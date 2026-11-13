@@ -439,7 +439,14 @@ func main() {
 				panic(err)
 			}
 			server := &dns.Server{Listener: listener, Handler: dns.HandlerFunc(func(w dns.ResponseWriter, q *dns.Msg) {
-				f.nativeTLSQueries.Add(1)
+				// Count only application-policy names: Android's own DoT
+				// validation must not satisfy the app-DNS transport assertion.
+				for _, question := range q.Question {
+					if strings.HasSuffix(strings.ToLower(question.Name), ".app-policy.test.") {
+						f.nativeTLSQueries.Add(1)
+						break
+					}
+				}
 				handler.ServeDNS(w, q)
 			})}
 			go server.ActivateAndServe()
