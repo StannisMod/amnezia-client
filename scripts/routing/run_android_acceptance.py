@@ -412,6 +412,10 @@ def main():
                         # when that failure terminated the service process.
                         report["resources"][label] = {"snapshot_error": type(error).__name__}
                     if label == "failure":
+                        if args.private_dns_strict:
+                            # Capture before debuggerd and instrumentation cleanup.
+                            for name in ("connectivity", "dnsresolver"):
+                                (work / ("failure-active-" + name + ".log")).write_text(adb("shell", "dumpsys", name))
                         failed = report['resources'].get('failure', {})
                         if 'pid' in failed:
                             try:

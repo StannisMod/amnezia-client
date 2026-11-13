@@ -588,7 +588,8 @@ func probeUnderlayAWG(path string) error {
 	}
 	defer connection.Close()
 	connection.SetDeadline(time.Now().Add(10 * time.Second))
-	data, err := io.ReadAll(io.LimitReader(connection, 16))
+	data := make([]byte, len("VPN\n"))
+	_, err = io.ReadFull(connection, data)
 	if err != nil {
 		return err
 	}

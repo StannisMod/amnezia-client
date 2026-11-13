@@ -295,6 +295,7 @@ public final class RoutingInstrumentation extends Instrumentation {
             result.putString("test_stack", stack.toString());
             // Capture the blocked native/JNI path before another network call
             // or cleanup changes it. The rooted driver collects debuggerd.
+            try { result.putString("connection_diagnostics", connectionDiagnostics().toString()); } catch (Exception ignored) {}
             progress("RESOURCE_CHECKPOINT failure"); SystemClock.sleep(10000);
             try { result.putString("observers", control("/stats", false).toString()); } catch (Exception ignored) {}
         } finally {
