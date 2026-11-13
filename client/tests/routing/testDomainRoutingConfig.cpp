@@ -3,10 +3,85 @@
 #include <QFileInfo>
 #include "../../core/utils/domainRoutingConfig.h"
 #include "../../core/utils/splitDnsConfig.h"
+#include "../../core/utils/proxyIpv6Routes.h"
+#include "../../platforms/macos/daemon/macproxyipv6.h"
 
 class DomainRoutingConfigTest : public QObject {
     Q_OBJECT
 private slots:
+    void desktopIpv6RollbackOwnsOnlySuccessfulChanges()
+    {
+        QStringList calls;
+        int additions = 0;
+        MacProxyIpv6 policy([&](const QString &program, const QStringList &arguments) {
+            calls.append(program + ' ' + arguments.join(' '));
+            if (program.endsWith("route") && arguments.contains("add")) return ++additions != 2;
+            return true;
+        });
+        QVERIFY(!policy.configure({"::/0"}, {}));
+        QVERIFY(calls.contains("/sbin/route -n delete -inet6 -net ::/1 -interface utun22"));
+        QVERIFY(!calls.contains("/sbin/route -n delete -inet6 -net 8000::/1 -interface utun22"));
+        QCOMPARE(calls.last(), QString("/sbin/ifconfig utun22 inet6 fdfe:dcba:9876::2 -alias"));
+        calls.clear();
+        QVERIFY(policy.clear());
+        QVERIFY(calls.isEmpty());
+        // A failed first add (e.g. an existing foreign route) must never be deleted.
+        MacProxyIpv6 foreign([&](const QString &program, const QStringList &arguments) {
+            calls.append(program + ' ' + arguments.join(' '));
+            return !(program.endsWith("route") && arguments.contains("add"));
+        });
+        QVERIFY(!foreign.configure({"fd00::/8"}, {}));
+        QVERIFY(std::none_of(calls.cbegin(), calls.cend(), [](const QString &call) { return call.contains(" delete "); }));
+    }
+    void desktopIpv6CleanupCanRetry()
+    {
+        int deletes = 0;
+        MacProxyIpv6 policy([&](const QString &program, const QStringList &arguments) {
+            if (program.endsWith("route") && arguments.contains("delete")) return ++deletes > 1;
+            return true;
+        });
+        QVERIFY(policy.configure({"fd00::/8"}, {}));
+        QVERIFY(!policy.clear());
+        QVERIFY(policy.clear());
+        QCOMPARE(deletes, 2);
+    }
+    void desktopIpv6CapturePreservesExceptions()
+    {
+        QStringList routes;
+        QVERIFY(amnezia::routing::proxyIpv6Routes({"::/0", "2001:db8::/32"},
+            {"2001:db8:1::/48", "fd00::/8", "2001:db8:2::7/128"}, routes));
+        QVERIFY(!routes.contains("::/0"));
+        const auto captured = [&](const QString &value) {
+            const QHostAddress address(value);
+            return std::any_of(routes.cbegin(), routes.cend(), [&](const QString &prefix) {
+                return address.isInSubnet(QHostAddress::parseSubnet(prefix));
+            });
+        };
+        QVERIFY(captured("2001:db8:3::1"));
+        QVERIFY(captured("fc00::1"));
+        QVERIFY(captured("64:ff9b::c000:201"));
+        QVERIFY(!captured("2001:db8:1::1234"));
+        QVERIFY(!captured("fd12::1"));
+        QVERIFY(!captured("2001:db8:2::7"));
+        QVERIFY(captured("2001:db8:2::8"));
+        // No address may match two owned routes, including overlapping inputs.
+        for (int i = 0; i < routes.size(); ++i)
+            for (int j = i + 1; j < routes.size(); ++j) {
+                const auto a = QHostAddress::parseSubnet(routes[i]);
+                const auto b = QHostAddress::parseSubnet(routes[j]);
+                QVERIFY(!a.first.isInSubnet(b) && !b.first.isInSubnet(a));
+            }
+        QVERIFY(amnezia::routing::proxyIpv6Routes({"fd00::/8", "64:ff9b::/96"}, {}, routes));
+        QVERIFY(!captured("2001:db8::1"));
+        QVERIFY(captured("fd12::1"));
+        QVERIFY(captured("64:ff9b::c000:201"));
+        QVERIFY(amnezia::routing::proxyIpv6Routes({"::/0"}, {"::/0"}, routes));
+        QVERIFY(routes.isEmpty());
+        routes = {"unchanged"};
+        QVERIFY(!amnezia::routing::proxyIpv6Routes({"::/129"}, {}, routes));
+        QVERIFY(!amnezia::routing::proxyIpv6Routes({"::/0"}, {"192.0.2.0/24"}, routes));
+        QCOMPARE(routes, QStringList{"unchanged"});
+    }
     void portablePoliciesMatchEngineCorpus()
     {
         const auto path = QDir(QFileInfo(QString::fromUtf8(__FILE__)).absolutePath())

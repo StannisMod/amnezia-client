@@ -481,7 +481,7 @@ bool KillSwitch::enableKillSwitch(const QJsonObject &configStr, int vpnAdapterIn
     MacOSFirewall::setAnchorEnabled(QStringLiteral("120.blockNets"), blockNets);
     MacOSFirewall::setAnchorTable(QStringLiteral("120.blockNets"), blockNets, QStringLiteral("blocknets"), blocknets);
     MacOSFirewall::setAnchorEnabled(QStringLiteral("200.allowVPN"), true);
-    MacOSFirewall::setAnchorEnabled(QStringLiteral("250.blockIPv6"), true);
+    MacOSFirewall::setAnchorEnabled(QStringLiteral("250.blockIPv6"), !configStr.value("proxyIpv6").toBool());
     MacOSFirewall::setAnchorEnabled(QStringLiteral("290.allowDHCP"), true);
     MacOSFirewall::setAnchorEnabled(QStringLiteral("300.allowLAN"), true);
 

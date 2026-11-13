@@ -119,7 +119,7 @@ void XrayProtocol::stop()
         if (!disableKillSwitch.waitForFinished() || !disableKillSwitch.returnValue())
             qWarning() << "Failed to disable killswitch";
 
-#if !defined(Q_OS_LINUX) || defined(Q_OS_ANDROID)
+#ifdef Q_OS_WIN
         auto StartRoutingIpv6 = iface->StartRoutingIpv6();
         if (!StartRoutingIpv6.waitForFinished() || !StartRoutingIpv6.returnValue())
             qWarning() << "Failed to start routing ipv6";
@@ -281,7 +281,7 @@ ErrorCode XrayProtocol::setupRouting()
                     if (vpnAdapterIndex != -1) {
                         QJsonObject config = m_rawConfig;
                         config.insert("vpnServer", m_remoteAddress);
-#if defined(Q_OS_LINUX) && !defined(Q_OS_ANDROID)
+#if (defined(Q_OS_LINUX) || defined(Q_OS_MACOS)) && !defined(Q_OS_ANDROID)
                         config.insert("proxyIpv6", true);
 #endif
 
@@ -305,7 +305,7 @@ ErrorCode XrayProtocol::setupRouting()
                     }
                 }
 
-#if defined(Q_OS_LINUX) && !defined(Q_OS_ANDROID)
+#if (defined(Q_OS_LINUX) || defined(Q_OS_MACOS)) && !defined(Q_OS_ANDROID)
                 QStringList includedIpv6, excludedIpv6;
                 if (m_routeMode != amnezia::RouteMode::VpnOnlyForwardSites) includedIpv6 << "::/0";
                 const auto sites = m_rawConfig.value(configKey::splitTunnelSites).toArray();

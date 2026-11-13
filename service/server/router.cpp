@@ -68,6 +68,8 @@ bool Router::configureProxyIpv6(const QStringList &included, const QStringList &
 {
 #ifdef Q_OS_LINUX
     return RouterLinux::Instance().configureProxyIpv6(included, excluded);
+#elif defined(Q_OS_MAC)
+    return RouterMac::Instance().configureProxyIpv6(included, excluded);
 #else
     Q_UNUSED(included)
     Q_UNUSED(excluded)
