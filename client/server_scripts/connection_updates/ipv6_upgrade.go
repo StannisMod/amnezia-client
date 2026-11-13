@@ -17,6 +17,7 @@ import (
 
 type ipv6UpgradeRequest struct {
 	Container           string `json:"container"`
+	ForwardingPrefix    string `json:"forwardingPrefix,omitempty"`
 	ExpectedPublicKey   string `json:"expectedPublicKey,omitempty"`
 	ExpectedCertificate string `json:"expectedCertificate,omitempty"`
 }
@@ -36,6 +37,10 @@ type ipv6UpgradeIntent struct {
 	ExpectedState        string             `json:"expectedState"`
 	PublicationAttempted bool               `json:"publicationAttempted"`
 	Phase                string             `json:"phase"`
+	StartupOriginalHash  string             `json:"startupOriginalHash,omitempty"`
+	StartupCandidateHash string             `json:"startupCandidateHash,omitempty"`
+	StartupOperation     string             `json:"startupOperation,omitempty"`
+	StartupPrepared      bool               `json:"startupPrepared,omitempty"`
 }
 
 type ipv6UpgradeEngine struct {
@@ -51,8 +56,11 @@ func (e *ipv6UpgradeEngine) call(ctx context.Context, input []byte, args ...stri
 	return engine.call(ctx, input, args...)
 }
 func (e *ipv6UpgradeEngine) helper(ctx context.Context, req configTransactionRequest) (map[string]json.RawMessage, error) {
+	return e.transaction(ctx, req, "config-file-transaction")
+}
+func (e *ipv6UpgradeEngine) transaction(ctx context.Context, req configTransactionRequest, command string) (map[string]json.RawMessage, error) {
 	req.Container = e.req.Container
-	out, err := e.call(ctx, mustJSON(req), "exec", "-i", e.intent.Target, "/opt/amnezia/config-helper", "config-file-transaction")
+	out, err := e.call(ctx, mustJSON(req), "exec", "-i", e.intent.Target, "/opt/amnezia/config-helper", command)
 	if err != nil {
 		return nil, errors.New("protocol operation not confirmed")
 	}
@@ -62,6 +70,80 @@ func (e *ipv6UpgradeEngine) helper(ctx context.Context, req configTransactionReq
 	}
 	return response, nil
 }
+
+// Boot preparation is a separate compatible transaction: it never executes the
+// startup body, and remains installed if an unpublished IPv6 activation rolls back.
+func (e *ipv6UpgradeEngine) prepareStartup(ctx context.Context) error {
+	if e.req.ForwardingPrefix == "" {
+		return nil
+	} // Older direct CLI callers prepare deployment themselves.
+	prefix := []byte(e.req.ForwardingPrefix)
+	current, err := e.call(ctx, nil, "exec", e.intent.Target, "head", "-c", "4194305", "/opt/amnezia/start.sh")
+	if err != nil || len(current) > 4<<20 {
+		return errors.New("cannot read startup")
+	}
+	candidate, err := ipv6StartupCandidate(current, prefix, e.req.Container)
+	if err != nil {
+		return err
+	}
+	invoke := func(req configTransactionRequest) (map[string]json.RawMessage, error) {
+		return e.transaction(ctx, req, "startup-file-transaction")
+	}
+	check := func() error {
+		_, err := invoke(configTransactionRequest{Action: "check-current", Expected: candidate})
+		return err
+	}
+	if (e.intent.StartupPrepared || e.intent.StartupOriginalHash == "") && bytes.Equal(current, candidate) {
+		return check()
+	}
+	if e.intent.StartupPrepared {
+		e.intent.StartupPrepared = false
+		e.intent.StartupOriginalHash = ""
+		e.intent.StartupCandidateHash = ""
+		e.intent.StartupOperation = ""
+	}
+	if e.intent.StartupOriginalHash == "" {
+		e.intent.StartupOriginalHash = configHash(current)
+		e.intent.StartupCandidateHash = configHash(candidate)
+		if err = e.save(e.intent.Phase); err != nil {
+			return err
+		}
+	}
+	matches := func(response map[string]json.RawMessage) bool {
+		operation := rawString(response["operation"])
+		return configOperationOK(operation) && rawString(response["originalHash"]) == e.intent.StartupOriginalHash && rawString(response["candidateHash"]) == e.intent.StartupCandidateHash && (e.intent.StartupOperation == "" || operation == e.intent.StartupOperation)
+	}
+	status, statusErr := invoke(configTransactionRequest{Action: "status"})
+	if statusErr == nil && matches(status) {
+		e.intent.StartupOperation = rawString(status["operation"])
+	} else if e.intent.StartupOperation == "" && configHash(current) == e.intent.StartupOriginalHash && configHash(candidate) == e.intent.StartupCandidateHash {
+		status, err = invoke(configTransactionRequest{Action: "stage", Expected: current, Candidate: candidate})
+		if err != nil {
+			status, err = invoke(configTransactionRequest{Action: "status"})
+		}
+		if err != nil || !matches(status) {
+			return errors.New("startup stage not confirmed")
+		}
+		e.intent.StartupOperation = rawString(status["operation"])
+	} else if configHash(current) == e.intent.StartupCandidateHash && e.intent.StartupOperation != "" && check() == nil {
+		e.intent.StartupPrepared = true
+		return e.save(e.intent.Phase)
+	} else {
+		return errors.New("startup transaction identity changed")
+	}
+	if err = e.save(e.intent.Phase); err != nil {
+		return err
+	}
+	if _, err = invoke(configTransactionRequest{Action: "commit", Operation: e.intent.StartupOperation}); err != nil && check() != nil {
+		return errors.New("startup commit not confirmed")
+	}
+	if err = check(); err != nil {
+		return err
+	}
+	e.intent.StartupPrepared = true
+	return e.save(e.intent.Phase)
+}
+
 func (e *ipv6UpgradeEngine) feed(ctx context.Context, action string, req request) (map[string]json.RawMessage, error) {
 	engine := rolloutEngine{docker: e.docker, deliveryImage: e.deliveryImage}
 	return engine.feed(ctx, action, req)
@@ -150,6 +232,9 @@ func (e *ipv6UpgradeEngine) execute(ctx context.Context) (result rolloutResult) 
 		}
 		result.Result = "recovery_required"
 	}()
+	if e.req.ForwardingPrefix != "" && (len(e.req.ForwardingPrefix) != forwardingPrefixSize || configHash([]byte(e.req.ForwardingPrefix)) != forwardingPrefixHash) {
+		return
+	}
 	if !containerOK(e.req.Container) || (e.req.ExpectedPublicKey == "") != (e.req.ExpectedCertificate == "") {
 		return
 	}
@@ -195,10 +280,12 @@ func (e *ipv6UpgradeEngine) execute(ctx context.Context) (result rolloutResult) 
 	var features []string
 	_ = json.Unmarshal(capabilities["features"], &features)
 	supported := false
+	bootSupported := false
 	for _, feature := range features {
 		supported = supported || feature == "ipv6-egress-v1"
+		bootSupported = bootSupported || feature == "ipv6-boot-upgrade-v1"
 	}
-	if !supported {
+	if !supported || (e.req.ForwardingPrefix != "" && !bootSupported) {
 		result.Reason = "protocol_helper_upgrade_required"
 		return
 	}
@@ -218,6 +305,18 @@ func (e *ipv6UpgradeEngine) execute(ctx context.Context) (result rolloutResult) 
 			result.Reason = "delivery_identity_changed"
 			return
 		}
+		var deliveryFeatures []string
+		if json.Unmarshal(info["features"], &deliveryFeatures) != nil {
+			return
+		}
+		conditional := false
+		for _, feature := range deliveryFeatures {
+			conditional = conditional || feature == "conditional-client-ipv6-v1"
+		}
+		if !conditional {
+			result.Reason = "delivery_service_upgrade_required"
+			return
+		}
 	}
 	configPath := "/opt/amnezia/wireguard/wg0.conf"
 	if e.req.Container == "amnezia-awg2" {
@@ -226,6 +325,13 @@ func (e *ipv6UpgradeEngine) execute(ctx context.Context) (result rolloutResult) 
 	current, err := e.call(ctx, nil, "exec", target, "head", "-c", "4194305", configPath)
 	if err != nil || len(current) > 4<<20 {
 		return
+	}
+	if e.intent.Phase == "complete" && configHash(current) == e.intent.CandidateHash {
+		if err = e.prepareStartup(ctx); err != nil {
+			result.Result = "pending"
+			result.Reason = "ipv6_boot_preparation_unconfirmed"
+			return
+		}
 	}
 	if e.intent.Phase == "complete" {
 		check := configTransactionRequest{Action: "check-live", Expected: current}
@@ -271,6 +377,11 @@ func (e *ipv6UpgradeEngine) execute(ctx context.Context) (result rolloutResult) 
 		if e.save("prepared") != nil {
 			return
 		}
+	}
+	if err = e.prepareStartup(ctx); err != nil {
+		result.Result = "pending"
+		result.Reason = "ipv6_boot_preparation_unconfirmed"
+		return
 	}
 	// A lost stage reply is recovered only by the exact original/candidate,
 	// server address and public assignments, never merely by finding a journal.
@@ -386,6 +497,12 @@ func (e *ipv6UpgradeEngine) commit(ctx context.Context) rolloutResult {
 }
 
 func validIPv6UpgradeIntent(intent ipv6UpgradeIntent) bool {
+	if intent.Request.ForwardingPrefix != "" && (len(intent.Request.ForwardingPrefix) != forwardingPrefixSize || configHash([]byte(intent.Request.ForwardingPrefix)) != forwardingPrefixHash) {
+		return false
+	}
+	if (intent.StartupOriginalHash == "") != (intent.StartupCandidateHash == "") || (intent.StartupOriginalHash != "" && (!configOperationOK(intent.StartupOriginalHash) || !configOperationOK(intent.StartupCandidateHash))) || (intent.StartupOperation != "" && (!configOperationOK(intent.StartupOperation) || intent.StartupOriginalHash == "")) {
+		return false
+	}
 	if intent.Version != 1 || !containerOK(intent.Request.Container) || !configOperationOK(intent.Target) || !configOperationOK(intent.OriginalHash) || !configOperationOK(intent.CandidateHash) || !configIPv6JournalOK(&configIPv6Journal{CIDR: intent.CIDR}) || intent.Assignments == nil || clientIPv6AssignmentsOK(intent.Assignments) != nil {
 		return false
 	}

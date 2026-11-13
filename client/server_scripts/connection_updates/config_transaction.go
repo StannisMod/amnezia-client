@@ -401,7 +401,7 @@ func configTransactionCommand(input io.Reader, output io.Writer, paths map[strin
 		if request.Operation != "" || len(request.Expected) != 0 || len(request.Candidate) != 0 || request.ServerIPv6 != "" {
 			return errors.New("unexpected capability fields")
 		}
-		return json.NewEncoder(output).Encode(map[string]any{"version": 1, "features": []string{"native-mutation-v1", "native-reconcile-v1", "native-rollback-guard-v1", "native-stage-restart-v1", "client-table-cas-v1", "native-receipt-v1", "client-table-migration-v1", "peer-metadata-intent-v1", "peer-native-revocation-v1", "ipv6-egress-v1"}})
+		return json.NewEncoder(output).Encode(map[string]any{"version": 1, "features": []string{"native-mutation-v1", "native-reconcile-v1", "native-rollback-guard-v1", "native-stage-restart-v1", "client-table-cas-v1", "native-receipt-v1", "client-table-migration-v1", "peer-metadata-intent-v1", "peer-native-revocation-v1", "ipv6-egress-v1", "ipv6-boot-upgrade-v1"}})
 	}
 	if request.Action == "prepare-receipt" || request.Action == "prepare-peer-metadata" || request.Action == "receipt-status" || request.Action == "check-revoked-peer" || request.Action == "ack-receipt" {
 		return configReceiptCommand(path, request, output)

@@ -13,6 +13,7 @@
 
 #include "core/utils/api/apiUtils.h"
 #include "core/controllers/selfhosted/installController.h"
+#include "core/controllers/selfhosted/connectionUpdatesController.h"
 #include "core/controllers/connectionController.h"
 #include "core/utils/networkUtilities.h"
 #include "core/utils/errorStrings.h"
@@ -414,24 +415,35 @@ void InstallUiController::updateProtocolSoftware(const QString &serverId, int co
     // Take credentials on the owning thread. The worker has no repository/model
     // access and never changes cached profiles or emits client revocations.
     const auto credentials = admin->credentials();
+    const auto deliveryMetadata = admin->connectionUpdates;
     m_serverConfigUpdateInProgress = true;
     emit serverIsBusy(true);
-    auto *watcher = new QFutureWatcher<ErrorCode>(this);
-    connect(watcher, &QFutureWatcher<ErrorCode>::finished, this, [this, watcher]() {
-        const auto error = watcher->result();
+    using Outcome = QPair<ErrorCode, QString>;
+    auto *watcher = new QFutureWatcher<Outcome>(this);
+    connect(watcher, &QFutureWatcher<Outcome>::finished, this, [this, watcher]() {
+        const auto result = watcher->result();
+        const auto error = result.first;
         watcher->deleteLater();
         m_serverConfigUpdateInProgress = false;
         emit serverIsBusy(false);
         if (error == ErrorCode::NoError) {
-            emit updateContainerFinished(tr("Protocol updated. Keys, users and connection settings were preserved."), false);
+            emit updateContainerFinished(result.second.isEmpty() ? tr("Protocol updated. Keys, users and connection settings were preserved.") : result.second, false);
         } else {
             emit installationErrorOccurred(error);
         }
     });
     // SSH schedules its blocking calls on Qt's global pool. The outer task
     // must not occupy that pool's only worker on a single-CPU machine.
-    watcher->setFuture(QtConcurrent::run(&m_protocolSoftwareUpdatePool, [credentials, container]() {
-        return InstallController::updateProtocolSoftware(credentials, container);
+    watcher->setFuture(QtConcurrent::run(&m_protocolSoftwareUpdatePool, [credentials, container, deliveryMetadata]() -> Outcome {
+        const auto error = InstallController::updateProtocolSoftware(credentials, container);
+        if (error != ErrorCode::NoError) return {error, {}};
+        QJsonObject ipv6;
+        const auto ipv6Error = ConnectionUpdatesController::prepareServerIPv6(credentials, container, ipv6, deliveryMetadata);
+        if (ipv6Error != ErrorCode::NoError)
+            return {ErrorCode::NoError, tr("Protocol updated. IPv6 setup did not finish; run the update again to resume it.")};
+        if (ipv6.value("result") == "unavailable")
+            return {ErrorCode::NoError, tr("Protocol updated. IPv6 could not be verified on this server; IPv4 settings were preserved.")};
+        return {ErrorCode::NoError, {}};
     }));
 }
 

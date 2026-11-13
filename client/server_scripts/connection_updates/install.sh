@@ -1,6 +1,7 @@
 #!/bin/sh
 # Run as root through SSH. Source lives in the caller's private staging directory.
 set -eu
+protocols='amnezia-wireguard amnezia-awg2'
 # Stage from the immutable image we just built. No VPN container restart and
 # no mutation of keys/configuration is required to deploy the helper.
 install_protocol_helpers() {
@@ -11,7 +12,7 @@ install_protocol_helpers() {
     fi
     docker rm "$helper_source" >/dev/null
     chmod 700 "$build/config-helper-candidate"
-    for protocol in amnezia-wireguard amnezia-awg2; do
+    for protocol in $protocols; do
         if ! docker container inspect "$protocol" >/dev/null 2>&1; then continue; fi
         protocol_id=$(docker inspect -f '{{.Id}}' "$protocol")
         test "$(docker inspect -f '{{.State.Running}}' "$protocol_id")" = true
@@ -28,7 +29,13 @@ install_protocol_helpers() {
     done
 }
 # The helper-only entry point is also used by the disposable native acceptance.
-if [ "$1" = --install-protocol-helpers ]; then
+if [ "$1" = --install-protocol-helpers ] || [ "$1" = --install-protocol-helper ]; then
+    if [ "$1" = --install-protocol-helper ]; then
+        test "$#" -eq 4
+        case "$4" in amnezia-wireguard|amnezia-awg2) protocols=$4 ;; *) exit 1 ;; esac
+    else
+        test "$#" -eq 3
+    fi
     image=$2
     build=$3
     operation=$(cat /proc/sys/kernel/random/uuid)
@@ -40,6 +47,11 @@ if [ "$1" = --install-protocol-helpers ]; then
 fi
 build=$1
 host=$2
+if [ "$#" -eq 3 ]; then
+    case "$3" in amnezia-wireguard|amnezia-awg2) protocols=$3 ;; *) exit 1 ;; esac
+else
+    test "$#" -eq 2
+fi
 name=amnezia-connection-updates
 volume=amnezia-connection-updates-state
 original_id=''

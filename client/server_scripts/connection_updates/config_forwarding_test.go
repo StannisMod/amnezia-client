@@ -201,10 +201,18 @@ func TestKnownStartupBootUpgrade(t *testing.T) {
 			desired := append(bytes.Clone(prefix), current[len("#!/bin/bash\n"):]...)
 			deployedOld := bytes.ReplaceAll(old, []byte("$SERVER_IP_ADDRESS"), []byte("203.0.113.7"))
 			deployedDesired := bytes.ReplaceAll(desired, []byte("$SERVER_IP_ADDRESS"), []byte("203.0.113.7"))
+			generated, generateErr := ipv6StartupCandidate(deployedOld, prefix, spec.container)
+			if generateErr != nil || !bytes.Equal(generated, deployedDesired) {
+				t.Fatal("legacy boot candidate differs from verified transformation", generateErr)
+			}
 			if !startupBootCandidateOK(deployedOld, deployedDesired, spec.container) {
 				t.Fatal("actual substituted startup prelude rejected")
 			}
 			fatalOld := bytes.Replace(current, call, []byte("\namnezia_enable_ipv6 "+spec.iface+" || exit 1\n"), 1)
+			repaired, repairErr := ipv6StartupCandidate(fatalOld, prefix, spec.container)
+			if repairErr != nil || !bytes.Equal(repaired, desired) {
+				t.Fatal("fatal legacy boot generator failed", repairErr)
+			}
 			if !startupBootCandidateOK(fatalOld, desired, spec.container) {
 				t.Fatal("fatal legacy boot call cannot be repaired")
 			}

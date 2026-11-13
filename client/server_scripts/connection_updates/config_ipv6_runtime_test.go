@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/x509"
 	"encoding/json"
@@ -11,7 +12,9 @@ import (
 	"net/http/httptest"
 	"net/netip"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -150,5 +153,50 @@ func TestIPv6EgressUsesAuthenticatedBoundIPv6(t *testing.T) {
 	}
 	if err := probeIPv6HTTPS(ctx, netip.MustParseAddr("127.0.0.1"), endpoint, name, "/dns-query", roots); err == nil {
 		t.Fatal("IPv4 source accepted")
+	}
+}
+
+func TestFreshConfigurationDefersIPv6UntilVerifiedAndPreservesExisting(t *testing.T) {
+	for _, spec := range []struct{ kind, tool, path string }{{"wireguard", "wg", "wg0.conf"}, {"awg", "awg", "awg0.conf"}} {
+		for _, existing := range []bool{false, true} {
+			t.Run(spec.kind+map[bool]string{false: "-fresh", true: "-existing"}[existing], func(t *testing.T) {
+				dir := t.TempDir()
+				state := filepath.Join(dir, "state")
+				if err := os.Mkdir(state, 0700); err != nil {
+					t.Fatal(err)
+				}
+				if existing {
+					if err := os.WriteFile(filepath.Join(state, spec.path), []byte("  [Interface]\nAddress = 10.77.0.1/24, FD77:0:0::1/64, fd88::1/64 # retain both\n[Peer]\nAllowedIPs = fd99::1/128\n"), 0600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				tool := filepath.Join(dir, spec.tool)
+				if err := os.WriteFile(tool, []byte("#!/bin/sh\nprintf '%s\\n' AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\n"), 0700); err != nil {
+					t.Fatal(err)
+				}
+				raw, err := os.ReadFile("../" + spec.kind + "/configure_container.sh")
+				if err != nil {
+					t.Fatal(err)
+				}
+				script := strings.ReplaceAll(string(raw), "/opt/amnezia/"+spec.kind, state)
+				command := exec.Command("/bin/sh", "-s")
+				command.Stdin = strings.NewReader(script)
+				command.Env = append(os.Environ(), "PATH="+dir+":"+os.Getenv("PATH"), "WIREGUARD_IPV6_ADDRESS=fd77::1/64", "WIREGUARD_SUBNET_IP=10.77.0.1", "AWG_SUBNET_IP=10.77.0.1", "WIREGUARD_SUBNET_CIDR=24", "WIREGUARD_SERVER_PORT=51820", "AWG_SERVER_PORT=51820")
+				if output, err := command.CombinedOutput(); err != nil {
+					t.Fatalf("configure fixture failed: %v (%d bytes output)", err, len(output))
+				}
+				result, err := os.ReadFile(filepath.Join(state, spec.path))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if existing {
+					if !bytes.Contains(result, []byte("Address = 10.77.0.1/24, FD77:0:0::1/64, fd88::1/64")) || bytes.Contains(result, []byte("fd99::1")) {
+						t.Fatal("previous IPv6 interface addresses were not preserved")
+					}
+				} else if !bytes.Contains(result, []byte("Address = 10.77.0.1/24\n")) || bytes.Contains(result, []byte("fd77::1")) {
+					t.Fatal("unverified new IPv6 was advertised")
+				}
+			})
+		}
 	}
 }

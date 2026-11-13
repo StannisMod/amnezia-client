@@ -285,6 +285,45 @@ private slots:
         else if (scenario == "edited") { QCOMPARE(result.value("description").toString(), "user edit"); QVERIFY(!client(result, false).contains("path_mtu_probe")); }
         settings.clearSettings();
     }
+    void realServerIPv6Activation()
+    {
+        if (qEnvironmentVariable("AMNEZIA_IPV6_ACTIVATION_TEST") != "isolated-docker")
+            QSKIP("Run server/ipv6/lab/test_activation.py with this executable");
+        QCOMPARE(qEnvironmentVariable("AMNEZIA_SSH_PROBE_HOST"), QString("127.0.0.1"));
+        ServerCredentials credentials; credentials.hostName="127.0.0.1";
+        credentials.port=qEnvironmentVariableIntValue("AMNEZIA_SSH_PROBE_PORT");
+        credentials.userName="root"; credentials.secretData="synthetic-probe-fixture";
+        const auto selected=qEnvironmentVariable("AMNEZIA_IPV6_CONTAINER");
+        QVERIFY(selected=="amnezia-wireguard" || selected=="amnezia-awg2");
+        const auto container=selected=="amnezia-awg2"?DockerContainer::Awg2:DockerContainer::WireGuard;
+        const auto tool=container==DockerContainer::Awg2?QString("awg"):QString("wg");
+        const auto iface=container==DockerContainer::Awg2?QString("awg0"):QString("wg0");
+        SshSession ssh; QString labels;
+        QCOMPARE(ssh.runScript(credentials,"test -f /run/amnezia-ipv6-fixture && sudo docker info --format '{{json .Labels}}'",
+            [&](const QString &data,libssh::Client &){labels+=data;return ErrorCode::NoError;}),ErrorCode::NoError);
+        QVERIFY(QJsonDocument::fromJson(labels.toUtf8()).array().contains("amnezia.test-environment=disposable"));
+        auto publicKey=[&]() {
+            QString value;
+            const auto error=ssh.runScript(credentials,QString("sudo docker exec %1 %2 show %3 public-key").arg(selected,tool,iface),
+                [&](const QString &data,libssh::Client &){value+=data;return ErrorCode::NoError;});
+            if(error!=ErrorCode::NoError)return QString();
+            return value.trimmed();
+        };
+        const auto original=publicKey();QVERIFY(!original.isEmpty());
+        QJsonObject metadata;
+        QCOMPARE(ConnectionUpdatesController::command(credentials,"info",{},metadata),ErrorCode::NoError);
+        QJsonObject outcome;
+        const auto error=ConnectionUpdatesController::prepareServerIPv6(credentials,container,outcome,metadata);
+        QVERIFY2(error==ErrorCode::NoError,qPrintable(QString::fromUtf8(QJsonDocument(outcome).toJson(QJsonDocument::Compact))));
+        QCOMPARE(outcome.value("result").toString(),qEnvironmentVariable("AMNEZIA_IPV6_EXPECT"));
+        QCOMPARE(publicKey(),original);
+        QJsonObject assignments;
+        QCOMPARE(ConnectionUpdatesController::fetchPeerIPv6Assignments(credentials,container,assignments),ErrorCode::NoError);
+        QCOMPARE(assignments.size(),2);
+        for(auto it=assignments.begin();it!=assignments.end();++it)
+            QCOMPARE(!it.value().toString().isEmpty(),outcome.value("result")=="applied");
+        qInfo().noquote()<<"IPV6_ACTIVATION_RESULT "+QString::fromUtf8(QJsonDocument(outcome).toJson(QJsonDocument::Compact));
+    }
     void realAdminProbeAddressRead()
     {
         const auto host = qEnvironmentVariable("AMNEZIA_SSH_PROBE_HOST");

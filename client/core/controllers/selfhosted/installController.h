@@ -123,7 +123,7 @@ private:
 
     ErrorCode processContainerForAdmin(DockerContainer container, ContainerConfig &containerConfig,
                                        const ServerCredentials &credentials, SshSession &sshSession,
-                                       const QString &serverId, const QString &clientName);
+                                       const QString &serverId, const QString &clientName, const QJsonObject &deliveryMetadata = {});
 
     void adminAppendRequested(const QString &serverId, DockerContainer container,
                               const ContainerConfig &containerConfig, const QString &clientName);

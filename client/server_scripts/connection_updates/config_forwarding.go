@@ -115,6 +115,29 @@ func startupTransactionCommand(input io.Reader, output io.Writer, paths map[stri
 	if decoder.Decode(&request) != nil || decoder.Decode(new(any)) != io.EOF || request.ServerIPv6 != "" {
 		return errors.New("invalid startup transaction request")
 	}
+	if request.Action == "check-current" {
+		path, exists := paths[request.Container]
+		if !exists || request.Operation != "" || len(request.Expected) == 0 || len(request.Expected) > 4<<20 || len(request.Candidate) != 0 || len(request.ExpectedEntry) != 0 {
+			return errors.New("invalid startup state check")
+		}
+		lock, err := lockConfig(path)
+		if err != nil {
+			return err
+		}
+		defer lock.Close()
+		if _, err := os.Lstat(path + ".amnezia-journal"); !errors.Is(err, os.ErrNotExist) {
+			return errors.New("startup transaction is pending")
+		}
+		current, info, err := readConfigFile(path, 4<<20)
+		if err != nil {
+			return err
+		}
+		owner, ok := info.Sys().(*syscall.Stat_t)
+		if !ok || owner.Nlink != 1 || int(owner.Uid) != os.Geteuid() || info.Mode().Perm()&0022 != 0 || !bytes.Equal(current, request.Expected) {
+			return errConfigConflict
+		}
+		return json.NewEncoder(output).Encode(map[string]any{"version": 1, "current": true, "candidateHash": configHash(current)})
+	}
 	switch request.Action {
 	case "stage":
 		if !startupCandidateOK(request.Expected, request.Candidate) && !startupBootCandidateOK(request.Expected, request.Candidate, request.Container) {
@@ -125,6 +148,48 @@ func startupTransactionCommand(input io.Reader, output io.Writer, paths map[stri
 		return errors.New("unsupported startup transaction action")
 	}
 	return configTransactionCommand(bytes.NewReader(raw), output, paths)
+}
+
+// Construct only the transformation accepted by the existing boot validator.
+// The remaining startup body, including user hooks, is preserved byte-for-byte.
+func ipv6StartupCandidate(original, prefix []byte, container string) ([]byte, error) {
+	if len(prefix) != forwardingPrefixSize || configHash(prefix) != forwardingPrefixHash {
+		return nil, errors.New("untrusted IPv6 forwarding prefix")
+	}
+	body, ok := startupBody(original)
+	if !ok {
+		return nil, errors.New("unsupported startup body")
+	}
+	candidate := append(bytes.Clone(prefix), body...)
+	if startupBootCandidateOK(original, candidate, container) {
+		return candidate, nil
+	}
+	iface, err := protocolInterface(container)
+	if err != nil {
+		return nil, err
+	}
+	tool, path := "wg-quick", "/opt/amnezia/wireguard/wg0.conf"
+	if container == "amnezia-awg2" {
+		tool, path = "awg-quick", "/opt/amnezia/awg/awg0.conf"
+	}
+	anchor := []byte("if [ -f " + path + " ]; then (" + tool + " up " + path + "); fi\n")
+	index := bytes.Index(body, anchor)
+	if index < 0 {
+		return nil, errors.New("unrecognized tunnel startup")
+	}
+	end := index + len(anchor)
+	tail := body[end:]
+	legacy := []byte("\namnezia_enable_ipv6 " + iface + " || exit 1\n")
+	if bytes.HasPrefix(tail, legacy) {
+		tail = tail[len(legacy):]
+	}
+	updated := append(bytes.Clone(body[:end]), []byte("\n"+startupBootCall(iface)+"\n")...)
+	updated = append(updated, tail...)
+	candidate = append(bytes.Clone(prefix), updated...)
+	if !startupBootCandidateOK(original, candidate, container) {
+		return nil, errors.New("unrecognized startup transformation")
+	}
+	return candidate, nil
 }
 
 // Recognize the complete known prelude, not a substring that could occur inside

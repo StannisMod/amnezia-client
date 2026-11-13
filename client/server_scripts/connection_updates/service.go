@@ -333,7 +333,7 @@ func stateTag(s *state) string {
 	return hex.EncodeToString(digest[:])
 }
 func info(s *state) map[string]any {
-	return map[string]any{"version": 1, "stateTag": stateTag(s), "features": []string{"coverage-v1", "conditional-publication-v1", "awg3-header-protection-v1", "rollout-readiness-v1", "live-publication-v1", "path-mtu-probe-v1", "client-ipv6-v1", "conditional-client-ipv6-v1", "idempotent-issue-v1", "ipv6-upgrade-v1"}, "host": s.Host, "publicKey": []byte(ed25519.PrivateKey(s.SigningKey).Public().(ed25519.PublicKey)), "certificate": s.Certificate}
+	return map[string]any{"version": 1, "stateTag": stateTag(s), "features": []string{"coverage-v1", "conditional-publication-v1", "awg3-header-protection-v1", "rollout-readiness-v1", "live-publication-v1", "path-mtu-probe-v1", "client-ipv6-v1", "conditional-client-ipv6-v1", "idempotent-issue-v1", "ipv6-upgrade-v1", "ipv6-boot-upgrade-v1"}, "host": s.Host, "publicKey": []byte(ed25519.PrivateKey(s.SigningKey).Public().(ed25519.PublicKey)), "certificate": s.Certificate}
 }
 func probe(s *state) error {
 	certificate, e := x509.ParseCertificate(s.Certificate)

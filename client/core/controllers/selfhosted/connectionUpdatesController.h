@@ -28,6 +28,8 @@ public:
                                          const QString &host, QJsonObject &settings, QStringList *peers = nullptr, QString *pathMtuProbe = nullptr);
     static ErrorCode fetchPeerIPv6Assignments(const ServerCredentials &credentials, DockerContainer container, QJsonObject &assignments);
     static ErrorCode fetchPathMtuProbeAddress(const ServerCredentials &credentials, DockerContainer container, QString &address);
+    static ErrorCode prepareServerIPv6(const ServerCredentials &credentials, DockerContainer container,
+                                      QJsonObject &outcome, const QJsonObject &deliveryMetadata = {});
     Q_INVOKABLE bool available(const QString &serverId) const;
     Q_INVOKABLE bool enabled(const QString &serverId) const;
     Q_INVOKABLE void refresh(const QString &serverId);

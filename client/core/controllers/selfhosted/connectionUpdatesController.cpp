@@ -2,6 +2,7 @@
 #include "core/utils/selfhosted/connectionUpdatesCommand.h"
 
 #include <QDateTime>
+#include <QCryptographicHash>
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFutureWatcher>
@@ -12,6 +13,7 @@
 #include <QSslConfiguration>
 #include <QTimer>
 #include <QRegularExpression>
+#include <QScopeGuard>
 #include <QUuid>
 #include <QtConcurrent>
 #include <memory>
@@ -104,6 +106,124 @@ ErrorCode ConnectionUpdatesController::fetchPeerIPv6Assignments(const ServerCred
         });
     if (error != ErrorCode::NoError) return error;
     return connectionUpdates::parsePeerIPv6Assignments(output, assignments) ? ErrorCode::NoError : ErrorCode::InternalError;
+}
+
+ErrorCode ConnectionUpdatesController::prepareServerIPv6(const ServerCredentials &credentials, DockerContainer container,
+                                                         QJsonObject &outcome, const QJsonObject &deliveryMetadata)
+{
+    outcome = {};
+    if (!credentials.isValid() || (container != DockerContainer::WireGuard && container != DockerContainer::Awg2)) return ErrorCode::InternalError;
+    const auto name = ContainerUtils::containerToString(container);
+    QFile networkResource(":/server_scripts/prepare_ipv6_network.sh");
+    QFile forwardingResource(":/server_scripts/enable_ipv6_forwarding.sh");
+    if (!networkResource.open(QIODevice::ReadOnly) || !forwardingResource.open(QIODevice::ReadOnly)) return ErrorCode::InternalError;
+    const auto forwarding = QByteArray("#!/bin/bash\n") + forwardingResource.readAll().replace("\r", "") + "\n";
+    QJsonObject request { {"container", name}, {"forwardingPrefix", QString::fromUtf8(forwarding)} };
+    bool upgradeDelivery = false;
+    QString deliveryHost;
+    if (!deliveryMetadata.isEmpty()) {
+        if (QByteArray::fromBase64(deliveryMetadata.value("publicKey").toString().toLatin1()).size() != 32
+            || QSslCertificate(QByteArray::fromBase64(deliveryMetadata.value("certificate").toString().toLatin1()), QSsl::Der).isNull()) return ErrorCode::InternalError;
+        request["expectedPublicKey"] = deliveryMetadata.value("publicKey");
+        request["expectedCertificate"] = deliveryMetadata.value("certificate");
+        QJsonObject info;
+        const auto infoError = command(credentials, "info", {}, info);
+        if (infoError != ErrorCode::NoError) return infoError;
+        if (info.value("publicKey") != deliveryMetadata.value("publicKey") || info.value("certificate") != deliveryMetadata.value("certificate")) return ErrorCode::InternalError;
+        upgradeDelivery = !info.value("features").toArray().contains("conditional-client-ipv6-v1");
+        if (upgradeDelivery) {
+            deliveryHost = vpnEndpoint::normalizeHost(info.value("host").toString());
+            if (deliveryHost.isEmpty()) return ErrorCode::InternalError;
+        }
+    }
+    SshSession ssh;
+    const auto stage = "/tmp/amnezia-ipv6-" + QUuid::createUuid().toString(QUuid::Id128);
+    auto error = ssh.runScript(credentials, "umask 077 && mkdir '" + stage + "'");
+    if (error != ErrorCode::NoError) return error;
+    const auto cleanup = qScopeGuard([&] { ssh.runScript(credentials, "sudo rm -rf -- '" + stage + "'"); });
+    const auto networkScript = networkResource.readAll().replace("\r", "")
+        + QString("\nif [ -n \"$AMNEZIA_IPV6_NETWORK\" ]; then\n"
+                  "amnezia_attach_ipv6_network '%1' || exit 1\n"
+                  "printf '\\namnezia_ipv6_network=ready\\n'\n"
+                  "else printf '\\namnezia_ipv6_network=unavailable\\n'; fi\n").arg(name).toUtf8();
+    error = ssh.uploadFileToHost(credentials, networkScript, stage + "/prepare-network.sh");
+    if (error != ErrorCode::NoError) return error;
+    QString networkOutput;
+    error = ssh.runScript(credentials, "sh '" + stage + "/prepare-network.sh'",
+        [&](const QString &data, libssh::Client &) { if (networkOutput.size() + data.size() > 65536) return ErrorCode::InternalError; networkOutput += data; return ErrorCode::NoError; });
+    if (error != ErrorCode::NoError) {
+        outcome = {{"version", 1}, {"result", "rejected"}, {"reason", "ipv6_network_preparation_failed"}};
+        return error;
+    }
+    const auto markers = networkOutput.split('\n').filter(QRegularExpression("^amnezia_ipv6_network=(ready|unavailable)$"));
+    if (markers.size() != 1) return ErrorCode::InternalError;
+    if (markers.first() == "amnezia_ipv6_network=unavailable") {
+        outcome = {{"version", 1}, {"result", "unavailable"}, {"reason", "ipv6_network_unavailable"}};
+        return ErrorCode::NoError;
+    }
+
+    const auto iface = container == DockerContainer::Awg2 ? QStringLiteral("awg0") : QStringLiteral("wg0");
+    error = ssh.runScript(credentials, QString(
+        "container_id=$(sudo docker inspect -f '{{.Id}}' '%1') && "
+        "sudo docker exec \"$container_id\" sh -c 'for attempt in 1 2 3 4 5 6 7 8 9 10; do "
+        "flags=$(cat /sys/class/net/%2/flags 2>/dev/null) && [ $((flags & 1)) -eq 1 ] && exit 0; "
+        "sleep 1; done; exit 1'").arg(name, iface));
+    if (error != ErrorCode::NoError) return error;
+
+    // The native helper is also deployed without enabling the optional HTTP
+    // delivery service. Build inputs are the same packaged, pinned sources.
+    QByteArray sources;
+    for (const auto &file : {"Dockerfile", "service.go", "rollout.go", "readiness.go", "ipv6_migration.go", "config_transaction.go", "config_runtime.go", "config_ipv6_runtime.go", "ipv6_publication.go", "ipv6_upgrade.go", "config_forwarding.go", "go.mod", "install.sh"}) {
+        const auto bytes = resource(file);
+        if (bytes.isEmpty()) { error = ErrorCode::InternalError; break; }
+        sources += QByteArray(file) + '\0' + bytes + '\0';
+        error = ssh.uploadFileToHost(credentials, bytes, stage + '/' + file);
+        if (error != ErrorCode::NoError) break;
+    }
+    if (error == ErrorCode::NoError) error = ssh.uploadFileToHost(credentials, QJsonDocument(request).toJson(QJsonDocument::Compact), stage + "/request.json");
+    QString output;
+    if (error == ErrorCode::NoError) {
+        const auto tag = "amnezia-ipv6-helper:" + QString::fromLatin1(QCryptographicHash::hash(sources, QCryptographicHash::Sha256).toHex());
+        const auto install = upgradeDelivery
+            ? QString("sudo sh '%1/install.sh' '%1' '%2' '%3' > '%1/helper-install.log' 2>&1\n").arg(stage, deliveryHost, name)
+            : QString("sudo sh '%1/install.sh' --install-protocol-helper \"$image\" '%1' '%2' > '%1/helper-install.log' 2>&1\n").arg(stage, name);
+        const auto script = QString(R"AMNEZIA(
+set -e
+source_id=''
+phase='helper_build_failed'
+cleanup() {
+    status=$?
+    if [ "$status" -ne 0 ]; then
+        printf '{"version":1,"result":"rejected","reason":"%s"}\n' "$phase"
+    fi
+    if [ -n "$source_id" ]; then sudo docker rm "$source_id" >/dev/null 2>&1 || true; fi
+}
+trap cleanup EXIT
+sudo docker build --network host -t '%1' '%2' > '%2/build.log' 2>&1
+image=$(sudo docker image inspect -f '{{.Id}}' '%1')
+phase='helper_install_failed'
+%3
+source_id=$(sudo docker create --network none --entrypoint /updates "$image")
+sudo docker cp "$source_id:/updates" '%2/updates' >/dev/null
+sudo chmod 700 '%2/updates'
+phase='ipv6_activation_unconfirmed'
+sudo '%2/updates' upgrade-ipv6 < '%2/request.json'
+)AMNEZIA").arg(tag, stage, install);
+        error = ssh.uploadFileToHost(credentials, script.toUtf8(), stage + "/deploy.sh");
+        if (error == ErrorCode::NoError) error = ssh.runScript(credentials, "sh '" + stage + "/deploy.sh'", [&](const QString &data, libssh::Client &) {
+            if (output.size() + data.size() > 65536) return ErrorCode::InternalError;
+            output += data; return ErrorCode::NoError;
+        });
+    }
+    outcome = QJsonDocument::fromJson(output.toUtf8()).object();
+    if (error != ErrorCode::NoError) return error;
+    if (outcome.value("version").toInt() != 1) return ErrorCode::InternalError;
+    if (outcome.value("result") == "applied") return ErrorCode::NoError;
+    if (outcome.value("result") == "rolled_back" && outcome.value("reason") == "ipv6_egress_unverified") {
+        outcome["result"] = "unavailable";
+        return ErrorCode::NoError;
+    }
+    return ErrorCode::InternalError;
 }
 ErrorCode ConnectionUpdatesController::fetchPublicSettings(const ServerCredentials &credentials, DockerContainer container,
                                                            const QString &host, QJsonObject &settings, QStringList *peers, QString *pathMtuProbe)
@@ -239,6 +359,10 @@ void ConnectionUpdatesController::administer(const QString &id, const QString &a
             profile[connectionUpdates::metadataKey] = metadata;
             m_servers->editServer(id, profile, serverConfigUtils::SelfHostedAdmin);
         }
+        if (action == "install" && result.reason == "ipv6_incomplete") {
+            emit finished(true, tr("Connection updates enabled on TCP port 8443. Allow this port in your VPS firewall. IPv6 setup did not finish; run setup again to resume it."));
+            return;
+        }
         emit finished(true, action == "install" ? tr("Connection updates enabled on TCP port 8443. Allow this port in your VPS firewall.")
                                                : action == "publish" ? tr("Connection settings published.") : tr("Update token revoked. Use Revoke access to also disable the VPN peer."));
     });
@@ -265,6 +389,15 @@ void ConnectionUpdatesController::administer(const QString &id, const QString &a
             QUrl url; url.setScheme("https"); url.setHost(updateHost); url.setPort(8443);
             result.metadata["url"] = url.toString();
             result.error = flushPendingRevocations(credentials, admin->connectionUpdates);
+            if (result.error != ErrorCode::NoError) return result;
+            for (const auto protocol : {DockerContainer::WireGuard, DockerContainer::Awg2}) {
+                if (!admin->containers.contains(protocol)) continue;
+                QJsonObject ipv6;
+                if (prepareServerIPv6(credentials, protocol, ipv6, result.metadata) != ErrorCode::NoError) {
+                    result.reason = "ipv6_incomplete";
+                    break;
+                }
+            }
             return result;
         }
         result.error = flushPendingRevocations(credentials, admin->connectionUpdates);
@@ -280,6 +413,16 @@ void ConnectionUpdatesController::administer(const QString &id, const QString &a
             if (!info.value("features").toArray().contains("live-publication-v1")) {
                 result.outcome = "upgrade_required"; return result;
             }
+            QJsonObject ipv6;
+            result.error = prepareServerIPv6(credentials, container, ipv6, admin->connectionUpdates);
+            if (result.error != ErrorCode::NoError) return result;
+            QJsonObject refreshed;
+            result.error = command(credentials, "info", {}, refreshed);
+            if (result.error != ErrorCode::NoError) return result;
+            if (refreshed.value("publicKey") != admin->connectionUpdates.value("publicKey") || refreshed.value("certificate") != admin->connectionUpdates.value("certificate")) {
+                result.error = ErrorCode::InternalError; return result;
+            }
+            individualIPv6Supported = refreshed.value("features").toArray().contains("client-ipv6-v1");
         }
         if (action == "activate-awg3") {
             result.error = ErrorCode::NoError; result.outcome = "rejected";

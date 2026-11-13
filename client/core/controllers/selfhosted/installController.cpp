@@ -1,4 +1,5 @@
 #include "installController.h"
+#include "connectionUpdatesController.h"
 
 #include "core/models/protocolConfig.h"
 
@@ -274,7 +275,16 @@ ErrorCode InstallController::setupContainer(const ServerCredentials &credentials
 
     setupServerFirewall(credentials, sshSession);
 
-    return startupContainerWorker(credentials, container, config, sshSession);
+    e = startupContainerWorker(credentials, container, config, sshSession);
+    if (e != ErrorCode::NoError) return e;
+    if (container == DockerContainer::WireGuard || container == DockerContainer::Awg2) {
+        QJsonObject ipv6;
+        e = ConnectionUpdatesController::prepareServerIPv6(credentials, container, ipv6);
+        if (e != ErrorCode::NoError) return e;
+        auto installer = createInstaller(container);
+        e = installer->extractConfigFromContainer(container, credentials, &sshSession, config);
+    }
+    return e;
 }
 
 ErrorCode InstallController::updateServerConfig(const QString &serverId, DockerContainer container, const ContainerConfig &oldConfig,
@@ -564,7 +574,7 @@ ErrorCode InstallController::validateAndPrepareConfig(const QString &serverId)
 
     SshSession sshSession;
     const QString clientName = QString("Admin [%1]").arg(QSysInfo::prettyProductName());
-    const ErrorCode errorCode = processContainerForAdmin(container, containerConfig, credentials, sshSession, serverId, clientName);
+    const ErrorCode errorCode = processContainerForAdmin(container, containerConfig, credentials, sshSession, serverId, clientName, adminConfig->connectionUpdates);
     if (errorCode != ErrorCode::NoError) {
         return errorCode;
     }
@@ -662,8 +672,16 @@ void InstallController::adminAppendRequested(const QString &serverId, DockerCont
 
 ErrorCode InstallController::processContainerForAdmin(DockerContainer container, ContainerConfig &containerConfig,
                                                       const ServerCredentials &credentials, SshSession &sshSession,
-                                                      const QString &serverId, const QString &clientName)
+                                                      const QString &serverId, const QString &clientName, const QJsonObject &deliveryMetadata)
 {
+    if (container == DockerContainer::WireGuard || container == DockerContainer::Awg2) {
+        QJsonObject ipv6;
+        auto error = ConnectionUpdatesController::prepareServerIPv6(credentials, container, ipv6, deliveryMetadata);
+        if (error != ErrorCode::NoError) return error;
+        auto installer = createInstaller(container);
+        error = installer->extractConfigFromContainer(container, credentials, &sshSession, containerConfig);
+        if (error != ErrorCode::NoError) return error;
+    }
     if (ContainerUtils::isSupportedByCurrentPlatform(container)) {
         ErrorCode errorCode = prepareContainerConfig(container, credentials, containerConfig, sshSession);
         if (errorCode != ErrorCode::NoError) {
@@ -1601,7 +1619,7 @@ ErrorCode InstallController::scanServerForInstalledContainers(const QString &ser
         if (!containers.contains(iterator.key())) {
             ContainerConfig containerConfig = iterator.value();
             errorCode = processContainerForAdmin(iterator.key(), containerConfig, credentials, sshSession,
-                                                 serverId, clientName);
+                                                 serverId, clientName, adminConfig->connectionUpdates);
             if (errorCode != ErrorCode::NoError) {
                 return errorCode;
             }
@@ -1723,7 +1741,7 @@ ErrorCode InstallController::installContainer(const QString &serverId, DockerCon
         if (existingConfigModel.container == DockerContainer::None) {
             ContainerConfig containerConfig = iterator.value();
             errorCode = processContainerForAdmin(iterator.key(), containerConfig, credentials, sshSession,
-                                                 serverId, clientName);
+                                                 serverId, clientName, adminConfig->connectionUpdates);
             if (errorCode != ErrorCode::NoError) {
                 return errorCode;
             }

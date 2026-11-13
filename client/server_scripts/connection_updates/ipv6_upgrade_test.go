@@ -14,6 +14,8 @@ import (
 type ipv6UpgradeDocker struct {
 	t                                       *testing.T
 	stateDir                                string
+	startupPath                             string
+	loseStartupCommit                       bool
 	current, original                       []byte
 	stage                                   map[string]any
 	applied, verified, signed               bool
@@ -62,6 +64,9 @@ func (f *ipv6UpgradeDocker) call(ctx context.Context, args []string, input []byt
 		return append([]byte(digest+"  /opt/amnezia/config-helper\n"), mustJSON(map[string]any{"version": 1, "installed": digest, "candidate": digest})...), nil
 	}
 	if args[0] == "exec" && args[2] == "head" {
+		if args[len(args)-1] == "/opt/amnezia/start.sh" {
+			return os.ReadFile(f.startupPath)
+		}
 		return bytes.Clone(f.current), nil
 	}
 	if args[0] != "exec" || args[1] != "-i" {
@@ -71,8 +76,17 @@ func (f *ipv6UpgradeDocker) call(ctx context.Context, args []string, input []byt
 	if json.Unmarshal(input, &req) != nil {
 		f.t.Fatal("invalid helper request")
 	}
+	if args[len(args)-1] == "startup-file-transaction" {
+		var output bytes.Buffer
+		err := startupTransactionCommand(bytes.NewReader(input), &output, map[string]string{req.Container: f.startupPath})
+		if err == nil && req.Action == "commit" && f.loseStartupCommit {
+			f.loseStartupCommit = false
+			return nil, errors.New("lost startup commit reply")
+		}
+		return output.Bytes(), err
+	}
 	if req.Action == "capabilities" {
-		return mustJSON(map[string]any{"version": 1, "features": []string{"ipv6-egress-v1"}}), nil
+		return mustJSON(map[string]any{"version": 1, "features": []string{"ipv6-egress-v1", "ipv6-boot-upgrade-v1"}}), nil
 	}
 	if req.Action == "check-ipv6-live" || req.Action == "check-live" {
 		if f.stage != nil || !f.applied || !bytes.Equal(req.Expected, f.current) {
@@ -143,7 +157,26 @@ func ipv6UpgradeFixture(t *testing.T, container string, signed bool) (*ipv6Upgra
 	mustAdmin(t, dir, "issue", request{Container: container, ClientPublicKey: testKey('A'), Settings: testSettings("original.example.test")})
 	config := []byte("[Interface]\nPrivateKey = " + testKey('P') + "\nAddress = 10.77.0.1/24\nListenPort = 51820\n[Peer]\nPublicKey = " + testKey('A') + "\nAllowedIPs = 10.77.0.2/32\n")
 	fake := &ipv6UpgradeDocker{t: t, stateDir: dir, current: config, signed: signed}
-	req := ipv6UpgradeRequest{Container: container}
+	kind, iface := "wireguard", "wg0"
+	if container == "amnezia-awg2" {
+		kind, iface = "awg", "awg0"
+	}
+	startup, err := os.ReadFile("../" + kind + "/start.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	startup = bytes.Replace(startup, []byte("\n"+startupBootCall(iface)+"\n"), nil, 1)
+	fake.startupPath = filepath.Join(t.TempDir(), "start.sh")
+	if err = os.WriteFile(fake.startupPath, startup, 0700); err != nil {
+		t.Fatal(err)
+	}
+	forwarding, err := os.ReadFile("../enable_ipv6_forwarding.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	prefix := append([]byte("#!/bin/bash\n"), forwarding...)
+	prefix = append(prefix, '\n')
+	req := ipv6UpgradeRequest{Container: container, ForwardingPrefix: string(prefix)}
 	if signed {
 		raw := mustJSON(info)
 		var response map[string]json.RawMessage
@@ -176,6 +209,7 @@ func TestIPv6UpgradePublishesOnlyAfterReadiness(t *testing.T) {
 			t.Run(container+map[bool]string{true: "-signed", false: "-native"}[signed], func(t *testing.T) {
 				e, f := ipv6UpgradeFixture(t, container, signed)
 				before := bytes.Clone(f.current)
+				f.loseStartupCommit = true
 				result := e.execute(context.Background())
 				if result.Result != "applied" {
 					t.Fatal(result)
@@ -192,6 +226,20 @@ func TestIPv6UpgradePublishesOnlyAfterReadiness(t *testing.T) {
 				}
 				if signed && f.publications != 1 {
 					t.Fatal("retry republished client revisions", f.publications)
+				}
+				if !signed {
+					info, err := admin(f.stateDir, "info", request{})
+					if err != nil {
+						t.Fatal(err)
+					}
+					var pins map[string]json.RawMessage
+					_ = json.Unmarshal(mustJSON(info), &pins)
+					retry.req.ExpectedPublicKey = rawString(pins["publicKey"])
+					retry.req.ExpectedCertificate = rawString(pins["certificate"])
+					f.signed = true
+					if upgraded := retry.execute(context.Background()); upgraded.Result != "applied" || f.publications != 1 || f.rollbacks != 0 {
+						t.Fatal("native deployment could not enable signed IPv6 later", upgraded)
+					}
 				}
 			})
 		}
