@@ -22,6 +22,8 @@ on:
       - .github/workflows/routing-android-acceptance.yml
       - recipes/**
       - scripts/routing/android/**
+      - scripts/routing/xray_ipv6_fixture.py
+      - scripts/routing/build_xray_fixture.py
       - scripts/routing/run_android_acceptance.py
       - native/routing/cmd/android-fixture/**
       - native/routing/cmd/traffic-probe/**
@@ -201,6 +203,9 @@ jobs:
       - name: Build the disposable AWG peer and independent egress observers
         working-directory: native/routing
         run: go build -mod=readonly -tags with_gvisor -o "$RUNNER_TEMP/android-fixture" ./cmd/android-fixture
+      - name: Build the Xray peer from the Android libxray dependency pin
+        if: ${{ matrix.transport == 'awg' && matrix.api != 28 }}
+        run: python3 scripts/routing/build_xray_fixture.py --work "$RUNNER_TEMP/xray-source" --output "$RUNNER_TEMP/xray-fixture" --report "$RUNNER_TEMP/xray-fixture-provenance.json"
       - name: Enable KVM for the disposable emulator
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
@@ -224,10 +229,20 @@ jobs:
             python3 scripts/routing/run_android_acceptance.py --apk "$FEATURE_APK" --fixture "$RUNNER_TEMP/fixture.json" --observer-ip 198.51.100.2 --quic-probe "$RUNNER_TEMP/android-traffic-probe" --quic-ca "$RUNNER_TEMP/quic.der" --work "$RUNNER_TEMP/android-acceptance" --cycles "${{ inputs.cycles || '100' }}" ${{ matrix.focus }} --apk-source-sha "$(python3 -c 'import json;print(json.load(open("tested-apk-source.json"))["head_sha"])')"
             if [ "${{ matrix.api }}" = 29 ]; then python3 scripts/routing/run_android_work_profile.py --apk "$FEATURE_APK" --fixture "$RUNNER_TEMP/fixture.json" --observer-ip 198.51.100.2 --quic-probe "$RUNNER_TEMP/android-traffic-probe" --quic-ca "$RUNNER_TEMP/quic.der" --work "$RUNNER_TEMP/android-work-profile-acceptance" --apk-source-sha "$(python3 -c 'import json;print(json.load(open("tested-apk-source.json"))["head_sha"])')"; fi
             if [ "${{ matrix.api }}" = 29 ]; then python3 scripts/routing/run_android_acceptance.py --private-dns-policy-only --apk "$FEATURE_APK" --fixture "$RUNNER_TEMP/fixture.json" --observer-ip 198.51.100.2 --quic-probe "$RUNNER_TEMP/android-traffic-probe" --quic-ca "$RUNNER_TEMP/quic.der" --work "$RUNNER_TEMP/android-private-dns-policy" --apk-source-sha "$(python3 -c 'import json;print(json.load(open("tested-apk-source.json"))["head_sha"])')"; fi
+            if [ "${{ matrix.transport }}" = awg ] && [ "${{ matrix.api }}" != 28 ]; then
+              kill "$(cat "$RUNNER_TEMP/fixture.pid")"
+              rm -f "$RUNNER_TEMP/fixture.pid"
+              sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT python3 scripts/routing/xray_ipv6_fixture.py --xray "$RUNNER_TEMP/xray-fixture" --work "$RUNNER_TEMP/xray-peer" > xray-fixture.log 2>&1 & echo $! > "$RUNNER_TEMP/xray-fixture.pid"
+              for i in $(seq 1 30); do sudo test -s "$RUNNER_TEMP/xray-peer/fixture.json" && break; sleep 1; done
+              sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT env "PATH=$PATH" "ANDROID_HOME=$ANDROID_HOME" "ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT:-$ANDROID_HOME}" python3 scripts/routing/run_android_acceptance.py --xray-ipv6-only --apk "$FEATURE_APK" --fixture "$RUNNER_TEMP/xray-peer/fixture.json" --quic-probe "$RUNNER_TEMP/android-traffic-probe" --quic-ca "$RUNNER_TEMP/xray-peer/quic.der" --work "$RUNNER_TEMP/android-xray-ipv6" --apk-source-sha "$(python3 -c 'import json;print(json.load(open("tested-apk-source.json"))["head_sha"])')"
+            fi
       - name: Stop the local peer and remove ephemeral private configuration
         if: always()
         run: |
           if test -f "$RUNNER_TEMP/fixture.pid"; then kill "$(cat "$RUNNER_TEMP/fixture.pid")" || true; fi
+          if test -f "$RUNNER_TEMP/xray-fixture.pid"; then sudo kill "$(cat "$RUNNER_TEMP/xray-fixture.pid")" || true; fi
+          if sudo test -f "$RUNNER_TEMP/xray-peer/xray.log"; then sudo cat "$RUNNER_TEMP/xray-peer/xray.log" > xray-server.log; fi
+          sudo rm -f "$RUNNER_TEMP/xray-peer/fixture.json" "$RUNNER_TEMP/xray-peer/server.json" "$RUNNER_TEMP/xray-peer/server.key"
           rm -f "$RUNNER_TEMP/fixture.json"
       - uses: actions/upload-artifact@v4
         if: always()
@@ -249,3 +264,8 @@ jobs:
             ${{ runner.temp }}/android-work-profile-acceptance/*.log
             ${{ runner.temp }}/android-private-dns-policy/android-acceptance.json
             ${{ runner.temp }}/android-private-dns-policy/*.log
+            ${{ runner.temp }}/xray-fixture-provenance.json
+            xray-fixture.log
+            xray-server.log
+            ${{ runner.temp }}/android-xray-ipv6/android-acceptance.json
+            ${{ runner.temp }}/android-xray-ipv6/*.log

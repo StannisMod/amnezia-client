@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Disposable Xray VLESS/TLS peer and real kernel IPv4/IPv6 TCP/UDP origins.
 
-Only runs as root in Docker --network none. No host networking, external server,
+Runs as root in Docker --network none or a disposable GitHub-hosted runner.
+No user-machine networking, external server,
 system CA installation, or production credentials. Supply the pinned Xray CLI.
 The Android acceptance runner consumes fixture.json and quic.der from --work.
 """
@@ -28,9 +29,12 @@ def main():
     parser.add_argument("--work", type=Path, required=True)
     parser.add_argument("--debug", action="store_true", help="verbose logs for synthetic fixture traffic only")
     args = parser.parse_args()
-    assert Path("/.dockerenv").exists() and os.geteuid() == 0, "only an owned rooted Docker fixture is supported"
-    links = json.loads(subprocess.check_output(["ip", "-j", "link", "show"], text=True))
-    assert {link["ifname"] for link in links} <= {"lo", "stability6"}, "use Docker --network none"
+    assert os.geteuid() == 0, "the disposable fixture needs root"
+    if Path("/.dockerenv").exists():
+        links = json.loads(subprocess.check_output(["ip", "-j", "link", "show"], text=True))
+        assert {link["ifname"] for link in links} <= {"lo", "stability6"}, "use Docker --network none"
+    else:
+        assert os.environ.get("GITHUB_ACTIONS") == "true" and os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted", "only disposable Docker/GitHub runners are supported"
     work = args.work.resolve(); work.mkdir(parents=True, exist_ok=True)
     os.chmod(work, 0o700)
     added, listeners = [], []

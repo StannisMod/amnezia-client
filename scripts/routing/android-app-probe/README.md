@@ -80,3 +80,25 @@ without changing the TUN session or the original socket. The driver only changes
 settings in a rooted disposable emulator and clears them in `finally`. API29
 AWG/WG jobs run this focused check alongside the existing suites; it does not
 claim support for encrypted system DNS together with effective domain rules.
+
+
+Xray IPv6 regression: `build_xray_fixture.py` builds a native test peer using
+only the checked Android libxray recipe archive and its exact SHA256. The CLI
+uses that archive's go.mod/go.sum and Xray fork replacement, not a separately
+chosen upstream version; it records source and binary provenance.
+`xray_ipv6_fixture.py --xray PATH --work DIR` runs on an isolated rooted Docker
+container or disposable GitHub-hosted runner. It starts VLESS/TLS and real
+kernel IPv4, global IPv6, ULA and NAT64 TCP/UDP origins. The pinned fork blocks
+private/documentation destinations by default; the fixture authorizes only its
+four owned addresses and two test ports. It changes no system trust store.
+The fixture removes only the loopback addresses it added when stopped.
+
+`run_android_acceptance.py --xray-ipv6-only` uses the actual XrayService and
+packaged libxray/tun2socks. Each successful TCP/UDP response must also increment
+the VLESS ingress count for that exact address: a native IPv6 bypass cannot
+satisfy this test. It separately waits for IPv4 and IPv6 kernel capture, then
+checks that explicit IPv4 site inclusion keeps unselected IPv6 traffic direct.
+The existing AWG jobs on API29 and API35 run this after their AWG checks; no
+extra matrix jobs are introduced. This proves client capture and local IPv6
+egress through VLESS/TLS, not IPv6 auto-deployment of a real remote Docker host
+or support on Windows/macOS/iOS.
