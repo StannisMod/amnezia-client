@@ -42,6 +42,20 @@ class NetworkState(
         properties.domains, properties.isPrivateDnsActive, properties.privateDnsServerName
     ).joinToString("|")
 
+    /** No DNS lookup: compare the captured inventory without interrupting it. */
+    fun dnsIdentity(): String {
+        val preferred = selectedUnderlay()?.networkHandle
+        val links = connectivityManager.allNetworks.mapNotNull { network ->
+            if (network in lostNetworks) return@mapNotNull null
+            val capabilities = connectivityManager.getNetworkCapabilities(network) ?: return@mapNotNull null
+            if (!capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN) ||
+                !capabilities.hasCapability(NET_CAPABILITY_INTERNET)) return@mapNotNull null
+            val properties = connectivityManager.getLinkProperties(network) ?: return@mapNotNull null
+            "${network.networkHandle}:${dnsFingerprint(properties)}"
+        }.sorted()
+        return "$preferred|${links.joinToString(";")}"
+    }
+
     fun dnsSnapshot(): JSONObject {
         val available = connectivityManager.allNetworks.mapNotNull { network ->
             if (network in lostNetworks) return@mapNotNull null

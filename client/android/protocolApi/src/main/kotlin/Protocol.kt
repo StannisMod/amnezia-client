@@ -31,8 +31,10 @@ abstract class Protocol {
     protected var endpointResolver: ((String) -> List<java.net.InetAddress>)? = null
     protected var networkDnsSnapshot: (() -> JSONObject)? = null
     protected var networkDnsProtect: ((Int, String) -> Boolean)? = null
-    fun configureNetworkDns(snapshot: () -> JSONObject, protect: (Int, String) -> Boolean) {
+    protected var networkDnsIdentity: (() -> String?)? = null
+    fun configureNetworkDns(snapshot: () -> JSONObject, protect: (Int, String) -> Boolean, identity: (() -> String?)? = null) {
         networkDnsSnapshot = snapshot
+        networkDnsIdentity = identity
         networkDnsProtect = protect
     }
 
@@ -72,6 +74,7 @@ abstract class Protocol {
     protected fun releaseNetworkHooks() {
         endpointResolver = null
         networkDnsSnapshot = null
+        networkDnsIdentity = null
         networkDnsProtect = null
         endpointRecovery = null
         underlayIdentity = null

@@ -157,6 +157,7 @@ open class Wireguard : Protocol() {
         }
 
     private fun startRouted(config: JSONObject, vpnBuilder: Builder, protect: (Int) -> Boolean) {
+        val initialDnsIdentity = networkDnsIdentity?.invoke()
         if (!AwgCorePolicy.platformSafe(Build.VERSION.SDK_INT, lockdownEnabled(), config)) {
             throw VpnStartException(if (Build.VERSION.SDK_INT < 29) "DIRECT routing requires Android 10 or newer" else "DIRECT routing or network DNS is unavailable while Android VPN lockdown is enabled")
         }
@@ -280,9 +281,11 @@ open class Wireguard : Protocol() {
                 delay(1000)
             }
         }
-        // Close the startup race: the usable physical path may have changed
-        // while DNS/native startup ran before the handle became observable.
-        requestRoutedRecovery(false)
+        // Close the startup race only when the path or DNS inventory changed.
+        // Suspending an unchanged, already prepared DNS generation here can
+        // reset Android's immediate strict-DoT validation and back off queries.
+        if (underlayIdentity?.invoke() != initialNetwork || initialDnsIdentity == null ||
+            networkDnsIdentity?.invoke() != initialDnsIdentity) requestRoutedRecovery(false)
     }
 
     private fun stopRouted() {

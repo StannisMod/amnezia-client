@@ -677,7 +677,7 @@ open class AmneziaVpnService : VpnService() {
                     Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && this@AmneziaVpnService.isLockdownEnabled
                 }
                 protocol.configureEndpointResolver(networkState::resolveEndpoint)
-                protocol.configureNetworkDns(networkState::dnsSnapshot, networkState::bindDnsSocket)
+                protocol.configureNetworkDns(networkState::dnsSnapshot, networkState::bindDnsSocket, networkState::dnsIdentity)
                 protocol.configureUnderlay(networkState::underlayIdentity) { fd ->
                     protect(fd) && networkState.bindVpnSocket(fd)
                 }
