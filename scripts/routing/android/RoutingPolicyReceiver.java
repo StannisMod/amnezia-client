@@ -25,6 +25,14 @@ public final class RoutingPolicyReceiver extends DeviceAdminReceiver {
                 for (android.net.wifi.WifiConfiguration network : wifi.getConfiguredNetworks()) {
                     if ("\"AndroidWifi\"".equals(network.SSID)) selected = wifi.enableNetwork(network.networkId, true);
                 }
+                if (!selected) {
+                    android.net.wifi.WifiConfiguration network = new android.net.wifi.WifiConfiguration();
+                    network.SSID = "\"AndroidWifi\"";
+                    network.allowedKeyManagement.set(android.net.wifi.WifiConfiguration.KeyMgmt.NONE);
+                    int id = wifi.addNetwork(network);
+                    if (id < 0) throw new IllegalStateException("synthetic Wi-Fi configuration was rejected");
+                    selected = wifi.enableNetwork(id, true);
+                }
                 if (!selected || !wifi.reconnect()) throw new IllegalStateException("synthetic Wi-Fi selection="+selected);
                 setResultCode(Activity.RESULT_OK);
                 return;
