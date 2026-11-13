@@ -239,7 +239,7 @@ def main():
               "not_run": ["physical device", "Wi-Fi/cellular handover", "Android 9 lockdown query restriction", "physical-device policy behavior", "performance parity"]}
     # QEMU exposes its DNS proxy at 10.0.2.3, but does not forward TCP/853.
     # Redirect only the disposable guest's DoT to the unprivileged local fixture.
-    private_dns_rule = ["OUTPUT", "-d", "10.0.2.2" if args.private_dns_strict else "10.0.2.3", "-p", "tcp", "--dport", "853",
+    private_dns_rule = ["OUTPUT", "!", "-o", "tun+", "-d", "10.0.2.2" if args.private_dns_strict else "10.0.2.3", "-p", "tcp", "--dport", "853",
                         "-m", "comment", "--comment", "amnezia-private-dns-acceptance",
                         "-j", "DNAT", "--to-destination", "10.0.2.2:8853"]
     private_dns_redirected = False
