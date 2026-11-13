@@ -19,6 +19,31 @@
 using namespace amnezia;
 using namespace amnezia::test;
 
+#if defined(Q_OS_LINUX) && !defined(Q_OS_ANDROID)
+class RefreshProtocol : public VpnProtocol {
+public:
+    RefreshProtocol() : VpnProtocol({}) {}
+    bool isConnected() const override { return true; }
+    bool supportsIpv6HostUpdates() const override { return true; }
+    ErrorCode start() override { return ErrorCode::NoError; }
+    void stop() override {}
+    int requests = 0;
+    QStringList requested;
+    std::function<void(bool)> completion;
+    void addResolvedIpv6Hosts(const QStringList &hosts, bool, std::function<void(bool)> done) override
+    { ++requests; requested = hosts; completion = std::move(done); }
+};
+class RefreshConnection : public VpnConnection {
+public:
+    using VpnConnection::VpnConnection;
+    using VpnConnection::refreshIpv6Sites;
+    void attach(const QSharedPointer<VpnProtocol> &protocol) { m_vpnProtocol = protocol; }
+    QList<std::function<void(const QHostInfo &)>> lookups;
+    int lookupSiteAddresses(const QString &, std::function<void(const QHostInfo &)> done) override
+    { lookups.append(std::move(done)); return -1; }
+};
+#endif
+
 class TestConnection : public QObject
 {
     Q_OBJECT
@@ -28,6 +53,52 @@ private:
     SecureQSettings* m_settings;
 
 private slots:
+#if defined(Q_OS_LINUX) && !defined(Q_OS_ANDROID)
+    void openVpnIpv6RefreshWaitsForRouteAck()
+    {
+        SecureQSettings settings("IPv6-Refresh-" + QUuid::createUuid().toString(), "test", nullptr, false);
+        SecureServersRepository servers(&settings);
+        SecureAppSettingsRepository app(&settings);
+        app.setRouteMode(RouteMode::VpnOnlyForwardSites);
+        app.setSitesSplitTunnelingEnabled(true);
+        app.addVpnSite(RouteMode::VpnOnlyForwardSites, "rotation.test", {"2001:db8::10"});
+        const auto protocol = QSharedPointer<RefreshProtocol>::create();
+        RefreshConnection connection(&servers, &app);
+        connection.attach(protocol);
+        connection.setConnectionState(Vpn::ConnectionState::Connected);
+        auto *timer = connection.findChild<QTimer *>("ipv6SiteRefresh");
+        QVERIFY(timer); QCOMPARE(timer->interval(), 30000); QVERIFY(timer->isActive());
+        timer->setInterval(1);
+        QTRY_COMPARE(connection.lookups.size(), 1);
+        timer->stop();
+        connection.refreshIpv6Sites();
+        QCOMPARE(connection.lookups.size(), 1); // One in-flight batch.
+        QHostInfo answer;
+        answer.setAddresses({QHostAddress("2001:db8::20"), QHostAddress("192.0.2.20")});
+        connection.lookups.takeFirst()(answer);
+        QCOMPARE(protocol->requested, QStringList{"2001:db8::20"});
+        const auto cached = [&] { return SecureAppSettingsRepository::siteIpList(app.vpnSites(RouteMode::VpnOnlyForwardSites).value("rotation.test")); };
+        QVERIFY(!cached().contains("2001:db8::20"));
+        protocol->completion(false);
+        QVERIFY(!cached().contains("2001:db8::20"));
+        connection.refreshIpv6Sites();
+        QCOMPARE(connection.lookups.size(), 1);
+        connection.lookups.takeFirst()(answer);
+        protocol->completion(true);
+        QVERIFY(cached().contains("2001:db8::20"));
+        QVERIFY(!cached().contains("192.0.2.20")); // IPv6 refresh never changes IPv4 routing/cache.
+        connection.refreshIpv6Sites();
+        answer.setAddresses({QHostAddress("2001:db8::30")});
+        connection.lookups.takeFirst()(answer);
+        connection.setConnectionState(Vpn::ConnectionState::Disconnected);
+        QVERIFY(!timer->isActive());
+        protocol->completion(true);
+        QVERIFY(!cached().contains("2001:db8::30")); // Ignore an ACK from the stopped session.
+        connection.refreshIpv6Sites();
+        QVERIFY(connection.lookups.isEmpty());
+        settings.clearSettings();
+    }
+#endif
     void openVpnIpv6ProfileAndExport()
     {
         QVERIFY(NetworkUtilities::checkIpSubnetFormat("fd00::/8"));

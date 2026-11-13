@@ -7,6 +7,7 @@
 #include <QScopedPointer>
 #include <QRemoteObjectNode>
 #include <QTimer>
+#include <QHostInfo>
 
 #include "core/protocols/vpnProtocol.h"
 #include "core/utils/errorCodes.h"
@@ -41,7 +42,7 @@ public:
     QSharedPointer<VpnProtocol> vpnProtocol() const;
 
     const QString &remoteAddress() const;
-    void addSitesRoutes(const QString &gw, amnezia::RouteMode mode);
+    void addSitesRoutes(const QString &gw, amnezia::RouteMode mode, bool ipv6Only = false);
 
 #ifdef Q_OS_ANDROID
     void restoreConnection();
@@ -66,10 +67,12 @@ signals:
     void serviceIsNotReady();
 
 protected slots:
+    void refreshIpv6Sites();
     void onBytesChanged(quint64 receivedBytes, quint64 sentBytes);
     void onConnectionStateChanged(Vpn::ConnectionState state);
 
 protected:
+    virtual int lookupSiteAddresses(const QString &site, std::function<void(const QHostInfo &)> done);
     QSharedPointer<VpnProtocol> m_vpnProtocol;
 
 private:
@@ -82,6 +85,10 @@ private:
 
     // Only for iOS for now, check counters
     QTimer m_checkTimer;
+    QTimer m_ipv6SiteRefreshTimer;
+    quint64 m_siteLookupGeneration = 0;
+    bool m_siteLookupPending = false;
+    QList<int> m_siteLookupIds;
 
 #ifdef Q_OS_ANDROID
    AndroidVpnProtocol* androidVpnProtocol = nullptr;

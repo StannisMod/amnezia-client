@@ -39,6 +39,15 @@ void OpenVpnProtocol::addResolvedIpv6Hosts(const QStringList &hosts, bool throug
         });
 }
 
+bool OpenVpnProtocol::supportsIpv6HostUpdates() const
+{
+#if defined(Q_OS_LINUX) && !defined(Q_OS_ANDROID)
+    return m_configData.value(ProtocolUtils::key_proto_config_data(Proto::OpenVpn)).toObject().value("ipv6Tunnel").toBool();
+#else
+    return false;
+#endif
+}
+
 QString OpenVpnProtocol::defaultConfigFileName()
 {
     return defaultConfigPath() + QString("/%1.ovpn").arg(APPLICATION_NAME);

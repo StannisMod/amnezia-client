@@ -8,6 +8,7 @@
 #include <QObject>
 #include <QSharedPointer>
 #include <QPointer>
+#include <utility>
 #include <QString>
 #include <QStringList>
 #include <QTimer>
@@ -44,8 +45,24 @@ VpnConnection::VpnConnection(SecureServersRepository* serversRepository, SecureA
       m_serversRepository(serversRepository),
       m_appSettingsRepository(appSettingsRepository),
       m_checkTimer(this),
+      m_ipv6SiteRefreshTimer(this),
       m_connectionState(Vpn::ConnectionState::Disconnected)
 {
+#if defined(Q_OS_LINUX) && !defined(Q_OS_ANDROID)
+    m_ipv6SiteRefreshTimer.setObjectName("ipv6SiteRefresh");
+    m_ipv6SiteRefreshTimer.setInterval(30000);
+    connect(&m_ipv6SiteRefreshTimer, &QTimer::timeout, this, &VpnConnection::refreshIpv6Sites);
+    connect(this, &VpnConnection::connectionStateChanged, this, [this](Vpn::ConnectionState state) {
+        if (state == Vpn::ConnectionState::Connected && m_vpnProtocol && m_vpnProtocol->supportsIpv6HostUpdates()) {
+            m_ipv6SiteRefreshTimer.start();
+        } else {
+            m_ipv6SiteRefreshTimer.stop();
+            ++m_siteLookupGeneration;
+            m_siteLookupPending = false;
+            for (int id : std::exchange(m_siteLookupIds, {})) QHostInfo::abortHostLookup(id);
+        }
+    });
+#endif
 #if defined(Q_OS_IOS) || defined(MACOS_NE)
     m_checkTimer.setInterval(1000);
     connect(IosController::Instance(), &IosController::connectionStateChanged, this, &VpnConnection::setConnectionState);
@@ -215,7 +232,24 @@ void VpnConnection::setRepositories(SecureServersRepository* serversRepository, 
     m_appSettingsRepository = appSettingsRepository;
 }
 
-void VpnConnection::addSitesRoutes(const QString &gw, amnezia::RouteMode mode)
+int VpnConnection::lookupSiteAddresses(const QString &site, std::function<void(const QHostInfo &)> done)
+{
+    return QHostInfo::lookupHost(site, this, std::move(done));
+}
+
+void VpnConnection::refreshIpv6Sites()
+{
+#ifdef AMNEZIA_DESKTOP
+    if (m_connectionState != Vpn::ConnectionState::Connected || !m_vpnProtocol
+        || !m_vpnProtocol->isConnected() || !m_vpnProtocol->supportsIpv6HostUpdates()
+        || !m_appSettingsRepository || !m_appSettingsRepository->isSitesSplitTunnelingEnabled()) return;
+    const auto mode = m_appSettingsRepository->routeMode();
+    if (mode != RouteMode::VpnOnlyForwardSites && mode != RouteMode::VpnAllExceptSites) return;
+    addSitesRoutes({}, mode, true);
+#endif
+}
+
+void VpnConnection::addSitesRoutes(const QString &gw, amnezia::RouteMode mode, bool ipv6Only)
 {
 #ifdef AMNEZIA_DESKTOP
     if (!m_appSettingsRepository) {
@@ -223,6 +257,15 @@ void VpnConnection::addSitesRoutes(const QString &gw, amnezia::RouteMode mode)
         return;
     }
 
+    if (m_siteLookupPending) return;
+    m_siteLookupPending = true;
+    const auto generation = ++m_siteLookupGeneration;
+    QTimer::singleShot(20000, this, [this, generation] {
+        if (generation != m_siteLookupGeneration || !m_siteLookupPending) return;
+        ++m_siteLookupGeneration;
+        m_siteLookupPending = false;
+        for (int id : std::exchange(m_siteLookupIds, {})) QHostInfo::abortHostLookup(id);
+    });
     QStringList ips;
     QStringList sites;
     const QVariantMap &m = m_appSettingsRepository->vpnSites(mode);
@@ -248,9 +291,10 @@ void VpnConnection::addSitesRoutes(const QString &gw, amnezia::RouteMode mode)
     });
 
 
-    IpcClient::withInterface([&](QSharedPointer<IpcInterfaceReplica> iface) {
+    if (!ipv6Only) IpcClient::withInterface([&](QSharedPointer<IpcInterfaceReplica> iface) {
         iface->routeAddList(gw, ips);
     });
+    if (sites.isEmpty()) { m_siteLookupPending = false; return; }
 
     auto remainingLookups = QSharedPointer<int>::create(sites.size());
     auto needFlush = QSharedPointer<bool>::create(false);
@@ -259,25 +303,33 @@ void VpnConnection::addSitesRoutes(const QString &gw, amnezia::RouteMode mode)
     const QPointer<VpnConnection> self(this);
     // Each answer belongs to this connection and policy, never a later session.
     for (const QString &site : sites) {
-        const auto cbResolv = [self, protocol, site, gw, mode, knownIps, remainingLookups, needFlush](const QHostInfo &hostInfo) {
-            const auto current = [self, protocol, mode, site] {
-                return self && protocol && self->m_vpnProtocol.data() == protocol.data() && protocol->isConnected()
+        const auto cbResolv = [self, protocol, site, gw, mode, knownIps, remainingLookups, needFlush, generation, ipv6Only](const QHostInfo &hostInfo) {
+            const auto release = [self, generation, remainingLookups] {
+                if (!self || self->m_siteLookupGeneration != generation) return false;
+                if (--(*remainingLookups) != 0) return false;
+                self->m_siteLookupPending = false;
+                self->m_siteLookupIds.clear();
+                return true;
+            };
+            const auto current = [self, protocol, mode, site, generation] {
+                return self && self->m_siteLookupGeneration == generation && protocol
+                    && self->m_vpnProtocol.data() == protocol.data() && protocol->isConnected()
                     && self->m_appSettingsRepository && self->m_appSettingsRepository->isSitesSplitTunnelingEnabled()
                     && self->m_appSettingsRepository->routeMode() == mode
                     && self->m_appSettingsRepository->vpnSites(mode).contains(site);
             };
-            if (!current()) return;
+            if (!current()) { release(); return; }
             QStringList ipv4, ipv6;
             for (const auto &address : hostInfo.addresses()) {
                 if (knownIps.contains(address.toString())) continue;
-                if (address.protocol() == QAbstractSocket::IPv4Protocol) ipv4 << address.toString();
+                if (!ipv6Only && address.protocol() == QAbstractSocket::IPv4Protocol) ipv4 << address.toString();
                 else if (address.protocol() == QAbstractSocket::IPv6Protocol && address.scopeId().isEmpty()
                          && !address.isLinkLocal() && !address.isMulticast() && !address.isLoopback()) ipv6 << address.toString();
             }
             ipv4.removeDuplicates(); ipv6.removeDuplicates();
             if (!ipv4.isEmpty()) IpcClient::withInterface([&](QSharedPointer<IpcInterfaceReplica> iface) { iface->routeAddList(gw, ipv4); });
-            const auto finish = [self, current, site, mode, ipv4, ipv6, remainingLookups, needFlush](bool installedIpv6) {
-                if (!current()) return;
+            const auto finish = [self, current, release, site, mode, ipv4, ipv6, needFlush](bool installedIpv6) {
+                if (!current()) { release(); return; }
                 auto added = ipv4;
                 if (installedIpv6) added << ipv6;
                 else if (!ipv6.isEmpty()) qWarning() << "IPv6 domain routes were not installed" << site;
@@ -285,7 +337,7 @@ void VpnConnection::addSitesRoutes(const QString &gw, amnezia::RouteMode mode)
                     self->m_appSettingsRepository->addVpnSite(mode, site, added);
                     *needFlush = true;
                 }
-                if (--(*remainingLookups) > 0 || !*needFlush) return;
+                if (!release() || !*needFlush) return;
                 IpcClient::withInterface([self](QSharedPointer<IpcInterfaceReplica> iface) {
                     auto *watcher = new QRemoteObjectPendingCallWatcher(iface->flushDns(), self);
                     QObject::connect(watcher, &QRemoteObjectPendingCallWatcher::finished, self,
@@ -299,7 +351,8 @@ void VpnConnection::addSitesRoutes(const QString &gw, amnezia::RouteMode mode)
             if (ipv6.isEmpty()) finish(true);
             else protocol->addResolvedIpv6Hosts(ipv6, mode == RouteMode::VpnOnlyForwardSites, finish);
         };
-        QHostInfo::lookupHost(site, this, cbResolv);
+        const int id = lookupSiteAddresses(site, cbResolv);
+        if (id >= 0) m_siteLookupIds.append(id);
     }
 #endif
 }

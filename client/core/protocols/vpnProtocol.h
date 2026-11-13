@@ -62,6 +62,7 @@ public:
     virtual ErrorCode start() = 0;
     virtual void stop() = 0;
     virtual void addResolvedIpv6Hosts(const QStringList &, bool, std::function<void(bool)> done) { done(false); }
+    virtual bool supportsIpv6HostUpdates() const { return false; }
 
     Vpn::ConnectionState connectionState() const;
     ErrorCode lastError() const;
