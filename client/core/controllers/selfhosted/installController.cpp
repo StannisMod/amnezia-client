@@ -1,5 +1,6 @@
 #include "installController.h"
 #include "connectionUpdatesController.h"
+#include "core/utils/connectionUpdates.h"
 
 #include "core/models/protocolConfig.h"
 
@@ -620,6 +621,19 @@ void InstallController::addEmptyServer(const ServerCredentials &credentials)
 
     m_serversRepository->addServer(QString(), serverConfig.toJson(),
                                     serverConfigUtils::ConfigType::SelfHostedAdmin);
+}
+
+bool InstallController::applyPreparedAdministratorIPv6(const QString &serverId, DockerContainer container,
+                                                       const QJsonObject &expected, const QJsonObject &assignments,
+                                                       const QStringList &probes)
+{
+    const auto current=m_serversRepository->selfHostedAdminConfig(serverId);
+    const auto original=m_serversRepository->serverJsonById(serverId);
+    if(!current || !original || current->toJson()!=expected) return false;
+    QJsonObject updated;
+    if(!connectionUpdates::mergeAdministratorIPv6(*original,ContainerUtils::containerToString(container),assignments,probes,updated)) return false;
+    m_serversRepository->editServer(serverId,updated,serverConfigUtils::SelfHostedAdmin);
+    return m_serversRepository->serverJsonById(serverId)==std::optional<QJsonObject>(updated);
 }
 
 ErrorCode InstallController::prepareContainerConfig(DockerContainer container, const ServerCredentials &credentials, ContainerConfig &containerConfig, SshSession &sshSession)

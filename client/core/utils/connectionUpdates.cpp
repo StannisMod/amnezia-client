@@ -520,6 +520,36 @@ bool mergeClientIPv6(QJsonObject &profile, QJsonObject &metadata, const QJsonVal
     return true;
 }
 }
+bool mergeAdministratorIPv6(const QJsonObject &profile, const QString &name, const QJsonObject &assignments,
+                            const QStringList &probes, QJsonObject &updated)
+{
+    if (!supported(name)) return false;
+    auto containers=profile.value(configKey::containers).toArray();int found=-1;
+    for(int i=0;i<containers.size();++i) if(containers[i].toObject().value(configKey::container)==name) {
+        if(found>=0) return false;found=i;
+    }
+    if(found<0) return false;
+    const auto container=containers[found].toObject();const auto protoName=protocol(name);
+    const auto client=QJsonDocument::fromJson(container.value(protoName).toObject().value(configKey::lastConfig).toString().toUtf8()).object();
+    if(!identityMatches(client)) return false;
+    QJsonObject individual;
+    if(!individualIPv6Assignment(assignments,client.value(configKey::clientPubKey).toString(),individual)) return false;
+    const auto target=individual.value(client.value(configKey::clientPubKey).toString()).toString();
+    if(target.isEmpty() || !validClientIPv6(target)) return false;
+    // Preserve custom IPv6 addresses rather than selecting an unverified source
+    // or accumulating a second server-managed address on every migration.
+    for(const auto &entry:client.value(configKey::clientIp).toString().split(',')) {
+        const QHostAddress address(entry.trimmed().section('/',0,0));
+        if(address.protocol()==QAbstractSocket::IPv6Protocol && address!=QHostAddress(target)) return false;
+    }
+    auto selected=profile;selected[configKey::containers]=QJsonArray{container};
+    QJsonObject metadata{{"container",name}};
+    if(!mergeClientIPv6(selected,metadata,target)) return false;
+    QJsonObject withProbes;
+    if(!mergePathProbes(selected,name,probes,withProbes)) return false;
+    containers[found]=withProbes.value(configKey::containers).toArray().first();
+    auto result=profile;result[configKey::containers]=containers;updated=result;return true;
+}
 bool apply(const QJsonObject &profile, const QByteArray &envelope, qint64 now, QJsonObject &updated)
 {
     if (envelope.size() > 65536 || !validateProfile(profile)) return false;

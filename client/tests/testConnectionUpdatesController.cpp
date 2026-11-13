@@ -18,6 +18,7 @@
 #include "connection-updates/fixtures.h"
 #include "core/utils/connectionUpdates.h"
 #include "core/controllers/selfhosted/connectionUpdatesController.h"
+#include "core/controllers/selfhosted/installController.h"
 #include "core/controllers/selfhosted/importController.h"
 #include "core/controllers/selfhosted/exportController.h"
 #include "core/controllers/selfhosted/usersController.h"
@@ -229,6 +230,23 @@ private slots:
         QVERIFY(!settings.compareAndSetDurable("Conf/pendingPeerRevocations",previous,QByteArray("unconfirmed replacement")));
         QCOMPARE(settings.value("Conf/pendingPeerRevocations").toByteArray(),previous);
     }
+    void administratorIPv6CommitRejectsChangedProfile()
+    {
+        SecureQSettings settings("Amnezia-IPv6-Commit-"+QUuid::createUuid().toString(),"test",nullptr,false);
+        SecureServersRepository servers(&settings);SecureAppSettingsRepository app(&settings);InstallController installer(&servers,&app);
+        auto original=profile();original.remove("connectionUpdates");original["userName"]="root";original["password"]="local-secret";original["port"]=22;
+        const auto id=servers.addServer({},original,serverConfigUtils::SelfHostedAdmin);
+        const auto expected=servers.selfHostedAdminConfig(id)->toJson();
+        const QJsonObject assignments{{client(original,false).value("client_pub_key").toString(),"fd77::2"}};
+        auto edited=*servers.serverJsonById(id);edited["description"]="concurrent user edit";servers.editServer(id,edited,serverConfigUtils::SelfHostedAdmin);
+        QVERIFY(!installer.applyPreparedAdministratorIPv6(id,DockerContainer::WireGuard,expected,assignments,{"10.8.0.1","fd77::1"}));QCOMPARE(*servers.serverJsonById(id),edited);
+        const auto current=servers.selfHostedAdminConfig(id)->toJson();
+        QVERIFY(installer.applyPreparedAdministratorIPv6(id,DockerContainer::WireGuard,current,assignments,{"10.8.0.1","fd77::1"}));
+        const auto result=*servers.serverJsonById(id);QCOMPARE(result.value("description"),edited.value("description"));
+        QCOMPARE(client(result,false).value("client_priv_key"),client(original,false).value("client_priv_key"));
+        QCOMPARE(client(result,false).value("client_ip").toString(),"10.8.0.2, fd77::2/128");
+        settings.clearSettings();
+    }
     void oldAdministratorProfileNeedsProbeRefreshOnce()
     {
         SecureQSettings settings("Amnezia-Probe-" + QUuid::createUuid().toString(), "test", nullptr, false);
@@ -326,6 +344,15 @@ private slots:
         QCOMPARE(assignments.size(),2);
         for(auto it=assignments.begin();it!=assignments.end();++it)
             QCOMPARE(!it.value().toString().isEmpty(),outcome.value("result")=="applied");
+        if(outcome.value("result")=="applied") {
+            QString raw;
+            QCOMPARE(ssh.runScript(credentials,"cat /run/amnezia-cached-client.json",[&](const QString &data,libssh::Client &){if(raw.size()+data.size()>65536)return ErrorCode::InternalError;raw+=data;return ErrorCode::NoError;}),ErrorCode::NoError);
+            const auto cached=QJsonDocument::fromJson(raw.toUtf8()).object();
+            QStringList probes;QCOMPARE(ConnectionUpdatesController::fetchPathMtuProbeAddresses(credentials,container,probes),ErrorCode::NoError);
+            QJsonObject updated;QVERIFY(connectionUpdates::mergeAdministratorIPv6(cached,selected,assignments,probes,updated));
+            for(const auto *key:{"client_priv_key","client_pub_key","allowed_ips"})QCOMPARE(client(updated,container==DockerContainer::Awg2).value(key),client(cached,container==DockerContainer::Awg2).value(key));
+            QCOMPARE(ssh.uploadFileToHost(credentials,QJsonDocument(updated).toJson(QJsonDocument::Compact),"/run/amnezia-cached-client-ipv6.json"),ErrorCode::NoError);
+        }
         qInfo().noquote()<<"IPV6_ACTIVATION_RESULT "+QString::fromUtf8(QJsonDocument(outcome).toJson(QJsonDocument::Compact));
     }
     void realAdminProbeAddressRead()

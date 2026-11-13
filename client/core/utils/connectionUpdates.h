@@ -28,6 +28,7 @@ bool mergePathProbes(const QJsonObject &profile, const QString &container, const
 bool mergePathProbe(const QJsonObject &profile, const QString &container, const QJsonValue &target, QJsonObject &updated);
 QByteArray readinessProof(const QJsonObject &profile, const QByteArray &envelope, qint64 now);
 bool attachInvitation(const QJsonObject &profile, const QJsonObject &invitation, QJsonObject &updated);
+bool mergeAdministratorIPv6(const QJsonObject &profile, const QString &container, const QJsonObject &assignments, const QStringList &probes, QJsonObject &updated);
 bool clientIdentityMatches(const QJsonObject &client);
 bool apply(const QJsonObject &profile, const QByteArray &envelope, qint64 now,
            QJsonObject &updated);

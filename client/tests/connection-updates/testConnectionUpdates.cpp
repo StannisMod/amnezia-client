@@ -265,6 +265,28 @@ private slots:
         containers.append(containers.at(0)); admin["containers"] = containers;
         QVERIFY(!connectionUpdates::mergePathProbe(admin, "amnezia-awg2", "10.8.0.1", rejected)); QCOMPARE(rejected.size(), 1);
     }
+    void administratorIPv6MigrationPreservesIdentity_data() { keepsDeviceAndLocalSettings_data(); }
+    void administratorIPv6MigrationPreservesIdentity()
+    {
+        QFETCH(bool,awg);auto original=profile(awg);original["userName"]="root";original["password"]="local-secret";
+        const auto before=client(original,awg);const auto name=awg?"amnezia-awg2":"amnezia-wireguard";
+        auto containers=original["containers"].toArray();const auto other=QJsonObject{{"container","amnezia-dns"},{"custom",true}};containers.append(other);original["containers"]=containers;
+        const QJsonObject assignments{{before.value("client_pub_key").toString(),"fd77::2"}};
+        QJsonObject updated;QVERIFY(connectionUpdates::mergeAdministratorIPv6(original,name,assignments,{"10.8.0.1","fd77::1"},updated));
+        const auto after=client(updated,awg);
+        QCOMPARE(after.value("client_ip").toString(),"10.8.0.2, fd77::2/128");
+        QVERIFY(after.value("config").toString().contains("Address = 10.8.0.2/32, fd77::2/128"));
+        for(const auto *key:{"client_priv_key","client_pub_key","psk_key","allowed_ips","mtu","hostName"}) QCOMPARE(after.value(key),before.value(key));
+        QCOMPARE(updated.value("userName"),original.value("userName"));QCOMPARE(updated.value("password"),original.value("password"));
+        QCOMPARE(updated["containers"].toArray()[1],other);
+        // An IPv4-only route restriction is kept: IPv6 control metadata cannot widen it.
+        QCOMPARE(after.value("path_mtu_probes").toArray(),QJsonArray({"10.8.0.1"}));
+        QJsonObject again;QVERIFY(connectionUpdates::mergeAdministratorIPv6(updated,name,assignments,{"10.8.0.1","fd77::1"},again));QCOMPARE(again,updated);
+        QJsonObject rejected{{"keep",true}};
+        QVERIFY(!connectionUpdates::mergeAdministratorIPv6(original,name,{}, {"10.8.0.1"},rejected));QCOMPARE(rejected.size(),1);
+        const QJsonObject changed{{before.value("client_pub_key").toString(),"fd77::3"}};
+        QVERIFY(!connectionUpdates::mergeAdministratorIPv6(updated,name,changed,{"10.8.0.1"},rejected));QCOMPARE(rejected.size(),1);
+    }
     void administratorDualFamilyProbeMigration()
     {
         auto original=profile();

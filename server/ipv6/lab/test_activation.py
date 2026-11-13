@@ -196,6 +196,13 @@ def main():
             endpoint = command('docker', 'inspect', '-f', '{{(index .NetworkSettings.Networks "bridge").IPAddress}}', protocol)
             client_native = ('[Interface]\nPrivateKey = '+client_key.decode()+'\n'+extensions+'[Peer]\nPublicKey = '+request['settings']['server_pub_key']+
                              '\nEndpoint = '+endpoint+':51820\nAllowedIPs = 0.0.0.0/0, ::/0\n')
+            cached_client = {'client_priv_key':client_key.decode(), 'client_pub_key':client_public,
+                'server_pub_key':request['settings']['server_pub_key'], 'client_ip':subnet+'.2/32',
+                'allowed_ips':['0.0.0.0/0','::/0'], 'mtu':'1380', 'hostName':endpoint, 'port':51820,
+                'config':client_native.replace('[Interface]\n','[Interface]\nAddress = '+subnet+'.2/32\n',1)}
+            cached_profile = {'defaultContainer':protocol,'containers':[{'container':protocol,
+                ('awg' if tool=='awg' else 'wireguard'):{'last_config':json.dumps(cached_client)}}]}
+            upload(json.dumps(cached_profile).encode(), '/run/amnezia-cached-client.json')
             app('sh', '-ec', 'umask 077; cat > /native.conf', data=client_native.encode())
             if tool == 'wg': app('ip', 'link', 'add', iface, 'type', 'wireguard')
             else: app('amneziawg-go', iface)
@@ -234,14 +241,18 @@ def main():
             peer_rows = vpn(tool, 'show', iface, 'allowed-ips').stdout.decode().splitlines()
             assigned = next(line.split()[1:] for line in peer_rows if line.split()[0] == client_public)
             address = next(value.strip(',') for value in assigned if ':' in value).split('/')[0]
-            app('ip', '-6', 'addr', 'add', address+'/128', 'dev', iface, 'nodad')
+            migrated_profile=json.loads(inside('cat','/run/amnezia-cached-client-ipv6.json').stdout)
+            migrated=json.loads(migrated_profile['containers'][0]['awg' if tool=='awg' else 'wireguard']['last_config'])
+            migrated_address=next(item.strip().split('/')[0] for item in migrated['client_ip'].split(',') if ':' in item)
+            assert migrated_address==address and migrated['client_priv_key']==cached_client['client_priv_key'] and migrated['client_pub_key']==client_public
+            app('ip', '-6', 'addr', 'add', migrated_address+'/128', 'dev', iface, 'nodad')
             app('ip', '-6', 'route', 'add', '2606:4700:4700::1111/128', 'dev', iface)
             app('sh', '-ec', 'mkdir -p /etc/ssl/certs; cat > /etc/ssl/certs/ca-certificates.crt', data=cert)
             probe = "import socket,ssl,json; s=ssl.create_default_context().wrap_socket(socket.create_connection(('2606:4700:4700::1111',443),10),server_hostname='cloudflare-dns.com'); s.sendall(b'GET /dns-query?name=.&type=NS HTTP/1.0\\r\\nHost: cloudflare-dns.com\\r\\n\\r\\n'); data=b''\nwhile True:\n p=s.recv(4096)\n if not p:break\n data+=p\nassert b'200 OK' in data and json.loads(data.split(b'\\r\\n\\r\\n',1)[1])['Status']==0\nprint('ENCRYPTED_IPV6_TLS_PASS')"
             assert b'ENCRYPTED_IPV6_TLS_PASS' in app('python3', '-c', probe).stdout
             retained('after-ipv6')
             report['protocols'][protocol] = {'application_attempts': attempts, 'original_tcp_port': identity['port'],
-                                             'same_ipv4_tcp': True, 'encrypted_ipv6_tls': True, 'startup_body_executed': False}
+                                             'same_ipv4_tcp': True, 'cached_client_ipv6_migrated': True, 'encrypted_ipv6_tls': True, 'startup_body_executed': False}
             stream.stdin.close();assert stream.wait(timeout=15) == 0
         observations = [json.loads(line) for line in command('cat', '/run/provider-observations.jsonl').splitlines()]
         assert len(observations) >= 4 and all(row['source'] == '2001:db8:99::2' for row in observations), observations
