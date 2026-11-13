@@ -145,7 +145,16 @@ public final class RoutingInstrumentation extends Instrumentation {
                 result.putString("retained_result", retainedResult.toString());
                 result.putString("routing_result", "PASS_PRIMARY_ONLY");code = 0;return;
             }
-            connect(false);
+            // Domain miss/default assertions must not be masked by the CIDR
+            // exception for the native control server at the shared real IP.
+            JSONObject domainOnly=configuration(false);
+            JSONArray domainRules=new JSONArray();
+            for(int i=0;i<domainOnly.getJSONObject("sing_box_routing").getJSONArray("rules").length();i++) {
+                JSONObject entry=domainOnly.getJSONObject("sing_box_routing").getJSONArray("rules").getJSONObject(i);
+                if(!entry.optString("value").equals("10.0.2.2/32")) domainRules.put(entry);
+            }
+            domainOnly.getJSONObject("sing_box_routing").put("rules",domainRules);
+            state=-1;serviceError=false;startService(domainOnly);awaitState(CONNECTED,false);
             progress("CHECK: service CONNECTED; requesting DIRECT FakeIP");
             InetAddress direct = dns("direct.ru", 1);
             progress("CHECK: DIRECT FakeIP returned; requesting VPN FakeIP");
@@ -170,6 +179,9 @@ public final class RoutingInstrumentation extends Instrumentation {
             require(four != null && fake(four), "system resolver did not use managed DNS");
             requireRoute(four, "DIRECT"); pass("Android system resolver uses the installed VPN DNS");
             loopback("127.0.0.1"); loopback("::1"); pass("native IPv4/IPv6 loopback stays local");
+            disconnect();connect(false);
+            requireRoute(dns("notdirect.ru.test",1),"DIRECT");
+            pass("unmatched domain follows its resolved-IP CIDR exception");
 
             // Allocate fresh FakeIPs without warming their real-address lookup.
             // During the outage these UDP flows must wait for VPN DNS without
