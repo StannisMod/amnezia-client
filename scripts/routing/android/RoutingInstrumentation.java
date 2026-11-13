@@ -52,6 +52,7 @@ public final class RoutingInstrumentation extends Instrumentation {
     private volatile int state = -1;
     private volatile boolean serviceError;
     private volatile String serviceErrorText = "";
+    private volatile String serviceErrorKind = "";
     private volatile JSONObject diagnostics;
     private volatile boolean retainedCheck;
     private volatile boolean retainedStateChanged;
@@ -70,6 +71,8 @@ public final class RoutingInstrumentation extends Instrumentation {
     private int androidUser;
     private boolean privateDnsOpportunistic;
     private boolean privateDnsStrict;
+    private boolean privateDnsPolicyOnly;
+    private volatile boolean policyPaused;
     private boolean api28CompatOnly;
     private boolean diagnoseControl;
     private long applicationPolicyReply = -1;
@@ -95,6 +98,7 @@ public final class RoutingInstrumentation extends Instrumentation {
         uploadMtuOnly = Boolean.parseBoolean(args.getString("upload_mtu_only", "false"));
         appPolicyOnly = Boolean.parseBoolean(args.getString("app_policy_only", "false"));
         privateDnsStrict = Boolean.parseBoolean(args.getString("private_dns_strict", "false"));
+        privateDnsPolicyOnly = Boolean.parseBoolean(args.getString("private_dns_policy_only", "false"));
         privateDnsOpportunistic = Boolean.parseBoolean(args.getString("private_dns_opportunistic", "false"));
         androidUser = Integer.parseInt(args.getString("android_user", "0"));
         packageLifecycle = Boolean.parseBoolean(args.getString("package_lifecycle", "false"));
@@ -125,7 +129,10 @@ public final class RoutingInstrumentation extends Instrumentation {
                         if (raw != null) try { diagnostics = new JSONObject(raw); }
                         catch (Exception bad) { serviceError = true; serviceErrorText = "invalid connection diagnostics"; }
                     }
-                    if (message.what == 3) { serviceError = true; serviceErrorText = message.getData().getString("ERROR", ""); }
+                    if (message.what == 3) {
+                        if (message.getData().getBoolean("POLICY_NOTICE", false)) policyPaused = message.getData().getBoolean("POLICY_PAUSED", false);
+                        else { serviceError = true; serviceErrorText = message.getData().getString("ERROR", ""); serviceErrorKind = message.getData().getString("ERROR_KIND", ""); }
+                    }
                     if (message.what == 4) {
                         applicationPolicyReply = message.getData().getLong("APPLICATION_POLICY_REQUEST_ID", -1);
                         applicationPolicyAccepted = message.getData().getBoolean("APPLICATION_POLICY_SUCCESS");
@@ -140,6 +147,9 @@ public final class RoutingInstrumentation extends Instrumentation {
             require(didBind && bound.await(15, TimeUnit.SECONDS), "AwgService binding failed");
             Bundle registration = new Bundle(); registration.putString("CLIENT_NAME", "routing-acceptance");
             send(REGISTER, registration);
+            if (privateDnsPolicyOnly) {
+                privateDnsPolicy();result.putString("routing_result","PASS_PRIVATE_DNS_POLICY_ONLY");code=0;return;
+            }
             if (api28CompatOnly) {
                 api28Compatibility();result.putString("routing_result","PASS_API28_COMPAT_ONLY");code=0;return;
             }
@@ -402,6 +412,80 @@ public final class RoutingInstrumentation extends Instrumentation {
         state=-1;serviceError=false;startService(normal);awaitState(CONNECTED,false);requireRoute(InetAddress.getByName("10.77.0.2"),"VPN");disconnect();
         progress("API28_COMPAT_RESULT "+new JSONObject().put("sdk",28).put("ordinary_shared_ipv4_ipv6",true).put("mixed_policy_rejected",true).put("subsequent_connect",true));
         pass("Android 9 ordinary shared core works and unsupported mixed policy fails explicitly");
+    }
+
+    private void awaitFlowPause(boolean paused) throws Exception {
+        long until=SystemClock.elapsedRealtime()+30000;
+        while (SystemClock.elapsedRealtime()<until) {
+            JSONObject current=connectionDiagnostics();
+            if (current.getJSONObject("routing").getBoolean("new_flows_paused")==paused && policyPaused==paused) return;
+            SystemClock.sleep(100);
+        }
+        throw new AssertionError("flow pause/notice did not become "+paused);
+    }
+
+    private void strictDnsCheckpoint(boolean strict) throws Exception {
+        retainedCheckpoint(strict ? "strict_dns_on" : "strict_dns_off");
+        ConnectivityManager manager=(ConnectivityManager)getTargetContext().getSystemService(Context.CONNECTIVITY_SERVICE);
+        long until=SystemClock.elapsedRealtime()+15000;
+        while(SystemClock.elapsedRealtime()<until) {
+            boolean configured=false;
+            for(Network network:manager.getAllNetworks()) {
+                NetworkCapabilities caps=manager.getNetworkCapabilities(network);
+                android.net.LinkProperties link=manager.getLinkProperties(network);
+                if(caps!=null && caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN) &&
+                    caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) && link!=null &&
+                    link.getPrivateDnsServerName()!=null && !link.getPrivateDnsServerName().isEmpty()) configured=true;
+            }
+            if(configured==strict)return;
+            SystemClock.sleep(100);
+        }
+        throw new AssertionError("Android did not publish strict DNS configuration "+strict);
+    }
+
+    private void privateDnsPolicy() throws Exception {
+        require(android.os.Build.VERSION.SDK_INT>=29,"strict DNS policy needs Android 10+");
+        JSONObject domain=primaryConfiguration();
+        domain.put("sing_box_routing",new JSONObject().put("version",1).put("default","vpn")
+            .put("rules",new JSONArray().put(rule("suffix","app-policy.test","direct"))));
+        strictDnsCheckpoint(true);
+        state=-1;serviceError=false;startService(domain);awaitState(DISCONNECTED,true);
+        require("STRICT_PRIVATE_DNS_DOMAIN_RULES".equals(serviceErrorKind) && !serviceErrorText.isEmpty(),"strict DNS startup refusal had no policy explanation: "+serviceErrorKind);
+        // An explicit always-VPN app ignores optional site rules. Strict DNS
+        // remains usable until the user tries to enable those rules for it.
+        JSONObject always=new JSONObject(domain.toString()).put("android_app_routing",new JSONObject()
+            .put("version",1).put("site_rule_packages",new JSONArray()));
+        state=-1;serviceError=false;startService(always);awaitState(CONNECTED,false);
+        long request=System.nanoTime();
+        Bundle update=new Bundle();update.putLong("APPLICATION_POLICY_REQUEST_ID",request);
+        update.putString("APPLICATION_POLICY",new JSONObject().put("version",1)
+            .put("site_rule_packages",new JSONArray().put("org.amnezia.vpn")).toString());
+        applicationPolicyReply=-1;send(7,update);
+        long until=SystemClock.elapsedRealtime()+20000;
+        synchronized(lock) { while(applicationPolicyReply!=request && SystemClock.elapsedRealtime()<until)lock.wait(100); }
+        require(applicationPolicyReply==request && !applicationPolicyAccepted && !applicationPolicyError.isEmpty(),"strict DNS live site-rule enable was accepted");
+        require(state==CONNECTED && !serviceError,"refused checkbox disconnected an always-VPN session");
+        disconnect();strictDnsCheckpoint(false);
+        state=-1;serviceError=false;startService(domain);awaitState(CONNECTED,false);
+        long session=connectionDiagnostics().getLong("session_id");
+        ExecutorService io=Executors.newSingleThreadExecutor();
+        try(Socket old=retainedSocket(InetAddress.getByName("10.77.0.2"))) {
+            int port=old.getLocalPort();retainedCheck=true;retainedStateChanged=false;
+            exchange(io,old,new byte[]{1,2,3});
+            strictDnsCheckpoint(true);awaitFlowPause(true);
+            exchange(io,old,new byte[]{4,5,6});
+            boolean refused=false;
+            try(Socket fresh=new Socket()) { fresh.setSoTimeout(3000);fresh.connect(new InetSocketAddress("10.77.0.2",18081),3000);refused=fresh.getInputStream().read()==-1; }
+            catch(java.net.SocketTimeoutException stalled) { throw new AssertionError("new captured flow stalled instead of being rejected",stalled); }
+            catch(java.io.IOException expected) { refused=true; }
+            require(refused,"incompatible strict DNS allowed a new captured TCP flow");
+            strictDnsCheckpoint(false);awaitFlowPause(false);
+            exchange(io,old,new byte[]{7,8,9});
+            try(Socket fresh=retainedSocket(InetAddress.getByName("10.77.0.2"))) { exchange(io,fresh,new byte[]{10}); }
+            require(old.getLocalPort()==port && connectionDiagnostics().getLong("session_id")==session && !retainedStateChanged,"DNS policy replaced the old TCP or TUN session");
+        } finally { retainedCheck=false;io.shutdownNow();disconnect(); }
+        progress("PRIVATE_DNS_POLICY_RESULT startup_rejected_live_enable_rejected_old_tcp_preserved_resumed");
+        pass("strict Private DNS requires manual change and pauses only new flows without replacing the TUN");
     }
 
     private JSONObject primaryConfiguration() throws Exception {

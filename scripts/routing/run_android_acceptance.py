@@ -162,6 +162,7 @@ def main():
     parser.add_argument("--source-sha", help="test-harness commit when a read-only worktree has no mounted Git metadata")
     parser.add_argument("--apk-source-sha", help="record the actual packaged client source independently of the harness")
     parser.add_argument("--diagnose-control", action="store_true", help="capture slow control-path stacks before timeout; diagnostic result only")
+    parser.add_argument("--private-dns-policy-only", action="store_true", help="strict DNS startup/live policy refusal and retained-TCP pause/resume on a disposable emulator")
     parser.add_argument("--private-dns-strict", action="store_true", help="with --app-policy-only, require strict Private DNS; disposable fixture CA must be installed in the emulator")
     parser.add_argument("--private-dns-opportunistic", action="store_true", help="with --app-policy-only, require active Android Private DNS and use network DoT for DIRECT DNS")
     parser.add_argument("--package-lifecycle", action="store_true", help="with --app-policy-only, reinstall a captured app and require fresh-UID VPN capture")
@@ -176,6 +177,7 @@ def main():
     if sum((args.app_policy_only, args.upload_mtu_only, args.primary_only, args.performance_only, args.api28_compat_only)) > 1:
         parser.error("focused acceptance modes are mutually exclusive")
     assert not (args.private_dns_opportunistic and args.private_dns_strict), "Private DNS modes are mutually exclusive"
+    assert not args.private_dns_policy_only or (args.android_user == 0 and not args.private_dns_strict and not args.private_dns_opportunistic), "policy transition mode needs user 0 and initially disabled Private DNS"
     private_dns_mode = "strict" if args.private_dns_strict else "opportunistic" if args.private_dns_opportunistic else "off"
     assert private_dns_mode == "off" or args.app_policy_only, "Private DNS acceptance requires --app-policy-only"
     assert 0 <= args.android_user <= 21474 and (args.android_user == 0 or args.app_policy_only), "managed-profile mode requires --app-policy-only"
@@ -235,7 +237,7 @@ def main():
     sign(aligned, instrument)
 
     probe_apks, probe_processes, probe_logs = [], [], []
-    if not (args.upload_mtu_only or args.primary_only or args.performance_only or args.api28_compat_only):
+    if not (args.upload_mtu_only or args.primary_only or args.performance_only or args.api28_compat_only or args.private_dns_policy_only):
         probe_apks = build_application_probes(tools, android_jar, work, sign)
 
     assert adb("shell", "getprop", "ro.kernel.qemu") == "1", "only disposable Android emulators are supported"
@@ -293,6 +295,7 @@ def main():
                    "-e", "observer_ip", args.observer_ip,
                    "-e", "android_user", str(args.android_user),
                    "-e", "private_dns_opportunistic", str(args.private_dns_opportunistic).lower(),
+                   "-e", "private_dns_policy_only", str(args.private_dns_policy_only).lower(),
                    "-e", "private_dns_strict", str(args.private_dns_strict).lower(),
                    "-e", "primary_only", str(args.primary_only).lower(),
                    "-e", "upload_mtu_only", str(args.upload_mtu_only).lower(),
@@ -364,7 +367,12 @@ def main():
                     if request_id in control_timers: control_timers[request_id].cancel()
                 if "RETAIN_CHECKPOINT " in line:
                     name = line.strip().split("RETAIN_CHECKPOINT ", 1)[1]
-                    assert name in ('before', 'after', 'restore_mtu', 'drop_mtu', 'drop_before_media', 'restore_before_media', 'drop_with_media', 'restore_with_media', 'wifi_off', 'wifi_on', 'safe_policy_before', 'safe_policy_after', 'perf_legacy_before', 'perf_legacy_after', 'perf_shared_before', 'perf_shared_after', 'upload_mtu_before', 'drop_upload_mtu', 'upload_mtu_after', 'restore_upload_mtu', 'app_policy_before', 'app_policy_after', 'package_refreshed')
+                    assert name in ('before', 'after', 'restore_mtu', 'drop_mtu', 'drop_before_media', 'restore_before_media', 'drop_with_media', 'restore_with_media', 'wifi_off', 'wifi_on', 'safe_policy_before', 'safe_policy_after', 'perf_legacy_before', 'perf_legacy_after', 'perf_shared_before', 'perf_shared_after', 'upload_mtu_before', 'drop_upload_mtu', 'upload_mtu_after', 'restore_upload_mtu', 'app_policy_before', 'app_policy_after', 'package_refreshed', 'strict_dns_on', 'strict_dns_off')
+                    if name in ('strict_dns_on', 'strict_dns_off'):
+                        assert args.private_dns_policy_only, 'unexpected strict DNS policy checkpoint'
+                        if name == 'strict_dns_on':
+                            adb('shell','settings','put','global','private_dns_specifier','routing-fixture.invalid')
+                        adb('shell','settings','put','global','private_dns_mode','hostname' if name == 'strict_dns_on' else 'off')
                     if name == 'package_refreshed':
                         assert args.package_lifecycle, 'unexpected package refresh checkpoint'
                         (work/'package-refreshed-connectivity.log').write_text(adb('shell','dumpsys','connectivity'))
@@ -468,6 +476,12 @@ def main():
             assert process.wait(timeout=15) == 0
             timer.cancel()
         output = "".join(output)
+        if args.private_dns_policy_only:
+            assert 'INSTRUMENTATION_RESULT: routing_result=PASS_PRIVATE_DNS_POLICY_ONLY' in output
+            assert 'PRIVATE_DNS_POLICY_RESULT startup_rejected_live_enable_rejected_old_tcp_preserved_resumed' in output
+            report['private_dns_policy']={'startup_rejected':True,'live_enable_rejected':True,'old_tcp_preserved':True,'same_tun_session':True,'new_flows_resume':True}
+            report['native_vpn_acceptance']='NOT_RUN_PRIVATE_DNS_POLICY_ONLY'
+            return
         if args.api28_compat_only:
             assert 'INSTRUMENTATION_RESULT: routing_result=PASS_API28_COMPAT_ONLY' in output
             assert report.get('api28_compatibility')=={'sdk':28,'ordinary_shared_ipv4_ipv6':True,'mixed_policy_rejected':True,'subsequent_connect':True}
@@ -549,8 +563,10 @@ def main():
         except (OSError, AssertionError) as error:
             report['fixture_peer_cleanup'] = type(error).__name__
         nft_command('delete', 'table', 'inet', fault_table, check=False)
-        if private_dns_mode != "off":
+        if private_dns_mode != "off" or args.private_dns_policy_only:
             adb("shell", "settings", "put", "global", "private_dns_mode", "off")
+        if args.private_dns_policy_only:
+            adb("shell", "settings", "delete", "global", "private_dns_specifier")
         if private_dns_redirected:
             adb("shell", "iptables", "-t", "nat", "-D", *private_dns_rule)
         try: adb('shell', 'svc', 'wifi', 'enable')

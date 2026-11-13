@@ -66,3 +66,17 @@ run this after their personal-profile scenario without adding matrix jobs.
 This scenario covers opportunistic network DNS and these applications' A/UDP
 TXT requests. It does not prove strict Private DNS certificate handling,
 work-profile behavior, or isolation of arbitrary system TXT/SRV cache entries.
+
+
+`run_android_acceptance.py --private-dns-policy-only` checks the chosen strict
+Private DNS compatibility contract without installing a trusted resolver CA.
+A configured strict provider must reject startup with effective domain rules
+and reject enabling those rules live for an otherwise always-VPN app. A second
+session starts with Private DNS off, retains a real encrypted-tunnel TCP stream,
+enables strict DNS, and requires the new-flow gate and nonfatal service notice.
+The old stream must still echo; a fresh captured TCP must reject promptly.
+After the host manually disables strict DNS, DNS recovery must reopen fresh TCP
+without changing the TUN session or the original socket. The driver only changes
+settings in a rooted disposable emulator and clears them in `finally`. API29
+AWG/WG jobs run this focused check alongside the existing suites; it does not
+claim support for encrypted system DNS together with effective domain rules.
