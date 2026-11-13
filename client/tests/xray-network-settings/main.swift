@@ -1,8 +1,8 @@
 import Foundation
 import NetworkExtension
 
-func require(_ value: @autoclosure () -> Bool, _ message: String) {
-    precondition(value(), message)
+func require(_ value: Bool, _ message: String) {
+    precondition(value, message)
 }
 
 let full = XrayNetworkSettings.make()
