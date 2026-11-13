@@ -433,6 +433,7 @@ public final class RoutingInstrumentation extends Instrumentation {
         for(int i=0;i<targets.length();i++) {
             String address=targets.getString(i);
             progress("XRAY_IPV6_CHECK "+address);
+            JSONObject before=control("/stats",false).getJSONObject("vless");
             try(Socket connection=new Socket()) {
                 connection.connect(new InetSocketAddress(InetAddress.getByName(address),18081),4000);connection.setSoTimeout(4000);
                 connection.getOutputStream().write("route-proof\n".getBytes(StandardCharsets.US_ASCII));connection.getOutputStream().flush();
@@ -440,6 +441,10 @@ public final class RoutingInstrumentation extends Instrumentation {
                 require("XRAY".equals(answer),"Xray TCP failed for "+address);
             }
             require("XRAY:route-proof".equals(udp(InetAddress.getByName(address))),"Xray UDP failed for "+address);
+            JSONObject after=control("/stats",false).getJSONObject("vless");
+            for(String network:new String[]{"tcp","udp"}) require(after.getJSONObject(network).optLong(address)==before.getJSONObject(network).optLong(address)+1,
+                "Xray "+network+" bypassed VLESS/TLS for "+address);
+            progress("XRAY_PATH_VERIFIED "+address);
         }
         disconnect();
         progress("XRAY_IPV6_RESULT ipv4_gua_ula_nat64_tcp_udp");

@@ -7,8 +7,10 @@ The Android acceptance runner consumes fixture.json and quic.der from --work.
 """
 import argparse
 import http.server
+import ipaddress
 import json
 import os
+import re
 from pathlib import Path
 import signal
 import socket
@@ -75,7 +77,19 @@ def main():
     class Control(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
             with lock:
-                data = json.dumps(counters).encode()
+                snapshot = json.loads(json.dumps(counters))
+            # Origin reachability alone cannot distinguish the tunnel from a
+            # native IPv6 bypass. Count accepted VLESS requests independently.
+            snapshot["vless"] = {"tcp": {}, "udp": {}}
+            log = work/"xray.log"
+            for network, address, port in re.findall(r" accepted (tcp|udp):(\[[^\]]+\]|[^\s:]+):(\d+)(?:\s|$)", log.read_text(errors="replace") if log.exists() else ""):
+                if int(port) not in (18081, 18082):
+                    continue
+                address = str(ipaddress.ip_address(address.strip("[]")))
+                if address in TARGETS:
+                    counts = snapshot["vless"][network]
+                    counts[address] = counts.get(address, 0)+1
+            data = json.dumps(snapshot).encode()
             self.send_response(200); self.end_headers(); self.wfile.write(data)
         def do_POST(self):
             self.send_response(200); self.end_headers()
