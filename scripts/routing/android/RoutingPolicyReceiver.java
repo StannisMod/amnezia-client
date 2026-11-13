@@ -25,7 +25,7 @@ public final class RoutingPolicyReceiver extends DeviceAdminReceiver {
                 for (android.net.wifi.WifiConfiguration network : wifi.getConfiguredNetworks()) {
                     if ("\"AndroidWifi\"".equals(network.SSID)) selected = wifi.enableNetwork(network.networkId, true);
                 }
-                if (!selected || !wifi.reconnect()) throw new IllegalStateException("synthetic Wi-Fi was not selected");
+                if (!selected || !wifi.reconnect()) throw new IllegalStateException("synthetic Wi-Fi selection="+selected);
                 setResultCode(Activity.RESULT_OK);
                 return;
             }
@@ -39,7 +39,7 @@ public final class RoutingPolicyReceiver extends DeviceAdminReceiver {
             setResultCode(Activity.RESULT_OK);
         } catch (Exception error) {
             setResultCode(Activity.RESULT_CANCELED);
-            setResultData(error.getClass().getSimpleName());
+            setResultData(error.getClass().getSimpleName()+": "+error.getMessage());
         }
     }
 }
