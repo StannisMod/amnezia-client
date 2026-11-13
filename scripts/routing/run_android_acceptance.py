@@ -413,7 +413,11 @@ def main():
                         stats = json.load(response)
                     local = work / ('stats-' + name + '.json');local.write_text(json.dumps(stats))
                     remote = f'/data/user/{args.android_user}/{PACKAGE}/files/routing-stats-{name}.json'
-                    adb('push', str(local), remote);adb('shell', 'restorecon', remote);adb('shell', 'chmod', '644', remote)
+                    adb('push', str(local), remote)
+                    owner = adb('shell','stat','-c','%u',f'/data/user/{args.android_user}/{PACKAGE}')
+                    assert owner.isdigit() and int(owner)//100000==args.android_user, 'test data owner belongs to a different Android user'
+                    adb('shell','chown',owner+':'+owner,remote)
+                    adb('shell', 'restorecon', remote);adb('shell', 'chmod', '644', remote)
                     adb('shell', 'touch', f'/data/user/{args.android_user}/{PACKAGE}/files/routing-retain-{name}.ready')
                 if "POLICY_CHECKPOINT " in line:
                     mode = line.strip().split("POLICY_CHECKPOINT ", 1)[1]
