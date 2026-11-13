@@ -20,6 +20,8 @@ private const val SPLIT_TUNNEL_DISABLE = 0
 private const val SPLIT_TUNNEL_INCLUDE = 1
 private const val SPLIT_TUNNEL_EXCLUDE = 2
 
+const val STRICT_PRIVATE_DNS_DOMAIN_RULES = "STRICT_PRIVATE_DNS_DOMAIN_RULES"
+
 abstract class Protocol {
 
     abstract val statistics: Statistics
@@ -32,8 +34,10 @@ abstract class Protocol {
     protected var networkDnsSnapshot: (() -> JSONObject)? = null
     protected var networkDnsProtect: ((Int, String) -> Boolean)? = null
     protected var networkDnsIdentity: (() -> String?)? = null
-    fun configureNetworkDns(snapshot: () -> JSONObject, protect: (Int, String) -> Boolean, identity: (() -> String?)? = null) {
+    protected var validateNetworkDnsPolicy: ((JSONObject) -> Unit)? = null
+    fun configureNetworkDns(snapshot: () -> JSONObject, protect: (Int, String) -> Boolean, identity: (() -> String?)? = null, validatePolicy: ((JSONObject) -> Unit)? = null) {
         networkDnsSnapshot = snapshot
+        validateNetworkDnsPolicy = validatePolicy
         networkDnsIdentity = identity
         networkDnsProtect = protect
     }
@@ -74,6 +78,7 @@ abstract class Protocol {
     protected fun releaseNetworkHooks() {
         endpointResolver = null
         networkDnsSnapshot = null
+        validateNetworkDnsPolicy = null
         networkDnsIdentity = null
         networkDnsProtect = null
         endpointRecovery = null

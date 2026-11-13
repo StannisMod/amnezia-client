@@ -141,7 +141,15 @@ class AmneziaActivity : QtActivity() {
                         msg.data?.getString(MSG_ERROR)?.let { error ->
                             Log.e(TAG, "From VpnService: $error")
                         }
-                        // todo: add error reporting to Qt
+                        if (msg.data.getString(MSG_ERROR_KIND) == org.amnezia.vpn.protocol.STRICT_PRIVATE_DNS_DOMAIN_RULES) {
+                            AlertDialog.Builder(this@AmneziaActivity)
+                                .setTitle(R.string.privateDnsDomainRulesTitle)
+                                .setMessage(R.string.privateDnsDomainRulesMessage)
+                                .setNegativeButton(R.string.cancel) { _, _ -> }
+                                .setPositiveButton(R.string.openPrivateDnsSettings) { _, _ ->
+                                    startActivity(Intent(Settings.ACTION_WIRELESS_SETTINGS))
+                                }.show()
+                        }
                         QtAndroidController.onServiceError()
                     }
                 }

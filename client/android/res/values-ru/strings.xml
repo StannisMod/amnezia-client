@@ -25,4 +25,8 @@
     <string name="openNotificationSettings">Открыть настройки уведомлений</string>
 
     <string name="tvNoFileBrowser">Пожалуйста, установите приложение для просмотра файлов</string>
+
+    <string name="privateDnsDomainRulesTitle">Частный DNS Android и правила доменов</string>
+    <string name="privateDnsDomainRulesMessage">Для правил доменов вручную выключите частный DNS с указанным провайдером в сетевых настройках Android. Зашифрованный системный DNS скрывает имена от этих правил. AmneziaVPN не меняет эту настройку автоматически.</string>
+    <string name="openPrivateDnsSettings">Открыть настройки сети</string>
 </resources>

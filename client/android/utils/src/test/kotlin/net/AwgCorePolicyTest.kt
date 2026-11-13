@@ -7,6 +7,42 @@ import org.junit.Test
 
 class AwgCorePolicyTest {
     private fun profile(): JSONObject = JSONObject("""{"protocol":"awg","dns1":"10.77.0.2","appSplitTunnelType":1,"splitTunnelType":0,"splitTunnelApps":["org.telegram.messenger"],"awg_config_data":{"allowed_ips":["0.0.0.0/0"],"client_priv_key":"keep-me","mtu":"1380","PersistentKeepalive":"25"}}""")
+    @Test fun strictDnsRequiresVisibleNamesOnlyForDomainPolicies() {
+        val input = AwgCorePolicy.prepare(profile())
+        val unchanged = input.toString()
+        assertFalse(AwgCorePolicy.requiresDomainVisibility(input))
+        assertEquals(unchanged,input.toString())
+        val routes = input.getJSONObject("sing_box_routing").getJSONArray("rules")
+        routes.put(JSONObject().put("kind","cidr").put("value","192.0.2.0/24").put("action","direct"))
+        assertFalse(AwgCorePolicy.requiresDomainVisibility(input))
+        routes.put(JSONObject().put("kind","suffix").put("value","example.test").put("action","direct"))
+        assertTrue(AwgCorePolicy.requiresDomainVisibility(input))
+        input.put("protocol","wireguard")
+        assertTrue(AwgCorePolicy.requiresDomainVisibility(input))
+    }
+    @Test fun strictDnsDoesNotDisableUnusedSiteRulesForExplicitVpnOnlyApps() {
+        val input = AwgCorePolicy.prepare(profile())
+        val routes = input.getJSONObject("sing_box_routing").getJSONArray("rules")
+        routes.put(JSONObject().put("kind","domain").put("value","example.test").put("action","direct"))
+        input.put("android_app_routing",JSONObject().put("version",1).put("site_rule_packages",JSONArray()))
+        assertFalse(AwgCorePolicy.requiresDomainVisibility(input))
+        input.getJSONObject("android_app_routing").getJSONArray("site_rule_packages").put("org.telegram.messenger")
+        assertTrue(AwgCorePolicy.requiresDomainVisibility(input))
+        input.getJSONObject("android_app_routing").put("site_rule_packages",JSONArray())
+        routes.getJSONObject(0).put("action","block")
+        assertTrue(AwgCorePolicy.requiresDomainVisibility(input))
+    }
+    @Test fun strictDnsAlsoDetectsSplitDnsDomainRulesButNotTlsResolverNames() {
+        val input = AwgCorePolicy.prepare(profile())
+        val dns = input.getJSONObject("sing_box_dns")
+        dns.getJSONObject("policies").getJSONObject("vpn").put("transport","tls").put("server_name","resolver.example")
+        assertFalse(AwgCorePolicy.requiresDomainVisibility(input))
+        dns.getJSONArray("rules").put(JSONObject().put("kind","domain").put("value","corp.example").put("policy","vpn"))
+        assertTrue(AwgCorePolicy.requiresDomainVisibility(input))
+        input.put("protocol","openvpn")
+        assertFalse(AwgCorePolicy.requiresDomainVisibility(input))
+    }
+
     @Test fun ordinaryAppOnlyAwgUsesSharedCoreAndVpnDnsWithoutSiteFlag() {
         val input = profile(); val original = input.toString()
         val result = AwgCorePolicy.prepare(input)

@@ -103,6 +103,7 @@ open class Wireguard : Protocol() {
         val next = routedConfig?.let { JSONObject(it.toString()) } ?: error("No routed profile")
         require(next.optInt("appSplitTunnelType", 0) == 1) { "Live rules require an application include list" }
         next.put("android_app_routing", JSONObject(policy.toString()))
+        validateNetworkDnsPolicy?.invoke(next)
         require(AwgCorePolicy.platformSafe(Build.VERSION.SDK_INT, lockdownEnabled(), next)) { "Application policy is incompatible with Android VPN lockdown" }
         val resolved = AndroidAppRoutingPolicy.resolveForSession(next, Build.VERSION.SDK_INT, { name ->
             try { context.packageManager.getApplicationInfo(name, 0).uid }
@@ -157,6 +158,7 @@ open class Wireguard : Protocol() {
         }
 
     private fun startRouted(config: JSONObject, vpnBuilder: Builder, protect: (Int) -> Boolean) {
+        validateNetworkDnsPolicy?.invoke(config)
         val initialDnsIdentity = networkDnsIdentity?.invoke()
         if (!AwgCorePolicy.platformSafe(Build.VERSION.SDK_INT, lockdownEnabled(), config)) {
             throw VpnStartException(if (Build.VERSION.SDK_INT < 29) "DIRECT routing requires Android 10 or newer" else "DIRECT routing or network DNS is unavailable while Android VPN lockdown is enabled")

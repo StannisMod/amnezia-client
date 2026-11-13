@@ -42,6 +42,14 @@ class NetworkState(
         properties.domains, properties.isPrivateDnsActive, properties.privateDnsServerName
     ).joinToString("|")
 
+    /** A configured strict provider matters even before its TLS validation. */
+    fun hasStrictPrivateDns(): Boolean = connectivityManager.allNetworks.any { network ->
+        if (network in lostNetworks) return@any false
+        val caps = connectivityManager.getNetworkCapabilities(network) ?: return@any false
+        caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN) && caps.hasCapability(NET_CAPABILITY_INTERNET) &&
+            !connectivityManager.getLinkProperties(network)?.privateDnsServerName.isNullOrBlank()
+    }
+
     /** No DNS lookup: compare the captured inventory without interrupting it. */
     fun dnsIdentity(): String {
         val preferred = selectedUnderlay()?.networkHandle

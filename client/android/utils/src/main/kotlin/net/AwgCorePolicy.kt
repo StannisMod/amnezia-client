@@ -82,6 +82,22 @@ object AwgCorePolicy {
         return result
     }
 
+    /** Encrypted OS DNS hides names needed by active domain policies. */
+    fun requiresDomainVisibility(config: JSONObject): Boolean {
+        if (config.optString("protocol") !in setOf("awg", "wireguard")) return false
+        fun domainRules(settings: JSONObject?): List<JSONObject> {
+            val rules = settings?.optJSONArray("rules") ?: return emptyList()
+            return (0 until rules.length()).mapNotNull { rules.optJSONObject(it) }
+                .filter { it.optString("kind") in setOf("domain", "suffix") }
+        }
+        val routes = domainRules(config.optJSONObject("sing_box_routing"))
+        if (routes.any { it.optString("action") == "block" }) return true
+        val applications = config.optJSONObject("android_app_routing")
+        val siteApps = applications?.optJSONArray("site_rule_packages")
+        val allCapturedVpnOnly = config.optInt("appSplitTunnelType", 0) == 1 && siteApps != null && siteApps.length() == 0
+        return !allCapturedVpnOnly && (routes.isNotEmpty() || domainRules(config.optJSONObject("sing_box_dns")).isNotEmpty())
+    }
+
     fun retainsVpnDns(config: JSONObject): Boolean {
         val dns = config.optJSONObject("sing_box_dns") ?: return false
         if (dns.optBoolean("preserve_network_domains")) return false

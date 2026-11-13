@@ -45,6 +45,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import org.amnezia.vpn.protocol.STRICT_PRIVATE_DNS_DOMAIN_RULES
 import org.amnezia.vpn.protocol.BadConfigException
 import org.amnezia.vpn.protocol.ProtocolState.CONNECTED
 import org.amnezia.vpn.protocol.ProtocolState.CONNECTING
@@ -71,6 +72,7 @@ const val ACTION_CONNECT = "org.amnezia.vpn.action.connect"
 const val MSG_VPN_CONFIG = "VPN_CONFIG"
 const val MSG_CONNECTION_DIAGNOSTICS = "CONNECTION_DIAGNOSTICS"
 const val MSG_ERROR = "ERROR"
+const val MSG_ERROR_KIND = "ERROR_KIND"
 const val MSG_APPLICATION_POLICY = "APPLICATION_POLICY"
 const val MSG_APPLICATION_POLICY_REQUEST_ID = "APPLICATION_POLICY_REQUEST_ID"
 const val MSG_APPLICATION_POLICY_SUCCESS = "APPLICATION_POLICY_SUCCESS"
@@ -217,7 +219,7 @@ open class AmneziaVpnService : VpnService() {
                                 } catch (cancelled: kotlinx.coroutines.CancellationException) {
                                     throw cancelled
                                 } catch (error: Exception) {
-                                    reason = error.message ?: reason
+                                    reason = localizedVpnError(error.message ?: reason)
                                 }
                                 target.send {
                                     ServiceEvent.APPLICATION_POLICY_RESULT.packToMessage {
@@ -643,8 +645,9 @@ open class AmneziaVpnService : VpnService() {
             return
         }
 
+        val privateDnsConflict = networkState.hasStrictPrivateDns() && org.amnezia.vpn.util.net.AwgCorePolicy.requiresDomainVisibility(config)
         val unsupportedApplicationPolicy = Build.VERSION.SDK_INT < Build.VERSION_CODES.Q && config.has("android_app_routing")
-        if (unsupportedApplicationPolicy || (config.has("sing_box_routing") &&
+        if (privateDnsConflict || unsupportedApplicationPolicy || (config.has("sing_box_routing") &&
             !org.amnezia.vpn.util.net.AwgCorePolicy.platformSafe(Build.VERSION.SDK_INT,
                 Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && isLockdownEnabled, config)
         )) {
@@ -652,7 +655,8 @@ open class AmneziaVpnService : VpnService() {
             // Repeated rejected starts may already be DISCONNECTED, so notify
             // clients explicitly instead of relying on a StateFlow transition.
             protocolState.value = DISCONNECTED
-            onError(if (unsupportedApplicationPolicy) "Per-application site rules require Android 10 or newer"
+            onError(if (privateDnsConflict) STRICT_PRIVATE_DNS_DOMAIN_RULES
+                    else if (unsupportedApplicationPolicy) "Per-application site rules require Android 10 or newer"
                     else if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) "DIRECT routing requires Android 10 or newer; use an all-VPN policy on Android 9"
                     else "DIRECT routing or network DNS is unavailable while Android VPN lockdown is enabled")
             clientMessengers.send {
@@ -677,7 +681,10 @@ open class AmneziaVpnService : VpnService() {
                     Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && this@AmneziaVpnService.isLockdownEnabled
                 }
                 protocol.configureEndpointResolver(networkState::resolveEndpoint)
-                protocol.configureNetworkDns(networkState::dnsSnapshot, networkState::bindDnsSocket, networkState::dnsIdentity)
+                protocol.configureNetworkDns(networkState::dnsSnapshot, networkState::bindDnsSocket, networkState::dnsIdentity) { candidate ->
+                    if (networkState.hasStrictPrivateDns() && org.amnezia.vpn.util.net.AwgCorePolicy.requiresDomainVisibility(candidate))
+                        throw VpnException(STRICT_PRIVATE_DNS_DOMAIN_RULES)
+                }
                 protocol.configureUnderlay(networkState::underlayIdentity) { fd ->
                     protect(fd) && networkState.bindVpnSocket(fd)
                 }
@@ -733,12 +740,16 @@ open class AmneziaVpnService : VpnService() {
     /**
      * Utils methods
      */
+    private fun localizedVpnError(message: String): String =
+        if (message == STRICT_PRIVATE_DNS_DOMAIN_RULES) getString(R.string.privateDnsDomainRulesMessage) else message
+
     private fun onError(msg: String) {
         Log.e(TAG, msg)
         mainScope.launch {
             clientMessengers.send {
                 ServiceEvent.ERROR.packToMessage {
-                    putString(MSG_ERROR, msg)
+                    putString(MSG_ERROR, localizedVpnError(msg))
+                    if (msg == STRICT_PRIVATE_DNS_DOMAIN_RULES) putString(MSG_ERROR_KIND, msg)
                 }
             }
         }
