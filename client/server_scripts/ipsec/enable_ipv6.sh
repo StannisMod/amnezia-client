@@ -4,6 +4,60 @@ amnezia_ipsec_v6_rule() {
     amnezia_ipsec_table=$1; shift
     ip6tables -t "$amnezia_ipsec_table" -C "$@" 2>/dev/null || ip6tables -t "$amnezia_ipsec_table" -A "$@"
 }
+amnezia_ipsec_migrate_ipv6_config() {
+    amnezia_ipsec_config=$1
+    [ -f "$amnezia_ipsec_config" ] || return 0
+    [ ! -L "$amnezia_ipsec_config" ] || return 1
+    [ "$IPSEC_IKEV2_SUBNETS" != '0.0.0.0/0' ] || return 0
+    amnezia_ipsec_candidate=$(mktemp "${amnezia_ipsec_config}.ipv6.XXXXXX") || return 1
+    # Only the standard managed connection is migrated. Refuse conflicting or
+    # custom selectors instead of broadening a manually restricted policy.
+    amnezia_ipsec_result=0
+    awk -v selectors="$IPSEC_IKEV2_SUBNETS" -v pool="$IPSEC_IKEV2_POOL" '
+        {
+            normalized=$0; sub(/#.*/, "", normalized)
+            gsub(/^[ \t]+|[ \t]+$/, "", normalized)
+            if (normalized ~ /^conn[ \t]+/) {
+                name=normalized; sub(/^conn[ \t]+/, "", name)
+                active=(name=="ikev2-cp"); if(active) connections++
+            }
+            if(active && normalized ~ /^(leftsubnet|rightaddresspool)[ \t]*=/) {
+                key=normalized; sub(/[ \t]*=.*/, "", key)
+                value=normalized; sub(/^[^=]*=[ \t]*/, "", value)
+                if(key=="leftsubnet") {
+                    left++; old="0.0.0.0/0"; desired=selectors
+                } else {
+                    right++; old="192.168.43.10-192.168.43.250"; desired=pool
+                }
+                if(value==old) {
+                    position=index($0,value)
+                    $0=substr($0,1,position-1) desired substr($0,position+length(value))
+                    changed++
+                } else if(value!=desired) bad=1
+            }
+            print
+        }
+        END {
+            if(bad || connections!=1 || left!=1 || right!=1) exit 1
+            if(!changed) exit 2
+        }' "$amnezia_ipsec_config" > "$amnezia_ipsec_candidate" || amnezia_ipsec_result=$?
+    case "$amnezia_ipsec_result" in
+        0)
+            # Preserve ownership/mode and replace only after the entire file
+            # passed validation. NSS files and client certificates are untouched.
+            amnezia_ipsec_preserved=$(mktemp "${amnezia_ipsec_config}.metadata.XXXXXX") || { rm -f "$amnezia_ipsec_candidate"; return 1; }
+            if cp -p "$amnezia_ipsec_config" "$amnezia_ipsec_preserved" &&
+                cat "$amnezia_ipsec_candidate" > "$amnezia_ipsec_preserved" &&
+                mv -f "$amnezia_ipsec_preserved" "$amnezia_ipsec_config"; then
+                rm -f "$amnezia_ipsec_candidate"; return 0
+            fi
+            rm -f "$amnezia_ipsec_preserved"
+            ;;
+        2) rm -f "$amnezia_ipsec_candidate"; return 0 ;;
+    esac
+    rm -f "$amnezia_ipsec_candidate"
+    return 1
+}
 amnezia_ipsec_prepare_ipv6() {
     IPSEC_IKEV2_SUBNETS='0.0.0.0/0'
     IPSEC_IKEV2_POOL='192.168.43.10-192.168.43.250'

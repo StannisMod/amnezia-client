@@ -129,7 +129,14 @@ try:
     # forwarding come from the shipping production resources without replacement.
     body = body.replace('left=%defaultroute', 'left=198.51.100.1')
     assert '$' not in body, 'unexpanded production configuration'
-    Path('/etc/ipsec.conf').write_text('version 2.0\nconfig setup\n  uniqueids=no\n\n' + body + '\n')
+    expected_connection = body + '\n# Retained administrator note\n\n'
+    legacy_connection = expected_connection.replace(settings['SELECTORS'], '0.0.0.0/0').replace(
+        settings['POOL'], '192.168.43.10-192.168.43.250')
+    stored_connection = Path('/etc/ipsec.d/ikev2.conf')
+    stored_connection.write_text(legacy_connection)
+    stored_connection.chmod(0o600)
+    original_owner = (stored_connection.stat().st_uid, stored_connection.stat().st_gid)
+    Path('/etc/ipsec.conf').write_text('version 2.0\nconfig setup\n  uniqueids=no\n\ninclude /etc/ipsec.d/ikev2.conf\n')
     Path('/etc/ipsec.secrets').touch()
     Path('/etc/swanctl/swanctl.conf').write_text('''connections {
   fixture {
@@ -164,6 +171,20 @@ try:
     assert 'failed to add' not in loaded, 'Libreswan rejected the actual connection'
     wait_file('/run/pluto/pluto.ctl')
     server_pid = Path('/run/pluto/pluto.pid').read_text()
+    assert stored_connection.read_text() == expected_connection, 'startup did not migrate the existing IPv4 connection'
+    assert stored_connection.stat().st_mode & 0o777 == 0o600
+    assert (stored_connection.stat().st_uid, stored_connection.stat().st_gid) == original_owner
+    migrate = ['bash', '-ec', '. "$1"; amnezia_ipsec_prepare_ipv6; amnezia_ipsec_migrate_ipv6_config "$2"',
+               'sh', '/src/client/server_scripts/ipsec/enable_ipv6.sh']
+    run(*migrate, str(stored_connection))
+    assert stored_connection.read_text() == expected_connection, 'migration is not idempotent'
+    custom = root / 'custom.conf'
+    custom.write_text(legacy_connection.replace('leftsubnet=0.0.0.0/0', 'leftsubnet=192.0.2.0/24'))
+    custom_before = custom.read_bytes()
+    rejected = subprocess.run([*migrate, str(custom)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=10)
+    assert rejected.returncode != 0 and custom.read_bytes() == custom_before, 'migration broadened a custom policy'
+    assert not list(root.glob('custom.conf.ipv6.*')), 'rejected migration leaked its staging file'
+    print('PASS: cold startup migrates existing IPv4 policy atomically, retains file permissions and refuses custom selectors unchanged', flush=True)
     spawn(['ip', 'netns', 'exec', names[0], '/usr/lib/strongswan/charon'], 'charon.log')
     wait_file('/run/charon.vici')
     print(run('ip', 'netns', 'exec', names[0], 'swanctl', '--load-all'), flush=True)
