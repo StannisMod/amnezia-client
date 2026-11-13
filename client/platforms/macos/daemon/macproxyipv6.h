@@ -8,6 +8,8 @@ class MacProxyIpv6 {
 public:
     using Runner = std::function<bool(const QString &, const QStringList &)>;
     explicit MacProxyIpv6(Runner runner = run) : m_run(std::move(runner)) {}
+    MacProxyIpv6(const MacProxyIpv6 &) = delete;
+    MacProxyIpv6 &operator=(const MacProxyIpv6 &) = delete;
     ~MacProxyIpv6() { clear(); }
 
     bool configure(const QStringList &included, const QStringList &excluded)

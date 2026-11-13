@@ -357,7 +357,7 @@ bool KillSwitch::enablePeerTraffic(const QJsonObject &configStr) {
 
     // killSwitch toggle
     if (QVariant(configStr.value(amnezia::configKey::killSwitchOption).toString()).toBool()) {
-        WindowsFirewall::create(this)->enablePeerTraffic(config);
+        if (!WindowsFirewall::create(this)->enablePeerTraffic(config)) return false;
     }
 
     WindowsDaemon::instance()->prepareActivation(config, inetAdapterIndex);

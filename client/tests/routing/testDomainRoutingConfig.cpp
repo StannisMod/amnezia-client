@@ -5,10 +5,42 @@
 #include "../../core/utils/splitDnsConfig.h"
 #include "../../core/utils/proxyIpv6Routes.h"
 #include "../../platforms/macos/daemon/macproxyipv6.h"
+#include "../../platforms/windows/daemon/windowsproxyipv6.h"
 
 class DomainRoutingConfigTest : public QObject {
     Q_OBJECT
 private slots:
+    void windowsIpv6ChangesAreTemporaryAndOwned()
+    {
+        QList<QStringList> calls;
+        int additions = 0;
+        WindowsProxyIpv6 policy(42, [&](const QStringList &arguments) {
+            calls.append(arguments);
+            if (arguments.contains("add") && arguments.contains("route")) return ++additions != 2;
+            return true;
+        });
+        QVERIFY(!policy.configure({"::/0"}, {}));
+        int deletedRoutes = 0;
+        for (const auto &args : calls) {
+            QVERIFY(args.contains("interface=42"));
+            QVERIFY(args.contains("store=active"));
+            QVERIFY(!args.contains("store=persistent"));
+            if (args.contains("route") && args.contains("delete")) {
+                ++deletedRoutes;
+                QVERIFY(args.contains("prefix=::/1"));
+                QVERIFY(!args.contains("prefix=8000::/1"));
+            }
+        }
+        QCOMPARE(deletedRoutes, 1);
+        QVERIFY(calls.last().contains("delete"));
+        QVERIFY(calls.last().contains("address=fdfe:dcba:9876::2"));
+        calls.clear();
+        QVERIFY(policy.clear());
+        QVERIFY(calls.isEmpty());
+        WindowsProxyIpv6 invalid(0, [&](const QStringList &args) { calls.append(args); return true; });
+        QVERIFY(!invalid.configure({"::/0"}, {}));
+        QVERIFY(calls.isEmpty());
+    }
     void desktopIpv6RollbackOwnsOnlySuccessfulChanges()
     {
         QStringList calls;
