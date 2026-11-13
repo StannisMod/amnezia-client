@@ -64,6 +64,7 @@ type fixture struct {
 	dnsQueries                           atomic.Int64
 	nativeDNSQueries                     atomic.Int64
 	nativeTLSQueries                     atomic.Int64
+	vpnTLSQueries                        atomic.Int64
 	dnsNamesMu                           sync.Mutex
 	dnsNames                             []string
 	outerRX, outerTX                     atomic.Int64
@@ -263,44 +264,63 @@ func (f *fixture) start() error {
 		f.closePeer = append(f.closePeer, pc)
 		go observeUDP(pc, "VPN", &f.vpnUDP)
 	}
+	vpnDNS := dns.HandlerFunc(func(w dns.ResponseWriter, q *dns.Msg) {
+		f.dnsQueries.Add(1)
+		a := new(dns.Msg)
+		a.SetReply(q)
+		for _, question := range q.Question {
+			name := strings.ToLower(question.Name)
+			if recordDNS {
+				f.dnsNamesMu.Lock()
+				if len(f.dnsNames) < 4096 {
+					f.dnsNames = append(f.dnsNames, name)
+				}
+				f.dnsNamesMu.Unlock()
+			}
+			if name == "cname.test." {
+				a.Answer = append(a.Answer, &dns.CNAME{Hdr: dns.RR_Header{Name: name, Rrtype: dns.TypeCNAME, Class: dns.ClassINET, Ttl: 30}, Target: "vpn.test."})
+				name = "vpn.test."
+			}
+			hdr := dns.RR_Header{Name: name, Rrtype: question.Qtype, Class: dns.ClassINET, Ttl: 30}
+			switch question.Qtype {
+			case dns.TypeA:
+				if name != "ipv6.test." {
+					a.Answer = append(a.Answer, &dns.A{Hdr: hdr, A: net.ParseIP(sharedIP)})
+				}
+			case dns.TypeTXT:
+				a.Answer = append(a.Answer, &dns.TXT{Hdr: hdr, Txt: []string{"VPN"}})
+			case dns.TypeAAAA:
+				if name == "ipv6.test." {
+					a.Answer = append(a.Answer, &dns.AAAA{Hdr: hdr, AAAA: net.ParseIP("fd77::2")})
+				}
+			}
+		}
+		w.WriteMsg(a)
+	})
 	for _, dnsAddress := range []string{"10.77.0.2:53", "[fd77::2]:53"} {
 		pc, err := stack.ListenUDPAddrPort(netip.MustParseAddrPort(dnsAddress))
 		if err != nil {
 			return err
 		}
 		f.closePeer = append(f.closePeer, pc)
-		server := &dns.Server{PacketConn: pc, Handler: dns.HandlerFunc(func(w dns.ResponseWriter, q *dns.Msg) {
-			f.dnsQueries.Add(1)
-			a := new(dns.Msg)
-			a.SetReply(q)
+		server := &dns.Server{PacketConn: pc, Handler: vpnDNS}
+		go server.ActivateAndServe()
+	}
+	if nativeDOTPort != 0 {
+		listener, err := stack.ListenTCPAddrPort(netip.AddrPortFrom(netip.MustParseAddr(sharedIP), 853))
+		if err != nil {
+			return err
+		}
+		secure := tls.NewListener(listener, &tls.Config{Certificates: []tls.Certificate{f.quicCertificate}, MinVersion: tls.VersionTLS12})
+		f.closePeer = append(f.closePeer, secure)
+		server := &dns.Server{Listener: secure, Handler: dns.HandlerFunc(func(w dns.ResponseWriter, q *dns.Msg) {
 			for _, question := range q.Question {
-				name := strings.ToLower(question.Name)
-				if recordDNS {
-					f.dnsNamesMu.Lock()
-					if len(f.dnsNames) < 4096 {
-						f.dnsNames = append(f.dnsNames, name)
-					}
-					f.dnsNamesMu.Unlock()
-				}
-				if name == "cname.test." {
-					a.Answer = append(a.Answer, &dns.CNAME{Hdr: dns.RR_Header{Name: name, Rrtype: dns.TypeCNAME, Class: dns.ClassINET, Ttl: 30}, Target: "vpn.test."})
-					name = "vpn.test."
-				}
-				hdr := dns.RR_Header{Name: name, Rrtype: question.Qtype, Class: dns.ClassINET, Ttl: 30}
-				switch question.Qtype {
-				case dns.TypeA:
-					if name != "ipv6.test." {
-						a.Answer = append(a.Answer, &dns.A{Hdr: hdr, A: net.ParseIP(sharedIP)})
-					}
-				case dns.TypeTXT:
-					a.Answer = append(a.Answer, &dns.TXT{Hdr: hdr, Txt: []string{"VPN"}})
-				case dns.TypeAAAA:
-					if name == "ipv6.test." {
-						a.Answer = append(a.Answer, &dns.AAAA{Hdr: hdr, AAAA: net.ParseIP("fd77::2")})
-					}
+				if strings.HasSuffix(strings.ToLower(question.Name), ".app-policy.test.") {
+					f.vpnTLSQueries.Add(1)
+					break
 				}
 			}
-			w.WriteMsg(a)
+			vpnDNS.ServeDNS(w, q)
 		})}
 		go server.ActivateAndServe()
 	}
@@ -465,7 +485,7 @@ func main() {
 	control.HandleFunc("/stats", func(w http.ResponseWriter, _ *http.Request) {
 		// Datagram counts identify delivery/peer response failures without
 		// persisting handshake payloads, keys or private UAPI configuration.
-		json.NewEncoder(w).Encode(map[string]int64{"direct_tcp": f.directTCP.Load(), "direct_udp": f.directUDP.Load(), "vpn_tcp": f.vpnTCP.Load(), "bulk_tcp": f.bulkTCP.Load(), "vpn_udp": f.vpnUDP.Load(), "dns_queries": f.dnsQueries.Load(), "native_dns_queries": f.nativeDNSQueries.Load(), "native_tls_queries": f.nativeTLSQueries.Load(), "outer_received": f.outerRX.Load(), "outer_sent": f.outerTX.Load()})
+		json.NewEncoder(w).Encode(map[string]int64{"direct_tcp": f.directTCP.Load(), "direct_udp": f.directUDP.Load(), "vpn_tcp": f.vpnTCP.Load(), "bulk_tcp": f.bulkTCP.Load(), "vpn_udp": f.vpnUDP.Load(), "dns_queries": f.dnsQueries.Load(), "native_dns_queries": f.nativeDNSQueries.Load(), "native_tls_queries": f.nativeTLSQueries.Load(), "vpn_tls_queries": f.vpnTLSQueries.Load(), "outer_received": f.outerRX.Load(), "outer_sent": f.outerTX.Load()})
 	})
 	control.HandleFunc("/endpoint-dns", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
