@@ -106,6 +106,12 @@ private slots:
     }
     void testIPv6PreparationIsPackagedForAWGAndWG()
     {
+        QFile coordinator(":/server_scripts/connection_updates/ipv6_upgrade.go");
+        QVERIFY(coordinator.open(QIODevice::ReadOnly));
+        QVERIFY(!coordinator.readAll().isEmpty());
+        QFile dockerfile(":/server_scripts/connection_updates/Dockerfile");
+        QVERIFY(dockerfile.open(QIODevice::ReadOnly));
+        QVERIFY(dockerfile.readAll().contains("ipv6_upgrade.go"));
         for (const auto container : {DockerContainer::Awg, DockerContainer::Awg2, DockerContainer::WireGuard}) {
             const auto script = scriptData(ProtocolScriptType::run_container, container);
             QVERIFY(script.contains("AMNEZIA_IPV6_NETWORK_STATUS"));

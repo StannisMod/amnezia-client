@@ -138,7 +138,7 @@ func TestStartupMigrationUsesDurableTransactionWithoutChangingBody(t *testing.T)
 	if err != nil || status["operation"] != operation {
 		t.Fatal("lost stage result not recoverable", err)
 	}
-	for _, action := range []string{"apply", "apply-commit", "stage-live", "rollback-live", "prepare-forwarding", "stage-ipv6", "discard-stage", "replace-client-table", "check-client-table", "prepare-receipt", "receipt-status", "check-revoked-peer", "ack-receipt", "migrate-client-table", "prepare-peer-metadata"} {
+	for _, action := range []string{"apply", "apply-commit", "stage-live", "rollback-live", "prepare-forwarding", "verify-ipv6-egress", "stage-ipv6", "discard-stage", "replace-client-table", "check-client-table", "prepare-receipt", "receipt-status", "check-revoked-peer", "ack-receipt", "migrate-client-table", "prepare-peer-metadata"} {
 		if _, err := invoke(action, operation, nil, nil); err == nil {
 			t.Fatal("startup transaction allowed protocol operation")
 		}

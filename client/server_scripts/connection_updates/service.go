@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/ed25519"
@@ -332,7 +333,7 @@ func stateTag(s *state) string {
 	return hex.EncodeToString(digest[:])
 }
 func info(s *state) map[string]any {
-	return map[string]any{"version": 1, "stateTag": stateTag(s), "features": []string{"coverage-v1", "conditional-publication-v1", "awg3-header-protection-v1", "rollout-readiness-v1", "live-publication-v1", "path-mtu-probe-v1", "client-ipv6-v1", "conditional-client-ipv6-v1", "idempotent-issue-v1"}, "host": s.Host, "publicKey": []byte(ed25519.PrivateKey(s.SigningKey).Public().(ed25519.PublicKey)), "certificate": s.Certificate}
+	return map[string]any{"version": 1, "stateTag": stateTag(s), "features": []string{"coverage-v1", "conditional-publication-v1", "awg3-header-protection-v1", "rollout-readiness-v1", "live-publication-v1", "path-mtu-probe-v1", "client-ipv6-v1", "conditional-client-ipv6-v1", "idempotent-issue-v1", "ipv6-upgrade-v1"}, "host": s.Host, "publicKey": []byte(ed25519.PrivateKey(s.SigningKey).Public().(ed25519.PublicKey)), "certificate": s.Certificate}
 }
 func probe(s *state) error {
 	certificate, e := x509.ParseCertificate(s.Certificate)
@@ -727,6 +728,21 @@ func run() error {
 			"amnezia-wireguard": "/opt/amnezia/wireguard/wg0.conf",
 			"amnezia-awg2":      "/opt/amnezia/awg/awg0.conf",
 		})
+	}
+	if command == "upgrade-ipv6" {
+		raw, err := io.ReadAll(io.LimitReader(os.Stdin, 65537))
+		if err != nil || len(raw) > 65536 {
+			return errors.New("invalid IPv6 upgrade request")
+		}
+		var req ipv6UpgradeRequest
+		decoder := json.NewDecoder(bytes.NewReader(raw))
+		decoder.DisallowUnknownFields()
+		if decoder.Decode(&req) != nil || decoder.Decode(new(any)) != io.EOF {
+			return errors.New("invalid IPv6 upgrade request")
+		}
+		ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM)
+		defer cancel()
+		return json.NewEncoder(os.Stdout).Encode(runIPv6Upgrade(ctx, req))
 	}
 	if command == "activate-awg3" {
 		b, e := io.ReadAll(io.LimitReader(os.Stdin, maxAdminRequest+1))

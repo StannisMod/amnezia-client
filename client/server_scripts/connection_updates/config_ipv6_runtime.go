@@ -2,8 +2,13 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/json"
 	"errors"
+	"io"
 	"net"
+	"net/http"
 	"net/netip"
 	"time"
 )
@@ -180,4 +185,96 @@ func configIPv6PlanMatches(journal configJournal) bool {
 	}
 	plan, err := planIPv6Config(journal.Original, journal.IPv6.CIDR)
 	return err == nil && configHash(plan.Config) == journal.CandidateHash
+}
+
+// A default route and installed NAT rules are not evidence of Internet egress.
+// Verify a TLS-authenticated response over IPv6, bound to the tunnel source so
+// this also exercises the source-prefix NAT rather than only the bridge IP.
+// Public endpoints: https://developers.cloudflare.com/1.1.1.1/infrastructure/network-operators/
+func probeIPv6HTTPS(ctx context.Context, source netip.Addr, endpoint netip.AddrPort, serverName, path string, roots *x509.CertPool) error {
+	if _, bounded := ctx.Deadline(); !bounded {
+		return errors.New("IPv6 egress probe requires a deadline")
+	}
+	if !source.Is6() || source.Is4In6() || source.Zone() != "" || !endpoint.Addr().Is6() || endpoint.Addr().Is4In6() || endpoint.Addr().Zone() != "" || endpoint.Port() == 0 || serverName == "" {
+		return errors.New("invalid IPv6 egress probe")
+	}
+	dialer := net.Dialer{LocalAddr: &net.TCPAddr{IP: net.IP(source.AsSlice())}, Timeout: 4 * time.Second}
+	transport := &http.Transport{
+		Proxy: nil, // Never consult HTTP(S)_PROXY or bypass the measured source path.
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return dialer.DialContext(ctx, "tcp6", endpoint.String())
+		},
+		TLSClientConfig:        &tls.Config{ServerName: serverName, RootCAs: roots, MinVersion: tls.VersionTLS12},
+		DisableKeepAlives:      true,
+		DisableCompression:     true,
+		MaxResponseHeaderBytes: 8192,
+	}
+	defer transport.CloseIdleConnections()
+	client := &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("egress redirects forbidden") }}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+serverName+path+"?name=.&type=NS", nil)
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Accept", "application/dns-json")
+	response, err := client.Do(request)
+	if err != nil {
+		return errors.New("authenticated IPv6 egress unavailable")
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return errors.New("unexpected IPv6 egress response")
+	}
+	raw, err := io.ReadAll(io.LimitReader(response.Body, 65537))
+	if err != nil || len(raw) > 65536 {
+		return errors.New("invalid IPv6 egress response")
+	}
+	var answer struct {
+		Status   *int
+		Question []struct {
+			Name string
+			Type int
+		}
+		Answer []struct {
+			Type int
+			Data string
+		}
+	}
+	if json.Unmarshal(raw, &answer) != nil || answer.Status == nil || *answer.Status != 0 || len(answer.Question) != 1 || answer.Question[0].Name != "." || answer.Question[0].Type != 2 || len(answer.Answer) == 0 || len(answer.Answer) > 64 {
+		return errors.New("IPv6 egress response did not answer the probe")
+	}
+	for _, record := range answer.Answer {
+		if record.Type == 2 && record.Data != "" {
+			return nil
+		}
+	}
+	return errors.New("IPv6 egress response lacks root nameservers")
+}
+
+func verifyConfigIPv6Egress(transaction *configTransaction, container string) error {
+	// This rechecks journal, native/file identity, current IPv6 address, and
+	// verified forwarding under the same protocol lock before measuring egress.
+	if err := prepareConfigForwarding(transaction, container); err != nil {
+		return err
+	}
+	prefix, err := netip.ParsePrefix(transaction.journal.IPv6.CIDR)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	// Independent providers avoid making a single service outage equivalent to
+	// absence of IPv6. Only a root-NS probe is sent, never user DNS queries.
+	// https://developers.google.com/speed/public-dns/docs/doh
+	for _, target := range []struct{ address, name, path string }{
+		{"2606:4700:4700::1111", "cloudflare-dns.com", "/dns-query"},
+		{"2001:4860:4860::8888", "dns.google", "/resolve"},
+	} {
+		attempt, stop := context.WithTimeout(ctx, 5*time.Second)
+		err = probeIPv6HTTPS(attempt, prefix.Addr(), netip.AddrPortFrom(netip.MustParseAddr(target.address), 443), target.name, target.path, nil)
+		stop()
+		if err == nil {
+			return nil
+		}
+	}
+	return errors.New("IPv6 Internet egress not verified")
 }

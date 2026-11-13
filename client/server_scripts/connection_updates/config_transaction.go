@@ -401,7 +401,7 @@ func configTransactionCommand(input io.Reader, output io.Writer, paths map[strin
 		if request.Operation != "" || len(request.Expected) != 0 || len(request.Candidate) != 0 || request.ServerIPv6 != "" {
 			return errors.New("unexpected capability fields")
 		}
-		return json.NewEncoder(output).Encode(map[string]any{"version": 1, "features": []string{"native-mutation-v1", "native-reconcile-v1", "native-rollback-guard-v1", "native-stage-restart-v1", "client-table-cas-v1", "native-receipt-v1", "client-table-migration-v1", "peer-metadata-intent-v1", "peer-native-revocation-v1"}})
+		return json.NewEncoder(output).Encode(map[string]any{"version": 1, "features": []string{"native-mutation-v1", "native-reconcile-v1", "native-rollback-guard-v1", "native-stage-restart-v1", "client-table-cas-v1", "native-receipt-v1", "client-table-migration-v1", "peer-metadata-intent-v1", "peer-native-revocation-v1", "ipv6-egress-v1"}})
 	}
 	if request.Action == "prepare-receipt" || request.Action == "prepare-peer-metadata" || request.Action == "receipt-status" || request.Action == "check-revoked-peer" || request.Action == "ack-receipt" {
 		return configReceiptCommand(path, request, output)
@@ -412,8 +412,8 @@ func configTransactionCommand(input io.Reader, output io.Writer, paths map[strin
 	if request.Action == "replace-client-table" || request.Action == "check-client-table" || request.Action == "migrate-client-table" {
 		return clientTableTransaction(path, request, output)
 	}
-	if request.Action == "check-live" {
-		if request.Operation != "" || len(request.Expected) == 0 || len(request.Expected) > 4<<20 || len(request.Candidate) != 0 || request.ServerIPv6 != "" {
+	if request.Action == "check-live" || request.Action == "check-ipv6-live" {
+		if request.Operation != "" || len(request.Expected) == 0 || len(request.Expected) > 4<<20 || len(request.Candidate) != 0 || (request.Action == "check-live" && request.ServerIPv6 != "") || (request.Action == "check-ipv6-live" && !configIPv6JournalOK(&configIPv6Journal{CIDR: request.ServerIPv6})) {
 			return errors.New("invalid live-state check")
 		}
 		lock, err := lockConfig(path)
@@ -438,6 +438,19 @@ func configTransactionCommand(input io.Reader, output io.Writer, paths map[strin
 		}
 		if err := verifyNativeConfigBaseline(request.Container, path, native); err != nil {
 			return err
+		}
+		if request.Action == "check-ipv6-live" {
+			plan, err := planIPv6Config(current, request.ServerIPv6)
+			if err != nil || !bytes.Equal(plan.Config, current) {
+				return errConfigConflict
+			}
+			present, err := protocolIPv6Present(request.Container, request.ServerIPv6)
+			if err != nil {
+				return err
+			}
+			if !present {
+				return errors.New("server IPv6 address missing")
+			}
 		}
 		return json.NewEncoder(output).Encode(map[string]any{"version": 1, "current": true, "candidateHash": configHash(current)})
 	}
@@ -504,7 +517,7 @@ func configTransactionCommand(input io.Reader, output io.Writer, paths map[strin
 			if request.Operation != "" {
 				return errors.New("unexpected operation identifier")
 			}
-		case "commit", "rollback", "apply", "apply-commit", "rollback-live", "prepare-forwarding", "discard-stage":
+		case "commit", "rollback", "apply", "apply-commit", "rollback-live", "prepare-forwarding", "verify-ipv6-egress", "discard-stage":
 			if !configOperationOK(request.Operation) {
 				return errors.New("invalid operation identifier")
 			}
@@ -546,6 +559,11 @@ func configTransactionCommand(input io.Reader, output io.Writer, paths map[strin
 			return err
 		}
 		result["ipv6ForwardingPrepared"] = true
+	case "verify-ipv6-egress":
+		if err := verifyConfigIPv6Egress(transaction, request.Container); err != nil {
+			return err
+		}
+		result["ipv6EgressVerified"] = true
 	case "apply", "apply-commit", "rollback-live":
 		if request.Action != "apply-commit" || !transaction.journal.NativeApplied {
 			if err := applyConfigTransactionRuntime(transaction, request.Container, request.Action == "rollback-live"); err != nil {
