@@ -61,7 +61,7 @@ ErrorCode prepare(const ServerCredentials &credentials, DockerContainer containe
         output += data;
         return ErrorCode::NoError;
     };
-    auto error = ssh.runScript(credentials, networkScript, collect);
+    auto error = ssh.runScript(credentials, SshSession::wholeScriptCommand(networkScript), collect);
     if (error != ErrorCode::NoError) { outcome["reason"] = "network_preparation_failed"; return error; }
     const auto markers = output.split('\n').filter(QRegularExpression("^amnezia_proxy_ipv6_target=(unavailable|[a-f0-9]{64})$"));
     if (markers.size() != 1) return ErrorCode::InternalError;

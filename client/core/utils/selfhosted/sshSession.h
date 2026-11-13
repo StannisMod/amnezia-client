@@ -38,6 +38,8 @@ public:
                                         ErrorCode &errorCode);
 
     static QString replaceVars(const QString &script, const Vars &vars);
+    // Substitute variables first. runScript otherwise opens one SSH exec per line.
+    static QString wholeScriptCommand(const QString &script);
 
     ErrorCode runScript(const ServerCredentials &credentials, QString script,
                         const std::function<ErrorCode(const QString &, libssh::Client &)> &cbReadStdOut = nullptr,

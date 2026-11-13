@@ -120,7 +120,7 @@ private slots:
             auto script=amnezia::scriptData(ProtocolScriptType::run_container,DockerContainer::Xray);
             QVERIFY(!script.isEmpty());
             script.replace("$CONTAINER_NAME",name).replace("$XRAY_SERVER_PORT","38443");
-            QCOMPARE(guard.runScript(credentials,script),ErrorCode::NoError);
+            QCOMPARE(guard.runScript(credentials,SshSession::wholeScriptCommand(script)),ErrorCode::NoError);
             return;
         }
         QJsonObject outcome;

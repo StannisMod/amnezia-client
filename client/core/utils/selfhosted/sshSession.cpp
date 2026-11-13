@@ -47,6 +47,11 @@ SshSession::~SshSession()
     m_sshClient.disconnectFromHost();
 }
 
+QString SshSession::wholeScriptCommand(const QString &script)
+{
+    return QString("printf '%s' '%1' | base64 -d | sh").arg(QString::fromLatin1(script.toUtf8().toBase64()));
+}
+
 ErrorCode SshSession::runScript(const ServerCredentials &credentials, QString script,
                                 const std::function<ErrorCode(const QString &, libssh::Client &)> &cbReadStdOut,
                                 const std::function<ErrorCode(const QString &, libssh::Client &)> &cbReadStdErr)

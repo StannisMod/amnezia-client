@@ -773,8 +773,11 @@ ErrorCode InstallController::runContainerWorker(const ServerCredentials &credent
     amnezia::ScriptVars baseVars = amnezia::genBaseVars(credentials, container, QString(), QString());
     amnezia::ScriptVars protocolVars = amnezia::genProtocolVarsForContainer(container, config);
     baseVars.append(protocolVars);
+    auto script = sshSession.replaceVars(amnezia::scriptData(ProtocolScriptType::run_container, container), baseVars);
+    if (ContainerUtils::isAwgContainer(container) || container == DockerContainer::WireGuard || container == DockerContainer::Xray)
+        script = SshSession::wholeScriptCommand(script);
     ErrorCode e = sshSession.runScript(
-            credentials, sshSession.replaceVars(amnezia::scriptData(ProtocolScriptType::run_container, container), baseVars),
+            credentials, script,
             cbReadStdOut);
 
     if (stdOut.contains("address already in use"))

@@ -97,9 +97,19 @@ def main():
         p=subprocess.Popen(['docker','exec','-i',fixture,*parts],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
         children.append(p);return p
     def application(container,expected):
-        argv=[part.format(fixture=fixture,protocol=container,expected=expected) for part in runner]
+        pid=run('docker','inspect','-f','{{.State.Pid}}',fixture).stdout.decode().strip()
+        argv=[part.format(fixture=fixture,pid=pid,protocol=container,expected=expected) for part in runner]
         result=run(*argv,check=False,timeout=120)
         print(result.stdout.decode(errors='replace'),end='',flush=True)
+        if result.returncode and expected=='verified':
+            for parts in (('docker','exec',container,'ip','-6','addr'),('docker','exec',container,'ip','-6','route'),
+                          ('docker','network','inspect','amnezia-ipv6-egress'),('ip','-6','route')):
+                detail=inside(*parts,check=False)
+                print(detail.stdout.decode(errors='replace'),detail.stderr.decode(errors='replace'),flush=True)
+            diagnostic=inside('docker','exec',container,'curl','-q','-v','--ipv6','--noproxy','*','--max-time','5',
+                '--resolve','cloudflare-dns.com:443:[2606:4700:4700::1111]',
+                'https://cloudflare-dns.com/dns-query?name=.&type=NS',check=False)
+            print(diagnostic.stdout.decode(errors='replace'),diagnostic.stderr.decode(errors='replace'),flush=True)
         assert result.returncode==0,result.stderr.decode(errors='replace')[-2000:]
     def state(container):
         return {'pid':command('docker','inspect','-f','{{.State.Pid}}',container),
@@ -153,7 +163,7 @@ def main():
             for source,dest in (('/server.json','/opt/amnezia/xray/server.json'),('/lab.crt','/opt/amnezia/xray/lab.crt'),('/lab.key','/opt/amnezia/xray/lab.key'),('/proxy-start.sh','/opt/amnezia/start.sh')):
                 command('docker','cp',source,container+':'+dest)
             command('docker','exec',container,'chmod','700','/opt/amnezia/start.sh');command('docker','restart',container)
-            server_ip=command('docker','inspect','-f','{{.NetworkSettings.IPAddress}}',container)
+            server_ip=command('docker','inspect','-f','{{(index .NetworkSettings.Networks "bridge").IPAddress}}',container)
             command('docker','cp',container+':/usr/bin/xray','/xray-client')
             target={'tag':'proxy','protocol':kind}
             if kind=='vless':
@@ -161,8 +171,11 @@ def main():
                 target['streamSettings']={'network':'tcp','security':'tls','tlsSettings':{'serverName':'routing-xray.test','disableSystemRoot':True,'certificates':[{'usage':'verify','certificate':ca}]}}
             else:target['settings']={'servers':[{'address':server_ip,'port':38443,'method':'aes-128-gcm','password':'synthetic-proxy-password'}]}
             upload(json.dumps({'log':{'loglevel':'warning'},'inbounds':[{'listen':'127.0.0.1','port':39080,'protocol':'socks','settings':{'udp':True}}],'outbounds':[target]}).encode(),'/client.json')
-            client=pipe('/xray-client','run','-config','/client.json');time.sleep(.3)
-            stream=pipe('python3','-u','/proxy-client.py');initial=json.loads(stream.stdout.readline());assert initial['ready']
+            client=pipe('sh','-ec','echo $$ > /run/proxy-client.pid; exec /xray-client run -config /client.json');time.sleep(.3)
+            stream=pipe('python3','-u','/proxy-client.py')
+            first=stream.stdout.readline()
+            assert first,stream.stderr.read()+'\n'+(client.stderr.read() if client.poll() is not None else '')
+            initial=json.loads(first);assert initial['ready']
             original=state(container)
             def retained(label):
                 stream.stdin.write(label+'\n');stream.stdin.flush();assert stream.stdout.readline().strip()=='SAME_TCP'
@@ -175,7 +188,9 @@ def main():
             current=state(container);assert current==original,'proxy PID, keys, IPv4 routes or DNS changed'
             for action,expected in (('ipv6','IPV6_TCP'),('udp6','IPV6_UDP')):
                 stream.stdin.write(action+'\n');stream.stdin.flush();assert stream.stdout.readline().strip()==expected
-            stream.stdin.close();stream.wait(timeout=10);client.terminate();client.wait(timeout=10)
+            stream.stdin.close();stream.wait(timeout=10)
+            command('sh','-ec','kill "$(cat /run/proxy-client.pid)"')
+            client.wait(timeout=10)
             report['protocols'][container]={'kind':kind,'old_tcp_origin_id':initial['origin_id'],'same_proxy_pid':True,'same_keys':True,
                 'ipv4_routes_preserved':True,'dns_preserved':True,'untrusted_ca_rejected':True,'idempotent':True,'new_ipv6_tcp':True,'new_ipv6_udp':True}
             command('docker','rm','-f',container)
