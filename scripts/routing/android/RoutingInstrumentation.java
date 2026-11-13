@@ -72,6 +72,7 @@ public final class RoutingInstrumentation extends Instrumentation {
     private boolean privateDnsOpportunistic;
     private boolean privateDnsStrict;
     private boolean privateDnsPolicyOnly;
+    private boolean xrayIpv6Only;
     private volatile boolean policyPaused;
     private boolean api28CompatOnly;
     private boolean diagnoseControl;
@@ -98,6 +99,7 @@ public final class RoutingInstrumentation extends Instrumentation {
         uploadMtuOnly = Boolean.parseBoolean(args.getString("upload_mtu_only", "false"));
         appPolicyOnly = Boolean.parseBoolean(args.getString("app_policy_only", "false"));
         privateDnsStrict = Boolean.parseBoolean(args.getString("private_dns_strict", "false"));
+        xrayIpv6Only = Boolean.parseBoolean(args.getString("xray_ipv6_only", "false"));
         privateDnsPolicyOnly = Boolean.parseBoolean(args.getString("private_dns_policy_only", "false"));
         privateDnsOpportunistic = Boolean.parseBoolean(args.getString("private_dns_opportunistic", "false"));
         androidUser = Integer.parseInt(args.getString("android_user", "0"));
@@ -142,11 +144,14 @@ public final class RoutingInstrumentation extends Instrumentation {
                 }
                 return true;
             }));
-            Intent intent = new Intent().setComponent(new ComponentName("org.amnezia.vpn", "org.amnezia.vpn.AwgService"));
+            Intent intent = new Intent().setComponent(new ComponentName("org.amnezia.vpn", "org.amnezia.vpn."+(xrayIpv6Only?"XrayService":"AwgService")));
             didBind = getTargetContext().bindService(intent, connection, Context.BIND_AUTO_CREATE);
             require(didBind && bound.await(15, TimeUnit.SECONDS), "AwgService binding failed");
             Bundle registration = new Bundle(); registration.putString("CLIENT_NAME", "routing-acceptance");
             send(REGISTER, registration);
+            if (xrayIpv6Only) {
+                xrayIpv6();result.putString("routing_result","PASS_XRAY_IPV6_ONLY");code=0;return;
+            }
             if (privateDnsPolicyOnly) {
                 privateDnsPolicy();result.putString("routing_result","PASS_PRIVATE_DNS_POLICY_ONLY");code=0;return;
             }
@@ -416,6 +421,24 @@ public final class RoutingInstrumentation extends Instrumentation {
         state=-1;serviceError=false;startService(normal);awaitState(CONNECTED,false);requireRoute(InetAddress.getByName("10.77.0.2"),"VPN");disconnect();
         progress("API28_COMPAT_RESULT "+new JSONObject().put("sdk",28).put("ordinary_shared_ipv4_ipv6",true).put("mixed_policy_rejected",true).put("subsequent_connect",true));
         pass("Android 9 ordinary shared core works and unsupported mixed policy fails explicitly");
+    }
+
+    private void xrayIpv6() throws Exception {
+        JSONObject config=new JSONObject(fixture.toString());
+        config.put("appSplitTunnelType",1).put("splitTunnelApps",new JSONArray().put("org.amnezia.vpn"));
+        state=-1;serviceError=false;startService(config);awaitState(CONNECTED,false);
+        awaitCapture("10.0.42.2");
+        JSONArray targets=config.getJSONArray("ipv6_test_destinations");
+        require(targets.length()==4,"Xray fixture must include IPv4, GUA, ULA and NAT64");
+        for(int i=0;i<targets.length();i++) {
+            String address=targets.getString(i);
+            progress("XRAY_IPV6_CHECK "+address);
+            require("XRAY".equals(tcp(InetAddress.getByName(address))),"Xray TCP failed for "+address);
+            require("XRAY:route-proof".equals(udp(InetAddress.getByName(address))),"Xray UDP failed for "+address);
+        }
+        disconnect();
+        progress("XRAY_IPV6_RESULT ipv4_gua_ula_nat64_tcp_udp");
+        pass("real Xray VLESS/TLS captures IPv4 and all tested IPv6 ranges for TCP/UDP");
     }
 
     private void awaitFlowPause(boolean paused) throws Exception {
@@ -955,7 +978,7 @@ public final class RoutingInstrumentation extends Instrumentation {
         startService(configuration(inverse)); awaitState(CONNECTED, false);
     }
     private void startService(JSONObject config) {
-        Intent intent = new Intent().setComponent(new ComponentName("org.amnezia.vpn", "org.amnezia.vpn.AwgService"));
+        Intent intent = new Intent().setComponent(new ComponentName("org.amnezia.vpn", "org.amnezia.vpn."+(xrayIpv6Only?"XrayService":"AwgService")));
         intent.putExtra("VPN_CONFIG", config.toString());
         getTargetContext().startForegroundService(intent);
     }

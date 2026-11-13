@@ -50,8 +50,8 @@ def check_ipc_contract():
         "DISCONNECTED", "CONNECTED", "CONNECTING", "DISCONNECTING", "RECONNECTING", "UNKNOWN"]
 
 
-def snapshot(android_user=0):
-    candidates = adb("shell", "pidof", "org.amnezia.vpn:amneziaAwgService").split()
+def snapshot(android_user=0, service_name="amneziaAwgService"):
+    candidates = adb("shell", "pidof", "org.amnezia.vpn:"+service_name).split()
     matches = []
     for candidate in candidates:
         assert candidate.isdigit(), "invalid service PID"
@@ -162,6 +162,7 @@ def main():
     parser.add_argument("--source-sha", help="test-harness commit when a read-only worktree has no mounted Git metadata")
     parser.add_argument("--apk-source-sha", help="record the actual packaged client source independently of the harness")
     parser.add_argument("--diagnose-control", action="store_true", help="capture slow control-path stacks before timeout; diagnostic result only")
+    parser.add_argument("--xray-ipv6-only", action="store_true", help="real Xray VLESS/TLS IPv4 and IPv6 capture/egress fixture; focused acceptance")
     parser.add_argument("--private-dns-policy-only", action="store_true", help="strict DNS startup/live policy refusal and retained-TCP pause/resume on a disposable emulator")
     parser.add_argument("--private-dns-strict", action="store_true", help="with --app-policy-only, require strict Private DNS; disposable fixture CA must be installed in the emulator")
     parser.add_argument("--private-dns-opportunistic", action="store_true", help="with --app-policy-only, require active Android Private DNS and use network DoT for DIRECT DNS")
@@ -174,7 +175,7 @@ def main():
     parser.add_argument("--performance-order",choices=("legacy-first","shared-first"),default="legacy-first")
     args = parser.parse_args()
     assert not args.package_lifecycle or args.app_policy_only, '--package-lifecycle requires --app-policy-only'
-    if sum((args.app_policy_only, args.upload_mtu_only, args.primary_only, args.performance_only, args.api28_compat_only, args.private_dns_policy_only)) > 1:
+    if sum((args.app_policy_only, args.upload_mtu_only, args.primary_only, args.performance_only, args.api28_compat_only, args.private_dns_policy_only, args.xray_ipv6_only)) > 1:
         parser.error("focused acceptance modes are mutually exclusive")
     assert not (args.private_dns_opportunistic and args.private_dns_strict), "Private DNS modes are mutually exclusive"
     assert not args.private_dns_policy_only or (args.android_user == 0 and not args.private_dns_strict and not args.private_dns_opportunistic), "policy transition mode needs user 0 and initially disabled Private DNS"
@@ -188,6 +189,7 @@ def main():
     source_sha = args.source_sha or run('git', 'rev-parse', 'HEAD', cwd=ROOT, capture_output=True, text=True).stdout.strip()
     fault_host_guard()
     fixture = json.loads(args.fixture.read_text())
+    service_name = "amneziaXrayService" if args.xray_ipv6_only else "amneziaAwgService"
     protocol = fixture['protocol']
     peer_port = int(fixture[protocol + '_config_data']['port'])
     assert 1 <= peer_port <= 65535
@@ -237,7 +239,7 @@ def main():
     sign(aligned, instrument)
 
     probe_apks, probe_processes, probe_logs = [], [], []
-    if not (args.upload_mtu_only or args.primary_only or args.performance_only or args.api28_compat_only or args.private_dns_policy_only):
+    if not (args.upload_mtu_only or args.primary_only or args.performance_only or args.api28_compat_only or args.private_dns_policy_only or args.xray_ipv6_only):
         probe_apks = build_application_probes(tools, android_jar, work, sign)
 
     assert adb("shell", "getprop", "ro.kernel.qemu") == "1", "only disposable Android emulators are supported"
@@ -295,6 +297,7 @@ def main():
                    "-e", "observer_ip", args.observer_ip,
                    "-e", "android_user", str(args.android_user),
                    "-e", "private_dns_opportunistic", str(args.private_dns_opportunistic).lower(),
+                   "-e", "xray_ipv6_only", str(args.xray_ipv6_only).lower(),
                    "-e", "private_dns_policy_only", str(args.private_dns_policy_only).lower(),
                    "-e", "private_dns_strict", str(args.private_dns_strict).lower(),
                    "-e", "primary_only", str(args.primary_only).lower(),
@@ -353,7 +356,7 @@ def main():
                         if diagnostic_taken.is_set(): return
                         diagnostic_taken.set()
                         try:
-                            pid = snapshot(args.android_user)['pid']
+                            pid = snapshot(args.android_user, service_name)['pid']
                             trace = subprocess.run(['adb','shell','debuggerd','-b',str(pid)],capture_output=True,text=True,timeout=6)
                             (work/f'slow-control-{request_id}.log').write_text(trace.stdout+trace.stderr)
                             sockets = subprocess.run(['adb','shell','ss','-nto'],capture_output=True,text=True,timeout=3)
@@ -416,7 +419,7 @@ def main():
                     elif name == 'wifi_off': adb('shell', 'svc', 'wifi', 'disable')
                     elif name == 'wifi_on': adb('shell', 'svc', 'wifi', 'enable')
                     if name in ('before', 'after', 'safe_policy_before', 'safe_policy_after', 'perf_legacy_before', 'perf_legacy_after', 'perf_shared_before', 'perf_shared_after', 'upload_mtu_before', 'upload_mtu_after', 'app_policy_before', 'app_policy_after'):
-                        report['retained_resources'][name] = snapshot(args.android_user)
+                        report['retained_resources'][name] = snapshot(args.android_user, service_name)
                     with urllib.request.urlopen('http://127.0.0.1:18080/stats', timeout=5) as response:
                         stats = json.load(response)
                     local = work / ('stats-' + name + '.json');local.write_text(json.dumps(stats))
@@ -446,7 +449,7 @@ def main():
                 if "RESOURCE_CHECKPOINT " in line:
                     label = line.strip().split("RESOURCE_CHECKPOINT ", 1)[1]
                     try:
-                        report["resources"][label] = snapshot(args.android_user)
+                        report["resources"][label] = snapshot(args.android_user, service_name)
                     except (AssertionError, subprocess.CalledProcessError) as error:
                         if label != "failure":
                             raise
@@ -476,6 +479,12 @@ def main():
             assert process.wait(timeout=15) == 0
             timer.cancel()
         output = "".join(output)
+        if args.xray_ipv6_only:
+            assert 'INSTRUMENTATION_RESULT: routing_result=PASS_XRAY_IPV6_ONLY' in output
+            assert 'XRAY_IPV6_RESULT ipv4_gua_ula_nat64_tcp_udp' in output
+            report['xray_ipv6']={'ipv4':True,'ipv6_global':True,'ipv6_ula':True,'ipv6_nat64':True,'tcp':True,'udp':True,'vless_tls':True}
+            report['native_vpn_acceptance']='NOT_RUN_XRAY_IPV6_ONLY'
+            return
         if args.private_dns_policy_only:
             assert 'INSTRUMENTATION_RESULT: routing_result=PASS_PRIVATE_DNS_POLICY_ONLY' in output
             assert 'PRIVATE_DNS_POLICY_RESULT startup_rejected_live_enable_rejected_old_tcp_preserved_resumed' in output
