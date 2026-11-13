@@ -174,7 +174,7 @@ def main():
     parser.add_argument("--performance-order",choices=("legacy-first","shared-first"),default="legacy-first")
     args = parser.parse_args()
     assert not args.package_lifecycle or args.app_policy_only, '--package-lifecycle requires --app-policy-only'
-    if sum((args.app_policy_only, args.upload_mtu_only, args.primary_only, args.performance_only, args.api28_compat_only)) > 1:
+    if sum((args.app_policy_only, args.upload_mtu_only, args.primary_only, args.performance_only, args.api28_compat_only, args.private_dns_policy_only)) > 1:
         parser.error("focused acceptance modes are mutually exclusive")
     assert not (args.private_dns_opportunistic and args.private_dns_strict), "Private DNS modes are mutually exclusive"
     assert not args.private_dns_policy_only or (args.android_user == 0 and not args.private_dns_strict and not args.private_dns_opportunistic), "policy transition mode needs user 0 and initially disabled Private DNS"
