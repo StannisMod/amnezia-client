@@ -65,6 +65,34 @@ private slots:
         QVERIFY(connectionUpdates::apply(renewed, sign(legacy), 2000000003, migrated));
         QCOMPARE(client(migrated, awg).value("path_mtu_probe").toString(), "10.8.0.9");
     }
+    void signedDualProbeMigrationAndWithdrawal_data() { keepsDeviceAndLocalSettings_data(); }
+    void signedDualProbeMigrationAndWithdrawal()
+    {
+        QFETCH(bool,awg); auto original=profile(awg);
+        auto containers=original["containers"].toArray(); auto container=containers[0].toObject();
+        const auto protocol=awg?"awg":"wireguard"; auto proto=container[protocol].toObject(); auto local=client(original,awg);
+        local["allowed_ips"]=QJsonArray{"0.0.0.0/0","::/0"};
+        proto["last_config"]=QString::fromUtf8(QJsonDocument(local).toJson(QJsonDocument::Compact));container[protocol]=proto;containers[0]=container;original["containers"]=containers;
+        auto update=payload(original,awg); update["clientIpv6"]="fd77::2";
+        update["pathMtuProbe"]="10.8.0.1";update["pathMtuProbes"]=QJsonArray{"10.8.0.1","fd77::1"};
+        QJsonObject migrated;QVERIFY(connectionUpdates::apply(original,sign(update),2000000001,migrated));
+        auto after=client(migrated,awg);QCOMPARE(after.value("path_mtu_probes").toArray(),QJsonArray({"10.8.0.1","fd77::1"}));
+        for(const auto *key:{"client_priv_key","client_pub_key","psk_key","allowed_ips"}) QCOMPARE(after.value(key),local.value(key));
+        QJsonObject replay;QVERIFY(connectionUpdates::apply(migrated,sign(update),2000000002,replay));
+        auto changed=update;changed["pathMtuProbes"]=QJsonArray{"10.8.0.1","fd77::9"};
+        QJsonObject rejected{{"keep",true}};QVERIFY(!connectionUpdates::apply(migrated,sign(changed),2000000002,rejected));QCOMPARE(rejected.size(),1);
+        for(const auto &invalid:{QJsonValue(42),QJsonValue(QJsonArray{"10.8.0.1",42}),QJsonValue(QJsonArray{"10.8.0.1","10.8.0.9"})}) {
+            changed=update;changed["revision"]="2";changed["pathMtuProbes"]=invalid;
+            QVERIFY(!connectionUpdates::apply(migrated,sign(changed),2000000002,rejected));QCOMPARE(rejected.size(),1);
+        }
+        // Signed IPv6 withdrawal keeps only probes usable by the remaining family.
+        changed=update;changed["revision"]="2";changed["clientIpv6"]="";
+        QVERIFY(connectionUpdates::apply(migrated,sign(changed),2000000002,replay));
+        QCOMPARE(client(replay,awg).value("path_mtu_probes").toArray(),QJsonArray({"10.8.0.1"}));
+        changed=update;changed["revision"]="3";changed.remove("pathMtuProbe");changed["pathMtuProbes"]=QJsonArray{};
+        QVERIFY(connectionUpdates::apply(replay,sign(changed),2000000003,rejected));
+        QVERIFY(!client(rejected,awg).contains("path_mtu_probe"));QVERIFY(!client(rejected,awg).contains("path_mtu_probes"));
+    }
     void signedIPv6ProbeRequiresCapturedFamilyAndAllowedRoute()
     {
         auto original = profile(); auto containers = original["containers"].toArray(); auto container = containers[0].toObject();
@@ -314,10 +342,16 @@ private slots:
     void goPathProbeInteroperability()
     {
         QFile file(":/connection-updates/path-probe-interop.json"); QVERIFY(file.open(QIODevice::ReadOnly));
-        const auto fixture = QJsonDocument::fromJson(file.readAll()).object(); const auto original = profile(); QJsonObject migrated;
+        const auto fixture = QJsonDocument::fromJson(file.readAll()).object(); auto original = profile(); QJsonObject migrated;
+        auto containers=original["containers"].toArray(); auto container=containers[0].toObject();
+        auto proto=container["wireguard"].toObject();auto local=client(original,false);
+        local["allowed_ips"]=QJsonArray{"0.0.0.0/0","::/0"};
+        proto["last_config"]=QString::fromUtf8(QJsonDocument(local).toJson(QJsonDocument::Compact));container["wireguard"]=proto;containers[0]=container;original["containers"]=containers;
         QVERIFY(connectionUpdates::apply(original, QJsonDocument(fixture.value("envelope").toObject()).toJson(), 2000000001, migrated));
         QCOMPARE(client(migrated, false).value("path_mtu_probe").toString(), "10.8.0.1");
         QCOMPARE(client(migrated, false).value("client_priv_key"), client(original, false).value("client_priv_key"));
+        QCOMPARE(client(migrated,false).value("path_mtu_probes").toArray(),QJsonArray({"10.8.0.1","fd77::1"}));
+        QCOMPARE(client(migrated,false).value("allowed_ips"),local.value("allowed_ips"));
     }
     void signedIPv6WithdrawalRevalidatesCachedProbe()
     {

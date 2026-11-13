@@ -24,7 +24,7 @@ bool mergeServerSettings(const QJsonObject &profile, const QString &container,
                          QJsonObject &updated);
 // Optional probes must fit the existing local address family and peer routes.
 bool usablePathProbe(const QJsonValue &target, const QJsonObject &client);
-bool mergePathProbes(const QJsonObject &profile, const QString &container, const QStringList &targets, QJsonObject &updated);
+bool mergePathProbes(const QJsonObject &profile, const QString &container, const QStringList &targets, QJsonObject &updated, bool requireUsable = true);
 bool mergePathProbe(const QJsonObject &profile, const QString &container, const QJsonValue &target, QJsonObject &updated);
 QByteArray readinessProof(const QJsonObject &profile, const QByteArray &envelope, qint64 now);
 bool attachInvitation(const QJsonObject &profile, const QJsonObject &invitation, QJsonObject &updated);

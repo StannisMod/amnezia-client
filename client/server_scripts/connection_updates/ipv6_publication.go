@@ -60,7 +60,7 @@ func publishClientIPv6(s *state, req request) (bool, error) {
 		return false, errors.New("invalid conditional IPv6 publication")
 	}
 	// This command may change only the key-bound IPv6 extension and its revision.
-	if publicationHasSettings(req.Settings) || req.PathMTUProbe != "" || req.ClientPublicKey != "" || req.ClientPublicKeys != nil || req.Host != "" {
+	if publicationHasSettings(req.Settings) || req.PathMTUProbe != "" || req.PathMTUProbes != nil || req.ClientPublicKey != "" || req.ClientPublicKeys != nil || req.Host != "" {
 		return false, errors.New("unrelated settings in IPv6 publication")
 	}
 	if err := clientIPv6AssignmentsOK(req.ClientIPv6); err != nil {
@@ -109,7 +109,7 @@ func ipv6PublicationStatus(s *state, req request) (map[string]any, error) {
 	if !containerOK(req.Container) || !configOperationOK(req.Operation) {
 		return nil, errors.New("invalid IPv6 publication status request")
 	}
-	if req.ClientIPv6 != nil || req.ExpectedState != "" || publicationHasSettings(req.Settings) || req.PathMTUProbe != "" || req.ClientPublicKey != "" || req.ClientPublicKeys != nil || req.Host != "" {
+	if req.ClientIPv6 != nil || req.ExpectedState != "" || publicationHasSettings(req.Settings) || req.PathMTUProbe != "" || req.PathMTUProbes != nil || req.ClientPublicKey != "" || req.ClientPublicKeys != nil || req.Host != "" {
 		return nil, errors.New("unexpected IPv6 status fields")
 	}
 	result := info(s)

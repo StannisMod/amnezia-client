@@ -77,6 +77,7 @@ ExportController::ExportResult ExportController::generateConnectionConfig(const 
         return result;
     }
     bool individualIPv6Supported = false;
+    bool dualProbeSupported = false;
     bool idempotentIssueSupported = false;
     ContainerConfig containerConfig = adminConfig->containerConfig(container);
     const bool recoverablePeer=container==DockerContainer::WireGuard || container==DockerContainer::Awg2;
@@ -121,6 +122,7 @@ ExportController::ExportResult ExportController::generateConnectionConfig(const 
             return result;
         }
         individualIPv6Supported = info.value("features").toArray().contains("client-ipv6-v1");
+        dualProbeSupported = info.value("features").toArray().contains("dual-path-mtu-probes-v1");
         idempotentIssueSupported = info.value("features").toArray().contains("idempotent-issue-v1");
     }
 
@@ -181,12 +183,13 @@ ExportController::ExportResult ExportController::generateConnectionConfig(const 
     if (updatable) {
         const auto client = containerConfig.protocolConfig.getClientConfigJson();
         QJsonObject response;
-        QString probe;
-        result.errorCode = ConnectionUpdatesController::fetchPathMtuProbeAddress(credentials, container, probe);
+        QStringList probes;
+        result.errorCode = ConnectionUpdatesController::fetchPathMtuProbeAddresses(credentials, container, probes);
         if (result.errorCode != ErrorCode::NoError) return result;
-        QJsonObject request { { "pathMtuProbe", probe }, { "container", ContainerUtils::containerToString(container) },
+        QJsonObject request { { "pathMtuProbe", probes.first() }, { "container", ContainerUtils::containerToString(container) },
             { "clientPublicKey", client.value(configKey::clientPubKey) },
             { "settings", connectionUpdates::publicSettings(client, container == DockerContainer::Awg2) } };
+        if (dualProbeSupported) request["pathMtuProbes"] = QJsonArray::fromStringList(probes);
         QString generatedIPv6;
         if (individualIPv6Supported) {
             QJsonObject assignments, individual;
@@ -279,13 +282,14 @@ ExportController::ExportResult ExportController::generateConnectionUpdates(const
         result.errorCode = ErrorCode::InternalError; return result;
     }
     const auto host = vpnEndpoint::normalizeHost(admin->vpnHostName.isEmpty() ? admin->hostName : admin->vpnHostName);
-    QJsonObject settings; QStringList peers; QString probe;
-    result.errorCode = ConnectionUpdatesController::fetchPublicSettings(admin->credentials(), container, host, settings, &peers, &probe);
+    QJsonObject settings; QStringList peers, probes; QString probe;
+    result.errorCode = ConnectionUpdatesController::fetchPublicSettings(admin->credentials(), container, host, settings, &peers, &probe, &probes);
     if (result.errorCode != ErrorCode::NoError) return result;
     if (!peers.contains(clientPublicKey)) { result.errorCode = ErrorCode::InternalError; return result; }
     QJsonObject response;
     QJsonObject request { { "pathMtuProbe", probe }, { "container", ContainerUtils::containerToString(container) },
         { "clientPublicKey", clientPublicKey }, { "settings", settings } };
+    if (info.value("features").toArray().contains("dual-path-mtu-probes-v1")) request["pathMtuProbes"] = QJsonArray::fromStringList(probes);
     if (info.value("features").toArray().contains("client-ipv6-v1")) {
         QJsonObject assignments, individual;
         result.errorCode = ConnectionUpdatesController::fetchPeerIPv6Assignments(admin->credentials(), container, assignments);

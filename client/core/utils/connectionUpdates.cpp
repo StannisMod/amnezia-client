@@ -373,7 +373,7 @@ bool mergeServerSettings(const QJsonObject &profile, const QString &name, const 
 }
 bool mergePathProbe(const QJsonObject &profile, const QString &name, const QJsonValue &target, QJsonObject &updated)
 {
-    if (!supported(name) || !validPathProbe(target)) return false;
+    if (!supported(name) || !target.isString() || (!target.toString().isEmpty() && !validPathProbe(target))) return false;
     auto containers = profile.value(configKey::containers).toArray(); int found = -1;
     for (int i = 0; i < containers.size(); ++i) {
         if (containers[i].toObject().value(configKey::container).toString() == name) {
@@ -407,17 +407,17 @@ bool mergePathProbe(const QJsonObject &profile, const QString &name, const QJson
     container[protoName] = proto; containers[found] = container;
     auto result = profile; result[configKey::containers] = containers; updated = result; return true;
 }
-bool mergePathProbes(const QJsonObject &profile, const QString &name, const QStringList &targets, QJsonObject &updated)
+bool mergePathProbes(const QJsonObject &profile, const QString &name, const QStringList &targets, QJsonObject &updated, bool requireUsable)
 {
-    if (targets.isEmpty() || targets.size() > 2) return false;
+    if ((requireUsable && targets.isEmpty()) || targets.size() > 2) return false;
     QSet<QAbstractSocket::NetworkLayerProtocol> families;
     for (const auto &target : targets) {
         const QHostAddress address(target);
-        if (!validPathProbe(target) || families.contains(address.protocol())) return false;
+        if (target.isEmpty() || !validPathProbe(target) || families.contains(address.protocol())) return false;
         families.insert(address.protocol());
     }
     QJsonObject result;
-    if (!mergePathProbe(profile, name, targets.first(), result)) return false;
+    if (!mergePathProbe(profile, name, targets.isEmpty() ? QString() : targets.first(), result)) return false;
     auto containers = result.value(configKey::containers).toArray();
     for (int i = 0; i < containers.size(); ++i) {
         auto container = containers[i].toObject();
@@ -427,9 +427,13 @@ bool mergePathProbes(const QJsonObject &profile, const QString &name, const QStr
         auto client = QJsonDocument::fromJson(proto.value(configKey::lastConfig).toString().toUtf8()).object();
         QJsonArray usable;
         for (const auto &target : targets) if (usablePathProbe(target, client)) usable.append(target);
-        if (usable.isEmpty()) return false;
-        client["path_mtu_probe"] = usable.first();
-        client["path_mtu_probes"] = usable;
+        if (usable.isEmpty()) {
+            if (requireUsable) return false;
+            client.remove("path_mtu_probe"); client.remove("path_mtu_probes");
+        } else {
+            client["path_mtu_probe"] = usable.first();
+            client["path_mtu_probes"] = usable;
+        }
         proto[configKey::lastConfig] = QString::fromUtf8(QJsonDocument(client).toJson(QJsonDocument::Compact));
         container[protoName] = proto; containers[i] = container;
     }
@@ -560,7 +564,22 @@ bool apply(const QJsonObject &profile, const QByteArray &envelope, qint64 now, Q
         result = withProbe;
         metadata["pathMtuProbe"] = target;
     }
-    if (p.contains("clientIpv6") && !p.contains("pathMtuProbe") && metadata.contains("pathMtuProbe")) {
+    if (p.contains("pathMtuProbes")) {
+        const auto value=p.value("pathMtuProbes");
+        if (!value.isArray() || value.toArray().size()>2) return false;
+        QStringList targets;
+        for (const auto &target:value.toArray()) {
+            if (!target.isString()) return false;
+            targets.append(target.toString());
+        }
+        if (p.contains("pathMtuProbe") && p.value("pathMtuProbe").toString() != (targets.isEmpty()?QString():targets.first())) return false;
+        if (revisionText==m.value("revision").toString() && m.contains("pathMtuProbes") && value!=m.value("pathMtuProbes")) return false;
+        QJsonObject withProbes;
+        if (!mergePathProbes(result,m.value("container").toString(),targets,withProbes,false)) return false;
+        result=withProbes; metadata["pathMtuProbes"]=value;
+        metadata["pathMtuProbe"]=targets.isEmpty()?QString():targets.first();
+    }
+    if (p.contains("clientIpv6") && !p.contains("pathMtuProbe") && !p.contains("pathMtuProbes") && metadata.contains("pathMtuProbe")) {
         QJsonObject withProbe;
         if (!mergePathProbe(result, m.value("container").toString(), metadata.value("pathMtuProbe"), withProbe)) return false;
         result = withProbe;

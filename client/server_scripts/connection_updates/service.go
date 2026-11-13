@@ -48,6 +48,7 @@ var hostLabel = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 var awgKeys = strings.Fields("Jc Jmin Jmax S1 S2 S3 S4 H1 H2 H3 H4 I1 I2 I3 I4 I5 HeaderProtectionKey ContentPaddingAddition RekeyAfterTime RekeyTimeout RejectAfterTime KeepaliveTimeout MaxHandshakeAttempts RandomTrailers DisableCookies")
 
 type record struct {
+	PathMTUProbes   *[]string       `json:"pathMtuProbes,omitempty"`
 	IssueOperation  string          `json:"issueOperation,omitempty"`
 	IssueDigest     string          `json:"issueDigest,omitempty"`
 	ClientIPv6      *string         `json:"clientIpv6,omitempty"`
@@ -69,6 +70,7 @@ type state struct {
 	Records          map[string]record                 `json:"records"`
 }
 type request struct {
+	PathMTUProbes    []string          `json:"pathMtuProbes,omitempty"`
 	Operation        string            `json:"operation,omitempty"`
 	ClientIPv6       map[string]string `json:"clientIpv6,omitempty"`
 	PathMTUProbe     string            `json:"pathMtuProbe,omitempty"`
@@ -171,6 +173,56 @@ func pathMTUProbeOK(value string) bool {
 	return len(value) <= 64 && ip != nil && ip.String() == value && ip.IsGlobalUnicast() && !ip.IsLoopback() && !ip.IsLinkLocalUnicast()
 }
 
+func probeList(value *[]string) []string {
+	if value == nil {
+		return nil
+	}
+	return *value
+}
+func probeListPointer(value []string) *[]string {
+	if value == nil {
+		return nil
+	}
+	copy := append([]string{}, value...)
+	return &copy
+}
+
+// Nil preserves legacy metadata; an explicit empty list withdraws all probes.
+func pathMTUProbesOK(primary string, values []string) bool {
+	if !pathMTUProbeOK(primary) || len(values) > 2 {
+		return false
+	}
+	seen := map[bool]bool{}
+	for _, value := range values {
+		if value == "" || !pathMTUProbeOK(value) {
+			return false
+		}
+		v4 := net.ParseIP(value).To4() != nil
+		if seen[v4] {
+			return false
+		}
+		seen[v4] = true
+	}
+	return values == nil || (len(values) == 0 && primary == "") || (len(values) > 0 && values[0] == primary)
+}
+func replacePathProbes(r *record, req request) {
+	if req.PathMTUProbes != nil {
+		r.PathMTUProbes = probeListPointer(req.PathMTUProbes)
+		r.PathMTUProbe = req.PathMTUProbe
+	} else if req.PathMTUProbe != "" {
+		if len(probeList(r.PathMTUProbes)) > 0 {
+			targets := []string{req.PathMTUProbe}
+			for _, target := range probeList(r.PathMTUProbes) {
+				if (net.ParseIP(target).To4() != nil) != (net.ParseIP(req.PathMTUProbe).To4() != nil) {
+					targets = append(targets, target)
+				}
+			}
+			r.PathMTUProbes = &targets
+		}
+		r.PathMTUProbe = req.PathMTUProbe
+	}
+}
+
 // This is per-device metadata, never a container-wide public setting. An
 // explicit empty value withdraws a managed address; omission preserves it.
 func clientIPv6OK(value string) bool {
@@ -233,7 +285,7 @@ func readState(dir string) (*state, error) {
 		return nil, errors.New("invalid state")
 	}
 	for _, rec := range s.Records {
-		if !pathMTUProbeOK(rec.PathMTUProbe) {
+		if !pathMTUProbesOK(rec.PathMTUProbe, probeList(rec.PathMTUProbes)) {
 			return nil, errors.New("invalid path probe address")
 		}
 	}
@@ -333,7 +385,7 @@ func stateTag(s *state) string {
 	return hex.EncodeToString(digest[:])
 }
 func info(s *state) map[string]any {
-	return map[string]any{"version": 1, "stateTag": stateTag(s), "features": []string{"coverage-v1", "conditional-publication-v1", "awg3-header-protection-v1", "rollout-readiness-v1", "live-publication-v1", "path-mtu-probe-v1", "client-ipv6-v1", "conditional-client-ipv6-v1", "idempotent-issue-v1", "ipv6-upgrade-v1", "ipv6-boot-upgrade-v1"}, "host": s.Host, "publicKey": []byte(ed25519.PrivateKey(s.SigningKey).Public().(ed25519.PublicKey)), "certificate": s.Certificate}
+	return map[string]any{"version": 1, "stateTag": stateTag(s), "features": []string{"coverage-v1", "conditional-publication-v1", "awg3-header-protection-v1", "rollout-readiness-v1", "live-publication-v1", "path-mtu-probe-v1", "dual-path-mtu-probes-v1", "client-ipv6-v1", "conditional-client-ipv6-v1", "idempotent-issue-v1", "ipv6-upgrade-v1", "ipv6-boot-upgrade-v1"}, "host": s.Host, "publicKey": []byte(ed25519.PrivateKey(s.SigningKey).Public().(ed25519.PublicKey)), "certificate": s.Certificate}
 }
 func probe(s *state) error {
 	certificate, e := x509.ParseCertificate(s.Certificate)
@@ -403,7 +455,7 @@ func admin(dir, command string, req request) (map[string]any, error) {
 		if err := clientIPv6AssignmentsOK(req.ClientIPv6); err != nil {
 			return nil, err
 		}
-		if !pathMTUProbeOK(req.PathMTUProbe) {
+		if !pathMTUProbesOK(req.PathMTUProbe, req.PathMTUProbes) {
 			return nil, errors.New("invalid path probe address")
 		}
 		if !keyOK(req.ClientPublicKey) {
@@ -439,7 +491,7 @@ func admin(dir, command string, req request) (map[string]any, error) {
 			id, token = operationID, operationToken
 		}
 		hash := sha256.Sum256([]byte(token))
-		s.Records[id] = record{ID: id, TokenHash: hex.EncodeToString(hash[:]), ClientPublicKey: req.ClientPublicKey, Container: req.Container, Revision: 1, Settings: req.Settings, PathMTUProbe: req.PathMTUProbe}
+		s.Records[id] = record{ID: id, TokenHash: hex.EncodeToString(hash[:]), ClientPublicKey: req.ClientPublicKey, Container: req.Container, Revision: 1, Settings: req.Settings, PathMTUProbe: req.PathMTUProbe, PathMTUProbes: probeListPointer(req.PathMTUProbes)}
 		if req.Operation != "" {
 			rec := s.Records[id]
 			rec.IssueOperation = req.Operation
@@ -499,7 +551,7 @@ func admin(dir, command string, req request) (map[string]any, error) {
 		if err := clientIPv6AssignmentsOK(req.ClientIPv6); err != nil {
 			return nil, err
 		}
-		if !pathMTUProbeOK(req.PathMTUProbe) {
+		if !pathMTUProbesOK(req.PathMTUProbe, req.PathMTUProbes) {
 			return nil, errors.New("invalid path probe address")
 		}
 		if strings.HasPrefix(command, "publish-if") && (req.ExpectedState == "" || req.ExpectedState != stateTag(s)) {
@@ -533,9 +585,7 @@ func admin(dir, command string, req request) (map[string]any, error) {
 				}
 				r.Revision++
 				r.Settings = req.Settings
-				if req.PathMTUProbe != "" {
-					r.PathMTUProbe = req.PathMTUProbe
-				}
+				replacePathProbes(&r, req)
 				if address, exists := req.ClientIPv6[r.ClientPublicKey]; exists {
 					r.ClientIPv6 = &address
 				}
@@ -647,7 +697,7 @@ func handler(dir string, books ...*readinessBook) http.Handler {
 		now := time.Now().Unix()
 		p := payload{payloadType, 1, rec.ID, rec.ClientPublicKey, rec.Container, strconv.FormatUint(rec.Revision, 10), now, now + 600, rec.Settings}
 		b, e := json.Marshal(p)
-		if e == nil && (book.challenge != nil || rec.PathMTUProbe != "" || rec.ClientIPv6 != nil) {
+		if e == nil && (book.challenge != nil || rec.PathMTUProbe != "" || rec.PathMTUProbes != nil || rec.ClientIPv6 != nil) {
 			var signed map[string]json.RawMessage
 			e = json.Unmarshal(b, &signed)
 			if e == nil {
@@ -656,6 +706,9 @@ func handler(dir string, books ...*readinessBook) http.Handler {
 				}
 				if e == nil && rec.PathMTUProbe != "" {
 					signed["pathMtuProbe"], e = json.Marshal(rec.PathMTUProbe)
+				}
+				if e == nil && rec.PathMTUProbes != nil {
+					signed["pathMtuProbes"], e = json.Marshal(rec.PathMTUProbes)
 				}
 				if e == nil && rec.ClientIPv6 != nil {
 					signed["clientIpv6"], e = json.Marshal(*rec.ClientIPv6)
@@ -828,7 +881,8 @@ func issueIdentity(s *state, req request) (string, string, string, error) {
 		Settings        any
 		PathMTUProbe    string
 		ClientIPv6      map[string]string `json:",omitempty"`
-	}{req.Container, req.ClientPublicKey, settings, req.PathMTUProbe, req.ClientIPv6})
+		PathMTUProbes   []string          `json:",omitempty"`
+	}{req.Container, req.ClientPublicKey, settings, req.PathMTUProbe, req.ClientIPv6, req.PathMTUProbes})
 	if err != nil {
 		return "", "", "", err
 	}

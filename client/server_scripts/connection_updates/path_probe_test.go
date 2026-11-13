@@ -91,6 +91,8 @@ func TestPathProbeWireFixture(t *testing.T) {
 		t.Fatal("invalid base payload")
 	}
 	fields["pathMtuProbe"], _ = json.Marshal("10.8.0.1")
+	fields["pathMtuProbes"], _ = json.Marshal([]string{"10.8.0.1", "fd77::1"})
+	fields["clientIpv6"], _ = json.Marshal("fd77::2")
 	raw, _ := json.Marshal(fields)
 	key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{'S'}, 32))
 	fixture := map[string]any{"publicKey": []byte(key.Public().(ed25519.PublicKey)), "envelope": envelope{raw, ed25519.Sign(key, raw)}}
@@ -106,4 +108,63 @@ func TestPathProbeWireFixture(t *testing.T) {
 	if err != nil || !bytes.Equal(actual, expected) {
 		t.Fatal("Go/Qt path probe fixture changed", err)
 	}
+}
+
+func TestDualPathProbeSignedMigrationAndWithdrawal(t *testing.T) {
+	dir := t.TempDir()
+	info := mustAdmin(t, dir, "init", request{Host: "127.0.0.1"})
+	settings := testSettings("vpn.example.test")
+	issued := mustAdmin(t, dir, "issue", request{Container: "amnezia-wireguard", ClientPublicKey: testKey('C'), Settings: settings})
+	id, token := issued["id"].(string), issued["token"].(string)
+	before, _ := readState(dir)
+	identity := before.Records[id]
+	check := func(want []string) {
+		t.Helper()
+		state, err := readState(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rec := state.Records[id]
+		if rec.ID != identity.ID || rec.TokenHash != identity.TokenHash || rec.ClientPublicKey != identity.ClientPublicKey || !bytes.Equal(rec.Settings, identity.Settings) {
+			t.Fatal("probe migration changed client identity/settings")
+		}
+		req := httptest.NewRequest(http.MethodGet, "/v1/connections/"+id, nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		response := httptest.NewRecorder()
+		handler(dir).ServeHTTP(response, req)
+		var env envelope
+		if response.Code != 200 || json.Unmarshal(response.Body.Bytes(), &env) != nil || !ed25519.Verify(info["publicKey"].([]byte), env.Payload, env.Signature) {
+			t.Fatal("invalid signed update")
+		}
+		var fields map[string]json.RawMessage
+		json.Unmarshal(env.Payload, &fields)
+		var got []string
+		if json.Unmarshal(fields["pathMtuProbes"], &got) != nil || got == nil || len(got) != len(want) {
+			t.Fatal("probe list missing or wrong", string(env.Payload))
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Fatal("wrong signed target")
+			}
+		}
+	}
+	dual := []string{"10.8.0.1", "fd77::1"}
+	mustAdmin(t, dir, "publish", request{Container: "amnezia-wireguard", Settings: settings, PathMTUProbe: dual[0], PathMTUProbes: dual})
+	check(dual)
+	mustAdmin(t, dir, "publish", request{Container: "amnezia-wireguard", Settings: settings})
+	check(dual)
+	mustAdmin(t, dir, "publish", request{Container: "amnezia-wireguard", Settings: settings, PathMTUProbe: "10.8.0.9"})
+	check([]string{"10.8.0.9", "fd77::1"})
+	frozen, _ := os.ReadFile(filepath.Join(dir, "state.json"))
+	for _, targets := range [][]string{{"10.8.0.1", "10.8.0.2"}, {"10.8.0.1", "fd77::1", "fd78::1"}, {"localhost"}, {""}} {
+		if _, err := admin(dir, "publish", request{Container: "amnezia-wireguard", Settings: settings, PathMTUProbe: targets[0], PathMTUProbes: targets}); err == nil {
+			t.Fatal("invalid targets accepted", targets)
+		}
+		current, _ := os.ReadFile(filepath.Join(dir, "state.json"))
+		if !bytes.Equal(frozen, current) {
+			t.Fatal("rejection changed state")
+		}
+	}
+	mustAdmin(t, dir, "publish", request{Container: "amnezia-wireguard", Settings: settings, PathMTUProbes: []string{}})
+	check([]string{})
 }

@@ -382,7 +382,7 @@ func TestIdempotentIssueRecovery(t *testing.T) {
 	for _, mutate := range []func(*request){func(r *request) { r.ClientPublicKey = testKey('D') }, func(r *request) {
 		r.Container = "amnezia-awg2"
 		r.Settings = json.RawMessage(`{"hostName":"vpn.example.test","port":51821,"server_pub_key":"` + testKey('P') + `","H1":"10-20"}`)
-	}, func(r *request) { r.PathMTUProbe = "10.8.0.2" }, func(r *request) { r.Settings = testSettings("other.example.test") }, func(r *request) { r.ClientIPv6 = map[string]string{r.ClientPublicKey: "fd77::2"} }} {
+	}, func(r *request) { r.PathMTUProbes = []string{r.PathMTUProbe, "fd77::1"} }, func(r *request) { r.PathMTUProbe = "10.8.0.2" }, func(r *request) { r.Settings = testSettings("other.example.test") }, func(r *request) { r.ClientIPv6 = map[string]string{r.ClientPublicKey: "fd77::2"} }} {
 		changed := req
 		mutate(&changed)
 		if _, err := admin(dir, "issue", changed); err == nil {

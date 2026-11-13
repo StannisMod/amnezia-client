@@ -137,7 +137,8 @@ ErrorCode ConnectionUpdatesController::prepareServerIPv6(const ServerCredentials
         const auto infoError = command(credentials, "info", {}, info);
         if (infoError != ErrorCode::NoError) return infoError;
         if (info.value("publicKey") != deliveryMetadata.value("publicKey") || info.value("certificate") != deliveryMetadata.value("certificate")) return ErrorCode::InternalError;
-        upgradeDelivery = !info.value("features").toArray().contains("conditional-client-ipv6-v1");
+        upgradeDelivery = !info.value("features").toArray().contains("conditional-client-ipv6-v1")
+            || !info.value("features").toArray().contains("dual-path-mtu-probes-v1");
         if (upgradeDelivery) {
             deliveryHost = vpnEndpoint::normalizeHost(info.value("host").toString());
             if (deliveryHost.isEmpty()) return ErrorCode::InternalError;
@@ -233,7 +234,7 @@ sudo '%2/updates' upgrade-ipv6 < '%2/request.json'
     return ErrorCode::InternalError;
 }
 ErrorCode ConnectionUpdatesController::fetchPublicSettings(const ServerCredentials &credentials, DockerContainer container,
-                                                           const QString &host, QJsonObject &settings, QStringList *peers, QString *pathMtuProbe)
+                                                           const QString &host, QJsonObject &settings, QStringList *peers, QString *pathMtuProbe, QStringList *pathMtuProbes)
 {
     if (container != DockerContainer::WireGuard && container != DockerContainer::Awg2) return ErrorCode::InternalError;
     SshSession ssh;
@@ -267,13 +268,14 @@ ErrorCode ConnectionUpdatesController::fetchPublicSettings(const ServerCredentia
         if (error != ErrorCode::NoError) return error;
         if (!connectionUpdates::parsePeerList(output, *peers)) return ErrorCode::InternalError;
     }
-    QString probe;
-    if (pathMtuProbe) {
-        error = fetchPathMtuProbeAddress(credentials, container, probe);
+    QStringList probes;
+    if (pathMtuProbe || pathMtuProbes) {
+        error = fetchPathMtuProbeAddresses(credentials, container, probes);
         if (error != ErrorCode::NoError) return error;
     }
     settings = candidate;
-    if (pathMtuProbe) *pathMtuProbe = probe;
+    if (pathMtuProbe) *pathMtuProbe = probes.first();
+    if (pathMtuProbes) *pathMtuProbes = probes;
     return ErrorCode::NoError;
 }
 bool ConnectionUpdatesController::available(const QString &id) const
@@ -410,6 +412,7 @@ void ConnectionUpdatesController::administer(const QString &id, const QString &a
         result.error = flushPendingRevocations(credentials, admin->connectionUpdates);
         if (result.error != ErrorCode::NoError) return result;
         bool individualIPv6Supported = false;
+        bool dualProbeSupported = false;
         if (action == "publish") {
             QJsonObject info; result.error = command(credentials, "info", {}, info);
             if (result.error != ErrorCode::NoError) return result;
@@ -430,6 +433,7 @@ void ConnectionUpdatesController::administer(const QString &id, const QString &a
                 result.error = ErrorCode::InternalError; return result;
             }
             individualIPv6Supported = refreshed.value("features").toArray().contains("client-ipv6-v1");
+            dualProbeSupported = refreshed.value("features").toArray().contains("dual-path-mtu-probes-v1");
         }
         if (action == "activate-awg3") {
             result.error = ErrorCode::NoError; result.outcome = "rejected";
@@ -470,8 +474,8 @@ void ConnectionUpdatesController::administer(const QString &id, const QString &a
         QJsonObject request { { "container", ContainerUtils::containerToString(container) } };
         if (action == "revoke") request["clientPublicKey"] = clientKey;
         else {
-            QJsonObject settings; QStringList peers; QString probe;
-            result.error = fetchPublicSettings(credentials, container, host, settings, &peers, &probe);
+            QJsonObject settings; QStringList peers, probes; QString probe;
+            result.error = fetchPublicSettings(credentials, container, host, settings, &peers, &probe, &probes);
             if (result.error != ErrorCode::NoError) return result;
             if (individualIPv6Supported) {
                 QJsonObject assignments;
@@ -485,6 +489,7 @@ void ConnectionUpdatesController::administer(const QString &id, const QString &a
             }
             request["settings"] = settings;
             request["pathMtuProbe"] = probe;
+            if (dualProbeSupported) request["pathMtuProbes"] = QJsonArray::fromStringList(probes);
             request["clientPublicKeys"] = QJsonArray::fromStringList(peers);
         }
         const auto remoteAction = action == "publish" ? QString("publish-live") : action;
