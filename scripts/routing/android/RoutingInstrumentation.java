@@ -335,19 +335,20 @@ public final class RoutingInstrumentation extends Instrumentation {
 
     private long awaitCapture(String expectedSource,String probeDestination) throws Exception {
             ConnectivityManager manager=getTargetContext().getSystemService(ConnectivityManager.class);
+            InetAddress expectedAddress=InetAddress.getByName(expectedSource);
             long readyStart=SystemClock.elapsedRealtime();boolean captureReady=false;
             do {
                 Network network=manager.getActiveNetwork();
                 NetworkCapabilities caps=network==null?null:manager.getNetworkCapabilities(network);
                 android.net.LinkProperties links=network==null?null:manager.getLinkProperties(network);
                 if(caps!=null && caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) && links!=null) {
-                    for(android.net.LinkAddress address:links.getLinkAddresses()) if(expectedSource.equals(address.getAddress().getHostAddress())) captureReady=true;
+                    for(android.net.LinkAddress address:links.getLinkAddresses()) if(expectedAddress.equals(address.getAddress())) captureReady=true;
                     if(captureReady) {
                         // UDP connect selects a source without sending a packet.
                         // This checks kernel routing, beyond cached framework data.
                         try(DatagramSocket route=new DatagramSocket()) {
                             route.connect(InetAddress.getByName(probeDestination),18081);
-                            captureReady=expectedSource.equals(route.getLocalAddress().getHostAddress());
+                            captureReady=expectedAddress.equals(route.getLocalAddress());
                         } catch(Exception notReady) {captureReady=false;}
                     }
                 }
@@ -442,6 +443,7 @@ public final class RoutingInstrumentation extends Instrumentation {
         config.put("appSplitTunnelType",1).put("splitTunnelApps",new JSONArray().put("org.amnezia.vpn"));
         state=-1;serviceError=false;startService(config);awaitState(CONNECTED,false);
         awaitCapture("10.0.42.2");
+        awaitCapture("fdfe:dcba:9876::2","2001:db8:42::2");
         ConnectivityManager captureManager=getTargetContext().getSystemService(ConnectivityManager.class);
         progress("XRAY_CAPTURE_ROUTES "+captureManager.getLinkProperties(captureManager.getActiveNetwork()));
         JSONArray targets=config.getJSONArray("ipv6_test_destinations");
