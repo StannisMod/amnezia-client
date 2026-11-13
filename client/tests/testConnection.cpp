@@ -129,6 +129,31 @@ private slots:
         settings.clearSettings();
     }
 #endif
+    void ipsecServerResourcesArePackaged()
+    {
+        QFile image(":/server_scripts/ipsec/Dockerfile");
+        QVERIFY(image.open(QIODevice::ReadOnly));
+        const auto dockerfile = image.readAll();
+        QVERIFY(dockerfile.contains("FROM hwdsl2/ipsec-vpn-server@sha256:"));
+        QVERIFY(dockerfile.contains("CMD []")); // Never inherit the identity-generating installer.
+        QFile helper(":/server_scripts/ipsec/enable_ipv6.sh");
+        QVERIFY(helper.open(QIODevice::ReadOnly));
+        QVERIFY(!helper.readAll().isEmpty());
+        for (const auto type : {ProtocolScriptType::configure_container, ProtocolScriptType::container_startup,
+                                ProtocolScriptType::run_container}) {
+            const auto script = scriptData(type, DockerContainer::Ipsec);
+            QVERIFY(!script.isEmpty());
+#if defined(Q_OS_LINUX) && !defined(Q_OS_ANDROID)
+            QProcess syntax;
+            syntax.start("bash", {"-n"});
+            QVERIFY(syntax.waitForStarted(3000));
+            syntax.write(script.toUtf8());
+            syntax.closeWriteChannel();
+            QVERIFY(syntax.waitForFinished(3000));
+            QVERIFY2(syntax.exitCode() == 0, syntax.readAllStandardError().constData());
+#endif
+        }
+    }
     void openVpnCapabilityWaitsForTunnel()
     {
         OpenVpnProtocolConfig original;

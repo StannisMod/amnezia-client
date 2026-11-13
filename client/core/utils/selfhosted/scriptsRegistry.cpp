@@ -113,7 +113,7 @@ QString amnezia::scriptData(amnezia::ProtocolScriptType type, DockerContainer co
     QByteArray data = file.readAll();
     data.replace("\r", "");
     if (type == ProtocolScriptType::run_container
-        && (ContainerUtils::isAwgContainer(container) || container == DockerContainer::WireGuard || container == DockerContainer::Xray || container == DockerContainer::OpenVpn)) {
+        && (ContainerUtils::isAwgContainer(container) || container == DockerContainer::WireGuard || container == DockerContainer::Xray || container == DockerContainer::OpenVpn || container == DockerContainer::Ipsec)) {
         QFile ipv6(":/server_scripts/prepare_ipv6_network.sh");
         if (!ipv6.open(QIODevice::ReadOnly)) return {};
         data.prepend(ipv6.readAll() + "\n");
@@ -129,6 +129,15 @@ QString amnezia::scriptData(amnezia::ProtocolScriptType type, DockerContainer co
         if (!migration.open(QIODevice::ReadOnly)) return {};
         data.insert(data.indexOf('\n') + 1, migration.readAll() + "\n");
     }
+    if ((type == ProtocolScriptType::configure_container || type == ProtocolScriptType::container_startup)
+        && container == DockerContainer::Ipsec) {
+        QFile ipv6(":/server_scripts/ipsec/enable_ipv6.sh");
+        if (!ipv6.open(QIODevice::ReadOnly) || !data.startsWith("#!")) return {};
+        data.insert(data.indexOf('\n') + 1, ipv6.readAll() + "\n");
+    }
+    // Helpers may be embedded from a Windows checkout too. Normalize the
+    // complete composition, including every prepended/inserted resource.
+    data.replace("\r", "");
     return data;
 }
 

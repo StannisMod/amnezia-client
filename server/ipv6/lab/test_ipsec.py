@@ -2,6 +2,7 @@
 import ipaddress
 import json
 import os
+import re
 import select
 from pathlib import Path
 import subprocess
@@ -41,6 +42,14 @@ def wait_file(path):
         time.sleep(.1)
 
 
+def ipv4_configuration():
+    # iptables-save includes wall-clock comments and live chain counters even
+    # without -c. Compare every rule/policy while excluding those changing stats.
+    rules = '\n'.join(re.sub(r' \[[0-9]+:[0-9]+\]$', '', line)
+                      for line in run('iptables-save').splitlines() if not line.startswith('#'))
+    return run('ip', '-4', 'route', 'show', 'table', 'all') + rules
+
+
 try:
     run('ip', 'link', 'set', 'lo', 'up')
     for name in names:
@@ -58,50 +67,68 @@ try:
         run('ip', '-n', ns, 'link', 'set', peer, 'up')
     run('ip', '-6', 'addr', 'add', 'fd88::2/64', 'dev', 'egress0', 'nodad')
     run('ip', '-n', names[1], '-6', 'addr', 'add', 'fd88::1/64', 'dev', 'origin0', 'nodad')
+    run('ip', '-n', names[1], '-6', 'addr', 'add', '2001:db8:88::1/128', 'dev', 'origin0', 'nodad')
     run('ip', 'route', 'add', 'default', 'via', '192.0.2.1')
     run('ip', '-6', 'route', 'add', 'default', 'via', 'fd88::1')
     run('ip', '-n', names[0], 'route', 'add', 'default', 'via', '198.51.100.1')
     run('ip', '-n', names[1], 'route', 'add', 'default', 'via', '192.0.2.2')
     run('ip', '-n', names[1], '-6', 'route', 'add', 'default', 'via', 'fd88::2')
-    run('sysctl', '-w', 'net.ipv4.ip_forward=1', 'net.ipv6.conf.all.forwarding=1')
-    for tool in ('iptables', 'ip6tables'):
+    run('sysctl', '-w', 'net.ipv4.ip_forward=1')
+    prepare = ['bash', '-ec', '. "$1"; amnezia_ipsec_prepare_ipv6; printf "SELECTORS=%s\\nPOOL=%s\\n" "$IPSEC_IKEV2_SUBNETS" "$IPSEC_IKEV2_POOL"',
+               'sh', '/src/client/server_scripts/ipsec/enable_ipv6.sh']
+    prepared = run(*prepare)
+    settings = dict(line.split('=', 1) for line in prepared.splitlines() if line.startswith(('SELECTORS=', 'POOL=')))
+    assert settings['SELECTORS'] == '0.0.0.0/0,::/0', prepared
+    for tool in ('iptables',):
         # No unencrypted client-origin packet can satisfy the acceptance test.
         run(tool, '-A', 'FORWARD', '-i', 'server0', '-m', 'policy', '--dir', 'in', '--pol', 'ipsec', '-j', 'ACCEPT')
         run(tool, '-A', 'FORWARD', '-i', 'server0', '-j', 'DROP')
         run(tool, '-A', 'FORWARD', '-o', 'server0', '-m', 'policy', '--dir', 'out', '--pol', 'ipsec', '-j', 'ACCEPT')
         run(tool, '-A', 'FORWARD', '-o', 'server0', '-j', 'DROP')
-    for tool, prefix in (('iptables', '192.168.43.0/24'), ('ip6tables', 'fd6e:a81b:704f:1201::/64')):
+    # IPv6 rules/NAT come exclusively from the shipping helper. Fail any
+    # plaintext fallback after those policy-scoped rules.
+    run('ip6tables', '-A', 'FORWARD', '-i', 'server0', '-j', 'DROP')
+    run('ip6tables', '-A', 'FORWARD', '-o', 'server0', '-j', 'DROP')
+    for tool, prefix in (('iptables', '192.168.43.0/24'),):
         run(tool, '-t', 'nat', '-A', 'POSTROUTING', '-s', prefix, '-o', 'egress0', '-j', 'MASQUERADE')
 
     db = Path('/etc/ipsec.d')
     db.mkdir(exist_ok=True)
-    run('certutil', '-N', '--empty-password', '-d', 'sql:' + str(db))
+    configuration = source.read_text()
+    factory = configuration.split('if [ "$IPSEC_VPN_DISABLE_IKEV2" != "yes" ]; then\n', 1)[1].split('cat > /etc/ipsec.d/ikev2.conf <<EOF', 1)[0]
+    factory_env = dict(os.environ, SERVER_IP_ADDRESS='198.51.100.1')
+    nss_setup = re.search(r'amnezia_ipsec_initialize_nss\(\) \{.*?^\}', configuration, re.MULTILINE | re.DOTALL).group(0) + '\namnezia_ipsec_initialize_nss\n'
+    run('bash', '-ec', nss_setup)
+    run('bash', '-ec', factory, env=factory_env)
+    identities = {nickname: run('certutil', '-L', '-d', 'sql:' + str(db), '-n', nickname, '-a')
+                  for nickname in ('IKEv2 VPN CA', '198.51.100.1')}
+    run('bash', '-ec', nss_setup)
+    run('bash', '-ec', factory, env=factory_env)
+    assert identities == {nickname: run('certutil', '-L', '-d', 'sql:' + str(db), '-n', nickname, '-a')
+                          for nickname in identities}, 'reconfiguration replaced production identities'
+    print('PASS: production NSS bootstrap and repeated configuration preserve CA/server identities', flush=True)
     noise = root / 'noise'
     noise.write_bytes(os.urandom(1024))
     common = ['-k', 'rsa', '-g', '2048', '-v', '1', '-d', 'sql:' + str(db), '-z', str(noise)]
-    run('certutil', '-S', '-x', '-n', 'fixture-ca', '-s', 'CN=Fixture CA', '-m', '1', '-t', 'CT,,', '-2', *common, input='y\n\nN\n')
-    for nickname, subject, serial, usage in (('198.51.100.1', '198.51.100.1', '2', 'serverAuth'),
-                                            ('fixture-client', 'Fixture Client', '3', 'clientAuth')):
-        run('certutil', '-S', '-c', 'fixture-ca', '-n', nickname, '-s', 'CN=' + subject,
-            '-m', serial, '-t', ',,', '--keyUsage', 'digitalSignature,keyEncipherment',
-            '--extKeyUsage', usage, '--extSAN', 'ip:198.51.100.1' if usage == 'serverAuth' else 'dns:fixture-client', *common)
+    run('certutil', '-S', '-c', 'IKEv2 VPN CA', '-n', 'fixture-client', '-s', 'CN=Fixture Client',
+        '-m', '3', '-t', ',,', '--keyUsage', 'digitalSignature,keyEncipherment',
+        '--extKeyUsage', 'clientAuth', '--extSAN', 'dns:fixture-client', *common)
     for folder in ('x509ca', 'x509', 'private'):
         Path('/etc/swanctl', folder).mkdir(parents=True, exist_ok=True)
-    Path('/etc/swanctl/x509ca/ca.pem').write_text(run('certutil', '-L', '-d', 'sql:' + str(db), '-n', 'fixture-ca', '-a'))
+    Path('/etc/swanctl/x509ca/ca.pem').write_text(run('certutil', '-L', '-d', 'sql:' + str(db), '-n', 'IKEv2 VPN CA', '-a'))
     Path('/etc/swanctl/x509/client.pem').write_text(run('certutil', '-L', '-d', 'sql:' + str(db), '-n', 'fixture-client', '-a'))
     run('pk12util', '-o', str(root / 'client.p12'), '-n', 'fixture-client', '-d', 'sql:' + str(db), '-W', 'fixture-password', '-K', '')
     run('openssl', 'pkcs12', '-legacy', '-in', str(root / 'client.p12'), '-passin', 'pass:fixture-password',
         '-nodes', '-nocerts', '-out', '/etc/swanctl/private/client.pem')
 
-    body = source.read_text().split('cat > /etc/ipsec.d/ikev2.conf <<EOF\n', 1)[1].split('\nEOF', 1)[0]
-    for variable, value in {'SERVER_IP_ADDRESS': '198.51.100.1', 'PRIMARY_SERVER_DNS': '1.1.1.1', 'SECONDARY_SERVER_DNS': '8.8.8.8'}.items():
+    body = configuration.split('cat > /etc/ipsec.d/ikev2.conf <<EOF\n', 1)[1].split('\nEOF', 1)[0]
+    for variable, value in {'SERVER_IP_ADDRESS': '198.51.100.1', 'PRIMARY_SERVER_DNS': '1.1.1.1', 'SECONDARY_SERVER_DNS': '8.8.8.8',
+                             'IPSEC_IKEV2_SUBNETS': settings['SELECTORS'], 'IPSEC_IKEV2_POOL': settings['POOL']}.items():
         body = body.replace('$' + variable, value)
-    # The outer endpoint is fixed in the lab; only add the proposed dual-stack
-    # selectors/pool to the exact production IKEv2 policy.
+    # Only the outer binding is fixture-specific. Selectors/pools and IPv6
+    # forwarding come from the shipping production resources without replacement.
     body = body.replace('left=%defaultroute', 'left=198.51.100.1')
-    body = body.replace('leftsubnet=0.0.0.0/0', 'leftsubnet=0.0.0.0/0,::/0')
-    body = body.replace('rightaddresspool=192.168.43.10-192.168.43.250',
-                        'rightaddresspool=192.168.43.10-192.168.43.250,fd6e:a81b:704f:1201::1000-fd6e:a81b:704f:1201::1fff')
+    assert '$' not in body, 'unexpanded production configuration'
     Path('/etc/ipsec.conf').write_text('version 2.0\nconfig setup\n  uniqueids=no\n\n' + body + '\n')
     Path('/etc/ipsec.secrets').touch()
     Path('/etc/swanctl/swanctl.conf').write_text('''connections {
@@ -129,11 +156,14 @@ try:
   }
 }
 ''')
-    spawn(['/usr/local/libexec/ipsec/pluto', '--nofork', '--config', '/etc/ipsec.conf'], 'pluto.log')
-    wait_file('/run/pluto/pluto.ctl')
-    loaded = run('/usr/local/sbin/ipsec', 'addconn', '--autoall', '--config', '/etc/ipsec.conf')
+    startup = ['bash', '-ec', '. "$1"; . "$2"', 'sh',
+               '/src/client/server_scripts/ipsec/enable_ipv6.sh', '/src/client/server_scripts/ipsec/start.sh']
+    loaded = run(*startup)
+    (root / 'pluto.log').write_text(loaded)
     print(loaded, flush=True)
     assert 'failed to add' not in loaded, 'Libreswan rejected the actual connection'
+    wait_file('/run/pluto/pluto.ctl')
+    server_pid = Path('/run/pluto/pluto.pid').read_text()
     spawn(['ip', 'netns', 'exec', names[0], '/usr/lib/strongswan/charon'], 'charon.log')
     wait_file('/run/charon.vici')
     print(run('ip', 'netns', 'exec', names[0], 'swanctl', '--load-all'), flush=True)
@@ -157,7 +187,7 @@ def accept(s):
 def udp(s):
  while True:
   data,a=s.recvfrom(4096);s.sendto(a[0].encode(),a)
-for family,address in ((socket.AF_INET,'192.0.2.1'),(socket.AF_INET6,'fd88::1')):
+for family,address in ((socket.AF_INET,'192.0.2.1'),(socket.AF_INET6,'fd88::1'),(socket.AF_INET6,'2001:db8:88::1')):
  for kind,worker in ((socket.SOCK_STREAM,accept),(socket.SOCK_DGRAM,udp)):
   s=socket.socket(family,kind);s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
   s.bind((address,18081))
@@ -209,6 +239,31 @@ print('ORIGINAL_DUAL_TCP_RETAINED',flush=True)
 
     expect('TCP_UDP_READY', 10)
     print('PASS: IPv4/IPv6 TCP+UDP reach separate origin through XFRM-only forwarding and NAT', flush=True)
+    run(*startup)
+    assert Path('/run/pluto/pluto.pid').read_text() == server_pid, 'warm startup restarted active IPsec daemon'
+    gua = "import socket;s=socket.create_connection(('2001:db8:88::1',18081),3);assert s.recv(64).strip()==b'fd88::2'"
+    run('ip', 'netns', 'exec', names[0], 'python3', '-c', gua)
+    before4 = ipv4_configuration()
+    run('ip', '-6', 'route', 'del', 'default', 'via', 'fd88::1')
+    assert 'AMNEZIA_IPSEC_IPV6_STATUS=no-egress' in run(*prepare)
+    unavailable = '''import socket,time,errno
+start=time.monotonic()
+try:socket.create_connection(('2001:db8:88::1',18081),3)
+except OSError as error:
+ assert error.errno in (errno.ENETUNREACH,errno.EHOSTUNREACH),repr(error)
+ assert time.monotonic()-start<1.5
+else:raise AssertionError('IPv6 escaped without server egress')
+'''
+    run('ip', 'netns', 'exec', names[0], 'python3', '-c', unavailable)
+    after4 = ipv4_configuration()
+    if before4 != after4:
+        import difflib
+        print(''.join(difflib.unified_diff(before4.splitlines(True), after4.splitlines(True))), flush=True)
+    assert before4 == after4, 'IPv6 preparation changed IPv4 configuration'
+    run('ip', '-6', 'route', 'add', 'default', 'via', 'fd88::1')
+    run(*prepare)
+    run('ip', 'netns', 'exec', names[0], 'python3', '-c', gua)
+    print('PASS: production IPv6 helper fails fast without server egress, preserves IPv4 and recovers', flush=True)
     drops = [('iptables', '-i', 'server0', '-p', 'udp', '--dport', '4500', '-j', 'DROP'),
              ('iptables', '-i', 'server0', '-p', 'esp', '-j', 'DROP')]
     for tool, *rule in drops:
@@ -236,6 +291,7 @@ except Exception:
             print(log, (root / log).read_text()[-24000:], flush=True)
     raise
 finally:
+    subprocess.run(['/usr/local/sbin/ipsec', 'whack', '--shutdown'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
     for process in reversed(processes):
         if process.poll() is None:
             process.terminate()

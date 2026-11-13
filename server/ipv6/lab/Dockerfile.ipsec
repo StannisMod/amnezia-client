@@ -1,9 +1,11 @@
-# Diagnostic interoperability environment, not a replacement production image.
-# Keep the server's upstream entrypoint from generating fresh VPN identities.
-FROM hwdsl2/ipsec-vpn-server@sha256:9ae4084cf5c93bced92551fbfffa5872291e21c84e6b1c2b46ab69eea5bacab1
-RUN apk add --no-cache dumb-init python3 util-linux strongswan
+# Build the application server image first; add only independent client/test tools.
+ARG IPSEC_SERVER_IMAGE=amnezia-ipsec-server-under-test:local
+FROM ${IPSEC_SERVER_IMAGE}
+RUN apk add --no-cache python3 util-linux strongswan
 COPY server/ipv6/lab/test_ipsec.py /app/test_ipsec.py
 COPY server/ipv6/lab/run_ipsec.sh /app/run_ipsec.sh
 COPY client/server_scripts/ipsec/configure_container.sh /src/client/server_scripts/ipsec/configure_container.sh
+COPY client/server_scripts/ipsec/enable_ipv6.sh /src/client/server_scripts/ipsec/enable_ipv6.sh
+COPY client/server_scripts/ipsec/start.sh /src/client/server_scripts/ipsec/start.sh
 ENTRYPOINT ["dumb-init", "tail", "-f", "/dev/null"]
 CMD []

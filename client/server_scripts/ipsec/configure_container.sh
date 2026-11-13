@@ -1,6 +1,7 @@
 #!/bin/bash
 
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+amnezia_ipsec_prepare_ipv6 || exit 1
 
 if [ ! -e /dev/ppp ]; then
 cat <<'EOF'
@@ -24,6 +25,7 @@ cat > /etc/ipsec.conf <<EOF
 version 2.0
 
 config setup
+  ikev1-policy=accept
   virtual-private=%v4:10.0.0.0/8,%v4:192.168.0.0/16,%v4:172.16.0.0/12,%v4:!$IPSEC_VPN_L2TP_NET,%v4:!$IPSEC_VPN_XAUTH_NET
   uniqueids=no
 
@@ -195,7 +197,14 @@ echo "Starting IPsec service..."
 mkdir -p /run/pluto /var/run/pluto
 rm -f /run/pluto/pluto.pid /var/run/pluto/pluto.pid
 
-ipsec initnss >/dev/null
+amnezia_ipsec_initialize_nss() {
+    # Never initialize over an existing store: current Libreswan rejects that
+    # request and, more importantly, all issued identities must remain intact.
+    if [ ! -f /etc/ipsec.d/cert9.db ]; then
+        ipsec initnss >/dev/null || return 1
+    fi
+}
+amnezia_ipsec_initialize_nss || exit 1
 ipsec pluto --config /etc/ipsec.conf
 
 
@@ -207,20 +216,30 @@ rm -f /var/run/xl2tpd.pid
 
 ################# IKEV2 ##################
 if [ "$IPSEC_VPN_DISABLE_IKEV2" != "yes" ]; then
+amnezia_ipsec_certificate_serial() {
+    # certutil's timestamp default can collide when CA/server keys are created
+    # in the same second. Keep random positive serials portable to 32-bit NSS.
+    amnezia_ipsec_serial=$(od -An -N4 -tu4 /dev/urandom) || return 1
+    printf '%s\n' "$((amnezia_ipsec_serial % 2147483646 + 1))"
+}
+if ! certutil -L -d sql:/etc/ipsec.d -n "IKEv2 VPN CA" >/dev/null 2>&1; then
 printf "y\n\nN\n" | certutil -z <(head -c 1024 /dev/urandom) \
   -S -x -n "IKEv2 VPN CA" \
   -s "O=IKEv2 VPN,CN=IKEv2 VPN CA" \
-  -k rsa -g 3072 -v 120 \
-  -d sql:/etc/ipsec.d -t "CT,," -2
+  -k rsa -g 3072 -v 120 -m "$(amnezia_ipsec_certificate_serial)" \
+  -d sql:/etc/ipsec.d -t "CT,," -2 || exit 1
+fi
 
+if ! certutil -L -d sql:/etc/ipsec.d -n "$SERVER_IP_ADDRESS" >/dev/null 2>&1; then
 certutil -z <(head -c 1024 /dev/urandom) \
    -S -c "IKEv2 VPN CA" -n "$SERVER_IP_ADDRESS" \
    -s "O=IKEv2 VPN,CN=$SERVER_IP_ADDRESS" \
-   -k rsa -g 3072 -v 120 \
+   -k rsa -g 3072 -v 120 -m "$(amnezia_ipsec_certificate_serial)" \
    -d sql:/etc/ipsec.d -t ",," \
    --keyUsage digitalSignature,keyEncipherment \
    --extKeyUsage serverAuth \
-   --extSAN "ip:$SERVER_IP_ADDRESS,dns:$SERVER_IP_ADDRESS"
+   --extSAN "ip:$SERVER_IP_ADDRESS,dns:$SERVER_IP_ADDRESS" || exit 1
+fi
 
 certutil -L -d sql:/etc/ipsec.d -n "IKEv2 VPN CA" -a | grep -v CERTIFICATE > /etc/ipsec.d/ca_cert_base64.p12
 
@@ -230,11 +249,11 @@ conn ikev2-cp
   leftcert=$SERVER_IP_ADDRESS
   leftid=$SERVER_IP_ADDRESS
   leftsendcert=always
-  leftsubnet=0.0.0.0/0
+  leftsubnet=$IPSEC_IKEV2_SUBNETS
   leftrsasigkey=%cert
   right=%any
   rightid=%fromcert
-  rightaddresspool=192.168.43.10-192.168.43.250
+  rightaddresspool=$IPSEC_IKEV2_POOL
   rightca=%same
   rightrsasigkey=%cert
   narrowing=yes

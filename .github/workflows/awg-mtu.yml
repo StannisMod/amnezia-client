@@ -13,6 +13,7 @@ on:
       - client/server_scripts/awg_legacy/**
       - client/server_scripts/wireguard/**
       - client/server_scripts/openvpn/**
+      - client/server_scripts/ipsec/**
       - client/server_scripts/serverScripts.qrc
       - .github/workflows/awg-mtu.yml
   pull_request:
@@ -28,6 +29,7 @@ on:
       - client/server_scripts/awg_legacy/**
       - client/server_scripts/wireguard/**
       - client/server_scripts/openvpn/**
+      - client/server_scripts/ipsec/**
       - .github/workflows/awg-mtu.yml
 permissions:
   contents: read
@@ -69,6 +71,18 @@ jobs:
         run: |
           set -euo pipefail
           docker run --rm --network none --privileged --pids-limit 128 --memory 256m --entrypoint sh ipv6-egress-regression /app/run_openvpn.sh | tee ipv6-openvpn-egress.log
+      - name: Verify IPsec identities and production dual-stack forwarding
+        run: |
+          set -euo pipefail
+          ipsec_old_image=amneziavpn/ipsec-server@sha256:080673496751055c76389c76d87329f033ad7b514f52a776651617ba14179540
+          ipsec_new_image=$(awk '$1 == "FROM" {print $2; exit}' client/server_scripts/ipsec/Dockerfile)
+          docker pull "$ipsec_old_image"
+          docker pull "$ipsec_new_image"
+          docker run --rm --network none --cap-drop ALL --mount "type=bind,src=$PWD/client/server_scripts/ipsec/enable_ipv6.sh,dst=/helper.sh,readonly" --entrypoint sh "$ipsec_old_image" -ec '. /helper.sh; amnezia_ipsec_prepare_ipv6; test "$IPSEC_IKEV2_SUBNETS" = 0.0.0.0/0; test "$IPSEC_IKEV2_POOL" = 192.168.43.10-192.168.43.250'
+          python3 server/ipv6/lab/test_ipsec_identity.py --old-image "$ipsec_old_image" --new-image "$ipsec_new_image" --report ipv6-ipsec-identities.json
+          docker build -f client/server_scripts/ipsec/Dockerfile -t amnezia-ipsec-server-under-test:local .
+          docker build -f server/ipv6/lab/Dockerfile.ipsec -t ipv6-ipsec-regression .
+          docker run --rm --network none --privileged --pids-limit 128 --memory 256m --entrypoint sh ipv6-ipsec-regression /app/run_ipsec.sh | tee ipv6-ipsec-egress.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -77,6 +91,8 @@ jobs:
             ipv6-egress-result.log
             ipv6-encrypted-egress.log
             ipv6-openvpn-egress.log
+            ipv6-ipsec-egress.log
+            ipv6-ipsec-identities.json
             ipv6-boot-*.log
   ownership:
     runs-on: ubuntu-latest
