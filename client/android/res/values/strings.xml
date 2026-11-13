@@ -29,4 +29,5 @@
     <string name="privateDnsDomainRulesTitle">Android Private DNS and domain rules</string>
     <string name="privateDnsDomainRulesMessage">To use domain rules, manually turn off Private DNS with a specified provider in Android network settings. Encrypted system DNS hides domain names from these rules. AmneziaVPN will not change this setting for you.</string>
     <string name="openPrivateDnsSettings">Open network settings</string>
+    <string name="privateDnsPausedMessage">New connections are paused; existing connections are kept. To use domain rules, manually turn off Private DNS with a specified provider in Android network settings. New connections will resume automatically.</string>
 </resources>

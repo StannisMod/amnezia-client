@@ -25,6 +25,7 @@ object RoutingBackend {
     external fun refresh(handle: Long, endpoint: String?, reopen: Boolean): Boolean
     external fun reloadNetworkDns(handle: Long, snapshot: ByteArray): Boolean
     external fun updateAndroidApplications(handle: Long, policy: ByteArray): Boolean
+    external fun setNewFlowsPaused(handle: Long, paused: Boolean): Boolean
     external fun suspendNetworkDns(handle: Long)
 }
 

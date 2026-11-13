@@ -82,6 +82,7 @@ private const val KEY_PENDING_OPEN_FILE_URI = "pending_open_file_uri"
 private const val FILE_PROVIDER_AUTHORITY = "org.amnezia.vpn.qtprovider"
 
 class AmneziaActivity : QtActivity() {
+    private var privateDnsPolicyDialog: AlertDialog? = null
 
     private lateinit var mainScope: CoroutineScope
     private val qtInitialized = CompletableDeferred<Unit>()
@@ -138,19 +139,27 @@ class AmneziaActivity : QtActivity() {
                     }
 
                     ServiceEvent.ERROR -> {
+                        val policyNotice = msg.data.getBoolean(MSG_POLICY_NOTICE, false)
                         msg.data?.getString(MSG_ERROR)?.let { error ->
-                            Log.e(TAG, "From VpnService: $error")
+                            if (!policyNotice) Log.e(TAG, "From VpnService: $error")
+                            else if (error.isNotEmpty()) Log.w(TAG, "From VpnService: $error")
                         }
                         if (msg.data.getString(MSG_ERROR_KIND) == org.amnezia.vpn.protocol.STRICT_PRIVATE_DNS_DOMAIN_RULES) {
-                            AlertDialog.Builder(this@AmneziaActivity)
-                                .setTitle(R.string.privateDnsDomainRulesTitle)
-                                .setMessage(R.string.privateDnsDomainRulesMessage)
-                                .setNegativeButton(R.string.cancel) { _, _ -> }
-                                .setPositiveButton(R.string.openPrivateDnsSettings) { _, _ ->
-                                    startActivity(Intent(Settings.ACTION_WIRELESS_SETTINGS))
-                                }.show()
+                            if (policyNotice && !msg.data.getBoolean(MSG_POLICY_PAUSED, false)) privateDnsPolicyDialog?.dismiss()
+                            else if (privateDnsPolicyDialog?.isShowing != true) {
+                                privateDnsPolicyDialog = AlertDialog.Builder(this@AmneziaActivity)
+                                    .setTitle(R.string.privateDnsDomainRulesTitle)
+                                    .setMessage(if (policyNotice) R.string.privateDnsPausedMessage else R.string.privateDnsDomainRulesMessage)
+                                    .setNegativeButton(R.string.cancel) { _, _ -> }
+                                    .setPositiveButton(R.string.openPrivateDnsSettings) { _, _ ->
+                                        startActivity(Intent(Settings.ACTION_WIRELESS_SETTINGS))
+                                    }.create().also { dialog ->
+                                        dialog.setOnDismissListener { privateDnsPolicyDialog = null }
+                                        dialog.show()
+                                    }
+                            }
                         }
-                        QtAndroidController.onServiceError()
+                        if (!policyNotice) QtAndroidController.onServiceError()
                     }
                 }
             }
@@ -496,6 +505,8 @@ class AmneziaActivity : QtActivity() {
     }
 
     override fun onDestroy() {
+        privateDnsPolicyDialog?.dismiss()
+        privateDnsPolicyDialog = null
         isActivityResumed = false
         hasWindowFocus = false
         // Cancel all pending operations when activity is destroyed

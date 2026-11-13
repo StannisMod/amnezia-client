@@ -13,6 +13,7 @@ import (
 // Diagnostics reports routing choices rather than transport success. Counters
 // and the last reason stay in memory; no destination names or addresses are kept.
 type DiagnosticSnapshot struct {
+	NewFlowsPaused bool `json:"new_flows_paused"`
 	UnknownOwner     uint64 `json:"unknown_owner"`
 	LastOwnerKnown   bool   `json:"last_owner_known"`
 	Direct           uint64 `json:"direct"`

@@ -226,6 +226,16 @@ func RoutingUpdateAndroidApplications(handle int64, raw string) int32 {
 	return 1
 }
 
+//export RoutingSetNewFlowsPaused
+func RoutingSetNewFlowsPaused(handle int64, paused int32) int32 {
+	if paused != 0 && paused != 1 { return 0 }
+	routedSessions.Lock()
+	session := routedSessions.sessions[handle]
+	routedSessions.Unlock()
+	if session == nil || session.SetNewFlowsPaused(paused != 0) != nil { return 0 }
+	return 1
+}
+
 //export RoutingSuspendDNS
 func RoutingSuspendDNS(handle int64) {
 	routedSessions.Lock()

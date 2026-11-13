@@ -34,6 +34,10 @@ abstract class Protocol {
     protected var networkDnsSnapshot: (() -> JSONObject)? = null
     protected var networkDnsProtect: ((Int, String) -> Boolean)? = null
     protected var networkDnsIdentity: (() -> String?)? = null
+    protected var policyNoticeChanged: ((Long, String?) -> Unit)? = null
+    fun configurePolicyNotice(callback: (Long, String?) -> Unit) { policyNoticeChanged = callback }
+    open fun recheckNetworkDnsPolicy() {}
+
     protected var validateNetworkDnsPolicy: ((JSONObject) -> Unit)? = null
     fun configureNetworkDns(snapshot: () -> JSONObject, protect: (Int, String) -> Boolean, identity: (() -> String?)? = null, validatePolicy: ((JSONObject) -> Unit)? = null) {
         networkDnsSnapshot = snapshot
@@ -79,6 +83,7 @@ abstract class Protocol {
         endpointResolver = null
         networkDnsSnapshot = null
         validateNetworkDnsPolicy = null
+        policyNoticeChanged = null
         networkDnsIdentity = null
         networkDnsProtect = null
         endpointRecovery = null

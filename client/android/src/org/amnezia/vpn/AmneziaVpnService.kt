@@ -73,6 +73,8 @@ const val MSG_VPN_CONFIG = "VPN_CONFIG"
 const val MSG_CONNECTION_DIAGNOSTICS = "CONNECTION_DIAGNOSTICS"
 const val MSG_ERROR = "ERROR"
 const val MSG_ERROR_KIND = "ERROR_KIND"
+const val MSG_POLICY_NOTICE = "POLICY_NOTICE"
+const val MSG_POLICY_PAUSED = "POLICY_PAUSED"
 const val MSG_APPLICATION_POLICY = "APPLICATION_POLICY"
 const val MSG_APPLICATION_POLICY_REQUEST_ID = "APPLICATION_POLICY_REQUEST_ID"
 const val MSG_APPLICATION_POLICY_SUCCESS = "APPLICATION_POLICY_SUCCESS"
@@ -149,6 +151,7 @@ open class AmneziaVpnService : VpnService() {
         }
     }
 
+    private var policyPauseNotice: String? = null
     private val applicationPolicyMutex = Mutex()
 
     private val actionMessageHandler: Handler by lazy(NONE) {
@@ -161,6 +164,7 @@ open class AmneziaVpnService : VpnService() {
                         val clientName = msg.data.getString(MSG_CLIENT_NAME)
                         val messenger = IpcMessenger(msg.replyTo, clientName)
                         clientMessengers[msg.replyTo] = messenger
+                        if (policyPauseNotice != null) messenger.send { policyNoticeMessage() }
                         Log.d(TAG, "Messenger client '$clientName' was registered")
                         // if (clientName == ACTIVITY_MESSENGER_NAME && isConnected) launchSendingStatistics()
                     }
@@ -262,7 +266,7 @@ open class AmneziaVpnService : VpnService() {
         connectionScope = CoroutineScope(SupervisorJob() + Dispatchers.IO + connectionExceptionHandler)
         loadServerData()
         launchProtocolStateHandler()
-        networkState = NetworkState(this, { reconnect() }, { vpnProto?.existingProtocol?.preservesConnections == true })
+        networkState = NetworkState(this, { handleNetworkChange() }, { vpnProto?.existingProtocol?.preservesConnections == true })
         trafficStats = TrafficStats()
         registerBroadcastReceivers()
     }
@@ -495,6 +499,7 @@ open class AmneziaVpnService : VpnService() {
             protocolState.drop(1).collect { protocolState ->
                 Log.d(TAG, "Protocol state changed: $protocolState")
 
+                if (protocolState == DISCONNECTED) publishPolicyNotice(null)
                 serviceNotification.updateNotification(serverName, vpnProto?.label, protocolState)
 
                 clientMessengers.send {
@@ -685,6 +690,10 @@ open class AmneziaVpnService : VpnService() {
                     if (networkState.hasStrictPrivateDns() && org.amnezia.vpn.util.net.AwgCorePolicy.requiresDomainVisibility(candidate))
                         throw VpnException(STRICT_PRIVATE_DNS_DOMAIN_RULES)
                 }
+                protocol.configurePolicyNotice { session, code -> mainScope.launch {
+                    if (vpnProto?.existingProtocol === protocol && protocol.connectionDiagnostics()?.optLong("session_id", -1) == session)
+                        publishPolicyNotice(code)
+                } }
                 protocol.configureUnderlay(networkState::underlayIdentity) { fd ->
                     protect(fd) && networkState.bindVpnSocket(fd)
                 }
@@ -718,6 +727,29 @@ open class AmneziaVpnService : VpnService() {
                 stopService()
             }
         }
+    }
+
+    @MainThread
+    private fun handleNetworkChange() {
+        vpnProto?.existingProtocol?.takeIf { it.preservesConnections }?.recheckNetworkDnsPolicy()
+        reconnect()
+    }
+
+    private fun policyNoticeMessage(): Message = ServiceEvent.ERROR.packToMessage {
+        putBoolean(MSG_POLICY_NOTICE, true)
+        putBoolean(MSG_POLICY_PAUSED, policyPauseNotice != null)
+        putString(MSG_ERROR_KIND, STRICT_PRIVATE_DNS_DOMAIN_RULES)
+        putString(MSG_ERROR, policyPauseNotice.orEmpty())
+    }
+
+    @MainThread
+    private fun publishPolicyNotice(code: String?) {
+        val notice = code?.let { if (it == STRICT_PRIVATE_DNS_DOMAIN_RULES) getString(R.string.privateDnsPausedMessage) else localizedVpnError(it) }
+        if (policyPauseNotice == notice) return
+        policyPauseNotice = notice
+        serviceNotification.policyNotice = notice
+        serviceNotification.updateNotification(serverName, vpnProto?.label, protocolState.value)
+        clientMessengers.send { policyNoticeMessage() }
     }
 
     @MainThread

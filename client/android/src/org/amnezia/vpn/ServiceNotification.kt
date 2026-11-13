@@ -31,6 +31,7 @@ private const val CONNECT_REQUEST_CODE = 1
 private const val DISCONNECT_REQUEST_CODE = 2
 
 class ServiceNotification(private val context: Context) {
+    var policyNotice: String? = null
 
     private val upDownSymbols = when (Build.BRAND) {
         "Infinix" -> '˅' to '˄'
@@ -67,7 +68,7 @@ class ServiceNotification(private val context: Context) {
         return notificationBuilder
             .setSmallIcon(R.drawable.ic_amnezia_round)
             .setContentTitle((serverName ?: "AmneziaVPN") + (protocol?.let { " $it" } ?: ""))
-            .setContentText(context.getString(state))
+            .setContentText(policyNotice ?: context.getString(state))
             .setSubText(speedString)
             .setWhen(System.currentTimeMillis())
             .clearActions()

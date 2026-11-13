@@ -206,6 +206,9 @@ JNIEXPORT jboolean JNICALL Java_org_amnezia_awg_RoutingBackend_updateAndroidAppl
  (*env)->ReleaseByteArrayElements(env,policy,bytes,JNI_ABORT);
  return ok?JNI_TRUE:JNI_FALSE;
 }
+JNIEXPORT jboolean JNICALL Java_org_amnezia_awg_RoutingBackend_setNewFlowsPaused(JNIEnv *env,jobject self,jlong handle,jboolean paused) {
+ return RoutingSetNewFlowsPaused(handle,paused?1:0)?JNI_TRUE:JNI_FALSE;
+}
 JNIEXPORT void JNICALL Java_org_amnezia_awg_RoutingBackend_suspendNetworkDns(JNIEnv *env,jobject self,jlong handle) {
  RoutingSuspendDNS(handle);
 }

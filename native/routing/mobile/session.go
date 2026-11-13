@@ -55,6 +55,8 @@ func (s *Session) ReplaceCapture(fd int) error {
 	return unsupported
 }
 
+func (s *Session) SetNewFlowsPaused(paused bool) error { return s.core.SetNewFlowsPaused(paused) }
+
 func (s *Session) Diagnostics() engine.DiagnosticSnapshot      { return s.core.Diagnostics() }
 func (s *Session) RefreshUnderlay(remote netip.AddrPort) error { return s.core.RefreshUnderlay(remote) }
 func (s *Session) ProbeUnderlay() error                        { return s.core.ProbeUnderlay() }

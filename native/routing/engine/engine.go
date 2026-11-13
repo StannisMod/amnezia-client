@@ -97,6 +97,8 @@ func NewWithCache(ctx context.Context, raw []byte, cachePath string) (*box.Box, 
 		}
 		options.Experimental.CacheFile = &option.CacheFileOptions{Enabled: true, Path: cachePath, CacheID: "amnezia-domain-routing-v1", StoreFakeIP: true}
 	}
+	flowPolicy, err := prepareNewFlowPolicy(ctx, &options)
+	if err != nil { return nil, err }
 	guard, err := preparePacketPreMatchGuard(ctx, &options)
 	if err != nil {
 		return nil, err
@@ -108,6 +110,11 @@ func NewWithCache(ctx context.Context, raw []byte, cachePath string) (*box.Box, 
 	parsedRules := instance.Router().Rules()
 	if guard {
 		parsedRules[0] = &packetPreMatchGuard{Rule: parsedRules[0]}
+		parsedRules = parsedRules[1:]
+	}
+	if flowPolicy != nil {
+		parsedRules[0] = &newFlowPolicyRule{Rule: parsedRules[0], policy: flowPolicy}
+		flowPolicy.installed = true
 		parsedRules = parsedRules[1:]
 	}
 	if live != nil {

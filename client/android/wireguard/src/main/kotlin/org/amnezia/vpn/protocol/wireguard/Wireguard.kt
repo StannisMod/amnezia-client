@@ -71,6 +71,7 @@ open class Wireguard : Protocol() {
     @Volatile private var routedConfig: JSONObject? = null
     private var capturedApplicationUids: Set<Int> = emptySet()
     @Volatile private var captureRefreshCount = 0L
+    @Volatile private var domainPolicyPaused = false
     private fun selectedApplicationUids(config: JSONObject): Set<Int> {
         if (config.optInt("appSplitTunnelType", 0) != 1) return emptySet()
         val selected=config.optJSONArray("splitTunnelApps") ?: return emptySet()
@@ -111,6 +112,7 @@ open class Wireguard : Protocol() {
         }, { uid -> context.packageManager.getPackagesForUid(uid)?.toList() ?: emptyList() }) ?: error("No application policy")
         require(RoutingBackend.updateAndroidApplications(routedHandle, resolved.toString().toByteArray(Charsets.UTF_8))) { "Application routing update failed" }
         routedConfig = next
+        resumeDomainPolicy(expectedSession)
         originalProfile = originalProfile?.let { JSONObject(it.toString()).put("android_app_routing", JSONObject(policy.toString())) }
         originalProfile?.let { JSONObject(it.toString()) } ?: next
     }
@@ -139,6 +141,37 @@ open class Wireguard : Protocol() {
         val refreshCount = captureRefreshCount + 1
         startRouted(config, vpnBuilder, protect)
         captureRefreshCount = refreshCount
+    }
+
+    private fun domainPolicyConflict(config: JSONObject): String? = try {
+        validateNetworkDnsPolicy?.invoke(config)
+        null
+    } catch (error: VpnException) {
+        if (error.message != org.amnezia.vpn.protocol.STRICT_PRIVATE_DNS_DOMAIN_RULES) throw error
+        error.message
+    }
+
+    override fun recheckNetworkDnsPolicy() = synchronized(endpointLock) {
+        val handle = routedHandle
+        val config = routedConfig
+        if (handle <= 0 || config == null) return@synchronized
+        val conflict = domainPolicyConflict(config)
+        if (conflict != null && !domainPolicyPaused) {
+            require(RoutingBackend.setNewFlowsPaused(handle, true)) { "Cannot protect new VPN flows" }
+            domainPolicyPaused = true
+            policyNoticeChanged?.invoke(handle, conflict)
+        }
+        // A compatible setting alone does not reopen flows: the recovery worker
+        // first installs a valid current DNS generation and rechecks its ticket.
+    }
+
+    private fun resumeDomainPolicy(handle: Long) {
+        if (!domainPolicyPaused || handle != routedHandle) return
+        val config = routedConfig ?: return
+        if (domainPolicyConflict(config) != null) return
+        require(RoutingBackend.setNewFlowsPaused(handle, false)) { "Cannot resume new VPN flows" }
+        domainPolicyPaused = false
+        policyNoticeChanged?.invoke(handle, null)
     }
 
     override val preservesConnections: Boolean get() = routedHandle > 0
@@ -251,6 +284,8 @@ open class Wireguard : Protocol() {
         }
         capturedApplicationUids=selectedApplicationUids(config)
         recoveryState.start(routedHandle, initialNetwork, wg.endpoint.toString())
+        recheckNetworkDnsPolicy()
+        if (!domainPolicyPaused) policyNoticeChanged?.invoke(routedHandle, null)
         ++endpointBackendEpoch
         val statusHandle = routedHandle
         routedStatusJob = routedScope.launch {
@@ -291,6 +326,7 @@ open class Wireguard : Protocol() {
     }
 
     private fun stopRouted() {
+        domainPolicyPaused = false
         capturedApplicationUids=emptySet()
         captureRefreshCount=0L
         routedRecoveryJob?.cancel()
@@ -655,6 +691,10 @@ open class Wireguard : Protocol() {
                             if (!RoutingBackend.reloadNetworkDns(handle, inventory.toString().toByteArray(Charsets.UTF_8)))
                                 throw VpnException("Network DNS refresh failed")
                         }
+                    }
+                    synchronized(endpointLock) {
+                        if (!recoveryState.current(ticket) || handle != routedHandle) return@launch
+                        resumeDomainPolicy(handle)
                     }
                     if (decision.verifyPeer) {
                         var authenticated = false

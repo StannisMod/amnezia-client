@@ -20,6 +20,7 @@ type Runtime struct {
 	cancel              context.CancelFunc
 	once                sync.Once
 	closeErr            error
+	flowPolicy          *newFlowPolicy
 	diagnostics         *Diagnostics
 	lifecycle           sync.Mutex
 	closed              bool
@@ -47,6 +48,8 @@ func startRuntime(ctx context.Context, compiled []byte, cachePath string, networ
 		proxy = newNetworkDNSProxy(ctx)
 	}
 	ctx = service.ContextWith[*networkDNSProxy](ctx, proxy)
+	flowPolicy := new(newFlowPolicy)
+	ctx = service.ContextWith[*newFlowPolicy](ctx, flowPolicy)
 	instance, err := NewWithCache(ctx, compiled, cachePath)
 	if err != nil {
 		cancel()
@@ -59,7 +62,7 @@ func startRuntime(ctx context.Context, compiled []byte, cachePath string, networ
 		// The pinned Box.Start unwinds its own scope on failure.
 		return nil, errors.New("routing engine startup failed")
 	}
-	runtime := &Runtime{box: instance, cancel: cancel, diagnostics: diagnostics, dns: proxy, ctx: ctx}
+	runtime := &Runtime{box: instance, cancel: cancel, diagnostics: diagnostics, dns: proxy, ctx: ctx, flowPolicy: flowPolicy}
 	runtime.applications = findLiveAndroidPolicy(instance.Router().Rules())
 	if runtime.applications != nil {
 		baseline, _, err := liveAndroidInvariant(compiled)
@@ -184,7 +187,11 @@ func (s *Runtime) Stats() (tunnel.Stats, error) {
 	}
 	return transport.Stats()
 }
-func (s *Runtime) Diagnostics() DiagnosticSnapshot { return s.diagnostics.Snapshot() }
+func (s *Runtime) Diagnostics() DiagnosticSnapshot {
+	result := s.diagnostics.Snapshot()
+	if s.flowPolicy != nil { result.NewFlowsPaused = s.flowPolicy.paused.Load() }
+	return result
+}
 
 // RefreshUnderlay retains the Box, capture reader, route/flow ownership and
 // private TCP stack. It must never call Network.ResetNetwork: that operation
