@@ -65,6 +65,15 @@ private slots:
         QVERIFY(connectionUpdates::apply(renewed, sign(legacy), 2000000003, migrated));
         QCOMPARE(client(migrated, awg).value("path_mtu_probe").toString(), "10.8.0.9");
     }
+    void pluralProbeControlMetadataIsStrict()
+    {
+        QStringList parsed{"unchanged"};
+        for(const auto &invalid:{QJsonValue("invalid"),QJsonValue(QJsonArray{""}),QJsonValue(QJsonArray{"10.8.0.1",42}),QJsonValue(QJsonArray{"10.8.0.1","10.8.0.9"})}) {
+            QVERIFY(!connectionUpdates::parsePathProbes(invalid,parsed));QCOMPARE(parsed,QStringList{"unchanged"});
+        }
+        QVERIFY(connectionUpdates::parsePathProbes(QJsonArray{"10.8.0.1","fd77::1"},parsed));QCOMPARE(parsed,QStringList({"10.8.0.1","fd77::1"}));
+        QVERIFY(connectionUpdates::parsePathProbes(QJsonArray{},parsed));QVERIFY(parsed.isEmpty());
+    }
     void signedDualProbeMigrationAndWithdrawal_data() { keepsDeviceAndLocalSettings_data(); }
     void signedDualProbeMigrationAndWithdrawal()
     {

@@ -217,9 +217,7 @@ ExportController::ExportResult ExportController::generateConnectionConfig(const 
             operation+=pendingBinding.toLatin1(); operation.append('\0'); operation+=key.toLatin1();
             request["operation"]=QString::fromLatin1(QCryptographicHash::hash(operation,QCryptographicHash::Sha256).toHex());
         }
-        result.errorCode = ConnectionUpdatesController::command(credentials, "issue", request, response);
-        if (result.errorCode!=ErrorCode::NoError && idempotentIssueSupported)
-            result.errorCode=ConnectionUpdatesController::command(credentials,"issue",request,response);
+        result.errorCode = ConnectionUpdatesController::issue(credentials, request, response);
         if (result.errorCode != ErrorCode::NoError) return result;
         // Detect server identity changes; a reinstallation must be explicitly trusted.
         if (response.value("publicKey") != updateMetadata.value("publicKey") || response.value("certificate") != updateMetadata.value("certificate")) {

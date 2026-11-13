@@ -496,6 +496,26 @@ void ConnectionUpdatesController::administer(const QString &id, const QString &a
         result.error = command(credentials, remoteAction, request, result.metadata); return result;
     }));
 }
+ErrorCode ConnectionUpdatesController::issue(const ServerCredentials &credentials, const QJsonObject &request, QJsonObject &response)
+{
+    if(request.contains("pathMtuProbes")) {
+        QStringList probes;
+        if(!connectionUpdates::parsePathProbes(request.value("pathMtuProbes"),probes)
+            || !request.value("pathMtuProbe").isString()
+            || request.value("pathMtuProbe").toString()!=(probes.isEmpty()?QString():probes.first())) return ErrorCode::InternalError;
+    }
+    auto error=command(credentials,"issue",request,response);
+    if(error==ErrorCode::NoError || request.value("operation").toString().isEmpty()) return error;
+    error=command(credentials,"issue",request,response);
+    if(error!=ErrorCode::NoError && request.contains("pathMtuProbes")) {
+        // An older app may have issued this SAME operation before the service
+        // advertised plural probes. Replay its original request shape; retain
+        // every identity/settings field and the operation-bound credentials.
+        auto legacy=request;legacy.remove("pathMtuProbes");
+        error=command(credentials,"issue",legacy,response);
+    }
+    return error;
+}
 void ConnectionUpdatesController::refresh(const QString &id) { fetch(id, true); }
 bool ConnectionUpdatesController::needsRefreshBeforeConnect(const QString &id) const
 {

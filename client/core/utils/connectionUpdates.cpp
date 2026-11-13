@@ -102,6 +102,18 @@ bool usablePathProbe(const QJsonValue &value, const QJsonObject &client)
     }
     return family && allowed;
 }
+bool parsePathProbes(const QJsonValue &value, QStringList &targets)
+{
+    if(!value.isArray() || value.toArray().size()>2) return false;
+    QStringList parsed;QSet<QAbstractSocket::NetworkLayerProtocol> families;
+    for(const auto &entry:value.toArray()) {
+        if(!validPathProbe(entry)) return false;
+        const auto family=QHostAddress(entry.toString()).protocol();
+        if(families.contains(family)) return false;
+        families.insert(family);parsed.append(entry.toString());
+    }
+    targets=parsed;return true;
+}
 bool parsePathProbeAddresses(const QString &output, const QString &interfaceName, QStringList &addresses)
 {
     const QString marker = "\namnezia_interface_addresses=ok\n";
@@ -596,12 +608,8 @@ bool apply(const QJsonObject &profile, const QByteArray &envelope, qint64 now, Q
     }
     if (p.contains("pathMtuProbes")) {
         const auto value=p.value("pathMtuProbes");
-        if (!value.isArray() || value.toArray().size()>2) return false;
         QStringList targets;
-        for (const auto &target:value.toArray()) {
-            if (!target.isString()) return false;
-            targets.append(target.toString());
-        }
+        if(!parsePathProbes(value,targets)) return false;
         if (p.contains("pathMtuProbe") && p.value("pathMtuProbe").toString() != (targets.isEmpty()?QString():targets.first())) return false;
         if (revisionText==m.value("revision").toString() && m.contains("pathMtuProbes") && value!=m.value("pathMtuProbes")) return false;
         QJsonObject withProbes;

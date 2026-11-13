@@ -352,6 +352,24 @@ private slots:
             QJsonObject updated;QVERIFY(connectionUpdates::mergeAdministratorIPv6(cached,selected,assignments,probes,updated));
             for(const auto *key:{"client_priv_key","client_pub_key","allowed_ips"})QCOMPARE(client(updated,container==DockerContainer::Awg2).value(key),client(cached,container==DockerContainer::Awg2).value(key));
             QCOMPARE(ssh.uploadFileToHost(credentials,QJsonDocument(updated).toJson(QJsonDocument::Compact),"/run/amnezia-cached-client-ipv6.json"),ErrorCode::NoError);
+            const auto cachedClient=client(cached,container==DockerContainer::Awg2);
+            auto operation=[&](const QByteArray &label) { return QString::fromLatin1(QCryptographicHash::hash(selected.toUtf8()+label,QCryptographicHash::Sha256).toHex()); };
+            QJsonObject oldRequest{{"operation",operation("legacy-probe-replay")},{"container",selected},
+                {"clientPublicKey",cachedClient.value("client_pub_key")},{"settings",connectionUpdates::publicSettings(cachedClient,container==DockerContainer::Awg2)},
+                {"pathMtuProbe",probes.first()}};
+            QJsonObject first,replayed,before,after;
+            QCOMPARE(ConnectionUpdatesController::command(credentials,"issue",oldRequest,first),ErrorCode::NoError);
+            QCOMPARE(ConnectionUpdatesController::command(credentials,"info",{},before),ErrorCode::NoError);
+            auto upgraded=oldRequest;upgraded["pathMtuProbes"]=QJsonArray::fromStringList(probes);
+            QCOMPARE(ConnectionUpdatesController::issue(credentials,upgraded,replayed),ErrorCode::NoError);
+            QVERIFY(replayed.value("replayed").toBool());QCOMPARE(replayed.value("id"),first.value("id"));QCOMPARE(replayed.value("token"),first.value("token"));
+            QCOMPARE(ConnectionUpdatesController::command(credentials,"info",{},after),ErrorCode::NoError);QCOMPARE(after.value("stateTag"),before.value("stateTag"));
+            upgraded["operation"]=operation("new-probe-replay");
+            QCOMPARE(ConnectionUpdatesController::issue(credentials,upgraded,first),ErrorCode::NoError);
+            QCOMPARE(ConnectionUpdatesController::command(credentials,"info",{},before),ErrorCode::NoError);
+            upgraded["pathMtuProbes"]=QJsonArray{probes.first(),"fd77:ffff::1"};
+            QVERIFY(ConnectionUpdatesController::issue(credentials,upgraded,replayed)!=ErrorCode::NoError);
+            QCOMPARE(ConnectionUpdatesController::command(credentials,"info",{},after),ErrorCode::NoError);QCOMPARE(after.value("stateTag"),before.value("stateTag"));
         }
         qInfo().noquote()<<"IPV6_ACTIVATION_RESULT "+QString::fromUtf8(QJsonDocument(outcome).toJson(QJsonDocument::Compact));
     }

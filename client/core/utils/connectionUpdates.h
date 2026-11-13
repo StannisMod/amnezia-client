@@ -9,6 +9,7 @@
 namespace amnezia::connectionUpdates {
 inline constexpr char metadataKey[] = "connectionUpdates";
 // All outputs are assigned only after full authentication and validation.
+bool parsePathProbes(const QJsonValue &value, QStringList &targets);
 bool parsePathProbeAddresses(const QString &output, const QString &interfaceName, QStringList &addresses);
 bool parsePathProbeAddress(const QString &output, const QString &interfaceName, QString &address);
 bool parsePeerList(const QString &output, QStringList &peers);

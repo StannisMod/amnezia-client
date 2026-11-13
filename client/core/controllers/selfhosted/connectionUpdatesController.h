@@ -39,6 +39,7 @@ public:
     Q_INVOKABLE void revoke(const QString &serverId, int container, const QString &clientPublicKey);
     // Static SSH path can be used by the existing export controller.
     static ErrorCode command(const ServerCredentials &credentials, const QString &action, const QJsonObject &request, QJsonObject &response);
+    static ErrorCode issue(const ServerCredentials &credentials, const QJsonObject &request, QJsonObject &response);
     bool needsRefreshBeforeConnect(const QString &serverId) const;
     void refreshBeforeConnect(const QString &serverId, const std::function<void()> &done);
 signals:
