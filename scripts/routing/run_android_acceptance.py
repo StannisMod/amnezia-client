@@ -154,6 +154,7 @@ def main():
     parser.add_argument("--source-sha", help="test-harness commit when a read-only worktree has no mounted Git metadata")
     parser.add_argument("--apk-source-sha", help="record the actual packaged client source independently of the harness")
     parser.add_argument("--diagnose-control", action="store_true", help="capture slow control-path stacks before timeout; diagnostic result only")
+    parser.add_argument("--private-dns-strict", action="store_true", help="with --app-policy-only, require strict Private DNS; disposable fixture CA must be installed in the emulator")
     parser.add_argument("--private-dns-opportunistic", action="store_true", help="with --app-policy-only, require active Android Private DNS and use network DoT for DIRECT DNS")
     parser.add_argument("--package-lifecycle", action="store_true", help="with --app-policy-only, reinstall a captured app and require fresh-UID VPN capture")
     parser.add_argument("--api28-compat-only",action="store_true",help="Android 9 ordinary core and unsupported mixed-policy rejection; not full acceptance")
@@ -166,7 +167,9 @@ def main():
     assert not args.package_lifecycle or args.app_policy_only, '--package-lifecycle requires --app-policy-only'
     if sum((args.app_policy_only, args.upload_mtu_only, args.primary_only, args.performance_only, args.api28_compat_only)) > 1:
         parser.error("focused acceptance modes are mutually exclusive")
-    assert not args.private_dns_opportunistic or args.app_policy_only, "Private DNS acceptance requires --app-policy-only"
+    assert not (args.private_dns_opportunistic and args.private_dns_strict), "Private DNS modes are mutually exclusive"
+    private_dns_mode = "strict" if args.private_dns_strict else "opportunistic" if args.private_dns_opportunistic else "off"
+    assert private_dns_mode == "off" or args.app_policy_only, "Private DNS acceptance requires --app-policy-only"
     check_ipc_contract()
     for value in (args.source_sha, args.apk_source_sha):
         assert value is None or re.fullmatch(r'[0-9a-f]{40}', value), 'invalid source revision'
@@ -236,7 +239,7 @@ def main():
               "not_run": ["physical device", "Wi-Fi/cellular handover", "Android 9 lockdown query restriction", "physical-device policy behavior", "performance parity"]}
     # QEMU exposes its DNS proxy at 10.0.2.3, but does not forward TCP/853.
     # Redirect only the disposable guest's DoT to the unprivileged local fixture.
-    private_dns_rule = ["OUTPUT", "-d", "10.0.2.3", "-p", "tcp", "--dport", "853",
+    private_dns_rule = ["OUTPUT", "-d", "10.0.2.2" if args.private_dns_strict else "10.0.2.3", "-p", "tcp", "--dport", "853",
                         "-m", "comment", "--comment", "amnezia-private-dns-acceptance",
                         "-j", "DNAT", "--to-destination", "10.0.2.2:8853"]
     private_dns_redirected = False
@@ -247,10 +250,12 @@ def main():
         subprocess.run(['adb', 'shell', 'dpm', 'remove-active-admin', admin], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
         for package in ('org.amnezia.routingtest', PACKAGE, 'org.amnezia.routingprobe.a', 'org.amnezia.routingprobe.b'):
             subprocess.run(['adb', 'uninstall', package], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
-        if args.private_dns_opportunistic:
+        if private_dns_mode != "off":
             adb("shell", "iptables", "-t", "nat", "-A", *private_dns_rule)
             private_dns_redirected = True
-        adb("shell", "settings", "put", "global", "private_dns_mode", "opportunistic" if args.private_dns_opportunistic else "off")
+        if args.private_dns_strict:
+            adb("shell", "settings", "put", "global", "private_dns_specifier", "routing-fixture.invalid")
+        adb("shell", "settings", "put", "global", "private_dns_mode", "hostname" if args.private_dns_strict else private_dns_mode)
         adb("install", "-r", "-t", str(target))
         adb("install", "-r", "-t", str(instrument))
         for index,probe_apk in enumerate(probe_apks):
@@ -266,6 +271,7 @@ def main():
         command = ["adb", "shell", "am", "instrument", "-w", "-r", "-e", "cycles", str(args.cycles),
                    "-e", "observer_ip", args.observer_ip,
                    "-e", "private_dns_opportunistic", str(args.private_dns_opportunistic).lower(),
+                   "-e", "private_dns_strict", str(args.private_dns_strict).lower(),
                    "-e", "primary_only", str(args.primary_only).lower(),
                    "-e", "upload_mtu_only", str(args.upload_mtu_only).lower(),
                    "-e", "app_policy_only", str(args.app_policy_only).lower(),
@@ -432,9 +438,9 @@ def main():
         if args.app_policy_only:
             assert 'INSTRUMENTATION_RESULT: routing_result=PASS_APP_POLICY_ONLY' in output
             app_policy_metrics(output,report)
-            if args.private_dns_opportunistic:
-                assert "PRIVATE_DNS_RESULT active_opportunistic_network_tls" in output
-                report["private_dns"] = {"mode":"opportunistic", "android_active":True, "direct_network_tls_queries":True}
+            if private_dns_mode != "off":
+                assert f"PRIVATE_DNS_RESULT active_{private_dns_mode}_network_tls" in output
+                report["private_dns"] = {"mode":private_dns_mode, "android_active":True, "direct_network_tls_queries":True}
             if args.package_lifecycle:
                 assert report.get('package_lifecycle') == {'uid_changed':True,'automatic_reconnect':True,'vpn_tcp_dns':True,'same_session':False}
                 assert report['package_update_same_uid']['same_session'] and report['package_update_same_uid']['other_tcp_preserved']
@@ -498,7 +504,7 @@ def main():
         except (OSError, AssertionError) as error:
             report['fixture_peer_cleanup'] = type(error).__name__
         nft_command('delete', 'table', 'inet', fault_table, check=False)
-        if args.private_dns_opportunistic:
+        if private_dns_mode != "off":
             adb("shell", "settings", "put", "global", "private_dns_mode", "off")
         if private_dns_redirected:
             adb("shell", "iptables", "-t", "nat", "-D", *private_dns_rule)
