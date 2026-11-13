@@ -52,6 +52,17 @@ the application-transport assertion. Both original TCP sockets must survive
 the policy switch as in the ordinary case. The existing API29 regression jobs
 combine this mode with package lifecycle coverage.
 
+`run_android_work_profile.py` accepts the same APK/fixture/work arguments and
+runs the existing per-app/lifecycle scenario in a newly created managed profile.
+It requires a rooted disposable emulator and removes its profile in `finally`.
+An additional copy of probe A in the personal profile keeps an original literal-IP
+TCP connection and opens a new one while the work VPN and its policies change.
+Both personal connections must stay DIRECT; work A/B must follow their own
+policies, and the same package's full UID difference must equal `userId * 100000`.
+The report says `NOT_RUN_WORK_PROFILE_ONLY`; this is focused coverage, not a
+100-cycle or arbitrary cross-profile system-DNS-cache claim. API29 AWG/WG jobs
+run this after their personal-profile scenario without adding matrix jobs.
+
 This scenario covers opportunistic network DNS and these applications' A/UDP
 TXT requests. It does not prove strict Private DNS certificate handling,
 work-profile behavior, or isolation of arbitrary system TXT/SRV cache entries.
