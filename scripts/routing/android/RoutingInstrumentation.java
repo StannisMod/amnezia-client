@@ -67,6 +67,7 @@ public final class RoutingInstrumentation extends Instrumentation {
     private boolean uploadMtuOnly;
     private boolean appPolicyOnly;
     private boolean packageLifecycle;
+    private int androidUser;
     private boolean privateDnsOpportunistic;
     private boolean privateDnsStrict;
     private boolean api28CompatOnly;
@@ -95,6 +96,7 @@ public final class RoutingInstrumentation extends Instrumentation {
         appPolicyOnly = Boolean.parseBoolean(args.getString("app_policy_only", "false"));
         privateDnsStrict = Boolean.parseBoolean(args.getString("private_dns_strict", "false"));
         privateDnsOpportunistic = Boolean.parseBoolean(args.getString("private_dns_opportunistic", "false"));
+        androidUser = Integer.parseInt(args.getString("android_user", "0"));
         packageLifecycle = Boolean.parseBoolean(args.getString("package_lifecycle", "false"));
         api28CompatOnly = Boolean.parseBoolean(args.getString("api28_compat_only", "false"));
         diagnoseControl = Boolean.parseBoolean(args.getString("diagnose_control", "false"));
@@ -105,6 +107,7 @@ public final class RoutingInstrumentation extends Instrumentation {
         int code = -1;
         boolean didBind = false;
         try {
+            require(android.os.Process.myUid()/100000 == androidUser, "instrumentation is running in the wrong Android profile");
             require(cycles >= 1 && cycles <= 1000, "invalid cycle count");
             require(VpnService.prepare(getTargetContext()) == null, "VPN consent was not granted by the disposable emulator driver");
             java.io.ByteArrayOutputStream fixtureBytes = new java.io.ByteArrayOutputStream();
@@ -582,6 +585,18 @@ public final class RoutingInstrumentation extends Instrumentation {
             return reply;
         }
     }
+    private JSONObject personalProbe(String operation, String tag) throws Exception {
+        JSONObject command = new JSONObject().put("op",operation).put("tag",tag).put("address",observerIP).put("payload","personal TCP across work-profile policy switch");
+        try (Socket socket = new Socket()) {
+            socket.connect(new InetSocketAddress("127.0.0.1",19093),2000);socket.setSoTimeout(12000);
+            socket.getOutputStream().write((command.toString()+"\n").getBytes(StandardCharsets.UTF_8));
+            JSONObject reply = new JSONObject(new BufferedReader(new InputStreamReader(socket.getInputStream(),StandardCharsets.UTF_8)).readLine());
+            require(reply.getBoolean("ok"), "personal-profile probe failed: "+reply.optString("error"));
+            require(reply.getInt("uid")/100000==0 && reply.getString("package").equals("org.amnezia.routingprobe.a"),"wrong personal-profile probe");
+            return reply;
+        }
+    }
+
     private void awaitAppProbe(int index) throws Exception {
         long until = SystemClock.elapsedRealtime()+15000;
         while (true) {
@@ -612,6 +627,16 @@ public final class RoutingInstrumentation extends Instrumentation {
 
     private void perApplicationPolicy() throws Exception {
         awaitAppProbe(0);awaitAppProbe(1);
+        JSONObject personal = null;
+        if (androidUser != 0) {
+            long deadline=SystemClock.elapsedRealtime()+15000;
+            while(true) {
+                try { personalProbe("ready","personal-old");break; }
+                catch(java.net.ConnectException notReady) { if(SystemClock.elapsedRealtime()>=deadline)throw notReady;SystemClock.sleep(100); }
+            }
+            personal = personalProbe("open-ip","personal-old");
+            require(personal.getString("route").equals("DIRECT"),"personal TCP was not initially direct");
+        }
         if (privateDnsOpportunistic || privateDnsStrict) {
             ConnectivityManager manager = (ConnectivityManager)getTargetContext().getSystemService(Context.CONNECTIVITY_SERVICE);
             long deadline = SystemClock.elapsedRealtime()+30000;
@@ -644,6 +669,8 @@ public final class RoutingInstrumentation extends Instrumentation {
             JSONObject before=retainedCheckpoint("app_policy_before");
             JSONObject a=appProbe(0,"open","old"),b=appProbe(1,"open","old");
             require(a.getInt("uid")!=b.getInt("uid"),"two probes share a UID");
+            require(a.getInt("uid")/100000==androidUser && b.getInt("uid")/100000==androidUser,"application UID lost its Android user");
+            if(personal != null) require(a.getInt("uid")-personal.getInt("uid")==androidUser*100000,"same package did not retain its full per-profile UID");
             require(a.getString("route").equals("VPN") && b.getString("route").equals("DIRECT"),"initial per-app routing wrong");
             require(a.getString("address").equals(b.getString("address")) && fake(InetAddress.getByName(a.getString("address"))),"apps did not share a FakeIP");
             for(int i=0;i<2;i++) {
@@ -669,6 +696,13 @@ public final class RoutingInstrumentation extends Instrumentation {
                 progress("PRIVATE_DNS_RESULT active_"+(privateDnsStrict ? "strict" : "opportunistic")+"_network_tls");
             }
             require(connectionDiagnostics().getLong("session_id")==session && !retainedStateChanged,"application update replaced/disconnected the core");
+            if(personal != null) {
+                JSONObject kept=personalProbe("echo","personal-old");
+                JSONObject fresh=personalProbe("open-ip","personal-fresh");
+                require(kept.getInt("local_port")==personal.getInt("local_port") && kept.getString("route").equals("DIRECT"),"work VPN replaced or captured personal TCP");
+                require(fresh.getString("route").equals("DIRECT"),"work VPN captured a new personal TCP");
+                progress("WORK_PROFILE_RESULT "+new JSONObject().put("user",androidUser).put("personal_uid",personal.getInt("uid")).put("work_uid",a.getInt("uid")).put("personal_tcp_preserved",true).put("personal_new_tcp_direct",true));
+            }
             progress("APP_POLICY_RESULT "+new JSONObject().put("uids",new JSONArray().put(a.getInt("uid")).put(b.getInt("uid")))
                 .put("same_session",true).put("same_old_ports",true).put("dns_contexts_switched",true));
             if (packageLifecycle) {
@@ -724,6 +758,7 @@ public final class RoutingInstrumentation extends Instrumentation {
         } finally {
             retainedCheck=false;
             for(int i=0;i<2;i++)try{appProbe(i,"stop","old");}catch(Exception ignored){}
+            if(androidUser != 0)try{personalProbe("stop","personal-old");}catch(Exception ignored){}
             if(state!=DISCONNECTED) disconnect();
         }
         pass("two real Android UIDs switch new TCP/UDP/DNS policy while original TCP and shared FakeIP survive");

@@ -50,10 +50,17 @@ def check_ipc_contract():
         "DISCONNECTED", "CONNECTED", "CONNECTING", "DISCONNECTING", "RECONNECTING", "UNKNOWN"]
 
 
-def snapshot():
-    pid = adb("shell", "pidof", "org.amnezia.vpn:amneziaAwgService").split()
-    assert len(pid) == 1 and pid[0].isdigit(), "real service process is missing or duplicated"
-    status = adb("shell", "cat", f"/proc/{pid[0]}/status")
+def snapshot(android_user=0):
+    candidates = adb("shell", "pidof", "org.amnezia.vpn:amneziaAwgService").split()
+    matches = []
+    for candidate in candidates:
+        assert candidate.isdigit(), "invalid service PID"
+        details = adb("shell", "cat", f"/proc/{candidate}/status")
+        if int(re.search(r"^Uid:\s+(\d+)", details, re.M)[1]) // 100000 == android_user:
+            matches.append((candidate, details))
+    assert len(matches) == 1, "real service process for the selected user is missing or duplicated"
+    process_id, status = matches[0]
+    pid = [process_id]
     # Enumerate names without stat-ing each descriptor. DNS workers may close
     # individual entries during enumeration; the process itself must stay alive.
     descriptors = adb("shell", f'test -d /proc/{pid[0]}/fd && printf "%s\\n" /proc/{pid[0]}/fd/*').split()
@@ -150,6 +157,7 @@ def main():
     parser.add_argument("--quic-probe", type=Path, required=True)
     parser.add_argument("--quic-ca", type=Path, required=True)
     parser.add_argument("--work", type=Path, required=True)
+    parser.add_argument("--android-user",type=int,default=0,help="existing AmneziaRoutingTest managed-profile ID; requires --app-policy-only")
     parser.add_argument("--cycles", type=int, default=100)
     parser.add_argument("--source-sha", help="test-harness commit when a read-only worktree has no mounted Git metadata")
     parser.add_argument("--apk-source-sha", help="record the actual packaged client source independently of the harness")
@@ -170,6 +178,8 @@ def main():
     assert not (args.private_dns_opportunistic and args.private_dns_strict), "Private DNS modes are mutually exclusive"
     private_dns_mode = "strict" if args.private_dns_strict else "opportunistic" if args.private_dns_opportunistic else "off"
     assert private_dns_mode == "off" or args.app_policy_only, "Private DNS acceptance requires --app-policy-only"
+    assert 0 <= args.android_user <= 21474 and (args.android_user == 0 or args.app_policy_only), "managed-profile mode requires --app-policy-only"
+    user_arguments = ["--user", str(args.android_user)]
     check_ipc_contract()
     for value in (args.source_sha, args.apk_source_sha):
         assert value is None or re.fullmatch(r'[0-9a-f]{40}', value), 'invalid source revision'
@@ -231,10 +241,15 @@ def main():
     assert adb("shell", "getprop", "ro.kernel.qemu") == "1", "only disposable Android emulators are supported"
     adb("root"); adb("wait-for-device")
     assert adb("shell", "id", "-u") == "0", "rooted emulator is needed to measure the actual service process"
+    if args.android_user:
+        users = adb("shell", "pm", "list", "users")
+        profile = re.search(r"UserInfo\{"+str(args.android_user)+r":(AmneziaRoutingTest[^:]*):([0-9a-fA-F]+)\}", users)
+        assert profile and int(profile[2],16)&0x20, "selected user is not our disposable managed profile"
+        assert int(adb("shell", "getprop", "ro.build.version.sdk")) >= 29, "work-profile routing acceptance requires API29+"
     report = {"schema_version": 1, "source_sha": source_sha, "apk_source_sha": args.apk_source_sha,
               "apk_sha256": hashlib.sha256(args.apk.read_bytes()).hexdigest(), "native_payloads": payload_hashes(args.apk),
               "environment": "disposable Android emulator; independent host and AWG-netstack observers",
-              "protocol": protocol, "cycles_requested": args.cycles,
+              "protocol": protocol, "android_user":args.android_user, "cycles_requested": args.cycles,
               "retained_resources": {}, "native_vpn_acceptance": "FAIL", "resources": {},
               "not_run": ["physical device", "Wi-Fi/cellular handover", "Android 9 lockdown query restriction", "physical-device policy behavior", "performance parity"]}
     # QEMU exposes its DNS proxy at 10.0.2.3, but does not forward TCP/853.
@@ -247,7 +262,7 @@ def main():
     try:
         # Only the emulator was accepted above. Remove stale test-only device
         # ownership/signatures from an interrupted prior disposable run.
-        subprocess.run(['adb', 'shell', 'dpm', 'remove-active-admin', admin], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+        subprocess.run(['adb', 'shell', 'dpm', 'remove-active-admin', *user_arguments, admin], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
         for package in ('org.amnezia.routingtest', PACKAGE, 'org.amnezia.routingprobe.a', 'org.amnezia.routingprobe.b'):
             subprocess.run(['adb', 'uninstall', package], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
         if private_dns_mode != "off":
@@ -256,20 +271,27 @@ def main():
         if args.private_dns_strict:
             adb("shell", "settings", "put", "global", "private_dns_specifier", "routing-fixture.invalid")
         adb("shell", "settings", "put", "global", "private_dns_mode", "hostname" if args.private_dns_strict else private_dns_mode)
-        adb("install", "-r", "-t", str(target))
-        adb("install", "-r", "-t", str(instrument))
+        adb("install", *user_arguments, "-r", "-t", str(target))
+        adb("install", *user_arguments, "-r", "-t", str(instrument))
         for index,probe_apk in enumerate(probe_apks):
-            adb('install','-r','-t',str(probe_apk))
+            adb('install',*user_arguments,'-r','-t',str(probe_apk))
+            if args.android_user and index == 0:
+                personal_package = 'org.amnezia.routingprobe.a'
+                adb('shell','cmd','package','install-existing','--user','0',personal_package)
+                personal_log = (work/'personal-profile-probe.log').open('w');probe_logs.append(personal_log)
+                probe_processes.append(subprocess.Popen(['adb','shell','am','instrument','--user','0','-w','-r','-e','port','19093',personal_package+'/org.amnezia.appprobe.Probe'],stdout=personal_log,stderr=subprocess.STDOUT))
             suffix = ('a','b')[index]
             log = (work/('app-probe-'+suffix+'.log')).open('w'); probe_logs.append(log)
-            probe_processes.append(subprocess.Popen(['adb','shell','am','instrument','-w','-r','-e','port',str(19091+index),
+            probe_processes.append(subprocess.Popen(['adb','shell','am','instrument',*user_arguments,'-w','-r','-e','port',str(19091+index),
                 'org.amnezia.routingprobe.'+suffix+'/org.amnezia.appprobe.Probe'],stdout=log,stderr=subprocess.STDOUT))
-        assert "Success" in adb("shell", "dpm", "set-device-owner", admin), "AVD device owner setup failed"
-        adb("shell", "appops", "set", PACKAGE, "ACTIVATE_VPN", "allow")
+        owner_mode = "set-profile-owner" if args.android_user else "set-device-owner"
+        assert "Success" in adb("shell", "dpm", owner_mode, *user_arguments, admin), "AVD test owner setup failed"
+        adb("shell", "appops", "set", *user_arguments, PACKAGE, "ACTIVATE_VPN", "allow")
         # am instrument does not set a useful shell exit code on test failure.
         # Require the explicit PASS result and successful resource assertions.
-        command = ["adb", "shell", "am", "instrument", "-w", "-r", "-e", "cycles", str(args.cycles),
+        command = ["adb", "shell", "am", "instrument", *user_arguments, "-w", "-r", "-e", "cycles", str(args.cycles),
                    "-e", "observer_ip", args.observer_ip,
+                   "-e", "android_user", str(args.android_user),
                    "-e", "private_dns_opportunistic", str(args.private_dns_opportunistic).lower(),
                    "-e", "private_dns_strict", str(args.private_dns_strict).lower(),
                    "-e", "primary_only", str(args.primary_only).lower(),
@@ -287,6 +309,8 @@ def main():
             started = time.monotonic(); output = []
             for line in process.stdout:
                 print(line, end="", flush=True); log.write(line); log.flush(); output.append(line)
+                if 'WORK_PROFILE_RESULT ' in line:
+                    report['work_profile']=json.loads(line.strip().split('WORK_PROFILE_RESULT ',1)[1])
                 if 'API28_COMPAT_RESULT ' in line:
                     report['api28_compatibility']=json.loads(line.strip().split('API28_COMPAT_RESULT ',1)[1])
                 if 'PACKAGE_LIFECYCLE_UPDATE_B ' in line:
@@ -294,11 +318,11 @@ def main():
                     operation=line.strip().split('PACKAGE_LIFECYCLE_UPDATE_B ',1)[1]
                     assert operation in ('same-uid','disconnected')
                     package='org.amnezia.routingprobe.b'
-                    assert 'Success' in adb('install','-r','-t',str(probe_apks[1]))
+                    assert 'Success' in adb('install',*user_arguments,'-r','-t',str(probe_apks[1]))
                     probe_processes[-1].wait(timeout=15)
                     lifecycle_log=(work/('app-probe-b-'+operation+'.log')).open('w');probe_logs.append(lifecycle_log)
-                    probe_processes.append(subprocess.Popen(['adb','shell','am','instrument','-w','-r','-e','port','19092',package+'/org.amnezia.appprobe.Probe'],stdout=lifecycle_log,stderr=subprocess.STDOUT))
-                    adb('shell','touch',f'/data/user/0/{PACKAGE}/files/routing-package-{operation}.ready')
+                    probe_processes.append(subprocess.Popen(['adb','shell','am','instrument',*user_arguments,'-w','-r','-e','port','19092',package+'/org.amnezia.appprobe.Probe'],stdout=lifecycle_log,stderr=subprocess.STDOUT))
+                    adb('shell','touch',f'/data/user/{args.android_user}/{PACKAGE}/files/routing-package-{operation}.ready')
                 if 'PACKAGE_LIFECYCLE_SAME_UID ' in line:
                     report['package_update_same_uid']=json.loads(line.strip().split('PACKAGE_LIFECYCLE_SAME_UID ',1)[1])
                 if 'PACKAGE_LIFECYCLE_DISCONNECTED ' in line:
@@ -309,11 +333,11 @@ def main():
                     package='org.amnezia.routingprobe.b'
                     assert 'Success' in adb('uninstall',package)
                     probe_processes[-1].wait(timeout=15)
-                    assert 'Success' in adb('install','-t',str(probe_apks[1]))
+                    assert 'Success' in adb('install',*user_arguments,'-t',str(probe_apks[1]))
                     lifecycle_log=(work/'app-probe-b-reinstalled.log').open('w');probe_logs.append(lifecycle_log)
-                    probe_processes.append(subprocess.Popen(['adb','shell','am','instrument','-w','-r','-e','port','19092',package+'/org.amnezia.appprobe.Probe'],stdout=lifecycle_log,stderr=subprocess.STDOUT))
+                    probe_processes.append(subprocess.Popen(['adb','shell','am','instrument',*user_arguments,'-w','-r','-e','port','19092',package+'/org.amnezia.appprobe.Probe'],stdout=lifecycle_log,stderr=subprocess.STDOUT))
                     (work/'package-after-connectivity.log').write_text(adb('shell','dumpsys','connectivity'))
-                    adb('shell','touch',f'/data/user/0/{PACKAGE}/files/routing-package-reinstalled.ready')
+                    adb('shell','touch',f'/data/user/{args.android_user}/{PACKAGE}/files/routing-package-reinstalled.ready')
                 if 'PACKAGE_LIFECYCLE_UIDS ' in line:
                     report['package_lifecycle_uids']=json.loads(line.strip().split('PACKAGE_LIFECYCLE_UIDS ',1)[1])
                 if 'PACKAGE_LIFECYCLE_RESULT ' in line:
@@ -326,7 +350,7 @@ def main():
                         if diagnostic_taken.is_set(): return
                         diagnostic_taken.set()
                         try:
-                            pid = snapshot()['pid']
+                            pid = snapshot(args.android_user)['pid']
                             trace = subprocess.run(['adb','shell','debuggerd','-b',str(pid)],capture_output=True,text=True,timeout=6)
                             (work/f'slow-control-{request_id}.log').write_text(trace.stdout+trace.stderr)
                             sockets = subprocess.run(['adb','shell','ss','-nto'],capture_output=True,text=True,timeout=3)
@@ -384,27 +408,27 @@ def main():
                     elif name == 'wifi_off': adb('shell', 'svc', 'wifi', 'disable')
                     elif name == 'wifi_on': adb('shell', 'svc', 'wifi', 'enable')
                     if name in ('before', 'after', 'safe_policy_before', 'safe_policy_after', 'perf_legacy_before', 'perf_legacy_after', 'perf_shared_before', 'perf_shared_after', 'upload_mtu_before', 'upload_mtu_after', 'app_policy_before', 'app_policy_after'):
-                        report['retained_resources'][name] = snapshot()
+                        report['retained_resources'][name] = snapshot(args.android_user)
                     with urllib.request.urlopen('http://127.0.0.1:18080/stats', timeout=5) as response:
                         stats = json.load(response)
                     local = work / ('stats-' + name + '.json');local.write_text(json.dumps(stats))
-                    remote = f'/data/user/0/{PACKAGE}/files/routing-stats-{name}.json'
+                    remote = f'/data/user/{args.android_user}/{PACKAGE}/files/routing-stats-{name}.json'
                     adb('push', str(local), remote);adb('shell', 'restorecon', remote);adb('shell', 'chmod', '644', remote)
-                    adb('shell', 'touch', f'/data/user/0/{PACKAGE}/files/routing-retain-{name}.ready')
+                    adb('shell', 'touch', f'/data/user/{args.android_user}/{PACKAGE}/files/routing-retain-{name}.ready')
                 if "POLICY_CHECKPOINT " in line:
                     mode = line.strip().split("POLICY_CHECKPOINT ", 1)[1]
                     assert mode in ("off", "alwayson", "lockdown")
-                    output_policy = adb("shell", "am", "broadcast", "-a", "org.amnezia.routingtest.POLICY", "-n", admin, "--es", "mode", mode)
+                    output_policy = adb("shell", "am", "broadcast", *user_arguments, "-a", "org.amnezia.routingtest.POLICY", "-n", admin, "--es", "mode", mode)
                     assert "result=-1" in output_policy, "AVD VPN policy was not applied: " + output_policy
                     if mode == "off":
                         # Removing an always-on package revokes its VPN grant.
                         # Emulate renewed user consent before the recovery test.
-                        adb("shell", "appops", "set", PACKAGE, "ACTIVATE_VPN", "allow")
-                    adb("shell", "touch", f"/data/user/0/{PACKAGE}/files/routing-policy-{mode}.ready")
+                        adb("shell", "appops", "set", *user_arguments, PACKAGE, "ACTIVATE_VPN", "allow")
+                    adb("shell", "touch", f"/data/user/{args.android_user}/{PACKAGE}/files/routing-policy-{mode}.ready")
                 if "RESOURCE_CHECKPOINT " in line:
                     label = line.strip().split("RESOURCE_CHECKPOINT ", 1)[1]
                     try:
-                        report["resources"][label] = snapshot()
+                        report["resources"][label] = snapshot(args.android_user)
                     except (AssertionError, subprocess.CalledProcessError) as error:
                         if label != "failure":
                             raise
@@ -449,7 +473,14 @@ def main():
                 assert report.get('package_lifecycle') == {'uid_changed':True,'automatic_reconnect':True,'vpn_tcp_dns':True,'same_session':False}
                 assert report['package_update_same_uid']['same_session'] and report['package_update_same_uid']['other_tcp_preserved']
                 assert report['package_update_disconnected']=={'stayed_disconnected':True}
-            report['native_vpn_acceptance']='NOT_RUN_PACKAGE_LIFECYCLE_ONLY' if args.package_lifecycle else 'NOT_RUN_APP_POLICY_ONLY'
+            assert all(uid//100000==args.android_user for uid in report['per_application_policy']['uids']), "probe UID belongs to a different Android user"
+            if args.android_user:
+                profile=report.get('work_profile',{})
+                assert profile.get('user')==args.android_user and profile.get('personal_tcp_preserved') and profile.get('personal_new_tcp_direct')
+                assert profile['work_uid']-profile['personal_uid']==args.android_user*100000
+                report['native_vpn_acceptance']='NOT_RUN_WORK_PROFILE_ONLY'
+            else:
+                report['native_vpn_acceptance']='NOT_RUN_PACKAGE_LIFECYCLE_ONLY' if args.package_lifecycle else 'NOT_RUN_APP_POLICY_ONLY'
             return
         if args.upload_mtu_only:
             assert 'INSTRUMENTATION_RESULT: routing_result=PASS_UPLOAD_MTU_ONLY' in output
@@ -515,8 +546,8 @@ def main():
         try: adb('shell', 'svc', 'wifi', 'enable')
         except subprocess.CalledProcessError: pass
         try:
-            adb("shell", "am", "broadcast", "-a", "org.amnezia.routingtest.POLICY", "-n", admin, "--es", "mode", "off")
-            adb("shell", "dpm", "remove-active-admin", admin)
+            adb("shell", "am", "broadcast", *user_arguments, "-a", "org.amnezia.routingtest.POLICY", "-n", admin, "--es", "mode", "off")
+            adb("shell", "dpm", "remove-active-admin", *user_arguments, admin)
         except subprocess.CalledProcessError:
             report["policy_cleanup"] = "FAIL"
         (work / "android-acceptance.json").write_text(json.dumps(report, indent=2) + "\n")
@@ -530,9 +561,11 @@ def main():
                 (work / (label + ".log")).write_text(adb(*command))
             except subprocess.CalledProcessError:
                 pass
-        adb("shell", "am", "force-stop", PACKAGE)
+        adb("shell", "am", "force-stop", *user_arguments, PACKAGE)
         for suffix in ('a','b'):
-            subprocess.run(['adb','shell','am','force-stop','org.amnezia.routingprobe.'+suffix],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=10)
+            subprocess.run(['adb','shell','am','force-stop',*user_arguments,'org.amnezia.routingprobe.'+suffix],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=10)
+        if args.android_user:
+            subprocess.run(["adb","shell","am","force-stop","--user","0","org.amnezia.routingprobe.a"],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=10)
         for process in probe_processes:
             try: process.wait(timeout=5)
             except subprocess.TimeoutExpired:

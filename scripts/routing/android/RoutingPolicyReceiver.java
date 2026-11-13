@@ -19,7 +19,7 @@ public final class RoutingPolicyReceiver extends DeviceAdminReceiver {
             String mode = intent.getStringExtra("mode");
             if (!"off".equals(mode) && !"alwayson".equals(mode) && !"lockdown".equals(mode)) throw new IllegalArgumentException("policy mode");
             DevicePolicyManager policy = context.getSystemService(DevicePolicyManager.class);
-            if (!policy.isDeviceOwnerApp(context.getPackageName())) throw new SecurityException("test admin is not device owner");
+            if (!policy.isDeviceOwnerApp(context.getPackageName()) && !policy.isProfileOwnerApp(context.getPackageName())) throw new SecurityException("test admin is not device/profile owner");
             ComponentName admin = new ComponentName(context, RoutingPolicyReceiver.class);
             String vpn = "off".equals(mode) ? null : "org.amnezia.vpn";
             boolean lockdown = "lockdown".equals(mode);

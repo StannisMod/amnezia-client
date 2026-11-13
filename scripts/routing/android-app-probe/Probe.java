@@ -34,9 +34,9 @@ public final class Probe extends Instrumentation {
                     try {
                         JSONObject command = new JSONObject(new BufferedReader(new InputStreamReader(control.getInputStream(), StandardCharsets.UTF_8)).readLine());
                         String operation = command.getString("op"), tag = command.optString("tag", "old");
-                        if (operation.equals("open")) {
+                        if (operation.equals("open") || operation.equals("open-ip")) {
                             if (streams.containsKey(tag)) throw new IOException("stream already exists");
-                            InetAddress address = address();
+                            InetAddress address = operation.equals("open-ip") ? InetAddress.getByName(command.getString("address")) : address();
                             Socket stream = new Socket(); stream.setSoTimeout(8000);
                             try {
                                 stream.connect(new InetSocketAddress(address, 18081), 8000);
