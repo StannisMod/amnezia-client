@@ -13,6 +13,7 @@ import (
 type tcpPathProof struct {
 	owner              *FlowStack
 	generation, serial uint64
+	peer               netip.Addr
 	size               int
 	verifiedAt         time.Time
 }
@@ -49,7 +50,7 @@ func (s *FlowStack) verifyTCPPath(ctx context.Context, peer netip.Addr) (tcpPath
 	defer stop()
 	operation := &tcpPathOperation{cancel: stop}
 	s.state.Lock()
-	generation, size, closed := s.tcpPathGeneration, s.mtu, s.closed
+	generation, size, closed := s.tcpPathGeneration, s.pathMTULocked(peer), s.closed
 	if !closed {
 		s.tcpPathProbe = operation
 	}
@@ -75,14 +76,14 @@ func (s *FlowStack) verifyTCPPath(ctx context.Context, peer netip.Addr) (tcpPath
 	if s.closed {
 		return tcpPathProof{}, net.ErrClosed
 	}
-	if generation != s.tcpPathGeneration || size != s.mtu {
+	if generation != s.tcpPathGeneration || size != s.pathMTULocked(peer) {
 		return tcpPathProof{}, errors.New("TCP path changed during verification")
 	}
 	if s.tcpProofSerial == ^uint64(0) {
 		return tcpPathProof{}, errors.New("TCP path proof sequence exhausted")
 	}
 	s.tcpProofSerial++
-	return tcpPathProof{s, generation, s.tcpProofSerial, size, time.Now()}, nil
+	return tcpPathProof{owner: s, generation: generation, serial: s.tcpProofSerial, peer: peer, size: size, verifiedAt: time.Now()}, nil
 }
 
 // Validation must also be repeated when dispatching a probe. It never grants
@@ -93,7 +94,7 @@ func (s *FlowStack) validTCPPathProof(proof tcpPathProof, now time.Time) bool {
 	age := now.Sub(proof.verifiedAt)
 	return !s.closed && proof.owner == s && proof.serial != 0 &&
 		proof.serial == s.tcpProofSerial && proof.generation == s.tcpPathGeneration &&
-		proof.size == s.mtu && age >= 0 && age <= tcpPathProofLifetime
+		proof.peer.IsValid() && proof.size == s.pathMTULocked(proof.peer) && age >= 0 && age <= tcpPathProofLifetime
 }
 
 // Serialize dispatch with the whole rebind operation. Invalidate on both edges

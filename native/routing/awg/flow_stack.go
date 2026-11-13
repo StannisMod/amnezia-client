@@ -46,6 +46,9 @@ type FlowStack struct {
 	notify            *channel.NotificationHandle
 	mtu               int
 	link              *flowMTULink
+	mtu4              *atomic.Uint32
+	mtu6              *atomic.Uint32
+	has4, has6        bool
 	minimumMTU        int
 	maximumMTU        int
 	events            chan tun.Event
@@ -88,11 +91,14 @@ func NewFlowTUN(addresses []netip.Addr, mtu int) (tun.Device, *FlowStack, error)
 	if len(addresses) == 0 || !validFlowMTU(addresses, mtu) {
 		return nil, nil, errors.New("invalid AWG flow interface")
 	}
+	mtu4, mtu6 := &atomic.Uint32{}, &atomic.Uint32{}
+	mtu4.Store(uint32(mtu))
+	mtu6.Store(uint32(mtu))
 	ctx, cancel := context.WithCancel(context.Background())
-	s := &FlowStack{tcpPathWake: make(chan struct{}, 1), ctx: ctx, cancel: cancel, mtu: mtu, events: make(chan tun.Event, 1), packets: make(chan *buffer.View), done: make(chan struct{}),
+	s := &FlowStack{tcpPathWake: make(chan struct{}, 1), ctx: ctx, cancel: cancel, mtu: mtu, mtu4: mtu4, mtu6: mtu6, events: make(chan tun.Event, 1), packets: make(chan *buffer.View), done: make(chan struct{}),
 		outputWake: make(chan struct{}, 1), outputDone: make(chan struct{}),
 		endpoint: channel.New(1024, uint32(mtu), ""), stack: stack.New(stack.Options{
-			NetworkProtocols:   []stack.NetworkProtocolFactory{ipv4.NewProtocol, ipv6.NewProtocol},
+			NetworkProtocols:   []stack.NetworkProtocolFactory{flowMTUFactory(ipv4.NewProtocol, mtu4), flowMTUFactory(ipv6.NewProtocol, mtu6)},
 			TransportProtocols: []stack.TransportProtocolFactory{tcp.NewProtocol, udp.NewProtocol, icmp.NewProtocol4, icmp.NewProtocol6}, HandleLocal: true})}
 	go s.runOutput()
 	failed := true
@@ -140,6 +146,7 @@ func NewFlowTUN(addresses []netip.Addr, mtu int) (tun.Device, *FlowStack, error)
 	if has6 {
 		s.stack.AddRoute(tcpip.Route{Destination: header.IPv6EmptySubnet, NIC: 1})
 	}
+	s.has4, s.has6 = has4, has6
 	s.notify = s.endpoint.AddNotify(s)
 	s.events <- tun.EventUp
 	failed = false
@@ -168,6 +175,10 @@ func (s *FlowStack) MTU() (int, error) {
 // claim that existing TCP has learned a smaller PMTU; regression tests must
 // establish that separately before a controller enables this automatically.
 func (s *FlowStack) SetPathMTU(mtu int) error {
+	return s.setPathMTU(netip.Addr{}, mtu)
+}
+
+func (s *FlowStack) setPathMTU(peer netip.Addr, mtu int) error {
 	s.tcpPathGate.Lock()
 	defer s.tcpPathGate.Unlock()
 	s.state.Lock()
@@ -175,15 +186,34 @@ func (s *FlowStack) SetPathMTU(mtu int) error {
 	if s.closed {
 		return net.ErrClosed
 	}
-	if mtu < s.minimumMTU || mtu > s.maximumMTU {
+	minimum := s.minimumMTU
+	if peer.IsValid() {
+		if (peer.Is4() && !s.has4) || (peer.Is6() && !s.has6) {
+			return errors.New("MTU family has no local address")
+		}
+		minimum = minimumPathMTU(peer)
+	}
+	if mtu < minimum || mtu > s.maximumMTU {
 		return errors.New("path MTU outside profile or IP family limits")
 	}
-	if mtu == s.mtu {
+	if (peer.IsValid() && mtu == s.pathMTULocked(peer)) || (!peer.IsValid() && int(s.mtu4.Load()) == mtu && int(s.mtu6.Load()) == mtu) {
 		return nil
 	}
 	s.invalidateTCPPathLocked(false)
-	s.link.value.Store(uint32(mtu))
-	s.mtu = mtu
+	if !peer.IsValid() || peer.Is4() {
+		s.mtu4.Store(uint32(mtu))
+	}
+	if !peer.IsValid() || peer.Is6() {
+		s.mtu6.Store(uint32(mtu))
+	}
+	s.mtu = 0
+	if s.has4 {
+		s.mtu = int(s.mtu4.Load())
+	}
+	if s.has6 && int(s.mtu6.Load()) > s.mtu {
+		s.mtu = int(s.mtu6.Load())
+	}
+	s.link.value.Store(uint32(s.mtu))
 	// A verified MTU change is a reason to recheck recovering TCP promptly;
 	// it is never itself proof that a full-sized path has returned.
 	select {

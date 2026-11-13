@@ -1,6 +1,7 @@
 package awg
 
 import (
+	"net/netip"
 	"testing"
 	"time"
 )
@@ -39,7 +40,7 @@ func TestTCPProbeDispatchRotatesAndSharesBudgetAcrossProofs(t *testing.T) {
 	for id := uint64(1); id <= 100; id++ {
 		flow.tcpConnections[&flowTCPConn{owner: flow, id: id}] = struct{}{}
 	}
-	proof := tcpPathProof{owner: flow, serial: 1, size: 1280, verifiedAt: time.Now()}
+	proof := tcpPathProof{owner: flow, serial: 1, size: 1280, peer: netip.MustParseAddr("10.77.0.2"), verifiedAt: time.Now()}
 	if n := flow.dispatchTCPPathProof(proof); n != 0 {
 		t.Fatal("nil endpoint transmitted")
 	}

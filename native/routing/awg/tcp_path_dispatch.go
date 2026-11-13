@@ -54,6 +54,10 @@ func (s *FlowStack) dispatchTCPPathProof(proof tcpPathProof) (sent int) {
 		conn := connections[(start+offset)%len(connections)]
 		s.tcpProbeCursor = conn.id
 		s.tcpProbeBudget.attempts++
+		// A smaller IPv4 proof cannot authorize a full-sized IPv6 probe.
+		if !s.tcpPathProofFitsConnection(proof, conn) {
+			continue
+		}
 		probe, supported := any(conn.TCPConn).(interface{ ProbeVerifiedPath(uint64) bool })
 		if supported && probe.ProbeVerifiedPath(proof.serial) {
 			s.tcpProbeBudget.packets++
@@ -61,4 +65,10 @@ func (s *FlowStack) dispatchTCPPathProof(proof tcpPathProof) (sent int) {
 		}
 	}
 	return sent
+}
+
+func (s *FlowStack) tcpPathProofFitsConnection(proof tcpPathProof, conn *flowTCPConn) bool {
+	s.state.Lock()
+	defer s.state.Unlock()
+	return proof.size >= s.mtu || (conn.remote.IsValid() && proof.size >= s.pathMTULocked(conn.remote))
 }

@@ -27,7 +27,7 @@ func startPathMTUWorker(parent context.Context, flow *FlowStack, peer netip.Addr
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		return flow.SetPathMTU(mtu)
+		return flow.setFamilyPathMTU(peer, mtu)
 	}
 	go func() {
 		defer close(w.done)

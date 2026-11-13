@@ -38,7 +38,7 @@ func NewPathMTUController(flow *FlowStack, peer netip.Addr) (*PathMTUController,
 func (c *PathMTUController) Check(ctx context.Context) (PathMTUResult, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	before, _ := c.flow.MTU()
+	before := c.flow.pathMTU(c.peer)
 	result := PathMTUResult{State: "inconclusive", Before: before, After: before}
 	if _, ok := ctx.Deadline(); !ok {
 		return result, errors.New("MTU check requires a deadline")
@@ -66,7 +66,7 @@ func (c *PathMTUController) Check(ctx context.Context) (PathMTUResult, error) {
 	}
 	candidate := c.flow.maximumMTU
 	if !passes(candidate) {
-		minimum := c.flow.minimumMTU
+		minimum := minimumPathMTU(c.peer)
 		if !passes(minimum) || !passes(128) {
 			return inconclusive()
 		}
@@ -114,7 +114,7 @@ func (c *PathMTUController) Check(ctx context.Context) (PathMTUResult, error) {
 	}
 	apply := c.apply
 	if apply == nil {
-		apply = func(_ context.Context, mtu int) error { return c.flow.SetPathMTU(mtu) }
+		apply = func(_ context.Context, mtu int) error { return c.flow.setFamilyPathMTU(c.peer, mtu) }
 	}
 	if err := apply(ctx, candidate); err != nil {
 		reset()

@@ -2,6 +2,7 @@ package awg
 
 import (
 	"net"
+	"net/netip"
 	"sync"
 
 	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
@@ -13,6 +14,7 @@ type flowTCPConn struct {
 	*gonet.TCPConn
 	owner    *FlowStack
 	id       uint64
+	remote   netip.Addr
 	once     sync.Once
 	closeErr error
 }
@@ -28,6 +30,12 @@ func (c *flowTCPConn) Close() error {
 }
 
 func (s *FlowStack) trackTCP(conn *gonet.TCPConn) (net.Conn, error) {
+	var remoteAddress netip.Addr
+	if address, ok := conn.RemoteAddr().(*net.TCPAddr); ok {
+		if remote, valid := netip.AddrFromSlice(address.IP); valid {
+			remoteAddress = remote.Unmap()
+		}
+	}
 	s.state.Lock()
 	if s.closed {
 		s.state.Unlock()
@@ -38,7 +46,8 @@ func (s *FlowStack) trackTCP(conn *gonet.TCPConn) (net.Conn, error) {
 		s.tcpConnections = make(map[*flowTCPConn]struct{})
 	}
 	s.tcpNextID++
-	tracked := &flowTCPConn{TCPConn: conn, owner: s, id: s.tcpNextID}
+	tracked := &flowTCPConn{TCPConn: conn, owner: s, id: s.tcpNextID, remote: remoteAddress}
+
 	s.tcpConnections[tracked] = struct{}{}
 	s.state.Unlock()
 	return tracked, nil

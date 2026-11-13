@@ -56,12 +56,26 @@ func TestMaturePathMTURecoveryCompletionExcludesObserverPause(t *testing.T) {
 }
 
 func testLinkedUploadMTU(t *testing.T, matureWorker, earlyRepair bool, observerPause ...time.Duration) {
-	_, a, err := NewFlowTUN([]netip.Addr{netip.MustParseAddr("10.77.0.1")}, 1420)
+	testLinkedUploadMTUFamilies(t, matureWorker, earlyRepair, false, observerPause...)
+}
+
+func TestDualStackMatureIPv4MTUAndTCPRecoveryRetainTCP(t *testing.T) {
+	testLinkedUploadMTUFamilies(t, true, true, true)
+}
+
+func testLinkedUploadMTUFamilies(t *testing.T, matureWorker, earlyRepair, dual bool, observerPause ...time.Duration) {
+	aAddresses := []netip.Addr{netip.MustParseAddr("10.77.0.1")}
+	bAddresses := []netip.Addr{netip.MustParseAddr("10.77.0.2")}
+	if dual {
+		aAddresses = append(aAddresses, netip.MustParseAddr("fd77::1"))
+		bAddresses = append(bAddresses, netip.MustParseAddr("fd77::2"))
+	}
+	_, a, err := NewFlowTUN(aAddresses, 1420)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer a.Close()
-	_, b, err := NewFlowTUN([]netip.Addr{netip.MustParseAddr("10.77.0.2")}, 1420)
+	_, b, err := NewFlowTUN(bAddresses, 1420)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +116,7 @@ func testLinkedUploadMTU(t *testing.T, matureWorker, earlyRepair bool, observerP
 			lastTimeouts := uint64(0)
 			until := start.Add(9 * time.Second)
 			for time.Now().Before(until) {
-				mtu, _ := a.MTU()
+				mtu := a.pathMTU(netip.MustParseAddr("10.77.0.2"))
 				timeouts := a.stack.Stats().TCP.Timeouts.Value()
 				if timeouts != lastTimeouts {
 					t.Logf("TCP timeouts=%d at %s, link MTU=%d", timeouts, time.Since(start), mtu)

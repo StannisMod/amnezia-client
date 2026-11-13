@@ -141,7 +141,7 @@ func TestTCPRegistryPreservesHalfCloseAndOwnership(t *testing.T) {
 	}
 	// A live, healthy TCP stream must not be retransmitted merely because a
 	// path was verified. Exercise the dispatcher against the actual endpoint.
-	proof := tcpPathProof{owner: flow, generation: flow.tcpPathGeneration, serial: 1, size: 1280, verifiedAt: time.Now()}
+	proof := tcpPathProof{owner: flow, generation: flow.tcpPathGeneration, serial: 1, size: 1280, peer: netip.MustParseAddr("10.77.0.2"), verifiedAt: time.Now()}
 	flow.tcpProofSerial = 1
 	if n := flow.dispatchTCPPathProof(proof); n != 0 {
 		t.Fatal("healthy stream probed", n)
