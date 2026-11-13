@@ -24,6 +24,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--xray", type=Path, required=True)
     parser.add_argument("--work", type=Path, required=True)
+    parser.add_argument("--debug", action="store_true", help="verbose logs for synthetic fixture traffic only")
     args = parser.parse_args()
     assert Path("/.dockerenv").exists() and os.geteuid() == 0, "only an owned rooted Docker fixture is supported"
     links = json.loads(subprocess.check_output(["ip", "-j", "link", "show"], text=True))
@@ -97,9 +98,12 @@ def main():
         identity = str(uuid.uuid4())
         stream_options = {"network": "tcp", "security": "tls", "tlsSettings": {"certificates": [
             {"certificateFile": str(work/"server.crt"), "keyFile": str(work/"server.key")}]}}
-        server_config = {"log": {"loglevel": "warning"}, "inbounds": [{"listen": "127.0.0.1", "port": 38443,
+        server_config = {"log": {"loglevel": "debug" if args.debug else "warning"}, "inbounds": [{"listen": "127.0.0.1", "port": 38443,
             "protocol": "vless", "settings": {"decryption": "none", "clients": [{"id": identity}]}, "streamSettings": stream_options}],
-            "outbounds": [{"protocol": "freedom"}]}
+            # The pinned fork rejects private/documentation destinations by
+            # default. Authorize only these owned origins and test ports.
+            "outbounds": [{"protocol": "freedom", "settings": {"finalRules": [{"action": "allow",
+                "ip": [ip + ("/128" if ":" in ip else "/32") for ip in TARGETS], "port": "18081-18082"}]}}]}
         (work/"server.json").write_text(json.dumps(server_config))
         client_config = {"log": {"loglevel": "warning"}, "inbounds": [{"listen": "127.0.0.1", "port": 10808,
             "protocol": "socks", "settings": {"udp": True}}], "outbounds": [{"tag": "proxy", "protocol": "vless",
