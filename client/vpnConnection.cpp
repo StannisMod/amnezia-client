@@ -72,6 +72,13 @@ VpnConnection::VpnConnection(SecureServersRepository* serversRepository, SecureA
 
 VpnConnection::~VpnConnection()
 {
+    ++m_siteLookupGeneration;
+    m_ipv6SiteRefreshTimer.stop();
+    for (int id : std::exchange(m_siteLookupIds, {})) QHostInfo::abortHostLookup(id);
+    if (m_vpnProtocol) m_vpnProtocol->disconnect(this);
+    // A protocol destructor can wait for IPC; release it while our members
+    // still exist and any queued DNS callbacks have already been invalidated.
+    m_vpnProtocol.clear();
 }
 
 void VpnConnection::onBytesChanged(quint64 receivedBytes, quint64 sentBytes)
