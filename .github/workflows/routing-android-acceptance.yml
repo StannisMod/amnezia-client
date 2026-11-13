@@ -222,6 +222,7 @@ jobs:
             "$RUNNER_TEMP/android-fixture" --shared-ip 198.51.100.2 --endpoint-host 10.0.2.2 --transport "${{ matrix.transport }}" --persistent --bulk --native-dns-port 1053 --native-dot-port 8853 --config "$RUNNER_TEMP/fixture.json" --quic-ca "$RUNNER_TEMP/quic.der" > fixture-server.log 2>&1 & echo $! > "$RUNNER_TEMP/fixture.pid"
             for i in $(seq 1 30); do test -s "$RUNNER_TEMP/fixture.json" && break; sleep 1; done
             python3 scripts/routing/run_android_acceptance.py --apk "$FEATURE_APK" --fixture "$RUNNER_TEMP/fixture.json" --observer-ip 198.51.100.2 --quic-probe "$RUNNER_TEMP/android-traffic-probe" --quic-ca "$RUNNER_TEMP/quic.der" --work "$RUNNER_TEMP/android-acceptance" --cycles "${{ inputs.cycles || '100' }}" ${{ matrix.focus }} --apk-source-sha "$(python3 -c 'import json;print(json.load(open("tested-apk-source.json"))["head_sha"])')"
+            if [ "${{ matrix.api }}" = 29 ]; then python3 scripts/routing/run_android_work_profile.py --apk "$FEATURE_APK" --fixture "$RUNNER_TEMP/fixture.json" --observer-ip 198.51.100.2 --quic-probe "$RUNNER_TEMP/android-traffic-probe" --quic-ca "$RUNNER_TEMP/quic.der" --work "$RUNNER_TEMP/android-work-profile-acceptance" --apk-source-sha "$(python3 -c 'import json;print(json.load(open("tested-apk-source.json"))["head_sha"])')"; fi
       - name: Stop the local peer and remove ephemeral private configuration
         if: always()
         run: |
@@ -243,3 +244,5 @@ jobs:
             ${{ runner.temp }}/android-acceptance/connectivity.log
             ${{ runner.temp }}/android-acceptance/service-errors.log
             ${{ runner.temp }}/android-acceptance/failure-*.log
+            ${{ runner.temp }}/android-work-profile-acceptance/android-acceptance.json
+            ${{ runner.temp }}/android-work-profile-acceptance/*.log
