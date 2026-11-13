@@ -4,12 +4,24 @@
 #include "../../core/utils/domainRoutingConfig.h"
 #include "../../core/utils/splitDnsConfig.h"
 #include "../../core/utils/proxyIpv6Routes.h"
+#include "../../core/utils/openVpnIpv6.h"
 #include "../../platforms/macos/daemon/macproxyipv6.h"
 #include "../../platforms/windows/daemon/windowsproxyipv6.h"
 
 class DomainRoutingConfigTest : public QObject {
     Q_OBJECT
 private slots:
+    void openVpnCapabilityRequiresAnActiveTunnel()
+    {
+        const QString config = "server-ipv6 fd6e:a81b:704f:1101::/64\n";
+        const QString row = "fd6ea81b704f11010000000000000001 00000003 40 00 80 tun0\n";
+        QVERIFY(amnezia::openVpnIpv6::activeServerTunnel(config, row));
+        QVERIFY(!amnezia::openVpnIpv6::activeServerTunnel("# " + config, row));
+        QVERIFY(!amnezia::openVpnIpv6::activeServerTunnel(config, QString(row).replace("tun0", "eth0")));
+        QVERIFY(!amnezia::openVpnIpv6::activeServerTunnel(config, QString(row).replace(" 80 ", " 40 ")));
+        QVERIFY(!amnezia::openVpnIpv6::activeServerTunnel(config, QString(row).replace("fd6e", "fd99")));
+        QVERIFY(!amnezia::openVpnIpv6::activeServerTunnel(config, ""));
+    }
     void windowsIpv6ChangesAreTemporaryAndOwned()
     {
         QList<QStringList> calls;

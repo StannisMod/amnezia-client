@@ -1,6 +1,7 @@
 #include "openVpnProtocolConfig.h"
 
 #include <QJsonDocument>
+#include "core/utils/openVpnIpv6.h"
 
 #include "../../../core/utils/protocolEnum.h"
 #include "../../../core/protocols/protocolUtils.h"
@@ -101,6 +102,7 @@ QJsonObject OpenVpnClientConfig::toJson() const
         obj[configKey::clientId] = clientId;
     }
     obj[configKey::blockOutsideDns] = blockOutsideDns;
+    obj["ipv6Tunnel"] = ipv6Tunnel;
     
     return obj;
 }
@@ -112,6 +114,8 @@ OpenVpnClientConfig OpenVpnClientConfig::fromJson(const QJsonObject& json)
     config.nativeConfig = json.value(configKey::config).toString();
     config.clientId = json.value(configKey::clientId).toString();
     config.blockOutsideDns = json.value(configKey::blockOutsideDns).toBool(false);
+    config.ipv6Tunnel = json.contains("ipv6Tunnel") ? json.value("ipv6Tunnel").toBool(false)
+        : openVpnIpv6::captureBlock().match(config.nativeConfig).hasMatch();
     
     return config;
 }

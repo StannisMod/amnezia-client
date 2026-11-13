@@ -8,6 +8,7 @@
 #include "core/utils/constants/configKeys.h"
 #include "core/utils/payloadSender.h"
 #include "core/utils/utilities.h"
+#include "core/utils/networkUtilities.h"
 #include "core/utils/serverConfigUtils.h"
 #include "version.h"
 #include "core/utils/containerEnum.h"
@@ -287,6 +288,16 @@ QJsonObject ConnectionController::createConnectionConfiguration(const QPair<QStr
             m_appSettingsRepository->routeMode()
         }
     };
+
+    if (proto == Proto::OpenVpn && connectionSettings.splitTunneling.isSitesSplitTunnelingEnabled) {
+        const auto sites = m_appSettingsRepository->vpnSites(connectionSettings.splitTunneling.routeMode);
+        for (auto it = sites.cbegin(); it != sites.cend(); ++it) {
+            if (NetworkUtilities::checkIpSubnetFormat(it.key())) connectionSettings.splitTunneling.siteRoutes << it.key();
+            else for (const auto &address : SecureAppSettingsRepository::siteIpList(it.value()))
+                if (NetworkUtilities::checkIpSubnetFormat(address)) connectionSettings.splitTunneling.siteRoutes << address;
+        }
+        connectionSettings.splitTunneling.siteRoutes.removeDuplicates();
+    }
 
     auto configurator = ConfiguratorBase::create(proto, nullptr);
     ProtocolConfig processedConfig = configurator->processConfigWithLocalSettings(connectionSettings,

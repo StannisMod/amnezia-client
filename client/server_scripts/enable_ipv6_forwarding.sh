@@ -19,6 +19,13 @@ amnezia_enable_ipv6() {
     amnezia_v6_default=$(ip -6 route show default) || return 1
     amnezia_v6_egress=$(printf '%s\n' "$amnezia_v6_default" | awk '{for(i=1;i<NF;i++) if($i=="dev"){print $(i+1);exit}}')
     if [ -z "$amnezia_v6_egress" ] || [ "$amnezia_v6_egress" = "$amnezia_v6_tunnel" ]; then
+        # OpenVPN may allocate an inner IPv6 address on an IPv4-only server.
+        # Let the kernel return ICMPv6 no-route instead of silently dropping it.
+        if [ "$amnezia_v6_tunnel" = tun0 ]; then
+            sysctl -w net.ipv6.conf.all.forwarding=1 >/dev/null || return 1
+            amnezia_ipv6_rule filter INPUT -i tun0 -j ACCEPT || return 1
+            amnezia_ipv6_rule filter OUTPUT -o tun0 -j ACCEPT || return 1
+        fi
         echo 'AMNEZIA_IPV6_FORWARDING_STATUS=no-egress-route' >&2
         return 1
     fi

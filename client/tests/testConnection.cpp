@@ -4,6 +4,7 @@
 #include <QUuid>
 #include <QSignalSpy>
 #include <QTest>
+#include <QHostAddress>
 
 #include "utils/testCoreController.h"
 #include "utils/testUtils.h"
@@ -11,6 +12,7 @@
 #include "secureQSettings.h"
 #include "core/utils/utilities.h"
 #include "version.h"
+#include "core/configurators/openVpnConfigurator.h"
 
 using namespace amnezia;
 using namespace amnezia::test;
@@ -24,6 +26,52 @@ private:
     SecureQSettings* m_settings;
 
 private slots:
+    void openVpnIpv6ProfileAndExport()
+    {
+        OpenVpnProtocolConfig profile;
+        OpenVpnClientConfig client;
+        client.nativeConfig = "client\nremote 198.51.100.1 1194\n";
+        client.ipv6Tunnel = true;
+        profile.setClientConfig(client);
+        profile = OpenVpnProtocolConfig::fromJson(profile.toJson());
+        QVERIFY(profile.clientConfig->ipv6Tunnel);
+        OpenVpnConfigurator configurator(nullptr);
+        ConnectionSettings settings{{"1.1.1.1", "8.8.8.8"}, false, {false, RouteMode::VpnAllSites, {}}};
+        const auto captured = [](const QString &config, const QString &ip) {
+            for (const auto &line : config.split('\n')) {
+                const auto fields = line.simplified().split(' ');
+                if (fields.size() >= 2 && fields[0] == "route-ipv6"
+                    && QHostAddress(ip).isInSubnet(QHostAddress::parseSubnet(fields[1]))) return true;
+            }
+            return false;
+        };
+        auto config = configurator.processConfigWithLocalSettings(settings, profile).nativeConfig();
+        QVERIFY(!config.contains("block-ipv6"));
+        QVERIFY(captured(config, "fd12::1"));
+        QVERIFY(captured(config, "64:ff9b::c000:201"));
+        config = configurator.processConfigWithExportSettings({settings.dns}, profile).nativeConfig();
+        QVERIFY(!config.contains("block-ipv6"));
+        QVERIFY(captured(config, "2001:db8::1"));
+        QVERIFY(captured(config, "fd12::1"));
+        const auto exportedClient = OpenVpnClientConfig::fromJson({{configKey::config, config}});
+        QVERIFY(exportedClient.ipv6Tunnel);
+        profile.setClientConfig(exportedClient);
+        settings.splitTunneling = {true, RouteMode::VpnOnlyForwardSites, {"fd00::/8", "192.0.2.0/24"}};
+        config = configurator.processConfigWithLocalSettings(settings, profile).nativeConfig();
+        QVERIFY(captured(config, "fd12::1"));
+        QVERIFY(!captured(config, "2001:db8::1"));
+        settings.splitTunneling.routeMode = RouteMode::VpnAllExceptSites;
+        config = configurator.processConfigWithLocalSettings(settings, profile).nativeConfig();
+        QVERIFY(!captured(config, "fd12::1"));
+        QVERIFY(captured(config, "2001:db8::1"));
+        QVERIFY(!config.contains("redirect-gateway ipv6"));
+        client.ipv6Tunnel = false;
+        profile.setClientConfig(client);
+        settings.splitTunneling.isSitesSplitTunnelingEnabled = false;
+        QVERIFY(configurator.processConfigWithLocalSettings(settings, profile).nativeConfig().contains("block-ipv6"));
+        QVERIFY(configurator.processConfigWithExportSettings({settings.dns}, profile).nativeConfig().contains("block-ipv6"));
+        QVERIFY(!OpenVpnClientConfig::fromJson({}).ipv6Tunnel);
+    }
     void initTestCase() {
         QString testOrg = "AmneziaVPN-Test-" + QUuid::createUuid().toString();
         m_settings = new SecureQSettings(testOrg, "amnezia-client", nullptr, false);

@@ -2,6 +2,7 @@
 #define COMMONSTRUCTS_H
 
 #include <QString>
+#include <QStringList>
 #include "core/utils/routeModes.h"
 
 namespace amnezia
@@ -43,6 +44,7 @@ namespace amnezia
     {
         bool isSitesSplitTunnelingEnabled;
         RouteMode routeMode;
+        QStringList siteRoutes;
     };
 
     struct ConnectionSettings
