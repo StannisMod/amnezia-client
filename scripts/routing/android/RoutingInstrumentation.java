@@ -433,7 +433,12 @@ public final class RoutingInstrumentation extends Instrumentation {
         for(int i=0;i<targets.length();i++) {
             String address=targets.getString(i);
             progress("XRAY_IPV6_CHECK "+address);
-            require("XRAY".equals(tcp(InetAddress.getByName(address))),"Xray TCP failed for "+address);
+            try(Socket connection=new Socket()) {
+                connection.connect(new InetSocketAddress(InetAddress.getByName(address),18081),4000);connection.setSoTimeout(4000);
+                connection.getOutputStream().write("route-proof\n".getBytes(StandardCharsets.US_ASCII));connection.getOutputStream().flush();
+                String answer=new BufferedReader(new InputStreamReader(connection.getInputStream(),StandardCharsets.US_ASCII)).readLine();
+                require("XRAY".equals(answer),"Xray TCP failed for "+address);
+            }
             require("XRAY:route-proof".equals(udp(InetAddress.getByName(address))),"Xray UDP failed for "+address);
         }
         disconnect();

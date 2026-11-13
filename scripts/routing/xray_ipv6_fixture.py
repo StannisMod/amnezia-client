@@ -44,6 +44,15 @@ def main():
             counters[kind][address] = counters[kind].get(address, 0) + 1
     def stream(connection):
         with connection:
+            connection.settimeout(5)
+            request = b""
+            while len(request) < 128 and not request.endswith(b"\n"):
+                part = connection.recv(128-len(request))
+                if not part:
+                    return
+                request += part
+            if request != b"route-proof\n":
+                return
             observe("tcp", connection.getsockname()[0])
             connection.sendall(b"XRAY\n")
     def accept(server):
