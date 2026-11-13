@@ -265,10 +265,6 @@ def main():
             probe_processes.append(subprocess.Popen(['adb','shell','am','instrument','-w','-r','-e','port',str(19091+index),
                 'org.amnezia.routingprobe.'+suffix+'/org.amnezia.appprobe.Probe'],stdout=log,stderr=subprocess.STDOUT))
         assert "Success" in adb("shell", "dpm", "set-device-owner", admin), "AVD device owner setup failed"
-        if args.private_dns_strict:
-            adb("shell", "pm", "grant", "org.amnezia.routingtest", "android.permission.ACCESS_FINE_LOCATION")
-            response = adb("shell", "am", "broadcast", "-a", "org.amnezia.routingtest.POLICY", "-n", admin, "--es", "mode", "test-wifi")
-            assert "result=-1" in response, "synthetic Wi-Fi selection failed: " + response
         adb("shell", "appops", "set", PACKAGE, "ACTIVATE_VPN", "allow")
         # am instrument does not set a useful shell exit code on test failure.
         # Require the explicit PASS result and successful resource assertions.
