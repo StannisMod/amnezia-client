@@ -167,6 +167,7 @@ private slots:
         QVERIFY(updates.needsRefreshBeforeConnect(id));
         ServersController serverController(&servers,&app);ConnectionUiController ui(&connection,&serverController);ui.setConnectionUpdatesController(&updates);
         QSignalSpy attempts(&connection,&ConnectionController::openConnectionRequested);
+        QSignalSpy stops(&connection,&ConnectionController::closeConnectionRequested);
         if(scenario=="canceled") {ui.openConnection();ui.closeConnection();}
         else updates.refreshBeforeConnect(id,[&]{++continuations;});
         QTRY_COMPARE(calls.load(),1);QVERIFY(correctArguments.load());
@@ -174,7 +175,7 @@ private slots:
         if(scenario=="edited") {expected["description"]="changed while IPv6 was prepared";servers.editServer(id,expected,serverConfigUtils::SelfHostedAdmin);}
         if(scenario=="late-success") {QTRY_COMPARE_WITH_TIMEOUT(continuations,1,2500);QVERIFY(updates.busy());}
         gate.release();QTRY_VERIFY(!updates.busy());
-        if(scenario=="canceled") QCOMPARE(attempts.count(),0);else QCOMPARE(continuations,1);
+        if(scenario=="canceled") {QCOMPARE(attempts.count(),0);QCOMPARE(stops.count(),0);} else QCOMPARE(continuations,1);
         QCOMPARE(*servers.serverJsonById(id),expected);
         QCOMPARE(updates.needsRefreshBeforeConnect(id),scenario=="failure"||scenario=="edited");
         settings.clearSettings();
