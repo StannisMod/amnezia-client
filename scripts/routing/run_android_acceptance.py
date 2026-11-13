@@ -231,6 +231,12 @@ def main():
               "protocol": protocol, "cycles_requested": args.cycles,
               "retained_resources": {}, "native_vpn_acceptance": "FAIL", "resources": {},
               "not_run": ["physical device", "Wi-Fi/cellular handover", "Android 9 lockdown query restriction", "physical-device policy behavior", "performance parity"]}
+    # QEMU exposes its DNS proxy at 10.0.2.3, but does not forward TCP/853.
+    # Redirect only the disposable guest's DoT to the unprivileged local fixture.
+    private_dns_rule = ["OUTPUT", "-d", "10.0.2.3", "-p", "tcp", "--dport", "853",
+                        "-m", "comment", "--comment", "amnezia-private-dns-acceptance",
+                        "-j", "DNAT", "--to-destination", "10.0.2.2:8853"]
+    private_dns_redirected = False
     admin = "org.amnezia.routingtest/.RoutingPolicyReceiver"
     try:
         # Only the emulator was accepted above. Remove stale test-only device
@@ -238,6 +244,9 @@ def main():
         subprocess.run(['adb', 'shell', 'dpm', 'remove-active-admin', admin], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
         for package in ('org.amnezia.routingtest', PACKAGE, 'org.amnezia.routingprobe.a', 'org.amnezia.routingprobe.b'):
             subprocess.run(['adb', 'uninstall', package], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
+        if args.private_dns_opportunistic:
+            adb("shell", "iptables", "-t", "nat", "-A", *private_dns_rule)
+            private_dns_redirected = True
         adb("shell", "settings", "put", "global", "private_dns_mode", "opportunistic" if args.private_dns_opportunistic else "off")
         adb("install", "-r", "-t", str(target))
         adb("install", "-r", "-t", str(instrument))
@@ -488,6 +497,8 @@ def main():
         nft_command('delete', 'table', 'inet', fault_table, check=False)
         if args.private_dns_opportunistic:
             adb("shell", "settings", "put", "global", "private_dns_mode", "off")
+        if private_dns_redirected:
+            adb("shell", "iptables", "-t", "nat", "-D", *private_dns_rule)
         try: adb('shell', 'svc', 'wifi', 'enable')
         except subprocess.CalledProcessError: pass
         try:

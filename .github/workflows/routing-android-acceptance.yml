@@ -62,8 +62,8 @@ jobs:
         include:
           - {transport: awg, api: 35, focus: '', check_name: 'actual-apk-service (awg)'}
           - {transport: wireguard, api: 35, focus: '', check_name: 'actual-apk-service (wireguard)'}
-          - {transport: awg, api: 29, focus: '--app-policy-only --package-lifecycle', check_name: 'actual-apk-service (awg, API29 app policy)'}
-          - {transport: wireguard, api: 29, focus: '--app-policy-only --package-lifecycle', check_name: 'actual-apk-service (wireguard, API29 app policy)'}
+          - {transport: awg, api: 29, focus: '--app-policy-only --package-lifecycle --private-dns-opportunistic', check_name: 'actual-apk-service (awg, API29 app policy)'}
+          - {transport: wireguard, api: 29, focus: '--app-policy-only --package-lifecycle --private-dns-opportunistic', check_name: 'actual-apk-service (wireguard, API29 app policy)'}
           - {transport: awg, api: 28, focus: '--api28-compat-only', check_name: 'actual-apk-service (awg, API28 compatibility)'}
           - {transport: wireguard, api: 28, focus: '--api28-compat-only', check_name: 'actual-apk-service (wireguard, API28 compatibility)'}
     steps:
@@ -219,7 +219,7 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           script: |
             sudo ip addr add 198.51.100.2/32 dev lo
-            "$RUNNER_TEMP/android-fixture" --shared-ip 198.51.100.2 --endpoint-host 10.0.2.2 --transport "${{ matrix.transport }}" --persistent --bulk --native-dns-port 1053 --config "$RUNNER_TEMP/fixture.json" --quic-ca "$RUNNER_TEMP/quic.der" > fixture-server.log 2>&1 & echo $! > "$RUNNER_TEMP/fixture.pid"
+            "$RUNNER_TEMP/android-fixture" --shared-ip 198.51.100.2 --endpoint-host 10.0.2.2 --transport "${{ matrix.transport }}" --persistent --bulk --native-dns-port 1053 --native-dot-port 8853 --config "$RUNNER_TEMP/fixture.json" --quic-ca "$RUNNER_TEMP/quic.der" > fixture-server.log 2>&1 & echo $! > "$RUNNER_TEMP/fixture.pid"
             for i in $(seq 1 30); do test -s "$RUNNER_TEMP/fixture.json" && break; sleep 1; done
             python3 scripts/routing/run_android_acceptance.py --apk "$FEATURE_APK" --fixture "$RUNNER_TEMP/fixture.json" --observer-ip 198.51.100.2 --quic-probe "$RUNNER_TEMP/android-traffic-probe" --quic-ca "$RUNNER_TEMP/quic.der" --work "$RUNNER_TEMP/android-acceptance" --cycles "${{ inputs.cycles || '100' }}" ${{ matrix.focus }} --apk-source-sha "$(python3 -c 'import json;print(json.load(open("tested-apk-source.json"))["head_sha"])')"
       - name: Stop the local peer and remove ephemeral private configuration
