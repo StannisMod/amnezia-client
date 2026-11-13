@@ -715,7 +715,7 @@ public final class RoutingInstrumentation extends Instrumentation {
                 require(state==DISCONNECTED && !serviceError,"package event re-enabled manually disconnected VPN");
                 progress("PACKAGE_LIFECYCLE_DISCONNECTED "+new JSONObject().put("stayed_disconnected",true));
             }
-        } catch (Exception error) {
+        } catch (Exception | AssertionError error) {
             // Preserve the live failure before this method disconnects in finally.
             applicationFailureDiagnostics = new JSONObject();
             try { applicationFailureDiagnostics = connectionDiagnostics(); } catch (Exception ignored) {}
