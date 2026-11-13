@@ -44,7 +44,11 @@ abstract class Protocol {
     }
     open fun updateApplicationPolicy(policy: JSONObject, expectedSession: Long): JSONObject =
         throw VpnException("Live application routing is unsupported by this protocol")
+    /** Returns true only when changed OS application membership requires a new VPN session. */
     open fun refreshApplicationPackages(packageName: String, refreshCapture: Boolean, vpnBuilder: Builder, expectedSession: Long): Boolean = false
+    open fun restartApplicationCapture(vpnBuilder: Builder, protect: (Int) -> Boolean, expectedSession: Long) {
+        throw VpnException("Application capture restart is unsupported by this protocol")
+    }
     open fun connectionDiagnostics(): JSONObject? = null
     open val preservesConnections: Boolean get() = false
     open fun refreshVpn(vpnBuilder: Builder, protect: (Int) -> Boolean, force: Boolean) = reconnectVpn(vpnBuilder, protect)

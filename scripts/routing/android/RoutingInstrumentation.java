@@ -588,23 +588,20 @@ public final class RoutingInstrumentation extends Instrumentation {
                 require(identity.getInt("uid")!=b.getInt("uid"),"reinstall did not exercise UID change");
                 long refreshDeadline=SystemClock.elapsedRealtime()+20000;
                 while(connectionDiagnostics().optLong("capture_refresh_count",0)<=captureGeneration && !serviceError && SystemClock.elapsedRealtime()<refreshDeadline)SystemClock.sleep(100);
-                require(connectionDiagnostics().optLong("capture_refresh_count",0)>captureGeneration,"package capture handover was not acknowledged");
+                require(connectionDiagnostics().optLong("capture_refresh_count",0)>captureGeneration,"automatic package reconnect was not acknowledged");
                 retainedCheckpoint("package_refreshed");
                 JSONObject capture=connectionDiagnostics();
                 progress("PACKAGE_LIFECYCLE_CAPTURE "+new JSONObject().put("session_id",capture.optLong("session_id",-1)).put("capture_refresh_count",capture.optLong("capture_refresh_count",-1)));
-                // Observe both contracts before asserting either: a broken old
-                // stream must not conceal that the new UID escaped VPN capture.
+                // UID replacement explicitly permits restarting the VPN. The
+                // ordinary live-policy checks above still require retained TCP.
                 JSONObject reinstalled=appProbe(1,"open","reinstalled",false);
                 JSONObject reinstalledDns=appProbe(1,"txt","reinstalled",false);
-                JSONObject kept=appProbe(0,"echo","old",false);
-                progress("PACKAGE_LIFECYCLE_OBSERVATIONS "+new JSONObject().put("new_tcp",reinstalled).put("new_dns",reinstalledDns).put("old_tcp",kept));
-                require(kept.getBoolean("ok"),"reinstall broke unaffected app TCP: "+kept.optString("error"));
-                require(kept.getInt("local_port")==a.getInt("local_port") && kept.getString("route").equals("VPN"),"reinstall broke unaffected app TCP");
+                progress("PACKAGE_LIFECYCLE_OBSERVATIONS "+new JSONObject().put("new_tcp",reinstalled).put("new_dns",reinstalledDns));
                 require(reinstalled.getBoolean("ok") && reinstalled.optString("route").equals("VPN"),"reinstalled always-VPN app escaped its policy");
                 require(reinstalledDns.getBoolean("ok") && reinstalledDns.optString("answer").equals("VPN"),"reinstalled app lost VPN DNS context");
-                require(connectionDiagnostics().getLong("session_id")==session && !retainedStateChanged,"package refresh replaced/disconnected the core");
-                progress("PACKAGE_LIFECYCLE_RESULT "+new JSONObject().put("uid_changed",true).put("unaffected_tcp_preserved",true).put("vpn_tcp_dns",true).put("same_session",true));
-                pass("package reinstall with a new UID retains VPN capture and unaffected app TCP");
+                require(connectionDiagnostics().getLong("session_id")!=session,"UID replacement did not restart the VPN session");
+                progress("PACKAGE_LIFECYCLE_RESULT "+new JSONObject().put("uid_changed",true).put("automatic_reconnect",true).put("vpn_tcp_dns",true).put("same_session",false));
+                pass("package reinstall with a new UID automatically reconnects and restores VPN TCP/DNS");
             }
         } finally {
             retainedCheck=false;

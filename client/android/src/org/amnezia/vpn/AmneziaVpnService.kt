@@ -372,7 +372,13 @@ open class AmneziaVpnService : VpnService() {
                     try {
                         applicationPolicyMutex.withLock {
                             if (!isConnected || vpnProto?.existingProtocol!==active || active.connectionDiagnostics()?.optLong("session_id", -1)!=session) return@launch
-                            withContext(Dispatchers.IO) { active.refreshApplicationPackages(request.packageName, request.refreshCapture, Builder(), session) }
+                            val restart = withContext(Dispatchers.IO) {
+                                active.refreshApplicationPackages(request.packageName, request.refreshCapture, Builder(), session)
+                            }
+                            // Recheck on the main thread after resolving packages:
+                            // a manual disconnect or a different session wins.
+                            if (!isConnected || vpnProto?.existingProtocol !== active || active.connectionDiagnostics()?.optLong("session_id", -1) != session) return@launch
+                            if (restart) active.restartApplicationCapture(Builder(), ::protect, session)
                         }
                         attempt=0
                     } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
@@ -396,6 +402,9 @@ open class AmneziaVpnService : VpnService() {
                 override fun onReceive(context: Context?, intent: Intent?) {
                     val event=intent ?: return
                     val name=event.data?.schemeSpecificPart ?: return
+                    // The temporary removal in an in-place APK update is not
+                    // a membership change. Resolve once the replacement exists.
+                    if (event.action == Intent.ACTION_PACKAGE_REMOVED && event.getBooleanExtra(Intent.EXTRA_REPLACING, false)) return
                     val capture=event.action != Intent.ACTION_PACKAGE_REMOVED
                     refreshApplicationPackage(name, capture)
                 }

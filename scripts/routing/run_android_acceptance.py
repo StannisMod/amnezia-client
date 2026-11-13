@@ -393,7 +393,7 @@ def main():
             assert 'INSTRUMENTATION_RESULT: routing_result=PASS_APP_POLICY_ONLY' in output
             app_policy_metrics(output,report)
             if args.package_lifecycle:
-                assert report.get('package_lifecycle') == {'uid_changed':True,'unaffected_tcp_preserved':True,'vpn_tcp_dns':True,'same_session':True}
+                assert report.get('package_lifecycle') == {'uid_changed':True,'automatic_reconnect':True,'vpn_tcp_dns':True,'same_session':False}
             report['native_vpn_acceptance']='NOT_RUN_PACKAGE_LIFECYCLE_ONLY' if args.package_lifecycle else 'NOT_RUN_APP_POLICY_ONLY'
             return
         if args.upload_mtu_only:

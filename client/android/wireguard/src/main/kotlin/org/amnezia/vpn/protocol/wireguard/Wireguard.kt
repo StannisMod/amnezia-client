@@ -126,16 +126,18 @@ open class Wireguard : Protocol() {
         require(RoutingBackend.updateAndroidApplications(routedHandle, resolved.toString().toByteArray(Charsets.UTF_8))) { "Application UID/DNS refresh is unavailable" }
         val selected=config.optJSONArray("splitTunnelApps") ?: JSONArray()
         val currentUids=selectedApplicationUids(config)
-        if (refreshCapture && currentUids!=capturedApplicationUids && (0 until selected.length()).any { selected.getString(it)==packageName }) {
-            buildVpnInterface(routedCapture(config), vpnBuilder)
-            vpnBuilder.establish().use { descriptor ->
-                require(descriptor != null) { "Cannot refresh Android application capture" }
-                require(RoutingBackend.replaceCapture(routedHandle, descriptor.detachFd())) { "Cannot hand over Android application capture" }
-            }
-            capturedApplicationUids=currentUids
-            ++captureRefreshCount
-        }
-        true
+        // Android's include/exclude list belongs to the established VPN. A new
+        // UID needs a normal session restart; same-UID updates only refresh DNS.
+        refreshCapture && currentUids != capturedApplicationUids &&
+            (0 until selected.length()).any { selected.getString(it) == packageName }
+    }
+
+    override fun restartApplicationCapture(vpnBuilder: Builder, protect: (Int) -> Boolean, expectedSession: Long) = synchronized(endpointLock) {
+        require(routedHandle > 0 && routedHandle == expectedSession) { "VPN session changed" }
+        val config = routedConfig?.let { JSONObject(it.toString()) } ?: error("No routed profile")
+        val refreshCount = captureRefreshCount + 1
+        startRouted(config, vpnBuilder, protect)
+        captureRefreshCount = refreshCount
     }
 
     override val preservesConnections: Boolean get() = routedHandle > 0
