@@ -533,6 +533,15 @@ public final class RoutingInstrumentation extends Instrumentation {
             require(applicationPolicyReply==request && applicationPolicyAccepted && !serviceError,"live application update was not acknowledged: "+applicationPolicyError);
         }
     }
+    private void packageLifecycleCheckpoint(String operation) throws Exception {
+        File ready=new File(getTargetContext().getFilesDir(),"routing-package-"+operation+".ready");
+        ready.delete();progress("PACKAGE_LIFECYCLE_UPDATE_B "+operation);
+        long deadline=SystemClock.elapsedRealtime()+60000;
+        while(!ready.exists() && SystemClock.elapsedRealtime()<deadline)SystemClock.sleep(100);
+        require(ready.exists(),"package update driver did not acknowledge: "+operation);ready.delete();
+        awaitAppProbe(1);
+    }
+
     private void perApplicationPolicy() throws Exception {
         awaitAppProbe(0);awaitAppProbe(1);
         JSONObject config=primaryConfiguration();
@@ -577,6 +586,16 @@ public final class RoutingInstrumentation extends Instrumentation {
                 .put("same_session",true).put("same_old_ports",true).put("dns_contexts_switched",true));
             if (packageLifecycle) {
                 long captureGeneration=connectionDiagnostics().optLong("capture_refresh_count",0);
+                packageLifecycleCheckpoint("same-uid");
+                JSONObject updated=appProbe(1,"ready","updated");
+                require(updated.getInt("uid")==b.getInt("uid"),"in-place update unexpectedly changed UID");
+                // Allow already delivered package broadcasts to finish; no
+                // network outage or reconnection is needed for an unchanged UID.
+                SystemClock.sleep(2000);
+                require(connectionDiagnostics().getLong("session_id")==session && connectionDiagnostics().optLong("capture_refresh_count",0)==captureGeneration && !retainedStateChanged,"same-UID update restarted VPN");
+                JSONObject unchanged=appProbe(0,"echo","old");
+                require(unchanged.getInt("local_port")==a.getInt("local_port") && unchanged.getString("route").equals("VPN"),"same-UID update broke another app TCP");
+                progress("PACKAGE_LIFECYCLE_SAME_UID "+new JSONObject().put("uid",updated.getInt("uid")).put("same_session",true).put("other_tcp_preserved",true));
                 File ready=new File(getTargetContext().getFilesDir(),"routing-package-reinstalled.ready");
                 ready.delete();progress("PACKAGE_LIFECYCLE_REINSTALL_B");
                 long deadline=SystemClock.elapsedRealtime()+60000;
@@ -602,11 +621,17 @@ public final class RoutingInstrumentation extends Instrumentation {
                 require(connectionDiagnostics().getLong("session_id")!=session,"UID replacement did not restart the VPN session");
                 progress("PACKAGE_LIFECYCLE_RESULT "+new JSONObject().put("uid_changed",true).put("automatic_reconnect",true).put("vpn_tcp_dns",true).put("same_session",false));
                 pass("package reinstall with a new UID automatically reconnects and restores VPN TCP/DNS");
+                retainedCheck=false;
+                disconnect();
+                packageLifecycleCheckpoint("disconnected");
+                SystemClock.sleep(2000);
+                require(state==DISCONNECTED && !serviceError,"package event re-enabled manually disconnected VPN");
+                progress("PACKAGE_LIFECYCLE_DISCONNECTED "+new JSONObject().put("stayed_disconnected",true));
             }
         } finally {
             retainedCheck=false;
             for(int i=0;i<2;i++)try{appProbe(i,"stop","old");}catch(Exception ignored){}
-            disconnect();
+            if(state!=DISCONNECTED) disconnect();
         }
         pass("two real Android UIDs switch new TCP/UDP/DNS policy while original TCP and shared FakeIP survive");
     }

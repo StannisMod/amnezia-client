@@ -262,12 +262,26 @@ def main():
             started = time.monotonic(); output = []
             for line in process.stdout:
                 print(line, end="", flush=True); log.write(line); log.flush(); output.append(line)
+                if 'PACKAGE_LIFECYCLE_UPDATE_B ' in line:
+                    assert args.package_lifecycle and args.app_policy_only, 'unexpected package update request'
+                    operation=line.strip().split('PACKAGE_LIFECYCLE_UPDATE_B ',1)[1]
+                    assert operation in ('same-uid','disconnected')
+                    package='org.amnezia.routingprobe.b'
+                    assert 'Success' in adb('install','-r','-t',str(probe_apks[1]))
+                    probe_processes[-1].wait(timeout=15)
+                    lifecycle_log=(work/('app-probe-b-'+operation+'.log')).open('w');probe_logs.append(lifecycle_log)
+                    probe_processes.append(subprocess.Popen(['adb','shell','am','instrument','-w','-r','-e','port','19092',package+'/org.amnezia.appprobe.Probe'],stdout=lifecycle_log,stderr=subprocess.STDOUT))
+                    adb('shell','touch',f'/data/user/0/{PACKAGE}/files/routing-package-{operation}.ready')
+                if 'PACKAGE_LIFECYCLE_SAME_UID ' in line:
+                    report['package_update_same_uid']=json.loads(line.strip().split('PACKAGE_LIFECYCLE_SAME_UID ',1)[1])
+                if 'PACKAGE_LIFECYCLE_DISCONNECTED ' in line:
+                    report['package_update_disconnected']=json.loads(line.strip().split('PACKAGE_LIFECYCLE_DISCONNECTED ',1)[1])
                 if 'PACKAGE_LIFECYCLE_REINSTALL_B' in line:
                     assert args.package_lifecycle and args.app_policy_only, 'unexpected package mutation request'
                     (work/'package-before-connectivity.log').write_text(adb('shell','dumpsys','connectivity'))
                     package='org.amnezia.routingprobe.b'
                     assert 'Success' in adb('uninstall',package)
-                    probe_processes[1].wait(timeout=15)
+                    probe_processes[-1].wait(timeout=15)
                     assert 'Success' in adb('install','-t',str(probe_apks[1]))
                     lifecycle_log=(work/'app-probe-b-reinstalled.log').open('w');probe_logs.append(lifecycle_log)
                     probe_processes.append(subprocess.Popen(['adb','shell','am','instrument','-w','-r','-e','port','19092',package+'/org.amnezia.appprobe.Probe'],stdout=lifecycle_log,stderr=subprocess.STDOUT))
@@ -394,6 +408,8 @@ def main():
             app_policy_metrics(output,report)
             if args.package_lifecycle:
                 assert report.get('package_lifecycle') == {'uid_changed':True,'automatic_reconnect':True,'vpn_tcp_dns':True,'same_session':False}
+                assert report['package_update_same_uid']['same_session'] and report['package_update_same_uid']['other_tcp_preserved']
+                assert report['package_update_disconnected']=={'stayed_disconnected':True}
             report['native_vpn_acceptance']='NOT_RUN_PACKAGE_LIFECYCLE_ONLY' if args.package_lifecycle else 'NOT_RUN_APP_POLICY_ONLY'
             return
         if args.upload_mtu_only:

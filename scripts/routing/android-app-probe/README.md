@@ -29,10 +29,12 @@ both packages and waits for their instrumentation processes during cleanup.
 
 For package lifecycle investigation, add `--package-lifecycle` together with
 `--app-policy-only`. After the initial policy switch the emulator driver
+first updates B in place (same UID, same VPN session and A's TCP), then
 uninstalls and reinstalls B, starts its probe again, and records Android's VPN
 network state on both sides. The scenario requires a different UID, an automatic
 VPN session restart, and B's new TCP and TXT DNS through VPN. Existing TCP may
-reset in this exceptional case; ordinary policy edits above must still retain it. A reused UID is rejected as insufficient evidence. This focused mode is
+reset in this exceptional case; ordinary policy edits above must still retain it. A reused UID is rejected as insufficient evidence. Finally a package update
+after manual VPN disconnect must leave VPN disconnected. This focused mode is
 reported as `NOT_RUN_PACKAGE_LIFECYCLE_ONLY`; it does not establish full client
 acceptance. Package mutation is allowed only after the existing rooted-emulator
 guards, and the flag is required before honoring a reinstall checkpoint.
