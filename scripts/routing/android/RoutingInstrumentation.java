@@ -66,6 +66,7 @@ public final class RoutingInstrumentation extends Instrumentation {
     private boolean uploadMtuOnly;
     private boolean appPolicyOnly;
     private boolean packageLifecycle;
+    private boolean privateDnsOpportunistic;
     private boolean api28CompatOnly;
     private boolean diagnoseControl;
     private long applicationPolicyReply = -1;
@@ -90,6 +91,7 @@ public final class RoutingInstrumentation extends Instrumentation {
         primaryOnly = Boolean.parseBoolean(args.getString("primary_only", "false"));
         uploadMtuOnly = Boolean.parseBoolean(args.getString("upload_mtu_only", "false"));
         appPolicyOnly = Boolean.parseBoolean(args.getString("app_policy_only", "false"));
+        privateDnsOpportunistic = Boolean.parseBoolean(args.getString("private_dns_opportunistic", "false"));
         packageLifecycle = Boolean.parseBoolean(args.getString("package_lifecycle", "false"));
         api28CompatOnly = Boolean.parseBoolean(args.getString("api28_compat_only", "false"));
         diagnoseControl = Boolean.parseBoolean(args.getString("diagnose_control", "false"));
@@ -603,6 +605,20 @@ public final class RoutingInstrumentation extends Instrumentation {
 
     private void perApplicationPolicy() throws Exception {
         awaitAppProbe(0);awaitAppProbe(1);
+        if (privateDnsOpportunistic) {
+            ConnectivityManager manager = (ConnectivityManager)getTargetContext().getSystemService(Context.CONNECTIVITY_SERVICE);
+            long deadline = SystemClock.elapsedRealtime()+30000;
+            boolean active = false;
+            while (!active && SystemClock.elapsedRealtime()<deadline) {
+                Network network = manager.getActiveNetwork();
+                android.net.LinkProperties properties = network == null ? null : manager.getLinkProperties(network);
+                NetworkCapabilities capabilities = network == null ? null : manager.getNetworkCapabilities(network);
+                active = properties != null && properties.isPrivateDnsActive() && properties.getPrivateDnsServerName() == null &&
+                    capabilities != null && capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN);
+                if (!active) SystemClock.sleep(100);
+            }
+            require(active, "Android did not validate the local opportunistic Private DNS server");
+        }
         JSONObject config=primaryConfiguration();
         config.put("splitTunnelApps",new JSONArray().put("org.amnezia.routingprobe.a").put("org.amnezia.routingprobe.b"));
         config.put("android_app_routing",new JSONObject().put("version",1).put("site_rule_packages",new JSONArray().put("org.amnezia.routingprobe.b")));
@@ -611,6 +627,7 @@ public final class RoutingInstrumentation extends Instrumentation {
         JSONObject policies=new JSONObject()
             .put("lan",new JSONObject().put("transport","udp").put("server","10.0.2.2").put("port",1053).put("path","direct"))
             .put("vpn",new JSONObject().put("transport","udp").put("server","10.77.0.2").put("port",53).put("path","vpn"));
+        if (privateDnsOpportunistic) policies.put("lan",new JSONObject().put("transport","udp").put("source","network").put("path","direct"));
         config.put("sing_box_dns",new JSONObject().put("version",1).put("default","vpn").put("follow_routing",true)
             .put("direct","lan").put("vpn","vpn").put("policies",policies).put("rules",new JSONArray()));
         state=-1;serviceError=false;startService(config);awaitState(CONNECTED,false);
@@ -640,6 +657,10 @@ public final class RoutingInstrumentation extends Instrumentation {
             JSONObject after=retainedCheckpoint("app_policy_after");
             require(after.getLong("vpn_tcp")==before.getLong("vpn_tcp")+2 && after.getLong("direct_tcp")==before.getLong("direct_tcp")+2,"unexpected TCP redial or observer");
             require(after.getLong("native_dns_queries")>before.getLong("native_dns_queries") && after.getLong("dns_queries")>before.getLong("dns_queries"),"both DNS observers were not exercised");
+            if (privateDnsOpportunistic) {
+                require(after.getLong("native_tls_queries")>before.getLong("native_tls_queries"), "DIRECT network DNS did not use TLS");
+                progress("PRIVATE_DNS_RESULT active_opportunistic_network_tls");
+            }
             require(connectionDiagnostics().getLong("session_id")==session && !retainedStateChanged,"application update replaced/disconnected the core");
             progress("APP_POLICY_RESULT "+new JSONObject().put("uids",new JSONArray().put(a.getInt("uid")).put(b.getInt("uid")))
                 .put("same_session",true).put("same_old_ports",true).put("dns_contexts_switched",true));

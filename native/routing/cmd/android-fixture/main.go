@@ -45,6 +45,7 @@ var persistentEnabled bool
 var transportKind string
 var recordDNS bool
 var nativeDNSPort int
+var nativeDOTPort int
 var dropEndpointDNS atomic.Bool
 
 var sharedIP = "10.0.2.2" // Android emulator host alias; Windows uses its native local IP.
@@ -62,6 +63,7 @@ type fixture struct {
 	bulkTCP                              atomic.Int64
 	dnsQueries                           atomic.Int64
 	nativeDNSQueries                     atomic.Int64
+	nativeTLSQueries                     atomic.Int64
 	dnsNamesMu                           sync.Mutex
 	dnsNames                             []string
 	outerRX, outerTX                     atomic.Int64
@@ -311,6 +313,7 @@ func main() {
 	flag.BoolVar(&persistentEnabled, "persistent", false, "keep the disposable TCP echo connection open for recovery acceptance")
 	flag.BoolVar(&bulkEnabled, "bulk", false, "enable bounded performance-test stream observers")
 	flag.IntVar(&nativeDNSPort, "native-dns-port", 0, "optional loopback UDP DNS fixture (ephemeral test host only)")
+	flag.IntVar(&nativeDOTPort, "native-dot-port", 0, "optional loopback DNS-over-TLS fixture (ephemeral test host only)")
 	flag.BoolVar(&recordDNS, "record-dns", false, "record bounded synthetic DNS observations for split DNS acceptance")
 	flag.StringVar(&sharedIP, "shared-ip", sharedIP, "native host address used by both controlled observers")
 	endpointHost := flag.String("endpoint-host", "", "emulator-visible outer peer address, default shared-ip")
@@ -402,13 +405,8 @@ func main() {
 	defer u.Close()
 	go observeTCP(l, "DIRECT", &f.directTCP)
 	go observeUDP(u, "DIRECT", &f.directUDP)
-	if nativeDNSPort != 0 {
-		pc, e := net.ListenPacket("udp4", fmt.Sprintf("127.0.0.1:%d", nativeDNSPort))
-		if e != nil {
-			panic(e)
-		}
-		defer pc.Close()
-		server := &dns.Server{PacketConn: pc, Handler: dns.HandlerFunc(func(w dns.ResponseWriter, q *dns.Msg) {
+	if nativeDNSPort != 0 || nativeDOTPort != 0 {
+		handler := dns.HandlerFunc(func(w dns.ResponseWriter, q *dns.Msg) {
 			f.nativeDNSQueries.Add(1)
 			var reply dns.Msg
 			reply.SetReply(q)
@@ -425,9 +423,28 @@ func main() {
 				}
 			}
 			w.WriteMsg(&reply)
-		})}
-		go server.ActivateAndServe()
-		defer server.Shutdown()
+		})
+		if nativeDNSPort != 0 {
+			pc, err := net.ListenPacket("udp4", fmt.Sprintf("127.0.0.1:%d", nativeDNSPort))
+			if err != nil {
+				panic(err)
+			}
+			server := &dns.Server{PacketConn: pc, Handler: handler}
+			go server.ActivateAndServe()
+			defer server.Shutdown()
+		}
+		if nativeDOTPort != 0 {
+			listener, err := tls.Listen("tcp4", fmt.Sprintf("127.0.0.1:%d", nativeDOTPort), &tls.Config{Certificates: []tls.Certificate{f.quicCertificate}, MinVersion: tls.VersionTLS12})
+			if err != nil {
+				panic(err)
+			}
+			server := &dns.Server{Listener: listener, Handler: dns.HandlerFunc(func(w dns.ResponseWriter, q *dns.Msg) {
+				f.nativeTLSQueries.Add(1)
+				handler.ServeDNS(w, q)
+			})}
+			go server.ActivateAndServe()
+			defer server.Shutdown()
+		}
 	}
 	control := http.NewServeMux()
 	if labControl != nil {
@@ -441,7 +458,7 @@ func main() {
 	control.HandleFunc("/stats", func(w http.ResponseWriter, _ *http.Request) {
 		// Datagram counts identify delivery/peer response failures without
 		// persisting handshake payloads, keys or private UAPI configuration.
-		json.NewEncoder(w).Encode(map[string]int64{"direct_tcp": f.directTCP.Load(), "direct_udp": f.directUDP.Load(), "vpn_tcp": f.vpnTCP.Load(), "bulk_tcp": f.bulkTCP.Load(), "vpn_udp": f.vpnUDP.Load(), "dns_queries": f.dnsQueries.Load(), "native_dns_queries": f.nativeDNSQueries.Load(), "outer_received": f.outerRX.Load(), "outer_sent": f.outerTX.Load()})
+		json.NewEncoder(w).Encode(map[string]int64{"direct_tcp": f.directTCP.Load(), "direct_udp": f.directUDP.Load(), "vpn_tcp": f.vpnTCP.Load(), "bulk_tcp": f.bulkTCP.Load(), "vpn_udp": f.vpnUDP.Load(), "dns_queries": f.dnsQueries.Load(), "native_dns_queries": f.nativeDNSQueries.Load(), "native_tls_queries": f.nativeTLSQueries.Load(), "outer_received": f.outerRX.Load(), "outer_sent": f.outerTX.Load()})
 	})
 	control.HandleFunc("/endpoint-dns", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {

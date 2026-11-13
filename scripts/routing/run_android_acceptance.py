@@ -151,6 +151,7 @@ def main():
     parser.add_argument("--source-sha", help="test-harness commit when a read-only worktree has no mounted Git metadata")
     parser.add_argument("--apk-source-sha", help="record the actual packaged client source independently of the harness")
     parser.add_argument("--diagnose-control", action="store_true", help="capture slow control-path stacks before timeout; diagnostic result only")
+    parser.add_argument("--private-dns-opportunistic", action="store_true", help="with --app-policy-only, require active Android Private DNS and use network DoT for DIRECT DNS")
     parser.add_argument("--package-lifecycle", action="store_true", help="with --app-policy-only, reinstall a captured app and require fresh-UID VPN capture")
     parser.add_argument("--api28-compat-only",action="store_true",help="Android 9 ordinary core and unsupported mixed-policy rejection; not full acceptance")
     parser.add_argument("--app-policy-only", action="store_true", help="focused two-app live policy regression; not full acceptance")
@@ -162,6 +163,7 @@ def main():
     assert not args.package_lifecycle or args.app_policy_only, '--package-lifecycle requires --app-policy-only'
     if sum((args.app_policy_only, args.upload_mtu_only, args.primary_only, args.performance_only, args.api28_compat_only)) > 1:
         parser.error("focused acceptance modes are mutually exclusive")
+    assert not args.private_dns_opportunistic or args.app_policy_only, "Private DNS acceptance requires --app-policy-only"
     check_ipc_contract()
     for value in (args.source_sha, args.apk_source_sha):
         assert value is None or re.fullmatch(r'[0-9a-f]{40}', value), 'invalid source revision'
@@ -236,7 +238,7 @@ def main():
         subprocess.run(['adb', 'shell', 'dpm', 'remove-active-admin', admin], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
         for package in ('org.amnezia.routingtest', PACKAGE, 'org.amnezia.routingprobe.a', 'org.amnezia.routingprobe.b'):
             subprocess.run(['adb', 'uninstall', package], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
-        adb("shell", "settings", "put", "global", "private_dns_mode", "off")
+        adb("shell", "settings", "put", "global", "private_dns_mode", "opportunistic" if args.private_dns_opportunistic else "off")
         adb("install", "-r", "-t", str(target))
         adb("install", "-r", "-t", str(instrument))
         for index,probe_apk in enumerate(probe_apks):
@@ -251,6 +253,7 @@ def main():
         # Require the explicit PASS result and successful resource assertions.
         command = ["adb", "shell", "am", "instrument", "-w", "-r", "-e", "cycles", str(args.cycles),
                    "-e", "observer_ip", args.observer_ip,
+                   "-e", "private_dns_opportunistic", str(args.private_dns_opportunistic).lower(),
                    "-e", "primary_only", str(args.primary_only).lower(),
                    "-e", "upload_mtu_only", str(args.upload_mtu_only).lower(),
                    "-e", "app_policy_only", str(args.app_policy_only).lower(),
@@ -417,6 +420,9 @@ def main():
         if args.app_policy_only:
             assert 'INSTRUMENTATION_RESULT: routing_result=PASS_APP_POLICY_ONLY' in output
             app_policy_metrics(output,report)
+            if args.private_dns_opportunistic:
+                assert "PRIVATE_DNS_RESULT active_opportunistic_network_tls" in output
+                report["private_dns"] = {"mode":"opportunistic", "android_active":True, "direct_network_tls_queries":True}
             if args.package_lifecycle:
                 assert report.get('package_lifecycle') == {'uid_changed':True,'automatic_reconnect':True,'vpn_tcp_dns':True,'same_session':False}
                 assert report['package_update_same_uid']['same_session'] and report['package_update_same_uid']['other_tcp_preserved']
@@ -480,6 +486,8 @@ def main():
         except (OSError, AssertionError) as error:
             report['fixture_peer_cleanup'] = type(error).__name__
         nft_command('delete', 'table', 'inet', fault_table, check=False)
+        if args.private_dns_opportunistic:
+            adb("shell", "settings", "put", "global", "private_dns_mode", "off")
         try: adb('shell', 'svc', 'wifi', 'enable')
         except subprocess.CalledProcessError: pass
         try:
