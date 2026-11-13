@@ -213,6 +213,7 @@ jobs:
         if: success()
         env:
           QT_QPA_PLATFORM: offscreen
+          AMNEZIA_OPENVPN_POLICY_FIXTURE: ${{ runner.temp }}/openvpn-qt-policies.json
         run: ctest --test-dir deploy/build/client/tests -V --timeout 120 --output-junit qt-regression.xml
       - name: Real SSH probe-address migration regression
         shell: bash
@@ -240,7 +241,7 @@ jobs:
           packages=(deploy/build/AmneziaVPN_*_linux_x64.run)
           chmod +x "${packages[0]}"
           sudo modprobe tun
-          python3 -u scripts/routing/run_linux_service_container.py --package "${packages[0]}" --peer "$RUNNER_TEMP/installed-routing-peer" --qt-probe "$GITHUB_WORKSPACE/routing-service-probe-build/routing-service-probe" --report "$GITHUB_WORKSPACE/linux-installed-service.json"
+          python3 -u scripts/routing/run_linux_service_container.py --package "${packages[0]}" --peer "$RUNNER_TEMP/installed-routing-peer" --qt-probe "$GITHUB_WORKSPACE/routing-service-probe-build/routing-service-probe" --openvpn-policies "$RUNNER_TEMP/openvpn-qt-policies.json" --report "$GITHUB_WORKSPACE/linux-installed-service.json"
       - name: Preserve real WSS/TCP sockets through isolated underlay outages
         id: tcp-stability
         shell: bash

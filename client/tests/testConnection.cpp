@@ -5,6 +5,7 @@
 #include <QSignalSpy>
 #include <QTest>
 #include <QHostAddress>
+#include <QFile>
 
 #include "utils/testCoreController.h"
 #include "utils/testUtils.h"
@@ -59,6 +60,7 @@ private slots:
         QVERIFY(!config.contains("block-ipv6"));
         QVERIFY(captured(config, "2001:db8::1"));
         QVERIFY(captured(config, "fd12::1"));
+        QJsonObject policies{{"full", config}};
         const auto exportedClient = OpenVpnClientConfig::fromJson({{configKey::config, config}});
         QVERIFY(exportedClient.ipv6Tunnel);
         profile.setClientConfig(exportedClient);
@@ -66,11 +68,20 @@ private slots:
         config = configurator.processConfigWithLocalSettings(settings, profile).nativeConfig();
         QVERIFY(captured(config, "fd12::1"));
         QVERIFY(!captured(config, "2001:db8::1"));
+        policies["include"] = config;
         settings.splitTunneling.routeMode = RouteMode::VpnAllExceptSites;
         config = configurator.processConfigWithLocalSettings(settings, profile).nativeConfig();
         QVERIFY(!captured(config, "fd12::1"));
         QVERIFY(captured(config, "2001:db8::1"));
         QVERIFY(!config.contains("redirect-gateway ipv6"));
+        policies["exclude"] = config;
+        const auto fixturePath = qEnvironmentVariable("AMNEZIA_OPENVPN_POLICY_FIXTURE");
+        if (!fixturePath.isEmpty()) {
+            QFile file(fixturePath);
+            QVERIFY(file.open(QIODevice::WriteOnly));
+            const auto bytes = QJsonDocument(policies).toJson();
+            QCOMPARE(file.write(bytes), qint64(bytes.size()));
+        }
         client.ipv6Tunnel = false;
         profile.setClientConfig(client);
         settings.splitTunneling.isSitesSplitTunnelingEnabled = false;
