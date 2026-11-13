@@ -616,8 +616,10 @@ public final class RoutingInstrumentation extends Instrumentation {
 
     private void automaticUploadMtu() throws Exception {
         JSONObject config = primaryConfiguration();
-        config.getJSONObject(config.getString("protocol") + "_config_data").put("client_ip", "10.77.0.1/32")
-            .put("allowed_ips", new JSONArray().put("0.0.0.0/0")).put("mtu", "1420")
+        // Keep IPv6 configured: its mandatory minimum must not prevent IPv4
+        // from adapting below 1280 on this already established connection.
+        config.getJSONObject(config.getString("protocol") + "_config_data").put("client_ip", "10.77.0.1/32, fd77::1/128")
+            .put("allowed_ips", new JSONArray().put("0.0.0.0/0").put("::/0")).put("mtu", "1420")
             .put("path_mtu_probe", "10.77.0.2");
         state = -1; serviceError = false; startService(config); awaitState(CONNECTED, false);
         long session = connectionDiagnostics().getLong("session_id");
