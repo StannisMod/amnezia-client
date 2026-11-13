@@ -417,7 +417,13 @@ def main():
                     owner = adb('shell','stat','-c','%u',f'/data/user/{args.android_user}/{PACKAGE}')
                     assert owner.isdigit() and int(owner)//100000==args.android_user, 'test data owner belongs to a different Android user'
                     adb('shell','chown',owner+':'+owner,remote)
-                    adb('shell', 'restorecon', remote);adb('shell', 'chmod', '644', remote)
+                    adb('shell', 'restorecon', remote)
+                    # restorecon on older Android may retain user-0 MLS
+                    # categories even after chown. Use this app's real directory.
+                    context = adb('shell','ls','-Zd',f'/data/user/{args.android_user}/{PACKAGE}/files').split()[0]
+                    assert context.startswith('u:object_r:app_data_file:s0'), 'unexpected test app data context'
+                    adb('shell','chcon',context,remote)
+                    adb('shell', 'chmod', '644', remote)
                     adb('shell', 'touch', f'/data/user/{args.android_user}/{PACKAGE}/files/routing-retain-{name}.ready')
                 if "POLICY_CHECKPOINT " in line:
                     mode = line.strip().split("POLICY_CHECKPOINT ", 1)[1]
