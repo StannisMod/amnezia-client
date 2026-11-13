@@ -26,6 +26,19 @@ OpenVpnProtocol::~OpenVpnProtocol()
     QThread::msleep(200);
 }
 
+void OpenVpnProtocol::addResolvedIpv6Hosts(const QStringList &hosts, bool throughVpn, std::function<void(bool)> done)
+{
+    if (!isConnected() || !m_openVpnProcess) { done(false); return; }
+    const auto reply = m_openVpnProcess->addOpenVpnIpv6Hosts(vpnLocalAddress(), hosts, throughVpn);
+    auto *watcher = new QRemoteObjectPendingCallWatcher(reply, this);
+    connect(watcher, &QRemoteObjectPendingCallWatcher::finished, this,
+        [done = std::move(done)](QRemoteObjectPendingCallWatcher *call) {
+            const bool success = call->error() == QRemoteObjectPendingCall::NoError && call->returnValue().toBool();
+            call->deleteLater();
+            done(success);
+        });
+}
+
 QString OpenVpnProtocol::defaultConfigFileName()
 {
     return defaultConfigPath() + QString("/%1.ovpn").arg(APPLICATION_NAME);

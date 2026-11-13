@@ -15,6 +15,10 @@ IpcServerProcess::IpcServerProcess(QObject *parent) :
     connect(m_process.data(), &QProcess::readyReadStandardOutput, this, &IpcServerProcess::readyReadStandardOutput);
     connect(m_process.data(), &QProcess::started, this, &IpcServerProcess::started);
     connect(m_process.data(), &QProcess::stateChanged, this, &IpcServerProcess::stateChanged);
+#if defined(Q_OS_LINUX) && !defined(Q_OS_ANDROID)
+    connect(m_process.data(), QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
+            [this] { m_ipv6Routes.reset(); });
+#endif
 
     connect(m_process.data(), &QProcess::errorOccurred, [&](QProcess::ProcessError error){
         qDebug() << "IpcServerProcess errorOccurred " << error;
@@ -24,11 +28,15 @@ IpcServerProcess::IpcServerProcess(QObject *parent) :
 
 IpcServerProcess::~IpcServerProcess()
 {
+    m_process->disconnect(this);
     qDebug() << "IpcServerProcess::~IpcServerProcess";
 }
 
 void IpcServerProcess::start()
 {
+#if defined(Q_OS_LINUX) && !defined(Q_OS_ANDROID)
+    m_ipv6Routes.reset();
+#endif
     if (m_process->program().isEmpty()) {
         qDebug() << "IpcServerProcess failed to start, program is empty";
     }
@@ -51,6 +59,20 @@ void IpcServerProcess::kill() {
 void IpcServerProcess::close()
 {
     m_process->close();
+}
+
+bool IpcServerProcess::addOpenVpnIpv6Hosts(const QString &localIpv4, const QStringList &hosts, bool throughVpn)
+{
+#if defined(Q_OS_LINUX) && !defined(Q_OS_ANDROID)
+    if (m_program != amnezia::PermittedProcess::OpenVPN || m_process->state() != QProcess::Running) return false;
+    if (!m_ipv6Routes) m_ipv6Routes = std::make_unique<LinuxOpenVpnIpv6Routes>();
+    return m_ipv6Routes->add(localIpv4, hosts, throughVpn);
+#else
+    Q_UNUSED(localIpv4)
+    Q_UNUSED(hosts)
+    Q_UNUSED(throughVpn)
+    return false;
+#endif
 }
 
 void IpcServerProcess::setArguments(const QStringList &arguments)

@@ -2,6 +2,7 @@
 #define VPNPROTOCOL_H
 
 #include <QObject>
+#include <functional>
 #include <QString>
 #include <QJsonObject>
 #include <QtQml/qqml.h>
@@ -60,6 +61,7 @@ public:
     virtual bool isDisconnected() const;
     virtual ErrorCode start() = 0;
     virtual void stop() = 0;
+    virtual void addResolvedIpv6Hosts(const QStringList &, bool, std::function<void(bool)> done) { done(false); }
 
     Vpn::ConnectionState connectionState() const;
     ErrorCode lastError() const;

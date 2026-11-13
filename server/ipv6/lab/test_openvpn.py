@@ -155,9 +155,15 @@ def udp(address):
  while True:
   data,a=u.recvfrom(4096);u.sendto(a[0].encode() if data==b'PATH' else data,a)
 for address in sys.argv[1:]:threading.Thread(target=udp,args=(address,),daemon=True).start()
+def tcp(c,peer):
+ try:
+  c.sendall(peer.encode())
+  while c.recv(4096):c.sendall(peer.encode())
+ except OSError:pass
+ finally:c.close()
 s=socket.socket(socket.AF_INET6);s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1);s.bind(('::',18081));s.listen()
 while True:
- c,a=s.accept();c.sendall(a[0].encode());c.close()
+ c,a=s.accept();threading.Thread(target=tcp,args=(c,a[0]),daemon=True).start()
 '''
     processes.append(subprocess.Popen(['ip', 'netns', 'exec', names[1], 'python3', '-u', '-c', echo, 'fd88::1', *(['2001:db8:88::1','64:ff9b::c000:201'] if policy_file else [])]))
     if not policy_file: run('ip', '-n', names[0], '-6', 'route', 'add', 'fd88::/64', 'dev', 'tun0')
@@ -176,6 +182,47 @@ u=socket.socket(socket.AF_INET6,socket.SOCK_DGRAM);u.settimeout(3);u.sendto(b'PA
 """
             run('ip', 'netns', 'exec', names[0], 'python3', '-c', check, destination, expected)
         print('PASS: Qt-generated '+policy_mode+' profile selects correct IPv6 TCP/UDP paths for GUA/ULA/NAT64',flush=True)
+    route_fixture = os.environ.get('AMNEZIA_OPENVPN_ROUTE_FIXTURE')
+    if route_fixture and policy_file and policy_mode == 'full':
+        old6 = """import socket,sys
+s=socket.create_connection(('2001:db8:88::1',18081),3);assert s.recv(64)==b'fd88::2'
+print('READY',flush=True)
+assert sys.stdin.readline().strip()=='continue'
+s.sendall(b'old-socket');assert s.recv(64)==b'fd88::2'
+print('ORIGINAL_IPV6_TCP_RETAINED',flush=True)
+"""
+        original6 = subprocess.Popen(['ip','netns','exec',names[0],'python3','-u','-c',old6],stdin=subprocess.PIPE,stdout=subprocess.PIPE,text=True)
+        processes.append(original6)
+        assert select.select([original6.stdout],[],[],5)[0] and original6.stdout.readline().strip()=='READY'
+        # DAD can add the automatic link-local anycast route after OpenVPN has
+        # reported ready. Snapshot a settled tunnel, not that unrelated transition.
+        settled = time.monotonic() + 5
+        while True:
+            rows = json.loads(run('ip','-n',names[0],'-j','-6','addr','show','dev','tun0'))
+            tentative = any('tentative' in entry.get('flags', []) for row in rows for entry in row['addr_info'])
+            if not tentative: break
+            assert time.monotonic() < settled, 'IPv6 tunnel DAD did not settle'
+            time.sleep(.05)
+        before6 = run('ip','-n',names[0],'-6','rule','show') + run('ip','-n',names[0],'-6','route','show','table','all')
+        route_env=dict(os.environ,AMNEZIA_IPV6_LAB='isolated-namespace')
+        route_env['LD_LIBRARY_PATH']=os.environ.get('AMNEZIA_OPENVPN_QT_LIBRARY_PATH','/opt/AmneziaVPN/lib:/opt/AmneziaVPN/bin')
+        updater = subprocess.Popen(['ip','netns','exec',names[0],route_fixture],env=route_env,stdin=subprocess.PIPE,stdout=subprocess.PIPE,text=True)
+        processes.append(updater)
+        assert select.select([updater.stdout],[],[],5)[0] and updater.stdout.readline().strip()=='READY'
+        addresses=json.loads(run('ip','-n',names[0],'-j','-4','addr','show','dev','tun0'))
+        local4=addresses[0]['addr_info'][0]['local']
+        updater.stdin.write(json.dumps({'local_ipv4':local4,'hosts':['2001:db8:88::1'],'through_vpn':False})+'\n');updater.stdin.flush()
+        assert select.select([updater.stdout],[],[],10)[0] and updater.stdout.readline().strip()=='OK'
+        original6.stdin.write('continue\n');original6.stdin.flush()
+        assert select.select([original6.stdout],[],[],5)[0] and original6.stdout.readline().strip()=='ORIGINAL_IPV6_TCP_RETAINED'
+        run('ip','netns','exec',names[0],'python3','-c',check,'2001:db8:88::1','fd99::2')
+        updater.stdin.close();assert updater.wait(timeout=10)==0
+        after6=run('ip','-n',names[0],'-6','rule','show')+run('ip','-n',names[0],'-6','route','show','table','all')
+        if before6 != after6:
+            import difflib
+            print(''.join(difflib.unified_diff(before6.splitlines(True),after6.splitlines(True))),flush=True)
+        assert before6==after6,'dynamic IPv6 rules/routes leaked after updater exit'
+        print('PASS: dynamic DIRECT IPv6 route changes new TCP/UDP path while original VPN TCP survives; owned policy cleans up',flush=True)
     print('PASS: real OpenVPN TLS forwards IPv6 TCP/UDP, retains two original IPv4 TCP sockets and IPv4 state; missing egress fails fast', flush=True)
 except Exception:
     for command in (['ip','-6','route','show','table','all'],

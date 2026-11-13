@@ -7,6 +7,7 @@
 #include <QJsonObject>
 #include <QObject>
 #include <QSharedPointer>
+#include <QPointer>
 #include <QString>
 #include <QStringList>
 #include <QTimer>
@@ -239,6 +240,7 @@ void VpnConnection::addSitesRoutes(const QString &gw, amnezia::RouteMode mode)
         }
     }
     ips.removeDuplicates();
+    const auto knownIps = ips;
     // These legacy IPC helpers install IPv4 routes. IPv6 capture is configured
     // by the protocol; keep IPv6 rules in the shared profile/site list.
     ips.removeIf([](const QString &value) {
@@ -253,53 +255,49 @@ void VpnConnection::addSitesRoutes(const QString &gw, amnezia::RouteMode mode)
     auto remainingLookups = QSharedPointer<int>::create(sites.size());
     auto needFlush = QSharedPointer<bool>::create(false);
 
-    // re-resolve domains
+    const QPointer<VpnProtocol> protocol(m_vpnProtocol.data());
+    const QPointer<VpnConnection> self(this);
+    // Each answer belongs to this connection and policy, never a later session.
     for (const QString &site : sites) {
-        const auto &cbResolv = [this, site, gw, mode, ips, remainingLookups, needFlush](const QHostInfo &hostInfo) {
-            QStringList resolvedIps;
-            for (const QHostAddress &addr : hostInfo.addresses()) {
-                if (addr.protocol() == QAbstractSocket::NetworkLayerProtocol::IPv4Protocol) {
-                    resolvedIps.append(addr.toString());
+        const auto cbResolv = [self, protocol, site, gw, mode, knownIps, remainingLookups, needFlush](const QHostInfo &hostInfo) {
+            const auto current = [self, protocol, mode, site] {
+                return self && protocol && self->m_vpnProtocol.data() == protocol.data() && protocol->isConnected()
+                    && self->m_appSettingsRepository && self->m_appSettingsRepository->isSitesSplitTunnelingEnabled()
+                    && self->m_appSettingsRepository->routeMode() == mode
+                    && self->m_appSettingsRepository->vpnSites(mode).contains(site);
+            };
+            if (!current()) return;
+            QStringList ipv4, ipv6;
+            for (const auto &address : hostInfo.addresses()) {
+                if (knownIps.contains(address.toString())) continue;
+                if (address.protocol() == QAbstractSocket::IPv4Protocol) ipv4 << address.toString();
+                else if (address.protocol() == QAbstractSocket::IPv6Protocol && address.scopeId().isEmpty()
+                         && !address.isLinkLocal() && !address.isMulticast() && !address.isLoopback()) ipv6 << address.toString();
+            }
+            ipv4.removeDuplicates(); ipv6.removeDuplicates();
+            if (!ipv4.isEmpty()) IpcClient::withInterface([&](QSharedPointer<IpcInterfaceReplica> iface) { iface->routeAddList(gw, ipv4); });
+            const auto finish = [self, current, site, mode, ipv4, ipv6, remainingLookups, needFlush](bool installedIpv6) {
+                if (!current()) return;
+                auto added = ipv4;
+                if (installedIpv6) added << ipv6;
+                else if (!ipv6.isEmpty()) qWarning() << "IPv6 domain routes were not installed" << site;
+                if (!added.isEmpty()) {
+                    self->m_appSettingsRepository->addVpnSite(mode, site, added);
+                    *needFlush = true;
                 }
-            }
-            resolvedIps.removeDuplicates();
-            qDebug() << "[SplitTunneling] addSitesRoutes resolved" << site << "->" << resolvedIps;
-
-            QStringList newIps;
-            for (const QString &ip : resolvedIps) {
-                if (!ips.contains(ip)) {
-                    IpcClient::withInterface([gw, ip](QSharedPointer<IpcInterfaceReplica> iface) {
-                        iface->routeAddList(gw, QStringList() << ip);
-                    });
-                    newIps.append(ip);
-                }
-            }
-
-            if (!newIps.isEmpty()) {
-                m_appSettingsRepository->addVpnSite(mode, site, newIps);
-                *needFlush = true;
-            }
-
-            if (--(*remainingLookups) > 0)
-                return;
-
-            if (!*needFlush)
-                return;
-
-            // Async flush: never waitForFinished() here — that re-enters the event loop and
-            // can re-enter this QHostInfo callback until the stack overflows (0xc00000fd).
-            IpcClient::withInterface([this](QSharedPointer<IpcInterfaceReplica> iface) {
-                QRemoteObjectPendingReply<bool> reply = iface->flushDns();
-                auto *watcher = new QRemoteObjectPendingCallWatcher(reply, this);
-                QObject::connect(watcher, &QRemoteObjectPendingCallWatcher::finished, this,
+                if (--(*remainingLookups) > 0 || !*needFlush) return;
+                IpcClient::withInterface([self](QSharedPointer<IpcInterfaceReplica> iface) {
+                    auto *watcher = new QRemoteObjectPendingCallWatcher(iface->flushDns(), self);
+                    QObject::connect(watcher, &QRemoteObjectPendingCallWatcher::finished, self,
                         [](QRemoteObjectPendingCallWatcher *call) {
-                            if (call->error() != QRemoteObjectPendingCall::NoError
-                                || !call->returnValue().toBool()) {
+                            if (call->error() != QRemoteObjectPendingCall::NoError || !call->returnValue().toBool())
                                 qWarning() << "VpnConnection::addSitesRoutes: Failed to flush DNS";
-                            }
                             call->deleteLater();
                         });
-            });
+                });
+            };
+            if (ipv6.isEmpty()) finish(true);
+            else protocol->addResolvedIpv6Hosts(ipv6, mode == RouteMode::VpnOnlyForwardSites, finish);
         };
         QHostInfo::lookupHost(site, this, cbResolv);
     }

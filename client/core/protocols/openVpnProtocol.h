@@ -13,8 +13,8 @@
 class OpenVpnProtocol : public VpnProtocol
 {
     Q_OBJECT
-
 public:
+    void addResolvedIpv6Hosts(const QStringList &hosts, bool throughVpn, std::function<void(bool)> done) override;
     explicit OpenVpnProtocol(const QJsonObject& configuration, QObject* parent = nullptr);
     virtual ~OpenVpnProtocol() override;
 
