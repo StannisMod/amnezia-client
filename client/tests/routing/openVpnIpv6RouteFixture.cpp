@@ -42,8 +42,11 @@ int main(int argc, char **argv)
             output << (started.waitForFinished(8000) && started.returnValue() ? "OK\n" : "FAIL\n") << Qt::flush;
             continue;
         }
-        if (process && document.value("operation") == "stop") {
-            process->terminate();
+        const auto operation = document.value("operation").toString();
+        if (process && (operation == "stop" || operation == "kill" || operation == "close")) {
+            if (operation == "kill") process->kill();
+            else if (operation == "close") process->close();
+            else process->terminate();
             auto stopped = process->waitForFinished(5000);
             output << (stopped.waitForFinished(7000) ? "OK\n" : "FAIL\n") << Qt::flush;
             continue;

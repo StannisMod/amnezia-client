@@ -5,6 +5,7 @@
 #include <QObject>
 #if defined(Q_OS_LINUX) && !defined(Q_OS_ANDROID)
 #include "../client/platforms/linux/daemon/linuxopenvpnipv6routes.h"
+#include "../client/platforms/linux/daemon/linuxopenvpndevice.h"
 #include <memory>
 #endif
 
@@ -45,8 +46,10 @@ signals:
 private:
     amnezia::PermittedProcess m_program = amnezia::PermittedProcess::Invalid;
     QSharedPointer<QProcess> m_process;
+    QStringList m_arguments;
 #if defined(Q_OS_LINUX) && !defined(Q_OS_ANDROID)
     std::unique_ptr<LinuxOpenVpnIpv6Routes> m_ipv6Routes;
+    std::unique_ptr<LinuxOpenVpnDevice> m_openVpnDevice;
 #endif
 };
 

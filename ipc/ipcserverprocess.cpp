@@ -9,16 +9,22 @@ IpcServerProcess::IpcServerProcess(QObject *parent) :
     m_process(QSharedPointer<QProcess>(new QProcess()))
 {
     connect(m_process.data(), &QProcess::errorOccurred, this, &IpcServerProcess::errorOccurred);
+#if defined(Q_OS_LINUX) && !defined(Q_OS_ANDROID)
+    // Restore routing before notifying clients, which may immediately restart.
+    connect(m_process.data(), QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
+            [this] {
+                m_ipv6Routes.reset();
+                if (m_openVpnDevice && !m_openVpnDevice->cleanup())
+                    qWarning() << "Failed to remove owned OpenVPN DCO device";
+                m_openVpnDevice.reset();
+            });
+#endif
     connect(m_process.data(), QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this, &IpcServerProcess::finished);
     connect(m_process.data(), &QProcess::readyRead, this, &IpcServerProcess::readyRead);
     connect(m_process.data(), &QProcess::readyReadStandardError, this, &IpcServerProcess::readyReadStandardError);
     connect(m_process.data(), &QProcess::readyReadStandardOutput, this, &IpcServerProcess::readyReadStandardOutput);
     connect(m_process.data(), &QProcess::started, this, &IpcServerProcess::started);
     connect(m_process.data(), &QProcess::stateChanged, this, &IpcServerProcess::stateChanged);
-#if defined(Q_OS_LINUX) && !defined(Q_OS_ANDROID)
-    connect(m_process.data(), QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
-            [this] { m_ipv6Routes.reset(); });
-#endif
 
     connect(m_process.data(), &QProcess::errorOccurred, [&](QProcess::ProcessError error){
         qDebug() << "IpcServerProcess errorOccurred " << error;
@@ -29,13 +35,28 @@ IpcServerProcess::IpcServerProcess(QObject *parent) :
 IpcServerProcess::~IpcServerProcess()
 {
     m_process->disconnect(this);
+#if defined(Q_OS_LINUX) && !defined(Q_OS_ANDROID)
+    if (m_openVpnDevice) {
+        m_process->kill();
+        if (m_process->state() != QProcess::NotRunning) m_process->waitForFinished(3000);
+        m_ipv6Routes.reset();
+        m_openVpnDevice.reset();
+    }
+#endif
     qDebug() << "IpcServerProcess::~IpcServerProcess";
 }
 
 void IpcServerProcess::start()
 {
+    if (m_process->state() != QProcess::NotRunning) return;
+    m_process->setArguments(m_arguments);
 #if defined(Q_OS_LINUX) && !defined(Q_OS_ANDROID)
     m_ipv6Routes.reset();
+    m_openVpnDevice.reset();
+    if (m_program == amnezia::PermittedProcess::OpenVPN) {
+        m_openVpnDevice = std::make_unique<LinuxOpenVpnDevice>();
+        m_process->setArguments(m_arguments + m_openVpnDevice->arguments());
+    }
 #endif
     if (m_process->program().isEmpty()) {
         qDebug() << "IpcServerProcess failed to start, program is empty";
@@ -77,7 +98,8 @@ bool IpcServerProcess::addOpenVpnIpv6Hosts(const QString &localIpv4, const QStri
 
 void IpcServerProcess::setArguments(const QStringList &arguments)
 {
-    m_process->setArguments(amnezia::sanitizeArguments(m_program, arguments));
+    m_arguments = amnezia::sanitizeArguments(m_program, arguments);
+    m_process->setArguments(m_arguments);
 }
 
 void IpcServerProcess::setInputChannelMode(QProcess::InputChannelMode mode)
@@ -103,6 +125,7 @@ void IpcServerProcess::setProgram(int programId)
              programId < static_cast<int>(amnezia::PermittedProcess::PermittedProcessCount));
     m_program = static_cast<amnezia::PermittedProcess>(programId);
     m_process->setProgram(amnezia::permittedProcessPath(m_program));
+    m_arguments.clear();
     m_process->setArguments({});
 }
 

@@ -122,6 +122,11 @@ verb 3
             processes.append(rpc_updater)
             assert select.select([rpc_updater.stdout],[],[],20)[0] and rpc_updater.stdout.readline().strip()=='READY','service process replica did not start'
             rpc_request(rpc_updater,{'local_ipv4':'198.51.100.2','hosts':['2001:db8:88::1'],'through_vpn':False},'FAIL')
+            # A pre-existing interface with the old conventional name is not
+            # owned by this process and must survive both graceful and hard exit.
+            run('ip','-n',names[0],'link','add','tun0','type','dummy')
+            run('ip','-n',names[0],'link','set','tun0','up')
+            run('ip','-n',names[0],'-6','addr','add','fd55::1/64','dev','tun0','nodad')
             deadline=time.monotonic()+5
             while any(e.get('tentative',False) for r in json.loads(run('ip','-n',names[0],'-j','-6','addr','show')) for e in r['addr_info']):
                 assert time.monotonic()<deadline,'native IPv6 DAD did not settle'
@@ -137,7 +142,12 @@ verb 3
         if any(p.poll() is not None for p in processes): raise RuntimeError('OpenVPN exited: '+(root/'server.log').read_text()+(root/'client.log').read_text())
         time.sleep(.1)
     else: raise RuntimeError('OpenVPN TLS handshake timed out: '+(root/'client.log').read_text())
-    addresses = json.loads(run('ip', '-n', names[0], '-j', '-6', 'addr', 'show', 'dev', 'tun0'))
+    client_links = json.loads(run('ip', '-n', names[0], '-j', '-4', 'addr', 'show'))
+    client_tun = next(link['ifname'] for link in client_links
+                      if any(address['local'] == '10.66.0.2' for address in link['addr_info']))
+    if ipc_service:
+        print('Owned OpenVPN interface:',run('ip','-n',names[0],'-d','-j','link','show','dev',client_tun).strip(),flush=True)
+    addresses = json.loads(run('ip', '-n', names[0], '-j', '-6', 'addr', 'show', 'dev', client_tun))
     assert any(a['scope']=='global' for r in addresses for a in r['addr_info']), 'production OpenVPN server supplied no tunnel IPv6 address'
     echo4 = """import socket,threading
 def serve(c):
@@ -167,7 +177,7 @@ print('ORIGINAL_TCP_RETAINED',flush=True)
     missing = subprocess.run(['bash', '-ec', '. "$1"; amnezia_enable_ipv6 tun0 required', 'sh', str(source_root/'client/server_scripts/enable_ipv6_forwarding.sh')],
                              text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=10)
     assert missing.returncode == 1 and 'no-egress-route' in missing.stdout, missing.stdout
-    run('ip', '-n', names[0], '-6', 'route', 'add', '2001:db8:6666::1/128', 'dev', 'tun0')
+    run('ip', '-n', names[0], '-6', 'route', 'add', '2001:db8:6666::1/128', 'dev', client_tun)
     unavailable = """import errno,socket,time
 start=time.monotonic()
 try:socket.create_connection(('2001:db8:6666::1',443),3)
@@ -176,7 +186,7 @@ else:raise AssertionError('IPv4-only server unexpectedly reached IPv6 origin')
 assert time.monotonic()-start<1.5,'missing IPv6 route caused a TCP timeout'
 """
     run('ip','netns','exec',names[0],'python3','-c',unavailable)
-    run('ip', '-n', names[0], '-6', 'route', 'delete', '2001:db8:6666::1/128', 'dev', 'tun0')
+    run('ip', '-n', names[0], '-6', 'route', 'delete', '2001:db8:6666::1/128', 'dev', client_tun)
     run('ip', '-6', 'route', 'add', 'default', 'via', 'fd88::1', 'dev', 'uplink0')
     run('bash', '-ec', '. "$1"; amnezia_enable_ipv6 tun0 required', 'sh', str(source_root/'client/server_scripts/enable_ipv6_forwarding.sh'))
     assert before4==run('ip','-4','route','show','table','all')+run('iptables','-S')+run('iptables','-t','nat','-S'), 'IPv6 preparation changed IPv4 state'
@@ -201,7 +211,7 @@ while True:
  c,a=s.accept();threading.Thread(target=tcp,args=(c,a[0]),daemon=True).start()
 '''
     processes.append(subprocess.Popen(['ip', 'netns', 'exec', names[1], 'python3', '-u', '-c', echo, 'fd88::1', *(['2001:db8:88::1','64:ff9b::c000:201'] if policy_file else [])]))
-    if not policy_file: run('ip', '-n', names[0], '-6', 'route', 'add', 'fd88::/64', 'dev', 'tun0')
+    if not policy_file: run('ip', '-n', names[0], '-6', 'route', 'add', 'fd88::/64', 'dev', client_tun)
     probe = "import socket,time;time.sleep(.1);s=socket.create_connection(('fd88::1',18081),3);assert s.recv(64)==b'fd88::2';u=socket.socket(socket.AF_INET6,socket.SOCK_DGRAM);u.settimeout(3);u.sendto(b'OPENVPN_IPV6_UDP',('fd88::1',18081));assert u.recv(64)==b'OPENVPN_IPV6_UDP'"
     if not policy_file:
         run('ip', 'netns', 'exec', names[0], 'python3', '-c', probe)
@@ -247,20 +257,23 @@ print('ORIGINAL_IPV6_TCP_RETAINED',flush=True)
             updater = subprocess.Popen(['ip','netns','exec',names[0],route_fixture],env=route_env,stdin=subprocess.PIPE,stdout=subprocess.PIPE,text=True)
             processes.append(updater)
             assert select.select([updater.stdout],[],[],5)[0] and updater.stdout.readline().strip()=='READY'
-        addresses=json.loads(run('ip','-n',names[0],'-j','-4','addr','show','dev','tun0'))
+        addresses=json.loads(run('ip','-n',names[0],'-j','-4','addr','show','dev',client_tun))
         local4=addresses[0]['addr_info'][0]['local']
         updater.stdin.write(json.dumps({'local_ipv4':local4,'hosts':['2001:db8:88::1'],'through_vpn':False})+'\n');updater.stdin.flush()
         assert select.select([updater.stdout],[],[],10)[0] and updater.stdout.readline().strip()=='OK'
         original6.stdin.write('continue\n');original6.stdin.flush()
         assert select.select([original6.stdout],[],[],5)[0] and original6.stdout.readline().strip()=='ORIGINAL_IPV6_TCP_RETAINED'
         run('ip','netns','exec',names[0],'python3','-c',check,'2001:db8:88::1','fd99::2')
-        if rpc_updater:rpc_request(updater,{'operation':'stop'})
+        if rpc_updater:rpc_request(updater,{'operation':os.environ.get('AMNEZIA_OPENVPN_STOP_OPERATION','stop')})
         updater.stdin.close();assert updater.wait(timeout=10)==0
         after6=run('ip','-n',names[0],'-6','rule','show')+run('ip','-n',names[0],'-6','route','show','table','all')
         if before6 != after6:
             import difflib
             print(''.join(difflib.unified_diff(before6.splitlines(True),after6.splitlines(True))),flush=True)
         assert before6==after6,'dynamic IPv6 rules/routes leaked after updater exit'
+        if rpc_updater:
+            assert json.loads(run('ip','-n',names[0],'-j','link','show','dev','tun0'))[0]['link_type']=='ether'
+            print('PASS: '+os.environ.get('AMNEZIA_OPENVPN_STOP_OPERATION','stop')+' removes owned OpenVPN interface and preserves foreign tun0',flush=True)
         print('PASS: dynamic DIRECT IPv6 route changes new TCP/UDP path while original VPN TCP survives; owned policy cleans up',flush=True)
     print('PASS: real OpenVPN TLS forwards IPv6 TCP/UDP, retains two original IPv4 TCP sockets and IPv4 state; missing egress fails fast', flush=True)
 except Exception:
