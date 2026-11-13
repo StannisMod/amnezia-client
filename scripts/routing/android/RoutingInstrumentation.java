@@ -322,6 +322,14 @@ public final class RoutingInstrumentation extends Instrumentation {
                 android.net.LinkProperties links=network==null?null:manager.getLinkProperties(network);
                 if(caps!=null && caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) && links!=null) {
                     for(android.net.LinkAddress address:links.getLinkAddresses()) if(expectedSource.equals(address.getAddress().getHostAddress())) captureReady=true;
+                    if(captureReady) {
+                        // UDP connect selects a source without sending a packet.
+                        // This checks kernel routing, beyond cached framework data.
+                        try(DatagramSocket route=new DatagramSocket()) {
+                            route.connect(InetAddress.getByName("10.77.0.2"),18081);
+                            captureReady=expectedSource.equals(route.getLocalAddress().getHostAddress());
+                        } catch(Exception notReady) {captureReady=false;}
+                    }
                 }
                 if(!captureReady) SystemClock.sleep(25);
             } while(!captureReady && !serviceError && SystemClock.elapsedRealtime()-readyStart<5000);
