@@ -16,7 +16,8 @@ class ConnectionUpdatesController : public QObject {
     Q_PROPERTY(QStringList updatableServers READ updatableServers NOTIFY configurationChanged)
 public:
     using ProbeAddressReader = std::function<ErrorCode(const ServerCredentials &, DockerContainer, QStringList &)>;
-    explicit ConnectionUpdatesController(SecureServersRepository *servers, ConnectionController *connection, QObject *parent = nullptr, ProbeAddressReader probeAddressReader = {});
+    using PeerIPv6Reader = std::function<ErrorCode(const ServerCredentials &, DockerContainer, QJsonObject &)>;
+    explicit ConnectionUpdatesController(SecureServersRepository *servers, ConnectionController *connection, QObject *parent = nullptr, ProbeAddressReader probeAddressReader = {}, PeerIPv6Reader peerIPv6Reader = {});
     ~ConnectionUpdatesController() override;
     bool busy() const { return m_busy; }
     QStringList enabledServers() const;
@@ -53,6 +54,7 @@ private:
     SecureServersRepository *m_servers;
     ConnectionController *m_connection;
     ProbeAddressReader m_probeAddressReader;
+    PeerIPv6Reader m_peerIPv6Reader;
     QNetworkAccessManager m_network;
     QThreadPool m_adminPool;
     bool m_busy = false;

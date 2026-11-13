@@ -266,16 +266,22 @@ private slots:
     }
     void asynchronousAdminProbeRefresh_data()
     {
-        QTest::addColumn<QString>("scenario");
-        for (const auto *name : { "success", "failure", "edited", "deadline", "canceled" }) QTest::newRow(name) << QString(name);
+        QTest::addColumn<QString>("scenario");QTest::addColumn<bool>("missingIPv6");
+        for(bool ipv6:{false,true}) for (const auto *name : { "success", "failure", "edited", "deadline", "canceled" })
+            QTest::newRow(qPrintable(QString(name)+(ipv6?"-missing-ipv6":"-probe-only"))) << QString(name) << ipv6;
     }
     void asynchronousAdminProbeRefresh()
     {
-        QFETCH(QString, scenario);
+        QFETCH(QString, scenario);QFETCH(bool,missingIPv6);
         SecureQSettings settings("Amnezia-Probe-Async-" + QUuid::createUuid().toString(), "test", nullptr, false);
         SecureServersRepository servers(&settings); SecureAppSettingsRepository app(&settings); VpnConnection vpn(&servers, &app); ConnectionController connection(&servers, &app, &vpn);
         disconnect(&connection, &ConnectionController::openConnectionRequested, &vpn, &VpnConnection::connectToVpn);
         auto administrator = profile(); administrator.remove("connectionUpdates"); administrator["userName"] = "root"; administrator["password"] = "test-password"; administrator["port"] = 22;
+        if(missingIPv6) {
+            auto containers=administrator["containers"].toArray();auto container=containers[0].toObject();auto proto=container["wireguard"].toObject();auto cached=client(administrator,false);
+            cached["allowed_ips"]=QJsonArray{"0.0.0.0/0","::/0"};cached["path_mtu_probes"]=QJsonArray{"10.8.0.1"};
+            proto["last_config"]=QString::fromUtf8(QJsonDocument(cached).toJson(QJsonDocument::Compact));container["wireguard"]=proto;containers[0]=container;administrator["containers"]=containers;
+        }
         const auto id = servers.addServer({}, administrator, serverConfigUtils::SelfHostedAdmin); servers.setDefaultServer(id);
         const auto original = *servers.serverJsonById(id);
         QSemaphore gate; std::atomic<int> calls { 0 }; std::atomic<bool> correctReaderArguments { false };
@@ -283,7 +289,10 @@ private slots:
             correctReaderArguments.store(credentials.userName == "root" && container == DockerContainer::WireGuard);
             calls.fetch_add(1); gate.acquire(); targets = {"10.8.0.1", "fd77::1"};
             return scenario == "failure" ? ErrorCode::InternalError : ErrorCode::NoError;
+        },[&](const ServerCredentials &,DockerContainer,QJsonObject &assignments) {
+            assignments={{client(original,false).value("client_pub_key").toString(),"fd77::2"}};return ErrorCode::NoError;
         });
+        QVERIFY(updates.needsRefreshBeforeConnect(id));
         const auto unblock = qScopeGuard([&] { gate.release(); });
         ServersController serverController(&servers, &app); ConnectionUiController ui(&connection, &serverController); ui.setConnectionUpdatesController(&updates);
         QSignalSpy attempts(&connection, &ConnectionController::openConnectionRequested);
@@ -303,6 +312,11 @@ private slots:
         if (scenario == "success") {
             QCOMPARE(client(result, false).value("path_mtu_probe").toString(), "10.8.0.1");
             QCOMPARE(client(result, false).value("client_priv_key"), client(original, false).value("client_priv_key"));
+            if(missingIPv6) {
+                QCOMPARE(client(result,false).value("client_ip").toString(),"10.8.0.2, fd77::2/128");
+                QCOMPARE(client(result,false).value("path_mtu_probes").toArray(),QJsonArray({"10.8.0.1","fd77::1"}));
+                QVERIFY(!updates.needsRefreshBeforeConnect(id));
+            }
         } else if (scenario == "failure" || scenario == "deadline") QCOMPARE(result, original);
         else if (scenario == "edited") { QCOMPARE(result.value("description").toString(), "user edit"); QVERIFY(!client(result, false).contains("path_mtu_probe")); }
         settings.clearSettings();
@@ -349,7 +363,16 @@ private slots:
             QCOMPARE(ssh.runScript(credentials,"cat /run/amnezia-cached-client.json",[&](const QString &data,libssh::Client &){if(raw.size()+data.size()>65536)return ErrorCode::InternalError;raw+=data;return ErrorCode::NoError;}),ErrorCode::NoError);
             const auto cached=QJsonDocument::fromJson(raw.toUtf8()).object();
             QStringList probes;QCOMPARE(ConnectionUpdatesController::fetchPathMtuProbeAddresses(credentials,container,probes),ErrorCode::NoError);
-            QJsonObject updated;QVERIFY(connectionUpdates::mergeAdministratorIPv6(cached,selected,assignments,probes,updated));
+            auto administrator=cached;administrator["hostName"]=credentials.hostName;administrator["userName"]=credentials.userName;administrator["password"]=credentials.secretData;administrator["port"]=credentials.port;
+            auto containers=administrator["containers"].toArray();auto chosen=containers[0].toObject();const auto protoName=container==DockerContainer::Awg2?"awg":"wireguard";auto proto=chosen[protoName].toObject();auto oldClient=client(cached,container==DockerContainer::Awg2);
+            oldClient["path_mtu_probes"]=QJsonArray{probes.first()};proto["last_config"]=QString::fromUtf8(QJsonDocument(oldClient).toJson(QJsonDocument::Compact));chosen[protoName]=proto;containers[0]=chosen;administrator["containers"]=containers;
+            SecureQSettings localSettings("Amnezia-Live-IPv6-"+QUuid::createUuid().toString(),"test",nullptr,false);
+            SecureServersRepository localServers(&localSettings);SecureAppSettingsRepository localApp(&localSettings);VpnConnection localVpn(&localServers,&localApp);ConnectionController localConnection(&localServers,&localApp,&localVpn);
+            const auto localId=localServers.addServer({},administrator,serverConfigUtils::SelfHostedAdmin);ConnectionUpdatesController localUpdates(&localServers,&localConnection);
+            QVERIFY(localUpdates.needsRefreshBeforeConnect(localId));int completed=0;localUpdates.refreshBeforeConnect(localId,[&]{++completed;});
+            QTRY_VERIFY_WITH_TIMEOUT(!localUpdates.busy(),4000);QCOMPARE(completed,1);
+            const auto updated=*localServers.serverJsonById(localId);QVERIFY(!localUpdates.needsRefreshBeforeConnect(localId));
+            localSettings.clearSettings();
             for(const auto *key:{"client_priv_key","client_pub_key","allowed_ips"})QCOMPARE(client(updated,container==DockerContainer::Awg2).value(key),client(cached,container==DockerContainer::Awg2).value(key));
             QCOMPARE(ssh.uploadFileToHost(credentials,QJsonDocument(updated).toJson(QJsonDocument::Compact),"/run/amnezia-cached-client-ipv6.json"),ErrorCode::NoError);
             const auto cachedClient=client(cached,container==DockerContainer::Awg2);

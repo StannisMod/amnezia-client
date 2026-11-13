@@ -31,6 +31,16 @@ namespace {
 constexpr auto labelCheck = "test \"$(sudo docker inspect -f '{{index .Config.Labels \"org.amnezia.connection-updates\"}}' amnezia-connection-updates)\" = 1";
 QByteArray resource(const QString &name) { QFile f(":/server_scripts/connection_updates/" + name); if (!f.open(QIODevice::ReadOnly)) return {}; return f.readAll().replace("\r\n", "\n"); }
 struct AdminResult { ErrorCode error = ErrorCode::InternalError; QJsonObject metadata; QString outcome; QString reason; };
+bool needsClientIPv6(const QJsonObject &client)
+{
+    for(const auto &entry:client.value(configKey::clientIp).toString().split(','))
+        if(QHostAddress(entry.trimmed().section('/',0,0)).protocol()==QAbstractSocket::IPv6Protocol) return false;
+    for(const auto &route:client.value(configKey::allowedIps).toArray()) {
+        const auto subnet=QHostAddress::parseSubnet(route.toString());
+        if(subnet.second>=0 && subnet.first.protocol()==QAbstractSocket::IPv6Protocol) return true;
+    }
+    return false;
+}
 ErrorCode flushPendingRevocations(const ServerCredentials &credentials, const QJsonObject &metadata)
 {
     for (const auto &entry : metadata.value("pendingRevocations").toArray()) {
@@ -42,9 +52,10 @@ ErrorCode flushPendingRevocations(const ServerCredentials &credentials, const QJ
 }
 
 }
-ConnectionUpdatesController::ConnectionUpdatesController(SecureServersRepository *servers, ConnectionController *connection, QObject *parent, ProbeAddressReader probeAddressReader)
+ConnectionUpdatesController::ConnectionUpdatesController(SecureServersRepository *servers, ConnectionController *connection, QObject *parent, ProbeAddressReader probeAddressReader, PeerIPv6Reader peerIPv6Reader)
     : QObject(parent), m_servers(servers), m_connection(connection),
-      m_probeAddressReader(probeAddressReader ? std::move(probeAddressReader) : ProbeAddressReader(&ConnectionUpdatesController::fetchPathMtuProbeAddresses))
+      m_probeAddressReader(probeAddressReader ? std::move(probeAddressReader) : ProbeAddressReader(&ConnectionUpdatesController::fetchPathMtuProbeAddresses)),
+      m_peerIPv6Reader(peerIPv6Reader ? std::move(peerIPv6Reader) : PeerIPv6Reader(&ConnectionUpdatesController::fetchPeerIPv6Assignments))
 {
     m_adminPool.setMaxThreadCount(1);
     connect(servers, &SecureServersRepository::serverAdded, this, &ConnectionUpdatesController::configurationChanged);
@@ -524,7 +535,7 @@ bool ConnectionUpdatesController::needsRefreshBeforeConnect(const QString &id) c
     if (!admin || !admin->credentials().isValid()
         || (admin->defaultContainer != DockerContainer::WireGuard && admin->defaultContainer != DockerContainer::Awg2)) return false;
     const auto cached = admin->containerConfig(admin->defaultContainer).protocolConfig.getClientConfigJson();
-    return !cached.isEmpty() && cached.value("path_mtu_probes").toArray().isEmpty();
+    return !cached.isEmpty() && (cached.value("path_mtu_probes").toArray().isEmpty() || needsClientIPv6(cached));
 }
 void ConnectionUpdatesController::refreshBeforeConnect(const QString &id, const std::function<void()> &done)
 {
@@ -534,7 +545,8 @@ void ConnectionUpdatesController::refreshBeforeConnect(const QString &id, const 
         || (admin->defaultContainer != DockerContainer::WireGuard && admin->defaultContainer != DockerContainer::Awg2)) { done(); return; }
     const auto container = admin->defaultContainer;
     const auto cached = admin->containerConfig(container).protocolConfig.getClientConfigJson();
-    if (cached.isEmpty() || !cached.value("path_mtu_probes").toArray().isEmpty()) { done(); return; }
+    const bool needsIPv6=needsClientIPv6(cached);
+    if (cached.isEmpty() || (!cached.value("path_mtu_probes").toArray().isEmpty() && !needsIPv6)) { done(); return; }
     setBusy(true); auto *watcher = new QFutureWatcher<AdminResult>(this);
     const auto completed = std::make_shared<bool>(false);
     const auto continueOnce = [completed, done] { if (!*completed) { *completed = true; done(); } };
@@ -543,18 +555,28 @@ void ConnectionUpdatesController::refreshBeforeConnect(const QString &id, const 
     QTimer::singleShot(1500, watcher, continueOnce);
     connect(watcher, &QFutureWatcher<AdminResult>::finished, this, [this, watcher, id, original, container, completed, continueOnce] {
         const auto result = watcher->result(); watcher->deleteLater();
-        QJsonObject updated;
-        if (!*completed && result.error == ErrorCode::NoError && m_connection->isDisconnected() && m_servers->serverJsonById(id) == original
-            && connectionUpdates::mergePathProbes(*original, ContainerUtils::containerToString(container), result.metadata.value("pathMtuProbes").toVariant().toStringList(), updated)) {
-            m_servers->editServer(id, updated, serverConfigUtils::SelfHostedAdmin);
+        if (!*completed && result.error == ErrorCode::NoError && m_connection->isDisconnected() && m_servers->serverJsonById(id) == original) {
+            const auto probes=result.metadata.value("pathMtuProbes").toVariant().toStringList();
+            const auto name=ContainerUtils::containerToString(container);
+            QJsonObject updated;
+            const bool migrated=result.metadata.contains("clientIpv6Assignments")
+                && connectionUpdates::mergeAdministratorIPv6(*original,name,result.metadata.value("clientIpv6Assignments").toObject(),probes,updated);
+            if ((migrated || connectionUpdates::mergePathProbes(*original,name,probes,updated)) && updated!=*original)
+                m_servers->editServer(id, updated, serverConfigUtils::SelfHostedAdmin);
         }
         setBusy(false);
         continueOnce();
     });
-    watcher->setFuture(QtConcurrent::run(&m_adminPool, [credentials = admin->credentials(), container, reader = m_probeAddressReader] {
+    watcher->setFuture(QtConcurrent::run(&m_adminPool, [credentials = admin->credentials(), container, needsIPv6, reader = m_probeAddressReader, peerReader = m_peerIPv6Reader] {
         AdminResult result; QStringList targets;
         result.error = reader(credentials, container, targets);
-        if (result.error == ErrorCode::NoError) result.metadata["pathMtuProbes"] = QJsonArray::fromStringList(targets);
+        if (result.error == ErrorCode::NoError) {
+            result.metadata["pathMtuProbes"] = QJsonArray::fromStringList(targets);
+            if(needsIPv6) {
+                QJsonObject assignments;
+                if(peerReader(credentials,container,assignments)==ErrorCode::NoError) result.metadata["clientIpv6Assignments"]=assignments;
+            }
+        }
         return result;
     }));
 }
