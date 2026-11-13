@@ -8,7 +8,7 @@ if ! ip netns add "$ns" 2>/dev/null; then
 fi
 trap 'ip netns del "$ns"' EXIT
 ip -n "$ns" link set lo up
-for dev in amn0 uplink0 lan0; do
+for dev in amn0 uplink0 lan0 tun2; do
     ip -n "$ns" link add "$dev" type dummy
     ip -n "$ns" link set "$dev" up
 done
@@ -24,4 +24,4 @@ ip -n "$ns" -6 addr add 2001:db8:1::2/64 dev uplink0 nodad
 ip -n "$ns" -6 addr add 2001:db8:2::2/64 dev lan0 nodad
 ip -n "$ns" -6 addr add fd58:baa6:dead::1/64 dev amn0 nodad
 ip -n "$ns" -6 route add default via 2001:db8:1::1 dev uplink0
-ip netns exec "$ns" "$1"
+ip netns exec "$ns" env AMNEZIA_PROXY_ROUTE_TEST=isolated-netns "$1"

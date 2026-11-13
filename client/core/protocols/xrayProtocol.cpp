@@ -13,6 +13,7 @@
 #include <QJsonDocument>
 #include <QTimer>
 #include <QJsonObject>
+#include <QJsonArray>
 #include <QNetworkInterface>
 #include <QtCore/qlogging.h>
 #include <QtCore/qobjectdefs.h>
@@ -118,9 +119,11 @@ void XrayProtocol::stop()
         if (!disableKillSwitch.waitForFinished() || !disableKillSwitch.returnValue())
             qWarning() << "Failed to disable killswitch";
 
+#if !defined(Q_OS_LINUX) || defined(Q_OS_ANDROID)
         auto StartRoutingIpv6 = iface->StartRoutingIpv6();
         if (!StartRoutingIpv6.waitForFinished() || !StartRoutingIpv6.returnValue())
             qWarning() << "Failed to start routing ipv6";
+#endif
 
         auto restoreResolvers = iface->restoreResolvers();
         if (!restoreResolvers.waitForFinished() || !restoreResolvers.returnValue())
@@ -278,6 +281,9 @@ ErrorCode XrayProtocol::setupRouting()
                     if (vpnAdapterIndex != -1) {
                         QJsonObject config = m_rawConfig;
                         config.insert("vpnServer", m_remoteAddress);
+#if defined(Q_OS_LINUX) && !defined(Q_OS_ANDROID)
+                        config.insert("proxyIpv6", true);
+#endif
 
                         auto enableKillSwitch = IpcClient::Interface()->enableKillSwitch(config, vpnAdapterIndex);
                         if (!enableKillSwitch.waitForFinished() || !enableKillSwitch.returnValue()) {
@@ -299,11 +305,27 @@ ErrorCode XrayProtocol::setupRouting()
                     }
                 }
 
+#if defined(Q_OS_LINUX) && !defined(Q_OS_ANDROID)
+                QStringList includedIpv6, excludedIpv6;
+                if (m_routeMode != amnezia::RouteMode::VpnOnlyForwardSites) includedIpv6 << "::/0";
+                const auto sites = m_rawConfig.value(configKey::splitTunnelSites).toArray();
+                for (const auto &site : sites) {
+                    const auto subnet = QHostAddress::parseSubnet(site.toString());
+                    if (subnet.first.protocol() != QAbstractSocket::IPv6Protocol) continue;
+                    if (m_routeMode == amnezia::RouteMode::VpnOnlyForwardSites) includedIpv6 << site.toString();
+                    else if (m_routeMode == amnezia::RouteMode::VpnAllExceptSites) excludedIpv6 << site.toString();
+                }
+                const QHostAddress endpoint(m_remoteAddress);
+                if (endpoint.protocol() == QAbstractSocket::IPv6Protocol) excludedIpv6 << endpoint.toString() + "/128";
+                auto ipv6 = iface->configureProxyIpv6(includedIpv6, excludedIpv6);
+                if (!ipv6.waitForFinished() || !ipv6.returnValue()) return ErrorCode::InternalError;
+#else
                 auto StopRoutingIpv6 = iface->StopRoutingIpv6();
                 if (!StopRoutingIpv6.waitForFinished() || !StopRoutingIpv6.returnValue()) {
                     qCritical() << "Failed to disable IPv6 routing";
                     return ErrorCode::InternalError;
                 }
+#endif
 
 #ifdef Q_OS_WIN
                 if (inetAdapterIndex != -1 && vpnAdapterIndex != -1) {

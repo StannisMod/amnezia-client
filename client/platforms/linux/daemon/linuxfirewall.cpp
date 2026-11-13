@@ -213,7 +213,7 @@ void LinuxFirewall::install()
                                                                  QStringLiteral("-o lo+ -j ACCEPT"),
                                                              });
 
-    installAnchor(IPv4, QStringLiteral("320.allowDNS"), {});
+    installAnchor(Both, QStringLiteral("320.allowDNS"), {});
 
     installAnchor(Both, QStringLiteral("310.blockDNS"), {
                                                             QStringLiteral("-p udp --dport 53 -j REJECT"),
@@ -254,9 +254,9 @@ void LinuxFirewall::install()
                                                              QStringLiteral("-m mark --mark %1 -j ACCEPT").arg(amnezia::xray::xrayTrafficMark),
                                                          });
 
-    installAnchor(IPv4, QStringLiteral("120.blockNets"), {});
+    installAnchor(Both, QStringLiteral("120.blockNets"), {});
 
-    installAnchor(IPv4, QStringLiteral("110.allowNets"), {});
+    installAnchor(Both, QStringLiteral("110.allowNets"), {});
 
     installAnchor(Both, QStringLiteral("400.allowPIA"), {});
 
@@ -325,15 +325,15 @@ void LinuxFirewall::uninstall()
     // Remove filter anchors
     uninstallAnchor(Both, QStringLiteral("000.allowLoopback"));
     uninstallAnchor(Both, QStringLiteral("400.allowPIA"));
-    uninstallAnchor(IPv4, QStringLiteral("320.allowDNS"));
+    uninstallAnchor(Both, QStringLiteral("320.allowDNS"));
     uninstallAnchor(Both, QStringLiteral("310.blockDNS"));
     uninstallAnchor(Both, QStringLiteral("300.allowLAN"));
     uninstallAnchor(Both, QStringLiteral("290.allowDHCP"));
     uninstallAnchor(IPv6, QStringLiteral("250.blockIPv6"));
     uninstallAnchor(Both, QStringLiteral("200.allowVPN"));
-    uninstallAnchor(IPv4, QStringLiteral("120.blockNets"));
+    uninstallAnchor(Both, QStringLiteral("120.blockNets"));
     uninstallAnchor(Both, QStringLiteral("130.allowMarkedXray"));
-    uninstallAnchor(IPv4, QStringLiteral("110.allowNets"));
+    uninstallAnchor(Both, QStringLiteral("110.allowNets"));
     uninstallAnchor(Both, QStringLiteral("100.blockAll"));
 
     // Remove Nat anchors
@@ -480,17 +480,18 @@ void LinuxFirewall::updateDNSServers(const QStringList& servers)
 
     existingServers = servers;
     const QString chain = QStringLiteral("%1.320.allowDNS").arg(kAnchorName);
-    executeIptables(QStringLiteral("iptables"), {QStringLiteral("-F"), chain});
+    for (const auto &program : {QStringLiteral("iptables"), QStringLiteral("ip6tables")})
+        executeIptables(program, {QStringLiteral("-F"), chain});
     const QStringList ifaces = {
         QStringLiteral("amn0+"), QStringLiteral("tun0+"), QStringLiteral("tun2+")
     };
     for (const QString& server : servers) {
         for (const QString& iface : ifaces) {
-            executeIptables(QStringLiteral("iptables"),
+            executeIptables(server.contains(':') ? QStringLiteral("ip6tables") : QStringLiteral("iptables"),
                 {QStringLiteral("-A"), chain, QStringLiteral("-o"), iface,
                  QStringLiteral("-d"), server, QStringLiteral("-p"), QStringLiteral("udp"),
                  QStringLiteral("--dport"), QStringLiteral("53"), QStringLiteral("-j"), QStringLiteral("ACCEPT")});
-            executeIptables(QStringLiteral("iptables"),
+            executeIptables(server.contains(':') ? QStringLiteral("ip6tables") : QStringLiteral("iptables"),
                 {QStringLiteral("-A"), chain, QStringLiteral("-o"), iface,
                  QStringLiteral("-d"), server, QStringLiteral("-p"), QStringLiteral("tcp"),
                  QStringLiteral("--dport"), QStringLiteral("53"), QStringLiteral("-j"), QStringLiteral("ACCEPT")});
@@ -501,9 +502,10 @@ void LinuxFirewall::updateDNSServers(const QStringList& servers)
 void LinuxFirewall::updateAllowNets(const QStringList& servers)
 {
     const QString chain = QStringLiteral("%1.110.allowNets").arg(kAnchorName);
-    executeIptables(QStringLiteral("iptables"), {QStringLiteral("-F"), chain});
+    for (const auto &program : {QStringLiteral("iptables"), QStringLiteral("ip6tables")})
+        executeIptables(program, {QStringLiteral("-F"), chain});
     for (const QString& server : servers)
-        executeIptables(QStringLiteral("iptables"),
+        executeIptables(server.contains(':') ? QStringLiteral("ip6tables") : QStringLiteral("iptables"),
             {QStringLiteral("-A"), chain, QStringLiteral("-d"), server,
              QStringLiteral("-j"), QStringLiteral("ACCEPT")});
 }
@@ -514,9 +516,10 @@ void LinuxFirewall::updateBlockNets(const QStringList& servers)
 
     existingServers = servers;
     const QString chain = QStringLiteral("%1.120.blockNets").arg(kAnchorName);
-    executeIptables(QStringLiteral("iptables"), {QStringLiteral("-F"), chain});
+    for (const auto &program : {QStringLiteral("iptables"), QStringLiteral("ip6tables")})
+        executeIptables(program, {QStringLiteral("-F"), chain});
     for (const QString& server : servers)
-        executeIptables(QStringLiteral("iptables"),
+        executeIptables(server.contains(':') ? QStringLiteral("ip6tables") : QStringLiteral("iptables"),
             {QStringLiteral("-A"), chain, QStringLiteral("-d"), server,
              QStringLiteral("-j"), QStringLiteral("REJECT")});
 }

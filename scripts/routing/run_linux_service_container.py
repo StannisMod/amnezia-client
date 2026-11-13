@@ -68,6 +68,15 @@ def main():
         execute('env', 'QT_QPA_PLATFORM=offscreen', 'bash', str(repo / 'scripts/routing/install_service_in_container.sh'),
                 str(args.package.resolve()), str(args.helper.resolve()) if args.helper else '',
                 str(args.service.resolve()) if args.service else '', timeout=240)
+        # Exercise the installed Qt service's proxy TUN and dual-stack firewall
+        # before the routed-session suite takes its original-state snapshot.
+        execute('bash', '-ec', '''
+ip link add amnproxytest0 type dummy
+trap 'ip link del amnproxytest0' EXIT
+ip link set amnproxytest0 up
+ip -6 addr add 2001:db8:2::2/64 dev amnproxytest0 nodad
+AMNEZIA_PROXY_ROUTE_TEST=isolated-docker AMNEZIA_PROXY_DIRECT_DEVICE=amnproxytest0 "$1" proxy-ipv6
+''', 'sh', str(args.qt_probe.resolve()))
         execute('python3', '-u', str(repo / 'scripts/routing/run_service_acceptance.py'),
                 '--peer', str(args.peer.resolve()), '--qt-probe', str(args.qt_probe.resolve()),
                 '--report', '/artifacts/' + report.name, '--resolver-cycles', '100', '--ci-rescue',

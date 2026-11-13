@@ -665,7 +665,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install DNS and native routing test dependencies
-        run: sudo apt-get update && sudo apt-get install -y qt6-base-dev ninja-build
+        run: sudo apt-get update && sudo apt-get install -y qt6-base-dev ninja-build iproute2
       - name: Test cache commands and production exclusion routes
         run: |
           cmake -S tests/linux-dns-cache -B build-dns-tests -G Ninja

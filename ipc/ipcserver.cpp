@@ -154,6 +154,11 @@ void IpcServer::clearLogs()
     Logger::clearLogs(true);
 }
 
+bool IpcServer::configureProxyIpv6(const QStringList &included, const QStringList &excluded)
+{
+    return Router::configureProxyIpv6(included, excluded);
+}
+
 bool IpcServer::createTun(const QString &dev, const QString &subnet)
 {
 #ifdef MZ_DEBUG
