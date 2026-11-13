@@ -52,17 +52,18 @@ VpnConnection::VpnConnection(SecureServersRepository* serversRepository, SecureA
     m_ipv6SiteRefreshTimer.setObjectName("ipv6SiteRefresh");
     m_ipv6SiteRefreshTimer.setInterval(30000);
     connect(&m_ipv6SiteRefreshTimer, &QTimer::timeout, this, &VpnConnection::refreshIpv6Sites);
+#endif
     connect(this, &VpnConnection::connectionStateChanged, this, [this](Vpn::ConnectionState state) {
-        if (state == Vpn::ConnectionState::Connected && m_vpnProtocol && m_vpnProtocol->supportsIpv6HostUpdates()) {
-            m_ipv6SiteRefreshTimer.start();
-        } else {
+        if (state != Vpn::ConnectionState::Connected) {
             m_ipv6SiteRefreshTimer.stop();
             ++m_siteLookupGeneration;
             m_siteLookupPending = false;
             for (int id : std::exchange(m_siteLookupIds, {})) QHostInfo::abortHostLookup(id);
         }
-    });
+#if defined(Q_OS_LINUX) && !defined(Q_OS_ANDROID)
+        else if (m_vpnProtocol && m_vpnProtocol->supportsIpv6HostUpdates()) m_ipv6SiteRefreshTimer.start();
 #endif
+    });
 #if defined(Q_OS_IOS) || defined(MACOS_NE)
     m_checkTimer.setInterval(1000);
     connect(IosController::Instance(), &IosController::connectionStateChanged, this, &VpnConnection::setConnectionState);

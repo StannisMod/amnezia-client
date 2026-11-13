@@ -24,7 +24,8 @@ class RefreshProtocol : public VpnProtocol {
 public:
     RefreshProtocol() : VpnProtocol({}) {}
     bool isConnected() const override { return true; }
-    bool supportsIpv6HostUpdates() const override { return true; }
+    bool periodic = true;
+    bool supportsIpv6HostUpdates() const override { return periodic; }
     ErrorCode start() override { return ErrorCode::NoError; }
     void stop() override {}
     int requests = 0;
@@ -96,6 +97,16 @@ private slots:
         QVERIFY(!cached().contains("2001:db8::30")); // Ignore an ACK from the stopped session.
         connection.refreshIpv6Sites();
         QVERIFY(connection.lookups.isEmpty());
+        // Connected must not cancel the initial lookup of a backend without polling.
+        protocol->periodic = false;
+        connection.addSitesRoutes({}, RouteMode::VpnOnlyForwardSites, true);
+        QCOMPARE(connection.lookups.size(), 1);
+        const int before = protocol->requests;
+        connection.setConnectionState(Vpn::ConnectionState::Connected);
+        QVERIFY(!timer->isActive());
+        connection.lookups.takeFirst()(answer);
+        QCOMPARE(protocol->requests, before + 1);
+        protocol->completion(false);
         settings.clearSettings();
     }
 #endif
