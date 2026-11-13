@@ -421,7 +421,8 @@ public final class RoutingInstrumentation extends Instrumentation {
             if (current.getJSONObject("routing").getBoolean("new_flows_paused")==paused && policyPaused==paused) return;
             SystemClock.sleep(100);
         }
-        throw new AssertionError("flow pause/notice did not become "+paused);
+        applicationFailureDiagnostics=connectionDiagnostics();
+        throw new AssertionError("flow pause/notice did not become "+paused+"; notice="+policyPaused+"; "+applicationFailureDiagnostics);
     }
 
     private void strictDnsCheckpoint(boolean strict) throws Exception {
