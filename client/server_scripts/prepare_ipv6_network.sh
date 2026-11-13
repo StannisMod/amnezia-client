@@ -35,7 +35,7 @@ amnezia_prepare_ipv6_network() {
 # may already be using. The migration coordinator owns any later cleanup.
 amnezia_attach_ipv6_network() {
     amnezia_v6_container=$1
-    case "$amnezia_v6_container" in amnezia-wireguard|amnezia-awg|amnezia-awg2|amnezia-xray|amnezia-ssxray) ;; *) return 1 ;; esac
+    case "$amnezia_v6_container" in amnezia-wireguard|amnezia-awg|amnezia-awg2|amnezia-xray|amnezia-ssxray|amnezia-openvpn) ;; *) return 1 ;; esac
     [ "$AMNEZIA_IPV6_NETWORK" = amnezia-ipv6-egress ] || return 1
     amnezia_v6_network_id=$(sudo docker network inspect --format '{{.Id}}' "$AMNEZIA_IPV6_NETWORK") || return 1
     amnezia_v6_shape=$(sudo docker network inspect --format '{{.Driver}} {{.EnableIPv6}} {{.EnableIPv4}} {{index .Labels "com.amnezia.ipv6-egress"}}' "$amnezia_v6_network_id") || return 1

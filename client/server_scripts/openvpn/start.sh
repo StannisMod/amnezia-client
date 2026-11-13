@@ -26,5 +26,6 @@ killall -KILL openvpn
 
 # start daemons if configured
 if [ -f /opt/amnezia/openvpn/ca.crt ]; then (openvpn --config /opt/amnezia/openvpn/server.conf --daemon); fi
+amnezia_enable_ipv6 tun0 || echo 'AMNEZIA_IPV6_FORWARDING_STATUS=boot-preparation-failed' >&2
 
 tail -f /dev/null

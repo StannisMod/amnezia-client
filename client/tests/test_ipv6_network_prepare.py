@@ -88,6 +88,9 @@ class IPv6NetworkPreparation(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         connects = [c for c in commands if c[:4] == ['sudo', 'docker', 'network', 'connect']]
         self.assertEqual(connects, [['sudo', 'docker', 'network', 'connect', 'a'*64, 'b'*64]])
+        result, commands = self.scenario('new', attach=True, container='amnezia-openvpn')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(['sudo', 'docker', 'network', 'connect', 'a'*64, 'b'*64], commands)
         result, commands = self.scenario('attached', attach=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse(any(c[:4] == ['sudo','docker','network','connect'] for c in commands))

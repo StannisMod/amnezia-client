@@ -774,7 +774,7 @@ ErrorCode InstallController::runContainerWorker(const ServerCredentials &credent
     amnezia::ScriptVars protocolVars = amnezia::genProtocolVarsForContainer(container, config);
     baseVars.append(protocolVars);
     auto script = sshSession.replaceVars(amnezia::scriptData(ProtocolScriptType::run_container, container), baseVars);
-    if (ContainerUtils::isAwgContainer(container) || container == DockerContainer::WireGuard || container == DockerContainer::Xray)
+    if (ContainerUtils::isAwgContainer(container) || container == DockerContainer::WireGuard || container == DockerContainer::Xray || container == DockerContainer::OpenVpn)
         script = SshSession::wholeScriptCommand(script);
     ErrorCode e = sshSession.runScript(
             credentials, script,

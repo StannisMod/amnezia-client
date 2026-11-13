@@ -6,7 +6,7 @@ amnezia_ipv6_rule() {
 }
 amnezia_enable_ipv6() {
     amnezia_v6_tunnel=$1
-    case "$amnezia_v6_tunnel" in wg0|awg0) ;; *) return 1 ;; esac
+    case "$amnezia_v6_tunnel" in wg0|awg0|tun0) ;; *) return 1 ;; esac
     amnezia_v6_addresses=$(ip -o -6 addr show dev "$amnezia_v6_tunnel" scope global) || return 1
     amnezia_v6_prefixes=$(printf '%s\n' "$amnezia_v6_addresses" | awk '{print $4}')
     if [ -z "$amnezia_v6_prefixes" ]; then

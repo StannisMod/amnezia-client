@@ -12,6 +12,7 @@ on:
       - client/server_scripts/awg/**
       - client/server_scripts/awg_legacy/**
       - client/server_scripts/wireguard/**
+      - client/server_scripts/openvpn/**
       - client/server_scripts/serverScripts.qrc
       - .github/workflows/awg-mtu.yml
   pull_request:
@@ -26,6 +27,7 @@ on:
       - client/server_scripts/awg/**
       - client/server_scripts/awg_legacy/**
       - client/server_scripts/wireguard/**
+      - client/server_scripts/openvpn/**
       - .github/workflows/awg-mtu.yml
 permissions:
   contents: read
@@ -63,6 +65,10 @@ jobs:
           done
       - name: Verify encrypted AWG and WG through Linux TUN and NAT66
         run: docker run --rm --network none --privileged --pids-limit 256 --memory 1g --entrypoint sh ipv6-egress-regression /app/run_encrypted.sh | tee ipv6-encrypted-egress.log
+      - name: Verify encrypted OpenVPN IPv6 with original IPv4 TCP retained
+        run: |
+          set -euo pipefail
+          docker run --rm --network none --privileged --pids-limit 128 --memory 256m --entrypoint sh ipv6-egress-regression /app/run_openvpn.sh | tee ipv6-openvpn-egress.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -70,6 +76,7 @@ jobs:
           path: |
             ipv6-egress-result.log
             ipv6-encrypted-egress.log
+            ipv6-openvpn-egress.log
             ipv6-boot-*.log
   ownership:
     runs-on: ubuntu-latest
