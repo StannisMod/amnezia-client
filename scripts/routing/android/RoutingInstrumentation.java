@@ -59,12 +59,14 @@ public final class RoutingInstrumentation extends Instrumentation {
     private Messenger service, replies;
     private JSONObject fixture;
     private int cycles = 100;
+    private String observerIP;
     private boolean performanceOnly;
     private boolean sharedFirst;
     private boolean primaryOnly;
     private boolean uploadMtuOnly;
     private boolean appPolicyOnly;
     private boolean packageLifecycle;
+    private boolean api28CompatOnly;
     private boolean diagnoseControl;
     private long applicationPolicyReply = -1;
     private boolean applicationPolicyAccepted;
@@ -84,10 +86,12 @@ public final class RoutingInstrumentation extends Instrumentation {
         sharedFirst="shared-first".equals(args.getString("performance_order","legacy-first"));
         performanceOnly=Boolean.parseBoolean(args.getString("performance_only","false"));
         cycles = Integer.parseInt(args.getString("cycles", "100"));
+        observerIP=args.getString("observer_ip","10.0.2.2");
         primaryOnly = Boolean.parseBoolean(args.getString("primary_only", "false"));
         uploadMtuOnly = Boolean.parseBoolean(args.getString("upload_mtu_only", "false"));
         appPolicyOnly = Boolean.parseBoolean(args.getString("app_policy_only", "false"));
         packageLifecycle = Boolean.parseBoolean(args.getString("package_lifecycle", "false"));
+        api28CompatOnly = Boolean.parseBoolean(args.getString("api28_compat_only", "false"));
         diagnoseControl = Boolean.parseBoolean(args.getString("diagnose_control", "false"));
         start();
     }
@@ -128,6 +132,9 @@ public final class RoutingInstrumentation extends Instrumentation {
             require(didBind && bound.await(15, TimeUnit.SECONDS), "AwgService binding failed");
             Bundle registration = new Bundle(); registration.putString("CLIENT_NAME", "routing-acceptance");
             send(REGISTER, registration);
+            if (api28CompatOnly) {
+                api28Compatibility();result.putString("routing_result","PASS_API28_COMPAT_ONLY");code=0;return;
+            }
             if (appPolicyOnly) {
                 perApplicationPolicy();
                 result.putString("routing_result", "PASS_APP_POLICY_ONLY");code = 0;return;
@@ -151,7 +158,7 @@ public final class RoutingInstrumentation extends Instrumentation {
             JSONArray domainRules=new JSONArray();
             for(int i=0;i<domainOnly.getJSONObject("sing_box_routing").getJSONArray("rules").length();i++) {
                 JSONObject entry=domainOnly.getJSONObject("sing_box_routing").getJSONArray("rules").getJSONObject(i);
-                if(!entry.optString("value").equals("10.0.2.2/32")) domainRules.put(entry);
+                if(!entry.optString("kind").equals("cidr") || entry.optString("value").equals("127.0.0.0/8") || entry.optString("value").equals("::1/128")) domainRules.put(entry);
             }
             domainOnly.getJSONObject("sing_box_routing").put("rules",domainRules);
             state=-1;serviceError=false;startService(domainOnly);awaitState(CONNECTED,false);
@@ -302,7 +309,24 @@ public final class RoutingInstrumentation extends Instrumentation {
                 config.remove("sing_box_routing"); config.remove("sing_box_dns");
                 config.put("android_legacy_awg_backend", true);
             }
-            startService(config); awaitState(CONNECTED, false);
+            state=-1;serviceError=false;startService(config); awaitState(CONNECTED, false);
+            // Legacy handshake completion may precede Android installing the
+            // new per-UID VPN network. Measure throughput only after OS capture
+            // is ready; never retry or replace the measured TCP stream.
+            ConnectivityManager manager=getTargetContext().getSystemService(ConnectivityManager.class);
+            String expectedSource=legacy?"10.77.0.1":"172.19.0.1";
+            long readyStart=SystemClock.elapsedRealtime();boolean captureReady=false;
+            do {
+                Network network=manager.getActiveNetwork();
+                NetworkCapabilities caps=network==null?null:manager.getNetworkCapabilities(network);
+                android.net.LinkProperties links=network==null?null:manager.getLinkProperties(network);
+                if(caps!=null && caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) && links!=null) {
+                    for(android.net.LinkAddress address:links.getLinkAddresses()) if(expectedSource.equals(address.getAddress().getHostAddress())) captureReady=true;
+                }
+                if(!captureReady) SystemClock.sleep(25);
+            } while(!captureReady && !serviceError && SystemClock.elapsedRealtime()-readyStart<5000);
+            require(captureReady && !serviceError,"benchmark VPN capture is not installed in Android");
+            long captureWait=SystemClock.elapsedRealtime()-readyStart;
             ExecutorService io = Executors.newSingleThreadExecutor();
             try (Socket connection = retainedSocket(InetAddress.getByName("10.77.0.2"))) {
                 byte[] payload = new byte[256 * 1024];
@@ -315,7 +339,7 @@ public final class RoutingInstrumentation extends Instrumentation {
                 }
                 long elapsed = SystemClock.elapsedRealtime() - begin;
                 retainedCheckpoint("perf_" + mode + "_after");
-                progress("PERFORMANCE " + new JSONObject().put("backend", mode).put("bytes", bytes).put("elapsed_ms", elapsed));
+                progress("PERFORMANCE " + new JSONObject().put("backend", mode).put("bytes", bytes).put("elapsed_ms", elapsed).put("capture_ready_wait_ms",captureWait));
             } finally { io.shutdownNow(); disconnect(); }
         }
         pass("legacy/shared CPU and RSS observations with verified original-stream payloads");
@@ -344,6 +368,20 @@ public final class RoutingInstrumentation extends Instrumentation {
             while ((count = input.read(data)) >= 0) bytes.write(data, 0, count);
             return new JSONObject(new String(bytes.toByteArray(), StandardCharsets.UTF_8));
         }
+    }
+
+    private void api28Compatibility() throws Exception {
+        require(android.os.Build.VERSION.SDK_INT==28,"API28 compatibility requires a real Android 9 emulator");
+        JSONObject normal=primaryConfiguration();
+        state=-1;serviceError=false;startService(normal);awaitState(CONNECTED,false);
+        require("shared".equals(connectionDiagnostics().getString("backend")),"ordinary API28 all-VPN profile lost the shared core");
+        requireRoute(InetAddress.getByName("10.77.0.2"),"VPN");requireRoute(InetAddress.getByName("fd77::2"),"VPN");disconnect();
+        JSONObject mixed=primaryConfiguration();mixed.put("android_app_routing",new JSONObject().put("version",1).put("site_rule_packages",new JSONArray().put("org.amnezia.vpn")));
+        state=-1;serviceError=false;serviceErrorText="";startService(mixed);awaitState(DISCONNECTED,true);
+        require(serviceErrorText.contains("Android 10"),"unsupported API28 policy was not rejected explicitly: "+serviceErrorText);
+        state=-1;serviceError=false;startService(normal);awaitState(CONNECTED,false);requireRoute(InetAddress.getByName("10.77.0.2"),"VPN");disconnect();
+        progress("API28_COMPAT_RESULT "+new JSONObject().put("sdk",28).put("ordinary_shared_ipv4_ipv6",true).put("mixed_policy_rejected",true).put("subsequent_connect",true));
+        pass("Android 9 ordinary shared core works and unsupported mixed policy fails explicitly");
     }
 
     private JSONObject primaryConfiguration() throws Exception {
@@ -765,6 +803,7 @@ public final class RoutingInstrumentation extends Instrumentation {
         rules.put(rule("domain", "override.direct.ru", "vpn"));
         rules.put(rule("domain", "vpn.test", "vpn"));
         rules.put(rule("cidr", "10.0.2.2/32", "direct"));
+        if(!observerIP.equals("10.0.2.2")) rules.put(rule("cidr",observerIP+(observerIP.contains(":")?"/128":"/32"),"direct"));
         rules.put(rule("cidr", "127.0.0.0/8", "direct"));
         rules.put(rule("cidr", "::1/128", "direct"));
         config.put("sing_box_routing", new JSONObject().put("version", 1).put("default", inverse ? "direct" : "vpn").put("rules", rules));
