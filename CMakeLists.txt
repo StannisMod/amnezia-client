@@ -82,6 +82,10 @@ if(NOT IOS AND NOT ANDROID AND NOT MACOS_NE)
     add_subdirectory(service)
 endif()
 
+if(LINUX AND NOT ANDROID)
+    include(cmake/linux_network_runtime.cmake)
+endif()
+
 if ((LINUX AND NOT ANDROID) OR (APPLE AND NOT IOS AND NOT MACOS_NE) OR (WIN32))
     include(${CMAKE_SOURCE_DIR}/cmake/CPack.cmake)
 endif()
