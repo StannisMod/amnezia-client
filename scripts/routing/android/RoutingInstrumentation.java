@@ -330,6 +330,10 @@ public final class RoutingInstrumentation extends Instrumentation {
     }
 
     private long awaitCapture(String expectedSource) throws Exception {
+        return awaitCapture(expectedSource,"10.77.0.2");
+    }
+
+    private long awaitCapture(String expectedSource,String probeDestination) throws Exception {
             ConnectivityManager manager=getTargetContext().getSystemService(ConnectivityManager.class);
             long readyStart=SystemClock.elapsedRealtime();boolean captureReady=false;
             do {
@@ -342,7 +346,7 @@ public final class RoutingInstrumentation extends Instrumentation {
                         // UDP connect selects a source without sending a packet.
                         // This checks kernel routing, beyond cached framework data.
                         try(DatagramSocket route=new DatagramSocket()) {
-                            route.connect(InetAddress.getByName("10.77.0.2"),18081);
+                            route.connect(InetAddress.getByName(probeDestination),18081);
                             captureReady=expectedSource.equals(route.getLocalAddress().getHostAddress());
                         } catch(Exception notReady) {captureReady=false;}
                     }
@@ -438,6 +442,8 @@ public final class RoutingInstrumentation extends Instrumentation {
         config.put("appSplitTunnelType",1).put("splitTunnelApps",new JSONArray().put("org.amnezia.vpn"));
         state=-1;serviceError=false;startService(config);awaitState(CONNECTED,false);
         awaitCapture("10.0.42.2");
+        ConnectivityManager captureManager=getTargetContext().getSystemService(ConnectivityManager.class);
+        progress("XRAY_CAPTURE_ROUTES "+captureManager.getLinkProperties(captureManager.getActiveNetwork()));
         JSONArray targets=config.getJSONArray("ipv6_test_destinations");
         require(targets.length()==4,"Xray fixture must include IPv4, GUA, ULA and NAT64");
         for(int i=0;i<targets.length();i++) {
@@ -458,7 +464,7 @@ public final class RoutingInstrumentation extends Instrumentation {
         long until=SystemClock.elapsedRealtime()+5000;
         while(java.util.Objects.equals(oldNetwork,manager.getActiveNetwork()) && SystemClock.elapsedRealtime()<until)SystemClock.sleep(25);
         require(!java.util.Objects.equals(oldNetwork,manager.getActiveNetwork()),"Android did not publish the new site-scoped VPN");
-        awaitCapture("10.0.42.2");
+        awaitCapture("10.0.42.2",targets.getString(0));
         JSONObject before=control("/stats",false).getJSONObject("vless");
         xrayTraffic(targets.getString(0));xrayTraffic(targets.getString(2));
         JSONObject after=control("/stats",false).getJSONObject("vless");
