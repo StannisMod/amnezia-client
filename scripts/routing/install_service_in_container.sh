@@ -18,3 +18,6 @@ if [[ -n "$service_binary" ]]; then
     install -m 0755 "$service_binary" "${services[0]}"
 fi
 systemctl restart AmneziaVPN
+# Exercise the installed executable against the bundled shared libraries, too.
+# A successful package build alone does not prove they load on the target OS.
+/opt/AmneziaVPN/bin/openvpn --version
