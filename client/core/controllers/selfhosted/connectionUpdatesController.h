@@ -4,6 +4,8 @@
 #include <QObject>
 #include <QNetworkAccessManager>
 #include <QThreadPool>
+#include <QHash>
+#include <QByteArray>
 #include <functional>
 #include "core/repositories/secureServersRepository.h"
 
@@ -17,7 +19,8 @@ class ConnectionUpdatesController : public QObject {
 public:
     using ProbeAddressReader = std::function<ErrorCode(const ServerCredentials &, DockerContainer, QStringList &)>;
     using PeerIPv6Reader = std::function<ErrorCode(const ServerCredentials &, DockerContainer, QJsonObject &)>;
-    explicit ConnectionUpdatesController(SecureServersRepository *servers, ConnectionController *connection, QObject *parent = nullptr, ProbeAddressReader probeAddressReader = {}, PeerIPv6Reader peerIPv6Reader = {});
+    using ProxyIPv6Preparer = std::function<ErrorCode(const ServerCredentials &, DockerContainer, QJsonObject &)>;
+    explicit ConnectionUpdatesController(SecureServersRepository *servers, ConnectionController *connection, QObject *parent = nullptr, ProbeAddressReader probeAddressReader = {}, PeerIPv6Reader peerIPv6Reader = {}, ProxyIPv6Preparer proxyIPv6Preparer = {});
     ~ConnectionUpdatesController() override;
     bool busy() const { return m_busy; }
     QStringList enabledServers() const;
@@ -55,6 +58,8 @@ private:
     ConnectionController *m_connection;
     ProbeAddressReader m_probeAddressReader;
     PeerIPv6Reader m_peerIPv6Reader;
+    ProxyIPv6Preparer m_proxyIPv6Preparer;
+    QHash<QString, QByteArray> m_proxyIPv6Verified;
     QNetworkAccessManager m_network;
     QThreadPool m_adminPool;
     bool m_busy = false;

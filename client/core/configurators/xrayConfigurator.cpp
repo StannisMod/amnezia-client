@@ -14,6 +14,7 @@
 #include "core/utils/protocolEnum.h"
 #include "core/utils/selfhosted/sshSession.h"
 #include "core/utils/selfhosted/scriptsRegistry.h"
+#include "core/utils/selfhosted/proxyIpv6Upgrade.h"
 #include "core/utils/protocolEnum.h"
 #include "core/protocols/protocolUtils.h"
 #include "core/utils/constants/configKeys.h"
@@ -668,6 +669,13 @@ ProtocolConfig XrayConfigurator::createConfig(const ServerCredentials &credentia
     }
 
     const XrayServerConfig &srv = *serverConfig;
+
+    if (proxyIpv6Upgrade::supported(container)) {
+        QJsonObject ipv6;
+        const auto ipv6Error = proxyIpv6Upgrade::prepare(credentials, container, ipv6);
+        if (ipv6Error != ErrorCode::NoError || ipv6.value("result") != "verified")
+            qWarning() << "Proxy IPv6 egress not verified:" << ipv6.value("reason").toString();
+    }
 
     QString xrayClientId = prepareServerConfig(credentials, container, containerConfig, dnsSettings, errorCode);
     if (errorCode != ErrorCode::NoError || xrayClientId.isEmpty()) {

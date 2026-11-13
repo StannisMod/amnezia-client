@@ -23,6 +23,8 @@
 #include "core/utils/connectionUpdates.h"
 #include "core/utils/selfhosted/sshSession.h"
 #include "core/utils/vpnEndpoint.h"
+#include "core/utils/selfhosted/proxyIpv6Upgrade.h"
+#include "core/models/protocols/xrayProtocolConfig.h"
 #include "core/utils/constants/configKeys.h"
 #include "core/utils/constants/protocolConstants.h"
 
@@ -52,10 +54,11 @@ ErrorCode flushPendingRevocations(const ServerCredentials &credentials, const QJ
 }
 
 }
-ConnectionUpdatesController::ConnectionUpdatesController(SecureServersRepository *servers, ConnectionController *connection, QObject *parent, ProbeAddressReader probeAddressReader, PeerIPv6Reader peerIPv6Reader)
+ConnectionUpdatesController::ConnectionUpdatesController(SecureServersRepository *servers, ConnectionController *connection, QObject *parent, ProbeAddressReader probeAddressReader, PeerIPv6Reader peerIPv6Reader, ProxyIPv6Preparer proxyIPv6Preparer)
     : QObject(parent), m_servers(servers), m_connection(connection),
       m_probeAddressReader(probeAddressReader ? std::move(probeAddressReader) : ProbeAddressReader(&ConnectionUpdatesController::fetchPathMtuProbeAddresses)),
-      m_peerIPv6Reader(peerIPv6Reader ? std::move(peerIPv6Reader) : PeerIPv6Reader(&ConnectionUpdatesController::fetchPeerIPv6Assignments))
+      m_peerIPv6Reader(peerIPv6Reader ? std::move(peerIPv6Reader) : PeerIPv6Reader(&ConnectionUpdatesController::fetchPeerIPv6Assignments)),
+      m_proxyIPv6Preparer(proxyIPv6Preparer ? std::move(proxyIPv6Preparer) : ProxyIPv6Preparer(&proxyIpv6Upgrade::prepare))
 {
     m_adminPool.setMaxThreadCount(1);
     connect(servers, &SecureServersRepository::serverAdded, this, &ConnectionUpdatesController::configurationChanged);
@@ -530,6 +533,14 @@ ErrorCode ConnectionUpdatesController::issue(const ServerCredentials &credential
 void ConnectionUpdatesController::refresh(const QString &id) { fetch(id, true); }
 bool ConnectionUpdatesController::needsRefreshBeforeConnect(const QString &id) const
 {
+    const auto proxy = m_servers->selfHostedAdminConfig(id);
+    if (proxy && proxyIpv6Upgrade::supported(proxy->defaultContainer)) {
+        const auto containerConfig = proxy->containerConfig(proxy->defaultContainer);
+        const auto *config = containerConfig.protocolConfig.as<XrayProtocolConfig>();
+        const auto original = m_servers->serverJsonById(id);
+        return proxy->credentials().isValid() && config && config->hasClientConfig() && !config->serverConfig.isThirdPartyConfig
+            && original && m_proxyIPv6Verified.value(id) != QCryptographicHash::hash(QJsonDocument(*original).toJson(QJsonDocument::Compact), QCryptographicHash::Sha256);
+    }
     if (available(id)) return true;
     const auto admin = m_servers->selfHostedAdminConfig(id);
     if (!admin || !admin->credentials().isValid()
@@ -539,6 +550,33 @@ bool ConnectionUpdatesController::needsRefreshBeforeConnect(const QString &id) c
 }
 void ConnectionUpdatesController::refreshBeforeConnect(const QString &id, const std::function<void()> &done)
 {
+    const auto proxy = m_servers->selfHostedAdminConfig(id);
+    if (proxy && proxyIpv6Upgrade::supported(proxy->defaultContainer)) {
+        const auto original = m_servers->serverJsonById(id);
+        if (m_busy || !m_connection->isDisconnected() || !original || !needsRefreshBeforeConnect(id)) { done(); return; }
+        const auto container = proxy->defaultContainer;
+        const auto tag = QCryptographicHash::hash(QJsonDocument(*original).toJson(QJsonDocument::Compact), QCryptographicHash::Sha256);
+        setBusy(true);
+        auto *watcher = new QFutureWatcher<AdminResult>(this);
+        const auto completed = std::make_shared<bool>(false);
+        const auto continueOnce = [completed, done] { if (!*completed) { *completed = true; done(); } };
+        // This only adds server networking. A slow/absent IPv6 path must not
+        // prevent an otherwise usable IPv4 connection or replace its session.
+        QTimer::singleShot(1500, watcher, continueOnce);
+        connect(watcher, &QFutureWatcher<AdminResult>::finished, this, [this, watcher, id, original, tag, continueOnce] {
+            const auto result = watcher->result(); watcher->deleteLater();
+            if (result.error == ErrorCode::NoError && result.metadata.value("result") == "verified" && m_servers->serverJsonById(id) == original)
+                m_proxyIPv6Verified[id] = tag;
+            setBusy(false);
+            continueOnce();
+        });
+        watcher->setFuture(QtConcurrent::run(&m_adminPool, [credentials = proxy->credentials(), container, prepare = m_proxyIPv6Preparer] {
+            AdminResult result;
+            result.error = prepare(credentials, container, result.metadata);
+            return result;
+        }));
+        return;
+    }
     if (available(id)) { fetch(id, false, done); return; }
     const auto admin = m_servers->selfHostedAdminConfig(id); const auto original = m_servers->serverJsonById(id);
     if (m_busy || !m_connection->isDisconnected() || !admin || !original || !admin->credentials().isValid()

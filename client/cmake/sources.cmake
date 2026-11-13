@@ -119,6 +119,7 @@ set(SOURCES ${SOURCES}
     ${CLIENT_ROOT_DIR}/core/controllers/gatewayController.cpp
     ${CLIENT_ROOT_DIR}/core/utils/selfhosted/pinnedSshSession.cpp
     ${CLIENT_ROOT_DIR}/core/utils/selfhosted/sshSession.cpp
+    ${CLIENT_ROOT_DIR}/core/utils/selfhosted/proxyIpv6Upgrade.cpp
     ${CLIENT_ROOT_DIR}/core/controllers/serversController.cpp
     ${CLIENT_ROOT_DIR}/core/controllers/selfhosted/usersController.cpp
     ${CLIENT_ROOT_DIR}/core/controllers/selfhosted/installController.cpp

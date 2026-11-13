@@ -1,4 +1,4 @@
-# Prepare a separate IPv6-only bridge for AWG/WG. Never recreate the existing
+# Prepare a separate IPv6-only bridge for managed VPN backends. Never recreate the existing
 # DNS bridge or change the Docker daemon's global networking configuration.
 AMNEZIA_IPV6_NETWORK=''
 amnezia_prepare_ipv6_network() {
@@ -35,19 +35,23 @@ amnezia_prepare_ipv6_network() {
 # may already be using. The migration coordinator owns any later cleanup.
 amnezia_attach_ipv6_network() {
     amnezia_v6_container=$1
-    case "$amnezia_v6_container" in amnezia-wireguard|amnezia-awg|amnezia-awg2) ;; *) return 1 ;; esac
+    case "$amnezia_v6_container" in amnezia-wireguard|amnezia-awg|amnezia-awg2|amnezia-xray|amnezia-ssxray) ;; *) return 1 ;; esac
     [ "$AMNEZIA_IPV6_NETWORK" = amnezia-ipv6-egress ] || return 1
     amnezia_v6_network_id=$(sudo docker network inspect --format '{{.Id}}' "$AMNEZIA_IPV6_NETWORK") || return 1
     amnezia_v6_shape=$(sudo docker network inspect --format '{{.Driver}} {{.EnableIPv6}} {{.EnableIPv4}} {{index .Labels "com.amnezia.ipv6-egress"}}' "$amnezia_v6_network_id") || return 1
     [ "$amnezia_v6_shape" = 'bridge true false v1' ] || return 1
     amnezia_v6_container_id=$(sudo docker inspect --format '{{.Id}}' "$amnezia_v6_container") || return 1
-    amnezia_v6_routes_before=$(sudo docker exec "$amnezia_v6_container_id" ip -4 route show table all) || return 1
+    amnezia_v6_route_command='ip -4 route show table all'
+    # Existing proxy images may only contain BusyBox ip. This reads the kernel
+    # IPv4 main table without installing packages or restarting the proxy.
+    case "$amnezia_v6_container" in amnezia-xray|amnezia-ssxray) amnezia_v6_route_command='cat /proc/net/route' ;; esac
+    amnezia_v6_routes_before=$(sudo docker exec "$amnezia_v6_container_id" $amnezia_v6_route_command) || return 1
     amnezia_v6_dns_before=$(sudo docker exec "$amnezia_v6_container_id" cat /etc/resolv.conf) || return 1
     amnezia_v6_attached=$(sudo docker network inspect --format "{{if (index .Containers \"$amnezia_v6_container_id\").Name}}yes{{end}}" "$amnezia_v6_network_id") || return 1
     if [ "$amnezia_v6_attached" != yes ]; then
         sudo docker network connect "$amnezia_v6_network_id" "$amnezia_v6_container_id" || return 1
     fi
-    amnezia_v6_routes_after=$(sudo docker exec "$amnezia_v6_container_id" ip -4 route show table all) || return 1
+    amnezia_v6_routes_after=$(sudo docker exec "$amnezia_v6_container_id" $amnezia_v6_route_command) || return 1
     amnezia_v6_dns_after=$(sudo docker exec "$amnezia_v6_container_id" cat /etc/resolv.conf) || return 1
     if [ "$amnezia_v6_routes_before" != "$amnezia_v6_routes_after" ] || [ "$amnezia_v6_dns_before" != "$amnezia_v6_dns_after" ]; then
         echo 'AMNEZIA_IPV6_NETWORK_STATUS=attachment-changed-ipv4-or-dns' >&2

@@ -17,6 +17,10 @@ iptables -P INPUT DROP
 ip6tables -A INPUT -i lo -j ACCEPT
 ip6tables -A INPUT -m state --state RELATED,ESTABLISHED -j ACCEPT
 ip6tables -A INPUT -p ipv6-icmp -j ACCEPT
+ip6tables -A INPUT -p tcp --dport 80 -j ACCEPT
+ip6tables -A INPUT -p tcp --dport 443 -j ACCEPT
+ip6tables -A INPUT -p tcp --dport $XRAY_SERVER_PORT -j ACCEPT
+ip6tables -A INPUT -p udp --dport $XRAY_SERVER_PORT -j ACCEPT
 ip6tables -P INPUT DROP
 
 # kill daemons in case of restart

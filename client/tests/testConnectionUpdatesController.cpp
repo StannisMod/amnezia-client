@@ -29,6 +29,7 @@
 #include "vpnConnection.h"
 #include "secureQSettings.h"
 #include "core/configurators/wireguardConfigurator.h"
+#include "core/utils/selfhosted/proxyIpv6Upgrade.h"
 
 using namespace amnezia;
 using namespace connectionUpdateTestFixtures;
@@ -103,6 +104,71 @@ public:
 class TestConnectionUpdatesController : public QObject {
     Q_OBJECT
 private slots:
+    void proxyIpv6Preflight_data()
+    {
+        QTest::addColumn<QString>("scenario");
+        for(const auto *name:{"late-success","failure","edited","canceled","third-party"}) QTest::newRow(name)<<QString(name);
+    }
+    void proxyIpv6Preflight()
+    {
+        QFETCH(QString,scenario);
+        SecureQSettings settings("Amnezia-Proxy-IPv6-"+QUuid::createUuid().toString(),"test",nullptr,false);
+        SecureServersRepository servers(&settings);SecureAppSettingsRepository app(&settings);VpnConnection vpn(&servers,&app);ConnectionController connection(&servers,&app,&vpn);
+        disconnect(&connection,&ConnectionController::openConnectionRequested,&vpn,&VpnConnection::connectToVpn);
+        XrayProtocolConfig protocol;protocol.serverConfig.applyDefaults();protocol.serverConfig.isThirdPartyConfig=scenario=="third-party";
+        protocol.setClientConfig(XrayClientConfig{QStringLiteral("{}"),QStringLiteral("10808"),QStringLiteral("11111111-1111-4111-8111-111111111111")});
+        const ContainerConfig container{DockerContainer::Xray,ProtocolConfig{protocol}};
+        const QJsonObject administrator{{"format_version",1},{"description","Proxy IPv6 fixture"},{"hostName","proxy.example.test"},
+            {"userName","root"},{"password","synthetic-admin-secret"},{"port",22},{"defaultContainer","amnezia-xray"},
+            {"containers",QJsonArray{container.toJson()}}};
+        const auto id=servers.addServer({},administrator,serverConfigUtils::SelfHostedAdmin);servers.setDefaultServer(id);
+        const auto original=*servers.serverJsonById(id);
+        QSemaphore gate;std::atomic<int> calls{0};std::atomic<bool> correctArguments{false};
+        ConnectionUpdatesController updates(&servers,&connection,nullptr,{}, {},[&](const ServerCredentials &credentials,DockerContainer backend,QJsonObject &outcome) {
+            correctArguments.store(credentials.userName=="root"&&backend==DockerContainer::Xray);calls.fetch_add(1);gate.acquire();
+            outcome={{"result","verified"}};return scenario=="failure"?ErrorCode::InternalError:ErrorCode::NoError;
+        });
+        const auto unblock=qScopeGuard([&]{gate.release();});
+        int continuations=0;
+        if(scenario=="third-party") {
+            QVERIFY(!updates.needsRefreshBeforeConnect(id));updates.refreshBeforeConnect(id,[&]{++continuations;});
+            QCOMPARE(continuations,1);QCOMPARE(calls.load(),0);settings.clearSettings();return;
+        }
+        QVERIFY(updates.needsRefreshBeforeConnect(id));
+        ServersController serverController(&servers,&app);ConnectionUiController ui(&connection,&serverController);ui.setConnectionUpdatesController(&updates);
+        QSignalSpy attempts(&connection,&ConnectionController::openConnectionRequested);
+        if(scenario=="canceled") {ui.openConnection();ui.closeConnection();}
+        else updates.refreshBeforeConnect(id,[&]{++continuations;});
+        QTRY_COMPARE(calls.load(),1);QVERIFY(correctArguments.load());
+        auto expected=original;
+        if(scenario=="edited") {expected["description"]="changed while IPv6 was prepared";servers.editServer(id,expected,serverConfigUtils::SelfHostedAdmin);}
+        if(scenario=="late-success") {QTRY_COMPARE_WITH_TIMEOUT(continuations,1,2500);QVERIFY(updates.busy());}
+        gate.release();QTRY_VERIFY(!updates.busy());
+        if(scenario=="canceled") QCOMPARE(attempts.count(),0);else QCOMPARE(continuations,1);
+        QCOMPARE(*servers.serverJsonById(id),expected);
+        QCOMPARE(updates.needsRefreshBeforeConnect(id),scenario=="failure"||scenario=="edited");
+        settings.clearSettings();
+    }
+
+    void proxyIpv6ProbeRejectsShortcuts()
+    {
+        const auto body=QStringLiteral(R"({"Status":0,"Question":[{"name":".","type":2}],"Answer":[{"type":2,"data":"a.root-servers.net."}]})");
+        const auto remote=QStringLiteral("2606:4700:4700::1111");
+        const QJsonObject proof{{"http",200},{"verify",0},{"remote",remote},{"local","fd42::2"}};
+        auto response=[&](const QJsonObject &metadata,const QString &answer) {
+            return answer+"\namnezia_ipv6_probe="+QString::fromUtf8(QJsonDocument(metadata).toJson(QJsonDocument::Compact))+"\n";
+        };
+        QJsonObject evidence;
+        QVERIFY(proxyIpv6Upgrade::parseProbeResponse(response(proof,body),remote,evidence));
+        QCOMPARE(evidence.value("localAddress").toString(),QStringLiteral("fd42::2"));
+        for(const auto &change:QList<QPair<QString,QJsonValue>>{{"http",302},{"verify",60},{"local","192.0.2.2"},{"local","::ffff:192.0.2.2"},{"remote","2001:db8::1"}}) {
+            auto bad=proof;bad[change.first]=change.second;
+            QVERIFY(!proxyIpv6Upgrade::parseProbeResponse(response(bad,body),remote,evidence));QVERIFY(evidence.isEmpty());
+        }
+        QVERIFY(!proxyIpv6Upgrade::parseProbeResponse(response(proof,QStringLiteral("{\"Status\":0}")),remote,evidence));
+        QVERIFY(!proxyIpv6Upgrade::parseProbeResponse(response(proof,body)+response(proof,body),remote,evidence));
+    }
+
     void pendingPeerExportSurvivesRepositoryRestartAndStaysLocal()
     {
         const QJsonObject pending{{"version",1},{"operation","synthetic-operation"},{"privateKey","synthetic-private-material"}};

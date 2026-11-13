@@ -1,5 +1,6 @@
 #include "installController.h"
 #include "connectionUpdatesController.h"
+#include "core/utils/selfhosted/proxyIpv6Upgrade.h"
 #include "core/utils/connectionUpdates.h"
 
 #include "core/models/protocolConfig.h"
@@ -284,6 +285,12 @@ ErrorCode InstallController::setupContainer(const ServerCredentials &credentials
         if (e != ErrorCode::NoError) return e;
         auto installer = createInstaller(container);
         e = installer->extractConfigFromContainer(container, credentials, &sshSession, config);
+    }
+    if (proxyIpv6Upgrade::supported(container)) {
+        QJsonObject ipv6;
+        const auto ipv6Error = proxyIpv6Upgrade::prepare(credentials, container, ipv6);
+        if (ipv6Error != ErrorCode::NoError || ipv6.value("result") != "verified")
+            qWarning() << "Proxy IPv6 egress not verified:" << ipv6.value("reason").toString();
     }
     return e;
 }

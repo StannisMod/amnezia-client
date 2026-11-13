@@ -113,7 +113,7 @@ QString amnezia::scriptData(amnezia::ProtocolScriptType type, DockerContainer co
     QByteArray data = file.readAll();
     data.replace("\r", "");
     if (type == ProtocolScriptType::run_container
-        && (ContainerUtils::isAwgContainer(container) || container == DockerContainer::WireGuard)) {
+        && (ContainerUtils::isAwgContainer(container) || container == DockerContainer::WireGuard || container == DockerContainer::Xray)) {
         QFile ipv6(":/server_scripts/prepare_ipv6_network.sh");
         if (!ipv6.open(QIODevice::ReadOnly)) return {};
         data.prepend(ipv6.readAll() + "\n");

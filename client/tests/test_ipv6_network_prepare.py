@@ -39,6 +39,7 @@ if args[:2]==['network','connect']:
 if args[:1]==['exec']:
  connected=Path(os.environ['CREATED']+'.connected').exists()
  if 'ip' in args:print('changed' if mode=='changed-route' and connected else 'default via 172.18.0.1 dev eth0')
+ elif args[-1]=='/proc/net/route':print('changed' if mode=='changed-route' and connected else 'eth0 00000000 010012AC 0003 0 0 0 00000000')
  elif 'cat' in args:print('changed' if mode=='changed-dns' and connected else 'nameserver 127.0.0.11')
  else:sys.exit(12)
  sys.exit(0)
@@ -46,7 +47,7 @@ sys.exit(11)
 '''
 
 class IPv6NetworkPreparation(unittest.TestCase):
-    def scenario(self, mode, attach=False):
+    def scenario(self, mode, attach=False, container='amnezia-wireguard'):
         with tempfile.TemporaryDirectory() as folder:
             folder = Path(folder)
             for name in ('sudo', 'ip'):
@@ -56,7 +57,7 @@ class IPv6NetworkPreparation(unittest.TestCase):
             trace = folder / 'trace'
             environment = dict(os.environ, PATH=str(folder)+os.pathsep+os.environ['PATH'],
                                TRACE=str(trace), CREATED=str(folder/'created'), SCENARIO=mode)
-            invocation = ['/bin/sh', '-c', '. "$1"; amnezia_attach_ipv6_network amnezia-wireguard', 'sh', str(SCRIPT)] if attach else ['/bin/sh', str(SCRIPT)]
+            invocation = ['/bin/sh', '-c', '. "$1"; amnezia_attach_ipv6_network "$2"', 'sh', str(SCRIPT), container] if attach else ['/bin/sh', str(SCRIPT)]
             result = subprocess.run(invocation, env=environment, text=True, capture_output=True)
             commands = [json.loads(line) for line in trace.read_text().splitlines()]
             return result, commands
@@ -109,6 +110,16 @@ class IPv6NetworkPreparation(unittest.TestCase):
             result, commands = self.scenario(mode)
             self.assertEqual(result.returncode, 0)
             self.assertFalse(any('--subnet' in c for c in commands))
+
+    def test_proxy_attachment_needs_no_iproute_package_and_keeps_ipv4(self):
+        for container in ('amnezia-xray', 'amnezia-ssxray'):
+            result, commands = self.scenario('new', attach=True, container=container)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(sum(c[-2:]==['cat','/proc/net/route'] for c in commands),2)
+            self.assertFalse(any('ip' in c and c[:3]==['sudo','docker','exec'] for c in commands))
+        result, commands = self.scenario('changed-route', attach=True, container='amnezia-xray')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('attachment-changed-ipv4-or-dns',result.stderr)
 
 if __name__ == '__main__':
     unittest.main()
