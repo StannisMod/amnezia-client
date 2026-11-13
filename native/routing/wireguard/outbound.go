@@ -17,20 +17,21 @@ import (
 const Type = "amnezia-wireguard"
 
 type Config struct {
-	PathMTUProbe netip.Addr     `json:"path_mtu_probe,omitempty"`
-	Address      []netip.Addr   `json:"address"`
-	MTU          int            `json:"mtu,omitempty"`
-	PrivateKey   string         `json:"private_key"`
-	PublicKey    string         `json:"public_key"`
-	PreSharedKey string         `json:"pre_shared_key,omitempty"`
-	Endpoint     netip.AddrPort `json:"endpoint"`
-	AllowedIPs   []netip.Prefix `json:"allowed_ips"`
-	Keepalive    uint16         `json:"keepalive,omitempty"`
-	ListenPort   uint16         `json:"listen_port,omitempty"`
+	PathMTUProbes []netip.Addr   `json:"path_mtu_probes,omitempty"`
+	PathMTUProbe  netip.Addr     `json:"path_mtu_probe,omitempty"`
+	Address       []netip.Addr   `json:"address"`
+	MTU           int            `json:"mtu,omitempty"`
+	PrivateKey    string         `json:"private_key"`
+	PublicKey     string         `json:"public_key"`
+	PreSharedKey  string         `json:"pre_shared_key,omitempty"`
+	Endpoint      netip.AddrPort `json:"endpoint"`
+	AllowedIPs    []netip.Prefix `json:"allowed_ips"`
+	Keepalive     uint16         `json:"keepalive,omitempty"`
+	ListenPort    uint16         `json:"listen_port,omitempty"`
 }
 
 func (c Config) Native() awg.Config {
-	return awg.Config{Address: c.Address, MTU: c.MTU, PrivateKey: c.PrivateKey, PublicKey: c.PublicKey, PreSharedKey: c.PreSharedKey, Endpoint: c.Endpoint, AllowedIPs: c.AllowedIPs, Keepalive: awg.Keepalive(strconv.Itoa(int(c.Keepalive))), ListenPort: c.ListenPort, PathMTUProbe: c.PathMTUProbe}
+	return awg.Config{Address: c.Address, MTU: c.MTU, PrivateKey: c.PrivateKey, PublicKey: c.PublicKey, PreSharedKey: c.PreSharedKey, Endpoint: c.Endpoint, AllowedIPs: c.AllowedIPs, Keepalive: awg.Keepalive(strconv.Itoa(int(c.Keepalive))), ListenPort: c.ListenPort, PathMTUProbe: c.PathMTUProbe, PathMTUProbes: c.PathMTUProbes}
 }
 func (c Config) Validate() error { return c.Native().Validate() }
 func Register(r *outbound.Registry, listen awg.ListenUnderlay) {

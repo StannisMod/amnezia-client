@@ -31,6 +31,7 @@ public:
         QString pskKey;        // preshared key
         QString host;          // host ip
         QString port;
+        QStringList pathMtuProbes; // derived from the same persisted server snapshot
     };
 
     amnezia::ProtocolConfig createConfig(const amnezia::ServerCredentials &credentials, amnezia::DockerContainer container,
@@ -47,6 +48,7 @@ public:
     void setPendingPeerExport(const QJsonObject &state, std::function<bool(const QJsonObject &)> persist);
     static ConnectionData genClientKeys();
     static QList<QHostAddress> getIpsFromConf(const QString &input);
+    static QStringList pathMtuProbesFromInterfaceConfig(const QString &configuration);
     static QString pathMtuProbeFromInterfaceConfig(const QString &configuration);
     static QString serverIPv4CidrFromInterfaceConfig(const QString &configuration);
     static QString serverIPv6CidrFromInterfaceConfig(const QString &configuration);

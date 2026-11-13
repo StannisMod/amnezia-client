@@ -161,7 +161,12 @@ private slots:
             QVERIFY(WireguardConfigurator::pathMtuProbeFromInterfaceConfig(QString("Address = %1\n").arg(address)).isEmpty());
         }
         QVERIFY(WireguardConfigurator::pathMtuProbeFromInterfaceConfig("Address = 127.0.0.1/8\n").isEmpty());
+        QCOMPARE(WireguardConfigurator::pathMtuProbesFromInterfaceConfig("Address = fd77::1/64, 10.77.0.9/24\n[Peer]\nAllowedIPs = fd77::2/128\n"), (QStringList{"10.77.0.9", "fd77::1"}));
         WireGuardClientConfig wg; wg.pathMtuProbe = "10.77.0.9";
+        wg.pathMtuProbes = QStringList{"10.77.0.9", "fd77::9"};
+        QCOMPARE(WireGuardClientConfig::fromJson(wg.toJson()).pathMtuProbes, wg.pathMtuProbes);
+        AwgClientConfig dualAwg; dualAwg.pathMtuProbes = wg.pathMtuProbes;
+        QCOMPARE(AwgClientConfig::fromJson(dualAwg.toJson()).pathMtuProbes, wg.pathMtuProbes);
         QCOMPARE(WireGuardClientConfig::fromJson(wg.toJson()).pathMtuProbe, wg.pathMtuProbe);
         wg.pathMtuProbe = "fd77::9";
         QCOMPARE(WireGuardClientConfig::fromJson(wg.toJson()).pathMtuProbe, wg.pathMtuProbe);

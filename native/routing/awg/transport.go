@@ -27,12 +27,13 @@ type Config struct {
 	PublicKey    string       `json:"public_key"`
 	PreSharedKey string       `json:"pre_shared_key,omitempty"`
 	// Endpoint is resolved through the host's underlay bootstrap before start.
-	Endpoint     netip.AddrPort    `json:"endpoint"`
-	AllowedIPs   []netip.Prefix    `json:"allowed_ips"`
-	Keepalive    Keepalive         `json:"keepalive,omitempty"`
-	ListenPort   uint16            `json:"listen_port,omitempty"`
-	Parameters   map[string]string `json:"parameters,omitempty"`
-	PathMTUProbe netip.Addr        `json:"path_mtu_probe,omitempty"`
+	Endpoint      netip.AddrPort    `json:"endpoint"`
+	AllowedIPs    []netip.Prefix    `json:"allowed_ips"`
+	Keepalive     Keepalive         `json:"keepalive,omitempty"`
+	ListenPort    uint16            `json:"listen_port,omitempty"`
+	Parameters    map[string]string `json:"parameters,omitempty"`
+	PathMTUProbe  netip.Addr        `json:"path_mtu_probe,omitempty"`
+	PathMTUProbes []netip.Addr      `json:"path_mtu_probes,omitempty"`
 }
 
 var parameters = strings.Fields("jc jmin jmax s1 s2 s3 s4 h1 h2 h3 h4 i1 i2 i3 i4 i5 header_protection_key content_padding_addition rekey_after_time rekey_timeout reject_after_time keepalive_timeout max_handshake_attempts random_trailers disable_cookies")
@@ -46,8 +47,11 @@ func keyHex(s string) (string, error) {
 }
 
 func (c Config) uapi() (string, error) {
-	if c.PathMTUProbe.IsValid() {
-		peer := c.PathMTUProbe.Unmap()
+	targets, targetErr := c.pathMTUProbeTargets()
+	if targetErr != nil {
+		return "", targetErr
+	}
+	for _, peer := range targets {
 		allowed, source := false, false
 		for _, prefix := range c.AllowedIPs {
 			allowed = allowed || prefix.Contains(peer)
@@ -227,9 +231,9 @@ func New(ctx context.Context, c Config, listen ListenUnderlay) (*Transport, erro
 			t.address6 = a
 		}
 	}
-	if c.PathMTUProbe.IsValid() {
-		t.mtuWorker = startPathMTUWorker(ctx, n, c.PathMTUProbe)
-		t.tcpWorker = startTCPPathWorker(ctx, n, c.PathMTUProbe)
+	if targets, _ := c.pathMTUProbeTargets(); len(targets) > 0 {
+		t.mtuWorker = startPathMTUWorker(ctx, n, targets...)
+		t.tcpWorker = startTCPPathWorker(ctx, n, targets...)
 	}
 	return t, nil
 }

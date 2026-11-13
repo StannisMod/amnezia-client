@@ -211,6 +211,7 @@ open class Wireguard : Protocol() {
                     put("allowed_ips", allowed)
                     put("mtu", wg.mtu)
                     data.optString("path_mtu_probe").takeIf { it.isNotBlank() }?.let { put("path_mtu_probe", it) }
+                    data.optJSONArray("path_mtu_probes")?.let { put("path_mtu_probes", it) }
                     // Preserve AWG 3.1 ranges; the shared native validator checks them.
                     if (adapterType == "awg") {
                         put("keepalive", wg.persistentKeepalive ?: "0")

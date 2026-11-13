@@ -41,7 +41,11 @@ func TestDualStackIPv4MTUCanRecoverBelowIPv6Minimum(t *testing.T) {
 					}
 				}
 			}
-			if limit && filtered.Load() && sizes[0] > 1200 {
+			threshold := 1200
+			if data[0]>>4 == 6 {
+				threshold = 1320
+			}
+			if limit && filtered.Load() && sizes[0] > threshold {
 				continue
 			}
 			if _, err := to.Write([][]byte{data[:sizes[0]]}, 0); err != nil {
@@ -151,5 +155,25 @@ func TestDualStackIPv4MTUCanRecoverBelowIPv6Minimum(t *testing.T) {
 	if err := a.SetPathMTU(1104); err == nil {
 		t.Fatal("global update disabled IPv6 minimum")
 	}
+
+	// The production worker must measure both configured families, rather than
+	// leaving IPv6 at the original ceiling after the preferred IPv4 check.
+	if err := a.SetPathMTU(1420); err != nil {
+		t.Fatal(err)
+	}
+	filtered.Store(true)
+	worker := startPathMTUWorker(context.Background(), a, netip.MustParseAddr("10.77.0.2"), netip.MustParseAddr("fd77::2"))
+	defer worker.stop()
+	worker.invalidate()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		four := a.pathMTU(netip.MustParseAddr("10.77.0.2"))
+		six := a.pathMTU(netip.MustParseAddr("fd77::2"))
+		if four <= 1200 && six >= 1280 && six <= 1320 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("worker failed to measure both families: IPv4=%d IPv6=%d", a.pathMTU(netip.MustParseAddr("10.77.0.2")), a.pathMTU(netip.MustParseAddr("fd77::2")))
 
 }

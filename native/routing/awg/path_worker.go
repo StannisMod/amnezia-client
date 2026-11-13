@@ -17,18 +17,23 @@ type pathMTUWorker struct {
 	generation  uint64
 }
 
-func startPathMTUWorker(parent context.Context, flow *FlowStack, peer netip.Addr) *pathMTUWorker {
+func startPathMTUWorker(parent context.Context, flow *FlowStack, peers ...netip.Addr) *pathMTUWorker {
 	ctx, cancel := context.WithCancel(parent)
 	w := &pathMTUWorker{ctx: ctx, cancel: cancel, wake: make(chan struct{}, 1), done: make(chan struct{})}
-	controller, _ := NewPathMTUController(flow, peer) // validated before transport start
-	controller.apply = func(ctx context.Context, mtu int) error {
-		w.mu.Lock()
-		defer w.mu.Unlock()
-		if err := ctx.Err(); err != nil {
-			return err
+	controllers := make([]*PathMTUController, 0, len(peers))
+	for _, peer := range peers {
+		controller, _ := NewPathMTUController(flow, peer) // validated before transport start
+		controller.apply = func(ctx context.Context, mtu int) error {
+			w.mu.Lock()
+			defer w.mu.Unlock()
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			return flow.setFamilyPathMTU(peer, mtu)
 		}
-		return flow.setFamilyPathMTU(peer, mtu)
+		controllers = append(controllers, controller)
 	}
+
 	go func() {
 		defer close(w.done)
 		timer := time.NewTimer(2 * time.Second)
@@ -67,13 +72,15 @@ func startPathMTUWorker(parent context.Context, flow *FlowStack, peer netip.Addr
 			reset := generation != w.generation
 			generation = w.generation
 			w.mu.Unlock()
-			if reset {
-				controller.mu.Lock()
-				controller.raiseCandidate = 0
-				controller.raiseCount = 0
-				controller.mu.Unlock()
+			for _, controller := range controllers {
+				if reset {
+					controller.mu.Lock()
+					controller.raiseCandidate = 0
+					controller.raiseCount = 0
+					controller.mu.Unlock()
+				}
+				controller.Check(checkCtx)
 			}
-			controller.Check(checkCtx)
 			stop()
 			w.mu.Lock()
 			w.checkCancel = nil

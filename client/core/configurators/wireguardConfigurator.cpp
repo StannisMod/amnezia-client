@@ -133,7 +133,13 @@ QList<QHostAddress> WireguardConfigurator::getIpsFromConf(const QString &input)
 
 QString WireguardConfigurator::pathMtuProbeFromInterfaceConfig(const QString &configuration)
 {
-    QString ipv6;
+    const auto targets = pathMtuProbesFromInterfaceConfig(configuration);
+    return targets.isEmpty() ? QString() : targets.first();
+}
+
+QStringList WireguardConfigurator::pathMtuProbesFromInterfaceConfig(const QString &configuration)
+{
+    QString ipv4, ipv6;
     // A server can expose only an IPv6 tunnel address. Use its configured
     // interface address, never an address inferred from a client's AllowedIPs.
     QString section = "[Interface]";
@@ -149,11 +155,14 @@ QString WireguardConfigurator::pathMtuProbeFromInterfaceConfig(const QString &co
             if (subnet.second < 0 || address.isNull() || address == QHostAddress::AnyIPv4 || address == QHostAddress::AnyIPv6
                 || address == QHostAddress::Broadcast || address.isLoopback() || address.isMulticast()
                 || address.isLinkLocal() || !address.scopeId().isEmpty()) continue;
-            if (address.protocol() == QAbstractSocket::IPv4Protocol) return address.toString();
+            if (address.protocol() == QAbstractSocket::IPv4Protocol && ipv4.isEmpty()) ipv4 = address.toString();
             if (address.protocol() == QAbstractSocket::IPv6Protocol && !mapped && ipv6.isEmpty()) ipv6 = address.toString();
         }
     }
-    return ipv6;
+    QStringList targets;
+    if (!ipv4.isEmpty()) targets << ipv4;
+    if (!ipv6.isEmpty()) targets << ipv6;
+    return targets;
 }
 
 QString WireguardConfigurator::serverIPv4CidrFromInterfaceConfig(const QString &configuration)
@@ -249,6 +258,7 @@ WireguardConfigurator::ConnectionData WireguardConfigurator::prepareWireguardCon
             state.value("clientIP").toString(),state.value("pathMtuProbe").toString(),state.value("clientIPv6").toString(),
             state.value("serverPubKey").toString(),state.value("pskKey").toString(),state.value("host").toString(),state.value("port").toString()};
         const auto original=state.value("expected").toString(), candidate=state.value("candidate").toString();
+        connData.pathMtuProbes = pathMtuProbesFromInterfaceConfig(original);
         const auto port=serverConfig && !serverConfig->port.isEmpty()?serverConfig->port:
             awgServerConfig && !awgServerConfig->port.isEmpty()?awgServerConfig->port:m_defaultPort;
         if (state.size()!=16 || state.value("version")!=1
@@ -296,6 +306,7 @@ WireguardConfigurator::ConnectionData WireguardConfigurator::prepareWireguardCon
     const auto &stdOut = originalConfig;
     auto ips = getIpsFromConf(stdOut);
     connData.pathMtuProbe = pathMtuProbeFromInterfaceConfig(stdOut);
+    connData.pathMtuProbes = pathMtuProbesFromInterfaceConfig(stdOut);
 
     QHostAddress nextIp = [&] {
         QHostAddress result;
@@ -462,6 +473,9 @@ ProtocolConfig WireguardConfigurator::createConfig(const ServerCredentials &cred
     
     if (connectionUpdates::usablePathProbe(connData.pathMtuProbe, clientConfig.toJson()))
         clientConfig.pathMtuProbe = connData.pathMtuProbe;
+    for (const auto &target : connData.pathMtuProbes) {
+        if (connectionUpdates::usablePathProbe(target, clientConfig.toJson())) clientConfig.pathMtuProbes.append(target);
+    }
     protocolConfig.setClientConfig(clientConfig);
     
     return protocolConfig;

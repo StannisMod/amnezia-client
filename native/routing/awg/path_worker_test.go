@@ -67,6 +67,36 @@ func TestPathMTUWorkerClosesDuringUnansweredProbe(t *testing.T) {
 	}
 }
 
+func TestDualStackPathMTUTargetValidation(t *testing.T) {
+	private, _ := keypair(t)
+	_, public := keypair(t)
+	base := Config{Address: []netip.Addr{netip.MustParseAddr("10.77.0.1"), netip.MustParseAddr("fd77::1")}, PrivateKey: private, PublicKey: public, Endpoint: netip.MustParseAddrPort("127.0.0.1:9"), AllowedIPs: []netip.Prefix{netip.MustParsePrefix("10.77.0.0/24"), netip.MustParsePrefix("fd77::/64")}, PathMTUProbe: netip.MustParseAddr("10.77.0.2"), PathMTUProbes: []netip.Addr{netip.MustParseAddr("10.77.0.2"), netip.MustParseAddr("fd77::2")}}
+	if err := base.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	targets, err := base.pathMTUProbeTargets()
+	if err != nil || len(targets) != 2 {
+		t.Fatal(targets, err)
+	}
+	for _, values := range [][]netip.Addr{
+		{netip.MustParseAddr("10.77.0.3")},
+		{netip.MustParseAddr("fd77::1")},
+		{netip.MustParseAddr("fd88::2")},
+		{{}},
+		{targets[0], targets[1], targets[0]},
+	} {
+		c := base
+		c.PathMTUProbes = values
+		if c.Validate() == nil {
+			t.Fatal("unsafe or unbounded probe targets accepted", values)
+		}
+	}
+	base.PathMTUProbe = netip.Addr{}
+	if err := base.Validate(); err != nil {
+		t.Fatal("additive targets require legacy field", err)
+	}
+}
+
 func TestPathMTUProbeMustStayInsidePeerScope(t *testing.T) {
 	private, _ := keypair(t)
 	_, public := keypair(t)

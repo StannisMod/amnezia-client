@@ -380,6 +380,20 @@ bool mergePathProbe(const QJsonObject &profile, const QString &name, const QJson
     // Optional control metadata never widens application routes.
     if (usablePathProbe(target, client)) client["path_mtu_probe"] = target;
     else client.remove("path_mtu_probe");
+    if (client.contains("path_mtu_probes")) {
+        QJsonArray targets;
+        if (!target.toString().isEmpty()) {
+            const QHostAddress selected(target.toString());
+            if (usablePathProbe(target, client)) targets.append(target);
+            for (const auto &cached : client.value("path_mtu_probes").toArray()) {
+                const QHostAddress address(cached.toString());
+                if (address.protocol() != selected.protocol() && usablePathProbe(cached, client)
+                    && targets.size() < 2) targets.append(cached);
+            }
+        }
+        if (targets.isEmpty()) client.remove("path_mtu_probes");
+        else client["path_mtu_probes"] = targets;
+    }
     proto[configKey::lastConfig] = QString::fromUtf8(QJsonDocument(client).toJson(QJsonDocument::Compact));
     container[protoName] = proto; containers[found] = container;
     auto result = profile; result[configKey::containers] = containers; updated = result; return true;
@@ -445,6 +459,16 @@ bool mergeClientIPv6(QJsonObject &profile, QJsonObject &metadata, const QJsonVal
     lines[addressLine] = "Address = " + nativeAddresses.join(", ");
     client[configKey::clientIp] = addresses.join(", ");
     client[configKey::config] = lines.join('\n');
+    // A signed IPv6 withdrawal also withdraws optional probes that no longer
+    // have a captured source family. Keep unrelated locally valid targets.
+    if (client.contains("path_mtu_probes")) {
+        QJsonArray targets;
+        for (const auto &target : client.value("path_mtu_probes").toArray()) {
+            if (usablePathProbe(target, client)) targets.append(target);
+        }
+        if (targets.isEmpty()) client.remove("path_mtu_probes");
+        else client["path_mtu_probes"] = targets;
+    }
     proto[configKey::lastConfig] = QString::fromUtf8(QJsonDocument(client).toJson(QJsonDocument::Compact));
     container[protoName] = proto; containers[0] = container; profile[configKey::containers] = containers;
     metadata["clientIpv6"] = value;

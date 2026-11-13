@@ -14,7 +14,7 @@ type tcpPathWorker struct {
 // Probe only after a real TCP timeout and while an owned socket still needs
 // recovery. The endpoint hint stops measurements after ACK recovery, including
 // when the normal RTO has already backed off beyond the polling interval.
-func startTCPPathWorker(parent context.Context, flow *FlowStack, peer netip.Addr) *tcpPathWorker {
+func startTCPPathWorker(parent context.Context, flow *FlowStack, peers ...netip.Addr) *tcpPathWorker {
 	ctx, cancel := context.WithCancel(parent)
 	worker := &tcpPathWorker{cancel: cancel, done: make(chan struct{})}
 	lastTimeouts := flow.stack.Stats().TCP.Timeouts.Value()
@@ -23,6 +23,7 @@ func startTCPPathWorker(parent context.Context, flow *FlowStack, peer netip.Addr
 		ticker := time.NewTicker(500 * time.Millisecond)
 		defer ticker.Stop()
 		pending := false
+		nextPeer := 0
 		for {
 			select {
 			case <-ctx.Done():
@@ -45,6 +46,12 @@ func startTCPPathWorker(parent context.Context, flow *FlowStack, peer netip.Addr
 				pending = false
 				continue
 			}
+			// Keep the existing one measurement per tick budget across both families.
+			if len(peers) == 0 {
+				continue
+			}
+			peer := peers[nextPeer%len(peers)]
+			nextPeer++
 			probeCtx, stop := context.WithTimeout(ctx, 400*time.Millisecond)
 			proof, err := flow.verifyTCPPath(probeCtx, peer)
 			stop()

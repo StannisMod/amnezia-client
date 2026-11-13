@@ -47,8 +47,15 @@ private slots:
         QJsonObject rejected { { "sentinel", true } };
         QVERIFY(!connectionUpdates::apply(migrated, sign(changed), 2000000002, rejected)); QCOMPARE(rejected.size(), 1);
         changed["revision"] = "2";
+        auto cachedContainers = migrated["containers"].toArray(); auto cachedContainer = cachedContainers[0].toObject();
+        const auto cachedProtocol = awg ? "awg" : "wireguard";
+        auto cachedProto = cachedContainer[cachedProtocol].toObject(); auto cachedClient = client(migrated, awg);
+        cachedClient["path_mtu_probes"] = QJsonArray{"10.8.0.1"};
+        cachedProto["last_config"] = QString::fromUtf8(QJsonDocument(cachedClient).toJson(QJsonDocument::Compact));
+        cachedContainer[cachedProtocol] = cachedProto; cachedContainers[0] = cachedContainer; migrated["containers"] = cachedContainers;
         QVERIFY(connectionUpdates::apply(migrated, sign(changed), 2000000002, renewed));
         QCOMPARE(client(renewed, awg).value("path_mtu_probe").toString(), "10.8.0.9");
+        QCOMPARE(client(renewed, awg).value("path_mtu_probes").toArray(), QJsonArray{"10.8.0.9"});
         for (const auto &bad : { "127.0.0.1", "0.0.0.0", "255.255.255.255", "224.0.0.1", "fe80::1", "vpn.example.test", "10.8.0.1\n" }) {
             auto invalid = update; invalid["pathMtuProbe"] = bad; QJsonObject output { { "sentinel", true } };
             QVERIFY2(!connectionUpdates::apply(original, sign(invalid), 2000000001, output), bad); QCOMPARE(output.size(), 1);
@@ -296,9 +303,15 @@ private slots:
         auto update = payload(original); update["clientIpv6"] = "fd77::2"; update["pathMtuProbe"] = "fd77::1";
         QJsonObject migrated; QVERIFY(connectionUpdates::apply(original, sign(update), 2000000001, migrated));
         QCOMPARE(client(migrated, false).value("path_mtu_probe").toString(), "fd77::1");
+        auto captured = migrated.value("containers").toArray(); auto capturedContainer = captured[0].toObject();
+        auto capturedProto = capturedContainer.value("wireguard").toObject(); auto capturedClient = client(migrated, false);
+        capturedClient["path_mtu_probes"] = QJsonArray{"10.8.0.1", "fd77::1"};
+        capturedProto["last_config"] = QString::fromUtf8(QJsonDocument(capturedClient).toJson(QJsonDocument::Compact));
+        capturedContainer["wireguard"] = capturedProto; captured[0] = capturedContainer; migrated["containers"] = captured;
         update.remove("pathMtuProbe"); update["clientIpv6"] = ""; update["revision"] = "2";
         QJsonObject withdrawn; QVERIFY(connectionUpdates::apply(migrated, sign(update), 2000000002, withdrawn));
         QVERIFY(!client(withdrawn, false).contains("path_mtu_probe"));
+        QCOMPARE(client(withdrawn, false).value("path_mtu_probes").toArray(), QJsonArray{"10.8.0.1"});
         // Keep authenticated metadata so a later compatible address can restore the target.
         update["clientIpv6"] = "fd77::3"; update["revision"] = "3";
         QJsonObject restored; QVERIFY(connectionUpdates::apply(withdrawn, sign(update), 2000000003, restored));

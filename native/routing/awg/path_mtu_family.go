@@ -77,3 +77,39 @@ func minimumPathMTU(peer netip.Addr) int {
 	}
 	return 576
 }
+
+// One authenticated peer address per family bounds work even when both the
+// legacy single-address field and the additive dual-stack field are present.
+func (c Config) pathMTUProbeTargets() ([]netip.Addr, error) {
+	if len(c.PathMTUProbes) > 2 {
+		return nil, errors.New("too many MTU probe targets")
+	}
+	targets := make([]netip.Addr, 0, 2)
+	appendTarget := func(peer netip.Addr) error {
+		peer = peer.Unmap()
+		if !peer.IsValid() {
+			return errors.New("invalid MTU probe target")
+		}
+		for _, existing := range targets {
+			if existing == peer {
+				return nil
+			}
+			if existing.BitLen() == peer.BitLen() {
+				return errors.New("multiple MTU probe targets in one family")
+			}
+		}
+		targets = append(targets, peer)
+		return nil
+	}
+	if c.PathMTUProbe.IsValid() {
+		if err := appendTarget(c.PathMTUProbe); err != nil {
+			return nil, err
+		}
+	}
+	for _, peer := range c.PathMTUProbes {
+		if err := appendTarget(peer); err != nil {
+			return nil, err
+		}
+	}
+	return targets, nil
+}

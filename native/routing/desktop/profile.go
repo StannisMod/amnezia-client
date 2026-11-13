@@ -124,6 +124,35 @@ func ProfileSession(raw []byte) (engine.SessionConfig, error) {
 		return config, errors.New("invalid VPN endpoint port")
 	}
 	config.AWG = awg.Config{PrivateKey: text(wg["client_priv_key"]), PublicKey: text(wg["server_pub_key"]), PreSharedKey: text(wg["psk_key"]), Endpoint: netip.AddrPortFrom(endpoint, uint16(port)), Parameters: map[string]string{}}
+	if value, exists := wg["path_mtu_probe"]; exists {
+		target, ok := value.(string)
+		if !ok {
+			return config, errors.New("invalid VPN MTU probe")
+		}
+		if target != "" {
+			config.AWG.PathMTUProbe, err = netip.ParseAddr(target)
+			if err != nil {
+				return config, errors.New("invalid VPN MTU probe")
+			}
+		}
+	}
+	if value, exists := wg["path_mtu_probes"]; exists {
+		targets, ok := value.([]any)
+		if !ok || len(targets) > 2 {
+			return config, errors.New("invalid VPN MTU probe targets")
+		}
+		for _, value := range targets {
+			target, ok := value.(string)
+			if !ok {
+				return config, errors.New("invalid VPN MTU probe target")
+			}
+			address, parseErr := netip.ParseAddr(target)
+			if parseErr != nil {
+				return config, errors.New("invalid VPN MTU probe target")
+			}
+			config.AWG.PathMTUProbes = append(config.AWG.PathMTUProbes, address)
+		}
+	}
 	for _, input := range strings.Split(text(wg["client_ip"]), ",") {
 		input = strings.TrimSpace(input)
 		var a netip.Addr
@@ -203,7 +232,7 @@ func ProfileSession(raw []byte) (engine.SessionConfig, error) {
 			return config, errors.New("standard WireGuard keepalive must be 0..65535")
 		}
 		c := config.AWG
-		config.VPN = &engine.TransportConfig{Type: "wireguard", WireGuard: &wireguard.Config{Address: c.Address, MTU: c.MTU, PrivateKey: c.PrivateKey, PublicKey: c.PublicKey, PreSharedKey: c.PreSharedKey, Endpoint: c.Endpoint, AllowedIPs: c.AllowedIPs, Keepalive: uint16(keepalive)}}
+		config.VPN = &engine.TransportConfig{Type: "wireguard", WireGuard: &wireguard.Config{Address: c.Address, MTU: c.MTU, PrivateKey: c.PrivateKey, PublicKey: c.PublicKey, PreSharedKey: c.PreSharedKey, Endpoint: c.Endpoint, AllowedIPs: c.AllowedIPs, Keepalive: uint16(keepalive), PathMTUProbe: c.PathMTUProbe, PathMTUProbes: c.PathMTUProbes}}
 		config.AWG = awg.Config{}
 	}
 
