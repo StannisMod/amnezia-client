@@ -268,6 +268,7 @@ public final class RoutingInstrumentation extends Instrumentation {
             legacy.remove("sing_box_routing"); legacy.remove("sing_box_dns");
             legacy.put("android_legacy_awg_backend", true);
             startService(legacy); awaitState(CONNECTED, false);
+            progress("LEGACY_CAPTURE_READY_MS "+awaitCapture("10.77.0.1"));
             requireRoute(InetAddress.getByName("10.77.0.2"), "VPN");
             quic(InetAddress.getByName("10.77.0.2"), "VPN");
             disconnect(); connect(false);
@@ -323,20 +324,8 @@ public final class RoutingInstrumentation extends Instrumentation {
         }
     }
 
-    private void performanceComparison() throws Exception {
-        for (boolean legacy : new boolean[]{!sharedFirst, sharedFirst}) {
-            String mode = legacy ? "legacy" : "shared";
-            JSONObject config = primaryConfiguration();
-            if (legacy) {
-                config.remove("sing_box_routing"); config.remove("sing_box_dns");
-                config.put("android_legacy_awg_backend", true);
-            }
-            state=-1;serviceError=false;startService(config); awaitState(CONNECTED, false);
-            // Legacy handshake completion may precede Android installing the
-            // new per-UID VPN network. Measure throughput only after OS capture
-            // is ready; never retry or replace the measured TCP stream.
+    private long awaitCapture(String expectedSource) throws Exception {
             ConnectivityManager manager=getTargetContext().getSystemService(ConnectivityManager.class);
-            String expectedSource=legacy?"10.77.0.1":"172.19.0.1";
             long readyStart=SystemClock.elapsedRealtime();boolean captureReady=false;
             do {
                 Network network=manager.getActiveNetwork();
@@ -355,8 +344,23 @@ public final class RoutingInstrumentation extends Instrumentation {
                 }
                 if(!captureReady) SystemClock.sleep(25);
             } while(!captureReady && !serviceError && SystemClock.elapsedRealtime()-readyStart<5000);
-            require(captureReady && !serviceError,"benchmark VPN capture is not installed in Android");
-            long captureWait=SystemClock.elapsedRealtime()-readyStart;
+            require(captureReady && !serviceError,"VPN capture is not installed in Android");
+            return SystemClock.elapsedRealtime()-readyStart;
+    }
+
+    private void performanceComparison() throws Exception {
+        for (boolean legacy : new boolean[]{!sharedFirst, sharedFirst}) {
+            String mode = legacy ? "legacy" : "shared";
+            JSONObject config = primaryConfiguration();
+            if (legacy) {
+                config.remove("sing_box_routing"); config.remove("sing_box_dns");
+                config.put("android_legacy_awg_backend", true);
+            }
+            state=-1;serviceError=false;startService(config); awaitState(CONNECTED, false);
+            // Legacy handshake completion may precede Android installing the
+            // new per-UID VPN network. Measure throughput only after OS capture
+            // is ready; never retry or replace the measured TCP stream.
+            long captureWait=awaitCapture(legacy?"10.77.0.1":"172.19.0.1");
             ExecutorService io = Executors.newSingleThreadExecutor();
             try (Socket connection = retainedSocket(InetAddress.getByName("10.77.0.2"))) {
                 byte[] payload = new byte[256 * 1024];
