@@ -21,11 +21,21 @@ assert {r['ifname'] for r in json.loads(run('ip', '-j', 'link'))} == {'lo'}, 're
 run('ip', 'link', 'set', 'lo', 'up')
 source_root = Path(os.environ.get('AMNEZIA_OPENVPN_SOURCE_ROOT', '/src'))
 openvpn_binary = os.environ.get('AMNEZIA_OPENVPN_BINARY', 'openvpn')
+if os.environ.get('AMNEZIA_OPENVPN_IPC_SERVICE'):
+    # Keep the fixture's QtRO sockets separate from an installed service that
+    # may already be running in the disposable container's parent namespace.
+    inputs=[source_root,Path(openvpn_binary),Path(os.environ['AMNEZIA_OPENVPN_IPC_SERVICE']),
+            Path(os.environ['AMNEZIA_OPENVPN_ROUTE_FIXTURE']),Path(os.environ['AMNEZIA_OPENVPN_CLIENT_POLICIES'])]
+    assert not any(path.resolve().is_relative_to('/tmp') for path in inputs), 'IPC fixture inputs must be outside its private /tmp'
+    run('mount','-t','tmpfs','-o','mode=1777','tmpfs','/tmp')
+
 root = Path('/opt/amnezia/openvpn')
 root.mkdir(parents=True, exist_ok=True)
 print(run(openvpn_binary,'--version').splitlines()[0],flush=True)
 processes = []
 logs = []
+rpc_updater = None
+native6_before = None
 names = ('ovpn-client', 'ovpn-origin')
 try:
     for name in names:
@@ -93,9 +103,34 @@ data-ciphers AES-256-GCM
 auth SHA256
 verb 3
 ''')
+    ipc_service = os.environ.get('AMNEZIA_OPENVPN_IPC_SERVICE')
+    def rpc_request(updater, message, expected='OK'):
+        updater.stdin.write(json.dumps(message)+'\n');updater.stdin.flush()
+        assert select.select([updater.stdout],[],[],12)[0], 'IPC fixture response timed out'
+        reply=updater.stdout.readline().strip()
+        assert reply==expected, ('IPC fixture response',reply,expected)
     for name, prefix in (('server', []), ('client', ['ip', 'netns', 'exec', names[0]])):
+        if name == 'client' and ipc_service:
+            assert policy_file and os.environ.get('AMNEZIA_OPENVPN_ROUTE_FIXTURE')
+            with (root/'client.conf').open('a') as config_file:config_file.write('\nlog '+str(root/'client.log')+'\n')
+            (root/'client.log').touch()
+            service_log=(root/'service.log').open('w');logs.append(service_log)
+            service_env=dict(os.environ,LD_LIBRARY_PATH=os.environ.get('AMNEZIA_OPENVPN_QT_LIBRARY_PATH','/opt/AmneziaVPN/lib:/opt/AmneziaVPN/bin'))
+            processes.append(subprocess.Popen([*prefix,'unshare','--pid','--fork','--mount-proc','--kill-child=SIGKILL',ipc_service,'--console'],env=service_env,cwd=root,stdout=service_log,stderr=subprocess.STDOUT))
+            service_env['AMNEZIA_IPV6_LAB']='isolated-namespace'
+            rpc_updater=subprocess.Popen([*prefix,os.environ['AMNEZIA_OPENVPN_ROUTE_FIXTURE'],'--ipc-process'],env=service_env,stdin=subprocess.PIPE,stdout=subprocess.PIPE,text=True)
+            processes.append(rpc_updater)
+            assert select.select([rpc_updater.stdout],[],[],20)[0] and rpc_updater.stdout.readline().strip()=='READY','service process replica did not start'
+            rpc_request(rpc_updater,{'local_ipv4':'198.51.100.2','hosts':['2001:db8:88::1'],'through_vpn':False},'FAIL')
+            deadline=time.monotonic()+5
+            while any(e.get('tentative',False) for r in json.loads(run('ip','-n',names[0],'-j','-6','addr','show')) for e in r['addr_info']):
+                assert time.monotonic()<deadline,'native IPv6 DAD did not settle'
+                time.sleep(.05)
+            native6_before=run('ip','-n',names[0],'-6','rule','show')+run('ip','-n',names[0],'-6','route','show','table','all')
+            rpc_request(rpc_updater,{'operation':'start','config':str(root/'client.conf')})
+            continue
         log = (root/(name+'.log')).open('w'); logs.append(log)
-        processes.append(subprocess.Popen([*prefix, openvpn_binary, '--config', str(root/(name+'.conf'))], stdout=log, stderr=subprocess.STDOUT))
+        processes.append(subprocess.Popen([*prefix, openvpn_binary, '--config', str(root/(name+'.conf'))], cwd=root, stdout=log, stderr=subprocess.STDOUT))
     deadline = time.monotonic()+15
     while time.monotonic() < deadline:
         if 'Initialization Sequence Completed' in (root/'client.log').read_text(): break
@@ -204,12 +239,14 @@ print('ORIGINAL_IPV6_TCP_RETAINED',flush=True)
             if not tentative: break
             assert time.monotonic() < settled, 'IPv6 tunnel DAD did not settle'
             time.sleep(.05)
-        before6 = run('ip','-n',names[0],'-6','rule','show') + run('ip','-n',names[0],'-6','route','show','table','all')
+        before6 = native6_before if rpc_updater else run('ip','-n',names[0],'-6','rule','show') + run('ip','-n',names[0],'-6','route','show','table','all')
         route_env=dict(os.environ,AMNEZIA_IPV6_LAB='isolated-namespace')
         route_env['LD_LIBRARY_PATH']=os.environ.get('AMNEZIA_OPENVPN_QT_LIBRARY_PATH','/opt/AmneziaVPN/lib:/opt/AmneziaVPN/bin')
-        updater = subprocess.Popen(['ip','netns','exec',names[0],route_fixture],env=route_env,stdin=subprocess.PIPE,stdout=subprocess.PIPE,text=True)
-        processes.append(updater)
-        assert select.select([updater.stdout],[],[],5)[0] and updater.stdout.readline().strip()=='READY'
+        updater = rpc_updater
+        if not updater:
+            updater = subprocess.Popen(['ip','netns','exec',names[0],route_fixture],env=route_env,stdin=subprocess.PIPE,stdout=subprocess.PIPE,text=True)
+            processes.append(updater)
+            assert select.select([updater.stdout],[],[],5)[0] and updater.stdout.readline().strip()=='READY'
         addresses=json.loads(run('ip','-n',names[0],'-j','-4','addr','show','dev','tun0'))
         local4=addresses[0]['addr_info'][0]['local']
         updater.stdin.write(json.dumps({'local_ipv4':local4,'hosts':['2001:db8:88::1'],'through_vpn':False})+'\n');updater.stdin.flush()
@@ -217,6 +254,7 @@ print('ORIGINAL_IPV6_TCP_RETAINED',flush=True)
         original6.stdin.write('continue\n');original6.stdin.flush()
         assert select.select([original6.stdout],[],[],5)[0] and original6.stdout.readline().strip()=='ORIGINAL_IPV6_TCP_RETAINED'
         run('ip','netns','exec',names[0],'python3','-c',check,'2001:db8:88::1','fd99::2')
+        if rpc_updater:rpc_request(updater,{'operation':'stop'})
         updater.stdin.close();assert updater.wait(timeout=10)==0
         after6=run('ip','-n',names[0],'-6','rule','show')+run('ip','-n',names[0],'-6','route','show','table','all')
         if before6 != after6:
@@ -233,9 +271,16 @@ except Exception:
         diagnostic=subprocess.run(command,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
         print(command,diagnostic.stdout,flush=True)
     print((root/'server.log').read_text(),(root/'client.log').read_text(),flush=True)
+    if (root/'service.log').exists():print((root/'service.log').read_text()[-65536:],flush=True)
     raise
 finally:
-    for process in reversed(processes): process.terminate()
+    if rpc_updater and rpc_updater.poll() is None:
+        try:
+            rpc_request(rpc_updater,{'operation':'stop'})
+            rpc_updater.stdin.close();rpc_updater.wait(timeout=5)
+        except (OSError,AssertionError,subprocess.TimeoutExpired): pass
+    for process in reversed(processes):
+        if process.poll() is None: process.terminate()
     for process in reversed(processes):
         try: process.wait(timeout=5)
         except subprocess.TimeoutExpired: process.kill(); process.wait()
