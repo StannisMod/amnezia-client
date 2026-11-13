@@ -482,7 +482,8 @@ def main():
         if args.xray_ipv6_only:
             assert 'INSTRUMENTATION_RESULT: routing_result=PASS_XRAY_IPV6_ONLY' in output
             assert 'XRAY_IPV6_RESULT ipv4_gua_ula_nat64_tcp_udp' in output
-            report['xray_ipv6']={'ipv4':True,'ipv6_global':True,'ipv6_ula':True,'ipv6_nat64':True,'tcp':True,'udp':True,'vless_tls':True}
+            assert 'XRAY_SITE_SCOPE_RESULT include_ipv4_keeps_unselected_ipv6_direct' in output
+            report['xray_ipv6']={'ipv4':True,'ipv6_global':True,'ipv6_ula':True,'ipv6_nat64':True,'tcp':True,'udp':True,'vless_tls':True,'site_scope_preserved':True,'destinations':fixture['ipv6_test_destinations']}
             report['native_vpn_acceptance']='NOT_RUN_XRAY_IPV6_ONLY'
             return
         if args.private_dns_policy_only:

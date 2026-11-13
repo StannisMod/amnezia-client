@@ -423,6 +423,16 @@ public final class RoutingInstrumentation extends Instrumentation {
         pass("Android 9 ordinary shared core works and unsupported mixed policy fails explicitly");
     }
 
+    private void xrayTraffic(String address) throws Exception {
+            try(Socket connection=new Socket()) {
+                connection.connect(new InetSocketAddress(InetAddress.getByName(address),18081),4000);connection.setSoTimeout(4000);
+                connection.getOutputStream().write("route-proof\n".getBytes(StandardCharsets.US_ASCII));connection.getOutputStream().flush();
+                String answer=new BufferedReader(new InputStreamReader(connection.getInputStream(),StandardCharsets.US_ASCII)).readLine();
+                require("XRAY".equals(answer),"Xray TCP failed for "+address);
+            }
+            require("XRAY:route-proof".equals(udp(InetAddress.getByName(address))),"Xray UDP failed for "+address);
+    }
+
     private void xrayIpv6() throws Exception {
         JSONObject config=new JSONObject(fixture.toString());
         config.put("appSplitTunnelType",1).put("splitTunnelApps",new JSONArray().put("org.amnezia.vpn"));
@@ -434,19 +444,30 @@ public final class RoutingInstrumentation extends Instrumentation {
             String address=targets.getString(i);
             progress("XRAY_IPV6_CHECK "+address);
             JSONObject before=control("/stats",false).getJSONObject("vless");
-            try(Socket connection=new Socket()) {
-                connection.connect(new InetSocketAddress(InetAddress.getByName(address),18081),4000);connection.setSoTimeout(4000);
-                connection.getOutputStream().write("route-proof\n".getBytes(StandardCharsets.US_ASCII));connection.getOutputStream().flush();
-                String answer=new BufferedReader(new InputStreamReader(connection.getInputStream(),StandardCharsets.US_ASCII)).readLine();
-                require("XRAY".equals(answer),"Xray TCP failed for "+address);
-            }
-            require("XRAY:route-proof".equals(udp(InetAddress.getByName(address))),"Xray UDP failed for "+address);
+            xrayTraffic(address);
             JSONObject after=control("/stats",false).getJSONObject("vless");
             for(String network:new String[]{"tcp","udp"}) require(after.getJSONObject(network).optLong(address)==before.getJSONObject(network).optLong(address)+1,
                 "Xray "+network+" bypassed VLESS/TLS for "+address);
             progress("XRAY_PATH_VERIFIED "+address);
         }
+        ConnectivityManager manager=getTargetContext().getSystemService(ConnectivityManager.class);
+        Network oldNetwork=manager.getActiveNetwork();
         disconnect();
+        config.put("splitTunnelType",1).put("splitTunnelSites",new JSONArray().put(targets.getString(0)+"/32"));
+        state=-1;serviceError=false;startService(config);awaitState(CONNECTED,false);
+        long until=SystemClock.elapsedRealtime()+5000;
+        while(java.util.Objects.equals(oldNetwork,manager.getActiveNetwork()) && SystemClock.elapsedRealtime()<until)SystemClock.sleep(25);
+        require(!java.util.Objects.equals(oldNetwork,manager.getActiveNetwork()),"Android did not publish the new site-scoped VPN");
+        awaitCapture("10.0.42.2");
+        JSONObject before=control("/stats",false).getJSONObject("vless");
+        xrayTraffic(targets.getString(0));xrayTraffic(targets.getString(2));
+        JSONObject after=control("/stats",false).getJSONObject("vless");
+        for(String network:new String[]{"tcp","udp"}) {
+            require(after.getJSONObject(network).optLong(targets.getString(0))==before.getJSONObject(network).optLong(targets.getString(0))+1,"selected IPv4 escaped Xray");
+            require(after.getJSONObject(network).optLong(targets.getString(2))==before.getJSONObject(network).optLong(targets.getString(2)),"IPv4 site inclusion captured unselected IPv6");
+        }
+        disconnect();
+        progress("XRAY_SITE_SCOPE_RESULT include_ipv4_keeps_unselected_ipv6_direct");
         progress("XRAY_IPV6_RESULT ipv4_gua_ula_nat64_tcp_udp");
         pass("real Xray VLESS/TLS captures IPv4 and all tested IPv6 ranges for TCP/UDP");
     }
