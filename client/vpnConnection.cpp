@@ -75,7 +75,10 @@ VpnConnection::~VpnConnection()
     ++m_siteLookupGeneration;
     m_ipv6SiteRefreshTimer.stop();
     for (int id : std::exchange(m_siteLookupIds, {})) QHostInfo::abortHostLookup(id);
-    if (m_vpnProtocol) m_vpnProtocol->disconnect(this);
+    if (m_vpnProtocol) {
+        m_vpnProtocol->stop(); // Keep the normal route/resolver rollback signals.
+        m_vpnProtocol->disconnect(this);
+    }
     // A protocol destructor can wait for IPC; release it while our members
     // still exist and any queued DNS callbacks have already been invalidated.
     m_vpnProtocol.clear();
