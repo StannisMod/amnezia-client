@@ -38,6 +38,7 @@ class NetworkState(
     private val pathFingerprints = ConcurrentHashMap<Network, String>()
     private val dnsFingerprints = ConcurrentHashMap<Network, String>()
     @Volatile private var preferredDnsNetwork: Network? = null
+    private var strictDnsPolicy: Boolean? = null
 
     private fun dnsFingerprint(properties: LinkProperties): String = listOf(
         properties.interfaceName, properties.dnsServers.joinToString { it.hostAddress ?: "" },
@@ -173,8 +174,25 @@ class NetworkState(
     private val privateDnsObserver by lazy(NONE) {
         object : ContentObserver(handler) {
             override fun onChange(selfChange: Boolean) {
-                if (isListenerBound && canRetainConnections()) onNetworkChange()
+                notifyPrivateDnsPolicy()
             }
+        }
+    }
+
+    private fun notifyPrivateDnsPolicy() {
+        val strict = hasStrictPrivateDns()
+        val changed = strictDnsPolicy != strict
+        strictDnsPolicy = strict
+        if (changed && isListenerBound && canRetainConnections()) onNetworkChange()
+    }
+
+    // Settings can be delivered before LinkProperties stop describing the
+    // old encrypted resolver. Observe every physical link so the final DNS
+    // transition cannot be lost when it belongs to a non-best network.
+    private val privateDnsLinks by lazy(NONE) {
+        object : NetworkCallback() {
+            override fun onLinkPropertiesChanged(network: Network, properties: LinkProperties) = notifyPrivateDnsPolicy()
+            override fun onLost(network: Network) = notifyPrivateDnsPolicy()
         }
     }
 
@@ -289,8 +307,10 @@ class NetworkState(
             }
         }
         isListenerBound = true
+        strictDnsPolicy = hasStrictPrivateDns()
         context.contentResolver.registerContentObserver(Settings.Global.getUriFor("private_dns_mode"), false, privateDnsObserver)
         context.contentResolver.registerContentObserver(Settings.Global.getUriFor("private_dns_specifier"), false, privateDnsObserver)
+        connectivityManager.registerNetworkCallback(networkRequest, privateDnsLinks, handler)
     }
 
     fun unbindNetworkListener() {
@@ -298,7 +318,9 @@ class NetworkState(
         Log.d(TAG, "Unbind network listener")
         connectivityManager.unregisterNetworkCallback(networkCallback)
         context.contentResolver.unregisterContentObserver(privateDnsObserver)
+        connectivityManager.unregisterNetworkCallback(privateDnsLinks)
         isListenerBound = false
+        strictDnsPolicy = null
         state.reset()
         lostNetworks.clear()
         dnsNetworks.clear()
