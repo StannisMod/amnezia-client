@@ -102,6 +102,7 @@ class Xray : Protocol() {
     private fun parseConfig(config: JSONObject, xrayJsonConfig: JSONObject): XrayConfig {
         return XrayConfig.build {
             addAddress(XrayConfig.DEFAULT_IPV4_ADDRESS)
+            addAddress(XrayConfig.DEFAULT_IPV6_ADDRESS)
 
             config.optString("dns1").let {
                 if (it.isNotBlank()) addDnsServer(parseInetAddress(it))
@@ -112,9 +113,12 @@ class Xray : Protocol() {
             }
 
             addRoute(InetNetwork("0.0.0.0", 0))
-            addRoute(InetNetwork("2000::0", 3))
+            // Preserve full IPv6 capture through the shared builder's legacy
+            // ::/0 compatibility conversion, including ULA and NAT64.
+            addRoute(InetNetwork("::", 1))
+            addRoute(InetNetwork("8000::", 1))
             config.getString("hostName").let {
-                excludeRoute(InetNetwork(it, 32))
+                excludeRoute(InetNetwork(parseInetAddress(it)))
             }
 
             config.optString("mtu").let {

@@ -123,6 +123,8 @@ open class ProtocolConfig protected constructor(
                 removeRoute(InetNetwork("0.0.0.0", 0))
                 removeRoute(InetNetwork("::", 0))
                 removeRoute(InetNetwork("2000::", 3))
+                removeRoute(InetNetwork("::", 1))
+                removeRoute(InetNetwork("8000::", 1))
                 prependRoutes {
                     addRoutes(includedAddresses)
                 }
