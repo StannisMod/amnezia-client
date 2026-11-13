@@ -38,3 +38,20 @@ after manual VPN disconnect must leave VPN disconnected. This focused mode is
 reported as `NOT_RUN_PACKAGE_LIFECYCLE_ONLY`; it does not establish full client
 acceptance. Package mutation is allowed only after the existing rooted-emulator
 guards, and the flag is required before honoring a reinstall checkpoint.
+
+Add `--private-dns-opportunistic` to `--app-policy-only` to exercise Android's
+active opportunistic Private DNS. Start the disposable peer with
+`--native-dns-port 1053 --native-dot-port 8853`. The driver redirects only the
+rooted guest's QEMU DNS-proxy TCP/853 to the local peer, enables opportunistic
+Private DNS and removes its exact redirect and setting during cleanup. It does
+not change the computer's DNS or firewall. The test requires Android to report
+active Private DNS before VPN startup, then uses the production network DNS
+snapshot for DIRECT resolution. The TLS observer counts only synthetic
+`*.app-policy.test` queries, so Android's own resolver validation cannot satisfy
+the application-transport assertion. Both original TCP sockets must survive
+the policy switch as in the ordinary case. The existing API29 regression jobs
+combine this mode with package lifecycle coverage.
+
+This scenario covers opportunistic network DNS and these applications' A/UDP
+TXT requests. It does not prove strict Private DNS certificate handling,
+work-profile behavior, or isolation of arbitrary system TXT/SRV cache entries.

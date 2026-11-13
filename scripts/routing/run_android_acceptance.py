@@ -54,7 +54,10 @@ def snapshot():
     pid = adb("shell", "pidof", "org.amnezia.vpn:amneziaAwgService").split()
     assert len(pid) == 1 and pid[0].isdigit(), "real service process is missing or duplicated"
     status = adb("shell", "cat", f"/proc/{pid[0]}/status")
-    descriptors = adb("shell", "ls", f"/proc/{pid[0]}/fd").split()
+    # Enumerate names without stat-ing each descriptor. DNS workers may close
+    # individual entries during enumeration; the process itself must stay alive.
+    descriptors = adb("shell", f'test -d /proc/{pid[0]}/fd && printf "%s\\n" /proc/{pid[0]}/fd/*').split()
+    assert descriptors and all(Path(fd).name.isdigit() for fd in descriptors), "service FD directory disappeared"
     targets = adb("shell", f'for fd in /proc/{pid[0]}/fd/*; do readlink "$fd" || true; done').splitlines()
     link_text = adb("shell", "ip", "link", "show")
     capture_links = {name: int(index) for index, name in re.findall(r"(?m)^([0-9]+): ([^: ]+):", link_text) if name.startswith("tun")}
