@@ -25,7 +25,7 @@ public final class RoutingPolicyReceiver extends DeviceAdminReceiver {
             boolean lockdown = "lockdown".equals(mode);
             policy.setAlwaysOnVpnPackage(admin, vpn, lockdown);
             if (!Objects.equals(policy.getAlwaysOnVpnPackage(admin), vpn)
-                    || policy.isAlwaysOnVpnLockdownEnabled(admin) != lockdown) throw new IllegalStateException("policy was not applied");
+                    || (android.os.Build.VERSION.SDK_INT >= 29 && policy.isAlwaysOnVpnLockdownEnabled(admin) != lockdown)) throw new IllegalStateException("policy was not applied");
             setResultCode(Activity.RESULT_OK);
         } catch (Exception error) {
             setResultCode(Activity.RESULT_CANCELED);

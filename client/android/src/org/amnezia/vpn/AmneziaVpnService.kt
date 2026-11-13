@@ -643,15 +643,17 @@ open class AmneziaVpnService : VpnService() {
             return
         }
 
-        if (config.has("sing_box_routing") &&
+        val unsupportedApplicationPolicy = Build.VERSION.SDK_INT < Build.VERSION_CODES.Q && config.has("android_app_routing")
+        if (unsupportedApplicationPolicy || (config.has("sing_box_routing") &&
             !org.amnezia.vpn.util.net.AwgCorePolicy.platformSafe(Build.VERSION.SDK_INT,
                 Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && isLockdownEnabled, config)
-        ) {
+        )) {
             // Policy rejection must precede prepare()/the permission activity.
             // Repeated rejected starts may already be DISCONNECTED, so notify
             // clients explicitly instead of relying on a StateFlow transition.
             protocolState.value = DISCONNECTED
-            onError(if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) "DIRECT routing requires Android 10 or newer; use an all-VPN policy on Android 9"
+            onError(if (unsupportedApplicationPolicy) "Per-application site rules require Android 10 or newer"
+                    else if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) "DIRECT routing requires Android 10 or newer; use an all-VPN policy on Android 9"
                     else "DIRECT routing or network DNS is unavailable while Android VPN lockdown is enabled")
             clientMessengers.send {
                 ServiceEvent.STATUS.packToMessage { putStatus(DISCONNECTED) }
