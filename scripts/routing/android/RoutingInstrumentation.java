@@ -180,6 +180,7 @@ public final class RoutingInstrumentation extends Instrumentation {
             requireRoute(four, "DIRECT"); pass("Android system resolver uses the installed VPN DNS");
             loopback("127.0.0.1"); loopback("::1"); pass("native IPv4/IPv6 loopback stays local");
             disconnect();connect(false);
+            direct=dns("direct.ru",1);vpn=dns("vpn.test",1);
             requireRoute(dns("notdirect.ru.test",1),"DIRECT");
             pass("unmatched domain follows its resolved-IP CIDR exception");
 
