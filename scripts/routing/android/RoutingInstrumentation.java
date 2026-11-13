@@ -56,6 +56,7 @@ public final class RoutingInstrumentation extends Instrumentation {
     private volatile boolean retainedCheck;
     private volatile boolean retainedStateChanged;
     private JSONObject retainedResult;
+    private JSONObject applicationFailureDiagnostics;
     private Messenger service, replies;
     private JSONObject fixture;
     private int cycles = 100;
@@ -295,8 +296,11 @@ public final class RoutingInstrumentation extends Instrumentation {
             result.putString("test_stack", stack.toString());
             // Capture the blocked native/JNI path before another network call
             // or cleanup changes it. The rooted driver collects debuggerd.
-            try { result.putString("connection_diagnostics", connectionDiagnostics().toString()); } catch (Exception ignored) {}
-            progress("RESOURCE_CHECKPOINT failure"); SystemClock.sleep(10000);
+            if (applicationFailureDiagnostics != null) result.putString("connection_diagnostics", applicationFailureDiagnostics.toString());
+            else {
+                try { result.putString("connection_diagnostics", connectionDiagnostics().toString()); } catch (Exception ignored) {}
+                progress("RESOURCE_CHECKPOINT failure"); SystemClock.sleep(10000);
+            }
             try { result.putString("observers", control("/stats", false).toString()); } catch (Exception ignored) {}
         } finally {
             if (service != null) try { send(DISCONNECT, new Bundle()); send(UNREGISTER, new Bundle()); } catch (Exception ignored) {}
@@ -711,6 +715,12 @@ public final class RoutingInstrumentation extends Instrumentation {
                 require(state==DISCONNECTED && !serviceError,"package event re-enabled manually disconnected VPN");
                 progress("PACKAGE_LIFECYCLE_DISCONNECTED "+new JSONObject().put("stayed_disconnected",true));
             }
+        } catch (Exception error) {
+            // Preserve the live failure before this method disconnects in finally.
+            applicationFailureDiagnostics = new JSONObject();
+            try { applicationFailureDiagnostics = connectionDiagnostics(); } catch (Exception ignored) {}
+            progress("RESOURCE_CHECKPOINT failure"); SystemClock.sleep(10000);
+            throw error;
         } finally {
             retainedCheck=false;
             for(int i=0;i<2;i++)try{appProbe(i,"stop","old");}catch(Exception ignored){}
