@@ -143,9 +143,15 @@ func newDNSGeneration(parent context.Context, compiled []byte, host Underlay, pl
 }
 
 type networkDNSProxy struct {
-	mu      sync.RWMutex
-	current *dnsGeneration
-	version uint64
+	startup        chan struct{}
+	startupContext context.Context
+	mu             sync.RWMutex
+	current        *dnsGeneration
+	version        uint64
+}
+
+func newNetworkDNSProxy(ctx context.Context) *networkDNSProxy {
+	return &networkDNSProxy{startup: make(chan struct{}), startupContext: ctx}
 }
 
 func (p *networkDNSProxy) freeze() uint64 {
@@ -175,6 +181,11 @@ func (p *networkDNSProxy) replaceWith(g *dnsGeneration, version uint64, commit f
 		commit()
 	}
 	p.current = g
+	if p.startup != nil {
+		close(p.startup)
+		p.startup = nil
+		p.startupContext = nil
+	}
 	p.mu.Unlock()
 	if old != nil {
 		old.close()
@@ -184,7 +195,24 @@ func (p *networkDNSProxy) replaceWith(g *dnsGeneration, version uint64, commit f
 func (p *networkDNSProxy) exchange(caller context.Context, message *mDNS.Msg) (*mDNS.Msg, error) {
 	p.mu.RLock()
 	g := p.current
+	startup := p.startup
+	startupContext := p.startupContext
 	p.mu.RUnlock()
+	// TUN publication can trigger Android's strict-DoT validation before the
+	// first DNS generation finishes starting. Wait only for that initial
+	// publication; later network suspensions must continue to fail closed.
+	if g == nil && startup != nil {
+		select {
+		case <-caller.Done():
+			return nil, caller.Err()
+		case <-startupContext.Done():
+			return nil, startupContext.Err()
+		case <-startup:
+		}
+		p.mu.RLock()
+		g = p.current
+		p.mu.RUnlock()
+	}
 	if g == nil {
 		return nil, errors.New("network DNS is waiting for a valid snapshot")
 	}

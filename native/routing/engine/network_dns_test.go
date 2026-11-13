@@ -35,6 +35,58 @@ func (r *delayedGenerationRouter) Exchange(context.Context, *dns.Msg, adapter.DN
 	return new(dns.Msg), nil
 }
 
+func TestInitialNetworkDNSWaitsForPublicationAndLaterSuspensionFailsClosed(t *testing.T) {
+	p := newNetworkDNSProxy(context.Background())
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { _, err := p.exchange(ctx, new(dns.Msg)); done <- err }()
+	select {
+	case err := <-done:
+		t.Fatalf("initial DNS failed before publication: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	router := &delayedGenerationRouter{started: make(chan struct{}), release: make(chan struct{})}
+	close(router.release)
+	gctx, gcancel := context.WithCancel(ctx)
+	g := &dnsGeneration{box: &dnsTestLifetime{}, router: router, ctx: gctx, cancel: gcancel, stopParent: func() bool { return true }}
+	if !p.replace(g, 0) {
+		t.Fatal("initial generation rejected")
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-ctx.Done():
+		t.Fatal("initial query did not resume")
+	}
+	p.freeze()
+	_, err := p.exchange(ctx, new(dns.Msg))
+	if err == nil || errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("suspended DNS did not fail closed immediately: %v", err)
+	}
+}
+
+func TestInitialNetworkDNSWaitHonorsCallerAndOwnerCancellation(t *testing.T) {
+	for _, cancelOwner := range []bool{false, true} {
+		owner, cancel := context.WithCancel(context.Background())
+		caller, stop := context.WithTimeout(context.Background(), time.Second)
+		p := newNetworkDNSProxy(owner)
+		if cancelOwner {
+			cancel()
+		} else {
+			stop()
+		}
+		_, err := p.exchange(caller, new(dns.Msg))
+		cancel()
+		stop()
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("initial DNS wait ignored cancellation (owner=%v): %v", cancelOwner, err)
+		}
+	}
+}
+
 func TestLateNetworkDNSCannotEscapeGenerationBoundary(t *testing.T) {
 	p := &networkDNSProxy{}
 	ctx, cancel := context.WithCancel(context.Background())

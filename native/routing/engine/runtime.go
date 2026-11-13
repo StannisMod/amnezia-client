@@ -44,7 +44,7 @@ func startRuntime(ctx context.Context, compiled []byte, cachePath string, networ
 	ctx, cancel := context.WithCancel(ctx)
 	var proxy *networkDNSProxy
 	if networkDNS {
-		proxy = &networkDNSProxy{}
+		proxy = newNetworkDNSProxy(ctx)
 	}
 	ctx = service.ContextWith[*networkDNSProxy](ctx, proxy)
 	instance, err := NewWithCache(ctx, compiled, cachePath)
