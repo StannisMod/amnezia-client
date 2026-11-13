@@ -30,6 +30,7 @@
 #include "secureQSettings.h"
 #include "core/configurators/wireguardConfigurator.h"
 #include "core/utils/selfhosted/proxyIpv6Upgrade.h"
+#include "core/utils/selfhosted/scriptsRegistry.h"
 
 using namespace amnezia;
 using namespace connectionUpdateTestFixtures;
@@ -104,6 +105,35 @@ public:
 class TestConnectionUpdatesController : public QObject {
     Q_OBJECT
 private slots:
+    void realProxyServerIpv6Activation()
+    {
+        if(qEnvironmentVariable("AMNEZIA_PROXY_IPV6_TEST")!="isolated-docker") QSKIP("requires the isolated proxy IPv6 fixture");
+        const auto name=qEnvironmentVariable("AMNEZIA_PROXY_IPV6_CONTAINER");
+        QVERIFY(name=="amnezia-xray"||name=="amnezia-ssxray");
+        const auto backend=name=="amnezia-xray"?DockerContainer::Xray:DockerContainer::SSXray;
+        ServerCredentials credentials{"127.0.0.1","root","synthetic-probe-fixture",2222};
+        SshSession guard;
+        QCOMPARE(guard.runScript(credentials,"test -f /run/amnezia-proxy-ipv6-fixture && sudo docker info -f '{{range .Labels}}{{println .}}{{end}}' | grep -Fxq amnezia.test-environment=disposable"),ErrorCode::NoError);
+        const auto expected=qEnvironmentVariable("AMNEZIA_PROXY_IPV6_EXPECT");
+        if(expected=="create-ipv4"||expected=="create-ipv6") {
+            // Use the actual packaged run script, including its IPv6 prefix.
+            auto script=amnezia::scriptData(ProtocolScriptType::run_container,DockerContainer::Xray);
+            QVERIFY(!script.isEmpty());
+            script.replace("$CONTAINER_NAME",name).replace("$XRAY_SERVER_PORT","38443");
+            QCOMPARE(guard.runScript(credentials,script),ErrorCode::NoError);
+            return;
+        }
+        QJsonObject outcome;
+        QCOMPARE(proxyIpv6Upgrade::prepare(credentials,backend,outcome),ErrorCode::NoError);
+        QCOMPARE(outcome.value("result").toString(),expected);
+        if(expected=="verified") {
+            QCOMPARE(QHostAddress(outcome.value("remoteAddress").toString()).protocol(),QAbstractSocket::IPv6Protocol);
+            QCOMPARE(QHostAddress(outcome.value("localAddress").toString()).protocol(),QAbstractSocket::IPv6Protocol);
+            QVERIFY(QRegularExpression("^[a-f0-9]{64}$").match(outcome.value("containerId").toString()).hasMatch());
+        }
+        qInfo().noquote()<<"AMNEZIA_PROXY_IPV6_RESULT"<<QJsonDocument(outcome).toJson(QJsonDocument::Compact);
+    }
+
     void proxyIpv6Preflight_data()
     {
         QTest::addColumn<QString>("scenario");
