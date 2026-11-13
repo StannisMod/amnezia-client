@@ -2,5 +2,8 @@
 # Keep the server's upstream entrypoint from generating fresh VPN identities.
 FROM hwdsl2/ipsec-vpn-server@sha256:9ae4084cf5c93bced92551fbfffa5872291e21c84e6b1c2b46ab69eea5bacab1
 RUN apk add --no-cache dumb-init python3 util-linux strongswan
+COPY server/ipv6/lab/test_ipsec.py /app/test_ipsec.py
+COPY server/ipv6/lab/run_ipsec.sh /app/run_ipsec.sh
+COPY client/server_scripts/ipsec/configure_container.sh /src/client/server_scripts/ipsec/configure_container.sh
 ENTRYPOINT ["dumb-init", "tail", "-f", "/dev/null"]
 CMD []
