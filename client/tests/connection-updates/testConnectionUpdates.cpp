@@ -237,6 +237,30 @@ private slots:
         containers.append(containers.at(0)); admin["containers"] = containers;
         QVERIFY(!connectionUpdates::mergePathProbe(admin, "amnezia-awg2", "10.8.0.1", rejected)); QCOMPARE(rejected.size(), 1);
     }
+    void administratorDualFamilyProbeMigration()
+    {
+        auto original=profile();
+        auto containers=original["containers"].toArray(); auto container=containers[0].toObject();
+        auto proto=container["wireguard"].toObject(); auto before=client(original,false);
+        before["client_ip"]="10.8.0.2/32, fd77::2/128";
+        before["allowed_ips"]=QJsonArray{"0.0.0.0/0","::/0"};
+        before["path_mtu_probe"]="10.8.0.1";
+        proto["last_config"]=QString::fromUtf8(QJsonDocument(before).toJson(QJsonDocument::Compact));
+        container["wireguard"]=proto; containers[0]=container; original["containers"]=containers;
+        QJsonObject updated;
+        QVERIFY(connectionUpdates::mergePathProbes(original,"amnezia-wireguard",{"10.8.0.1","fd77::1"},updated));
+        const auto after=client(updated,false);
+        QCOMPARE(after.value("path_mtu_probes").toArray(),QJsonArray({"10.8.0.1","fd77::1"}));
+        for(const auto *key:{"client_priv_key","client_pub_key","psk_key","client_ip","allowed_ips","config"}) QCOMPARE(after.value(key),before.value(key));
+        QJsonObject rejected{{"keep",true}};
+        for(const auto &targets:{QStringList{"10.8.0.1","10.8.0.9"},QStringList{"localhost"},QStringList{"fd77::2"}}) {
+            QVERIFY(!connectionUpdates::mergePathProbes(original,"amnezia-wireguard",targets,rejected));
+            QCOMPARE(rejected,QJsonObject({{"keep",true}}));
+        }
+        // A probe cannot introduce IPv6 addresses or routes into an IPv4-only profile.
+        QVERIFY(connectionUpdates::mergePathProbes(profile(),"amnezia-wireguard",{"10.8.0.1","fd77::1"},updated));
+        QCOMPARE(client(updated,false).value("path_mtu_probes").toArray(),QJsonArray({"10.8.0.1"}));
+    }
     void readinessProofMatchesGoWithoutSendingPrivateKey()
     {
         QFile file(":/connection-updates/readiness-interop.json"); QVERIFY(file.open(QIODevice::ReadOnly));
@@ -258,6 +282,9 @@ private slots:
         QVERIFY(connectionUpdates::parsePathProbeAddress(QString::fromUtf8(captured.readAll()), "wg0", target)); QCOMPARE(target, "10.77.0.9");
         QVERIFY(connectionUpdates::parsePathProbeAddress("7: wg0 inet 10.77.0.9/24 scope global wg0\n7: wg0 inet6 fd77::1/64 scope global" + marker, "wg0", target));
         QCOMPARE(target, "10.77.0.9");
+        QStringList targets;
+        QVERIFY(connectionUpdates::parsePathProbeAddresses("7: wg0 inet 10.77.0.9/24 scope global wg0\n7: wg0 inet6 fd77::1/64 scope global" + marker,"wg0",targets));
+        QCOMPARE(targets,QStringList({"10.77.0.9","fd77::1"}));
         QVERIFY(connectionUpdates::parsePathProbeAddress("8: awg0 inet6 fd77::9/64 scope global" + marker, "awg0", target)); QCOMPARE(target, "fd77::9");
         const QStringList invalid { "", "7: wg0 inet 10.77.0.9/24 scope global", "7: eth0 inet 10.77.0.9/24 scope global" + marker,
             "7: wg0 inet 127.0.0.1/8 scope global" + marker, "7: wg0 inet6 fe80::1/64 scope global" + marker,

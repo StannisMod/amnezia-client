@@ -102,7 +102,7 @@ bool usablePathProbe(const QJsonValue &value, const QJsonObject &client)
     }
     return family && allowed;
 }
-bool parsePathProbeAddress(const QString &output, const QString &interfaceName, QString &address)
+bool parsePathProbeAddresses(const QString &output, const QString &interfaceName, QStringList &addresses)
 {
     const QString marker = "\namnezia_interface_addresses=ok\n";
     if ((interfaceName != "wg0" && interfaceName != "awg0") || output.size() > 65536 || !output.endsWith(marker)) return false;
@@ -120,10 +120,19 @@ bool parsePathProbeAddress(const QString &output, const QString &interfaceName, 
         auto &target = v4 ? ipv4 : ipv6;
         if (target.isEmpty()) target = candidate.toString();
     }
-    const auto target = ipv4.isEmpty() ? ipv6 : ipv4;
-    if (target.isEmpty()) return false;
-    address = target; return true;
+    QStringList targets;
+    if (!ipv4.isEmpty()) targets.append(ipv4);
+    if (!ipv6.isEmpty()) targets.append(ipv6);
+    if (targets.isEmpty()) return false;
+    addresses = targets; return true;
 }
+bool parsePathProbeAddress(const QString &output, const QString &interfaceName, QString &address)
+{
+    QStringList addresses;
+    if (!parsePathProbeAddresses(output, interfaceName, addresses)) return false;
+    address = addresses.first(); return true;
+}
+
 bool parsePeerList(const QString &output, QStringList &peers)
 {
     const QString marker = "\namnezia_peers=ok\n";
@@ -398,6 +407,36 @@ bool mergePathProbe(const QJsonObject &profile, const QString &name, const QJson
     container[protoName] = proto; containers[found] = container;
     auto result = profile; result[configKey::containers] = containers; updated = result; return true;
 }
+bool mergePathProbes(const QJsonObject &profile, const QString &name, const QStringList &targets, QJsonObject &updated)
+{
+    if (targets.isEmpty() || targets.size() > 2) return false;
+    QSet<QAbstractSocket::NetworkLayerProtocol> families;
+    for (const auto &target : targets) {
+        const QHostAddress address(target);
+        if (!validPathProbe(target) || families.contains(address.protocol())) return false;
+        families.insert(address.protocol());
+    }
+    QJsonObject result;
+    if (!mergePathProbe(profile, name, targets.first(), result)) return false;
+    auto containers = result.value(configKey::containers).toArray();
+    for (int i = 0; i < containers.size(); ++i) {
+        auto container = containers[i].toObject();
+        if (container.value(configKey::container) != name) continue;
+        const auto protoName = protocol(name);
+        auto proto = container.value(protoName).toObject();
+        auto client = QJsonDocument::fromJson(proto.value(configKey::lastConfig).toString().toUtf8()).object();
+        QJsonArray usable;
+        for (const auto &target : targets) if (usablePathProbe(target, client)) usable.append(target);
+        if (usable.isEmpty()) return false;
+        client["path_mtu_probe"] = usable.first();
+        client["path_mtu_probes"] = usable;
+        proto[configKey::lastConfig] = QString::fromUtf8(QJsonDocument(client).toJson(QJsonDocument::Compact));
+        container[protoName] = proto; containers[i] = container;
+    }
+    result[configKey::containers] = containers;
+    updated = result; return true;
+}
+
 namespace {
 bool mergeClientIPv6(QJsonObject &profile, QJsonObject &metadata, const QJsonValue &value)
 {

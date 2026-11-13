@@ -9,6 +9,7 @@
 namespace amnezia::connectionUpdates {
 inline constexpr char metadataKey[] = "connectionUpdates";
 // All outputs are assigned only after full authentication and validation.
+bool parsePathProbeAddresses(const QString &output, const QString &interfaceName, QStringList &addresses);
 bool parsePathProbeAddress(const QString &output, const QString &interfaceName, QString &address);
 bool parsePeerList(const QString &output, QStringList &peers);
 // Accept only unambiguous individual IPv6 /128 assignments from live WG/AWG output.
@@ -23,6 +24,7 @@ bool mergeServerSettings(const QJsonObject &profile, const QString &container,
                          QJsonObject &updated);
 // Optional probes must fit the existing local address family and peer routes.
 bool usablePathProbe(const QJsonValue &target, const QJsonObject &client);
+bool mergePathProbes(const QJsonObject &profile, const QString &container, const QStringList &targets, QJsonObject &updated);
 bool mergePathProbe(const QJsonObject &profile, const QString &container, const QJsonValue &target, QJsonObject &updated);
 QByteArray readinessProof(const QJsonObject &profile, const QByteArray &envelope, qint64 now);
 bool attachInvitation(const QJsonObject &profile, const QJsonObject &invitation, QJsonObject &updated);

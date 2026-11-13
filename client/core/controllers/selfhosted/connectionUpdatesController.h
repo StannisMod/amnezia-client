@@ -15,7 +15,7 @@ class ConnectionUpdatesController : public QObject {
     Q_PROPERTY(QStringList protectionServers READ protectionServers NOTIFY configurationChanged)
     Q_PROPERTY(QStringList updatableServers READ updatableServers NOTIFY configurationChanged)
 public:
-    using ProbeAddressReader = std::function<ErrorCode(const ServerCredentials &, DockerContainer, QString &)>;
+    using ProbeAddressReader = std::function<ErrorCode(const ServerCredentials &, DockerContainer, QStringList &)>;
     explicit ConnectionUpdatesController(SecureServersRepository *servers, ConnectionController *connection, QObject *parent = nullptr, ProbeAddressReader probeAddressReader = {});
     ~ConnectionUpdatesController() override;
     bool busy() const { return m_busy; }
@@ -27,6 +27,7 @@ public:
     static ErrorCode fetchPublicSettings(const ServerCredentials &credentials, DockerContainer container,
                                          const QString &host, QJsonObject &settings, QStringList *peers = nullptr, QString *pathMtuProbe = nullptr);
     static ErrorCode fetchPeerIPv6Assignments(const ServerCredentials &credentials, DockerContainer container, QJsonObject &assignments);
+    static ErrorCode fetchPathMtuProbeAddresses(const ServerCredentials &credentials, DockerContainer container, QStringList &addresses);
     static ErrorCode fetchPathMtuProbeAddress(const ServerCredentials &credentials, DockerContainer container, QString &address);
     static ErrorCode prepareServerIPv6(const ServerCredentials &credentials, DockerContainer container,
                                       QJsonObject &outcome, const QJsonObject &deliveryMetadata = {});

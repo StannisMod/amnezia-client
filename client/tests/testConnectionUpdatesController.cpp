@@ -237,7 +237,11 @@ private slots:
         const auto id = servers.addServer({}, administrator, serverConfigUtils::SelfHostedAdmin);
         ConnectionUpdatesController updates(&servers, &connection);
         QVERIFY(!updates.available(id)); QVERIFY(updates.needsRefreshBeforeConnect(id));
-        QJsonObject migrated; QVERIFY(connectionUpdates::mergePathProbe(*servers.serverJsonById(id), "amnezia-wireguard", "10.8.0.1", migrated));
+        QJsonObject migrated;
+        QVERIFY(connectionUpdates::mergePathProbe(*servers.serverJsonById(id),"amnezia-wireguard","10.8.0.1",migrated));
+        servers.editServer(id,migrated,serverConfigUtils::SelfHostedAdmin);
+        QVERIFY(updates.needsRefreshBeforeConnect(id)); // The old single-target format also needs migration.
+        QVERIFY(connectionUpdates::mergePathProbes(*servers.serverJsonById(id), "amnezia-wireguard", {"10.8.0.1"}, migrated));
         servers.editServer(id, migrated, serverConfigUtils::SelfHostedAdmin);
         QVERIFY(!updates.needsRefreshBeforeConnect(id));
         settings.clearSettings();
@@ -257,9 +261,9 @@ private slots:
         const auto id = servers.addServer({}, administrator, serverConfigUtils::SelfHostedAdmin); servers.setDefaultServer(id);
         const auto original = *servers.serverJsonById(id);
         QSemaphore gate; std::atomic<int> calls { 0 }; std::atomic<bool> correctReaderArguments { false };
-        ConnectionUpdatesController updates(&servers, &connection, nullptr, [&](const ServerCredentials &credentials, DockerContainer container, QString &target) {
+        ConnectionUpdatesController updates(&servers, &connection, nullptr, [&](const ServerCredentials &credentials, DockerContainer container, QStringList &targets) {
             correctReaderArguments.store(credentials.userName == "root" && container == DockerContainer::WireGuard);
-            calls.fetch_add(1); gate.acquire(); target = "10.8.0.1";
+            calls.fetch_add(1); gate.acquire(); targets = {"10.8.0.1", "fd77::1"};
             return scenario == "failure" ? ErrorCode::InternalError : ErrorCode::NoError;
         });
         const auto unblock = qScopeGuard([&] { gate.release(); });
@@ -337,6 +341,9 @@ private slots:
         }
         QCOMPARE(ConnectionUpdatesController::fetchPathMtuProbeAddress(credentials, DockerContainer::WireGuard, target), ErrorCode::NoError);
         QCOMPARE(target, "10.77.0.9");
+        QStringList targets;
+        QCOMPARE(ConnectionUpdatesController::fetchPathMtuProbeAddresses(credentials,DockerContainer::WireGuard,targets),ErrorCode::NoError);
+        QCOMPARE(targets,QStringList({"10.77.0.9","fd77::1"}));
         QCOMPARE(ConnectionUpdatesController::fetchPathMtuProbeAddress(credentials, DockerContainer::Awg2, target), ErrorCode::NoError);
         QCOMPARE(target, "fd88::9");
         SecureQSettings settings("Amnezia-Probe-SSH-" + QUuid::createUuid().toString(), "test", nullptr, false);
