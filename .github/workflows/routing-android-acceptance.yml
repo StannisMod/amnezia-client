@@ -62,8 +62,8 @@ jobs:
         include:
           - {transport: awg, api: 35, focus: '', check_name: 'actual-apk-service (awg)'}
           - {transport: wireguard, api: 35, focus: '', check_name: 'actual-apk-service (wireguard)'}
-          - {transport: awg, api: 29, focus: '--app-policy-only', check_name: 'actual-apk-service (awg, API29 app policy)'}
-          - {transport: wireguard, api: 29, focus: '--app-policy-only', check_name: 'actual-apk-service (wireguard, API29 app policy)'}
+          - {transport: awg, api: 29, focus: '--app-policy-only --package-lifecycle', check_name: 'actual-apk-service (awg, API29 app policy)'}
+          - {transport: wireguard, api: 29, focus: '--app-policy-only --package-lifecycle', check_name: 'actual-apk-service (wireguard, API29 app policy)'}
           - {transport: awg, api: 28, focus: '--api28-compat-only', check_name: 'actual-apk-service (awg, API28 compatibility)'}
           - {transport: wireguard, api: 28, focus: '--api28-compat-only', check_name: 'actual-apk-service (wireguard, API28 compatibility)'}
     steps:
