@@ -17,6 +17,7 @@ RUN for kind in wireguard awg awg-legacy; do \
 COPY server/ipv6/lab/run_openvpn.sh /app/run_openvpn.sh
 COPY server/ipv6/lab/test_openvpn.py /app/test_openvpn.py
 COPY client/server_scripts/openvpn/configure_container.sh /src/client/server_scripts/openvpn/configure_container.sh
+COPY client/server_scripts/openvpn/migrate_ipv6.sh /src/client/server_scripts/openvpn/migrate_ipv6.sh
 COPY client/server_scripts/enable_ipv6_forwarding.sh /src/client/server_scripts/enable_ipv6_forwarding.sh
 COPY server/ipv6/lab/run.sh /app/run.sh
 COPY server/ipv6/lab/test_forwarding.py /app/test_forwarding.py

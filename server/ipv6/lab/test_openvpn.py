@@ -5,6 +5,7 @@ Fixture certificates, DH mode and Unix group are local test substitutions.
 """
 import json
 import hashlib
+import ipaddress
 import os
 import select
 from pathlib import Path
@@ -162,9 +163,13 @@ verb 3
         if any(p.poll() is not None for p in processes): raise RuntimeError('OpenVPN exited: '+(root/'server.log').read_text()+(root/'client.log').read_text())
         time.sleep(.1)
     else: raise RuntimeError('OpenVPN TLS handshake timed out: '+(root/'client.log').read_text())
-    client_links = json.loads(run('ip', '-n', names[0], '-j', '-4', 'addr', 'show'))
+    client_links = json.loads(run('ip', '-n', names[0], '-j', '-6', 'addr', 'show'))
+    # OpenVPN 2.6 net30 and 2.7 DCO/subnet allocate different IPv4 addresses.
+    # Find the actual tunnel using the negotiated IPv6 pool, not a fixed .2.
+    client_pool = ipaddress.IPv6Network('fd6e:a81b:704f:1101::/64')
     client_tun = next(link['ifname'] for link in client_links
-                      if any(address['local'] == '10.66.0.2' for address in link['addr_info']))
+                      if 'POINTOPOINT' in link['flags'] and any(
+                          ipaddress.IPv6Address(address['local']) in client_pool for address in link['addr_info']))
     if ipc_service:
         print('Owned OpenVPN interface:',run('ip','-n',names[0],'-d','-j','link','show','dev',client_tun).strip(),flush=True)
     addresses = json.loads(run('ip', '-n', names[0], '-j', '-6', 'addr', 'show', 'dev', client_tun))
