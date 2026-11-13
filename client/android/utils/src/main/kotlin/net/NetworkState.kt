@@ -1,6 +1,8 @@
 package org.amnezia.vpn.util.net
 
 import android.content.Context
+import android.database.ContentObserver
+import android.provider.Settings
 import android.net.ConnectivityManager
 import android.net.ConnectivityManager.NetworkCallback
 import android.net.Network
@@ -43,7 +45,9 @@ class NetworkState(
     ).joinToString("|")
 
     /** A configured strict provider matters even before its TLS validation. */
-    fun hasStrictPrivateDns(): Boolean = connectivityManager.allNetworks.any { network ->
+    fun hasStrictPrivateDns(): Boolean =
+        runCatching { Settings.Global.getString(context.contentResolver, "private_dns_mode") == "hostname" }.getOrDefault(false) ||
+        connectivityManager.allNetworks.any { network ->
         if (network in lostNetworks) return@any false
         val caps = connectivityManager.getNetworkCapabilities(network) ?: return@any false
         caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN) && caps.hasCapability(NET_CAPABILITY_INTERNET) &&
@@ -164,6 +168,16 @@ class NetworkState(
         Handler(context.mainLooper)
     }
 
+    // A best-network callback may observe Wi-Fi while the protected socket
+    // temporarily uses another physical link. The DNS policy is system-wide.
+    private val privateDnsObserver by lazy(NONE) {
+        object : ContentObserver(handler) {
+            override fun onChange(selfChange: Boolean) {
+                if (isListenerBound && canRetainConnections()) onNetworkChange()
+            }
+        }
+    }
+
     private val connectivityManager: ConnectivityManager by lazy {
         context.getSystemService<ConnectivityManager>()!!
     }
@@ -208,7 +222,7 @@ class NetworkState(
                 val previous = dnsFingerprints.put(network, current)
                 val path = pathFingerprint(linkProperties)
                 val oldPath = pathFingerprints.put(network, path)
-                if (network == preferredDnsNetwork &&
+                if ((network == preferredDnsNetwork || canRetainConnections()) &&
                     ((previous != null && current != previous) ||
                         (canRetainConnections() && (oldPath == null || oldPath != path)))) onNetworkChange()
             }
@@ -275,12 +289,15 @@ class NetworkState(
             }
         }
         isListenerBound = true
+        context.contentResolver.registerContentObserver(Settings.Global.getUriFor("private_dns_mode"), false, privateDnsObserver)
+        context.contentResolver.registerContentObserver(Settings.Global.getUriFor("private_dns_specifier"), false, privateDnsObserver)
     }
 
     fun unbindNetworkListener() {
         if (!isListenerBound) return
         Log.d(TAG, "Unbind network listener")
         connectivityManager.unregisterNetworkCallback(networkCallback)
+        context.contentResolver.unregisterContentObserver(privateDnsObserver)
         isListenerBound = false
         state.reset()
         lostNetworks.clear()
