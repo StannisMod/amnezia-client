@@ -84,6 +84,7 @@ def main():
     parser.add_argument('--report',type=Path,required=True)
     parser.add_argument('--tool-image',default='amnezia-local-vpn-tests')
     parser.add_argument('--proxy-image',default='amnezia-xray-ipv6:local')
+    parser.add_argument('--tun-runner',type=Path,help='optional owned Linux TUN/service runner: FIXTURE SERVER_IPV6_SUBNET')
     parser.add_argument('runner',nargs=argparse.REMAINDER)
     args=parser.parse_args();runner=args.runner[1:] if args.runner[:1]==['--'] else args.runner
     assert runner,'supply the Qt test runner after --'
@@ -139,6 +140,13 @@ def main():
             prefix=['ip'] if namespace is None else ['ip','-n',namespace]
             command(*prefix,'link','set',iface,'up');command(*prefix,'addr','add',v4,'dev',iface);command(*prefix,'-6','addr','add',v6,'dev',iface,'nodad')
         for ip in ('2606:4700:4700::1111/128','2001:4860:4860::8888/128'):command('ip','-n','provider','-6','addr','add',ip,'dev','lo','nodad')
+        if args.tun_runner:
+            command('ip','netns','exec','provider','sysctl','-w','net.ipv4.ip_forward=1')
+            for protocol in ('tcp','udp'):
+                command('ip','netns','exec','provider','iptables','-t','nat','-A','PREROUTING','-p',protocol,'--dport','38443',
+                        '-j','DNAT','--to-destination','198.51.100.2:38443')
+                command('ip','netns','exec','provider','iptables','-t','nat','-A','POSTROUTING','-p',protocol,'--dport','38443',
+                        '-j','SNAT','--to-source','198.51.100.1')
         command('openssl','req','-x509','-newkey','rsa:2048','-nodes','-days','1','-subj','/CN=Isolated proxy IPv6 fixture',
                 '-addext','subjectAltName=DNS:cloudflare-dns.com,DNS:dns.google,DNS:routing-xray.test',
                 '-addext','basicConstraints=critical,CA:TRUE','-keyout','/lab.key','-out','/lab.crt')
@@ -170,6 +178,7 @@ def main():
                 target['settings']={'vnext':[{'address':server_ip,'port':38443,'users':[{'id':identity,'encryption':'none'}]}]}
                 target['streamSettings']={'network':'tcp','security':'tls','tlsSettings':{'serverName':'routing-xray.test','disableSystemRoot':True,'certificates':[{'usage':'verify','certificate':ca}]}}
             else:target['settings']={'servers':[{'address':server_ip,'port':38443,'method':'aes-128-gcm','password':'synthetic-proxy-password'}]}
+            target.setdefault('streamSettings',{})['sockopt']={'mark':130}
             upload(json.dumps({'log':{'loglevel':'warning'},'inbounds':[{'listen':'127.0.0.1','port':39080,'protocol':'socks','settings':{'udp':True}}],'outbounds':[target]}).encode(),'/client.json')
             client=pipe('sh','-ec','echo $$ > /run/proxy-client.pid; exec /xray-client run -config /client.json');time.sleep(.3)
             stream=pipe('python3','-u','/proxy-client.py')
@@ -188,11 +197,34 @@ def main():
             current=state(container);assert current==original,'proxy PID, keys, IPv4 routes or DNS changed'
             for action,expected in (('ipv6','IPV6_TCP'),('udp6','IPV6_UDP')):
                 stream.stdin.write(action+'\n');stream.stdin.flush();assert stream.stdout.readline().strip()==expected
+            if args.tun_runner:
+                subnet=json.loads(command('docker','network','inspect','amnezia-ipv6-egress'))[0]['IPAM']['Config'][0]['Subnet']
+                # The lab client and Docker server share a host. Real deployed
+                # servers do not; keep server-forwarded packets on their underlay.
+                command('ip','-6','rule','add','priority','1000','from',subnet,'lookup','main')
+                try:
+                    client_config=json.loads(command('cat','/client.json'))
+                    client_config['log']={'loglevel':'debug'}
+                    client_config['inbounds'][0]['port']=39081
+                    outbound=client_config['outbounds'][0]['settings']
+                    outbound['vnext' if kind=='vless' else 'servers'][0]['address']='198.51.100.1'
+                    result=run(str(args.tun_runner.resolve()),fixture,subnet,data=json.dumps(client_config).encode(),timeout=120,check=False)
+                    print(result.stdout.decode(errors='replace'),result.stderr.decode(errors='replace'),flush=True)
+                    if result.returncode:
+                        for parts in (('iptables-save','-c'),('ip','netns','exec','provider','iptables-save','-c'),
+                                      ('ip','-6','rule','show'),('cat','/run/proxy-origins.jsonl')):
+                            detail=inside(*parts,check=False)
+                            print(detail.stdout.decode(errors='replace'),detail.stderr.decode(errors='replace'),flush=True)
+                    assert result.returncode==0,f'Linux TUN runner exit {result.returncode}'
+                    assert b'LINUX_PROXY_IPV6_TUN_TCP_UDP_PASS' in result.stdout+result.stderr
+                finally:command('ip','-6','rule','del','priority','1000','from',subnet,'lookup','main')
+                retained('after-linux-tun')
             stream.stdin.close();stream.wait(timeout=10)
             command('sh','-ec','kill "$(cat /run/proxy-client.pid)"')
             client.wait(timeout=10)
             report['protocols'][container]={'kind':kind,'old_tcp_origin_id':initial['origin_id'],'same_proxy_pid':True,'same_keys':True,
-                'ipv4_routes_preserved':True,'dns_preserved':True,'untrusted_ca_rejected':True,'idempotent':True,'new_ipv6_tcp':True,'new_ipv6_udp':True}
+                'ipv4_routes_preserved':True,'dns_preserved':True,'untrusted_ca_rejected':True,'idempotent':True,'new_ipv6_tcp':True,'new_ipv6_udp':True,
+                'linux_tun_tcp_udp':bool(args.tun_runner)}
             command('docker','rm','-f',container)
             if container=='amnezia-xray':
                 application(container,'create-ipv6')

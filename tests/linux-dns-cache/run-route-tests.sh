@@ -24,4 +24,5 @@ ip -n "$ns" -6 addr add 2001:db8:1::2/64 dev uplink0 nodad
 ip -n "$ns" -6 addr add 2001:db8:2::2/64 dev lan0 nodad
 ip -n "$ns" -6 addr add fd58:baa6:dead::1/64 dev amn0 nodad
 ip -n "$ns" -6 route add default via 2001:db8:1::1 dev uplink0
+ip -n "$ns" -6 rule add priority 1000 from 2001:db8:2::/64 lookup main
 ip netns exec "$ns" env AMNEZIA_PROXY_ROUTE_TEST=isolated-netns "$1"

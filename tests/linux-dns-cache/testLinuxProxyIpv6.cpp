@@ -25,6 +25,7 @@ private slots:
                 QVERIFY2(device(target).contains("dev tun2"), target);
             QVERIFY(device("2001:db8:2::42").contains("dev lan0"));
             QVERIFY(device("2001:db8:1::42").contains("dev uplink0"));
+            QVERIFY(ip({"-6", "route", "get", "2606:4700::1", "from", "2001:db8:2::2"}).contains("dev uplink0"));
             QVERIFY(!policy.configure({"::/0"}, {}));
         }
         QCOMPARE(ip({"-6", "rule", "show"}), rules);

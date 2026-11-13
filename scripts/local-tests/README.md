@@ -33,6 +33,23 @@ the nested environment. The wrapper removes its generated runner and anonymous
 volumes on exit. It does not remove existing host containers or run global prune.
 The source repository and kernel modules are mounted read-only.
 
+For Xray/legacy Shadowsocks-Xray IPv6 deployment and Linux TUN data-plane
+regressions, set `AMNEZIA_PROXY_QT_ROOT` to the Qt installation used by the Linux
+build, then run:
+
+```sh
+cmake -S scripts/routing/service-probe -B routing-service-probe-build -DCMAKE_PREFIX_PATH="$AMNEZIA_PROXY_QT_ROOT"
+cmake --build routing-service-probe-build
+bash scripts/local-tests/proxy-ipv6-activation.sh deploy/build/client/tests/test_connection_updates_controller
+```
+
+This uses separate owned Docker network namespaces, synthetic TLS certificates
+and independent TCP/UDP origins. It verifies retained server TCP during IPv6
+activation, followed by actual Linux TUN → tun2socks → service Xray → proxy
+TCP/UDP with kill switch enabled. `proxy-ipv6-activation.json` records results
+for both proxy protocols. Existing Linux CI jobs run the same wrapper; no public
+VPN or host network/DNS/firewall changes are needed.
+
 Image builds and the full-build container use the host network to download
 dependencies correctly when the host uses a VPN DNS proxy with synthetic IPs.
 The VPN runners retain a separate network and use public DNS. No host firewall

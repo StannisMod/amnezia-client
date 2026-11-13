@@ -41,7 +41,16 @@ public:
             const int priority = rule.value("priority").toInt(-1);
             occupied.insert(priority);
             const auto table = rule.value("table");
-            if (table.toString() == "main" || table.toString() == "254" || table.toInt() == 254) {
+            bool unconditional = true;
+            for (auto field = rule.begin(); field != rule.end(); ++field) {
+                if (field.key() == "priority" || field.key() == "table" || field.key() == "protocol") continue;
+                if ((field.key() == "src" || field.key() == "dst") && field.value().toString() == "all") continue;
+                if (field.key() == "flags" && field.value().isArray() && field.value().toArray().isEmpty()) continue;
+                unconditional = false;
+            }
+            // A source-, mark- or interface-selected lookup of main is an
+            // administrator policy, not the final unconditional main lookup.
+            if (unconditional && (table.toString() == "main" || table.toString() == "254" || table.toInt() == 254)) {
                 if (mainPriority < 0 || priority < mainPriority) mainPriority = priority;
             }
         }

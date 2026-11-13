@@ -79,11 +79,12 @@ jobs:
         run: |
           set -o pipefail
           bash scripts/local-tests/ipv6-activation.sh deploy/build/client/tests/test_connection_updates_controller 2>&1 | tee ipv6-activation.log
-          bash scripts/local-tests/proxy-ipv6-activation.sh deploy/build/client/tests/test_connection_updates_controller 2>&1 | tee proxy-ipv6-activation.log
       - name: Build installed-service IPC probe and disposable peer
         run: |
           cmake -S scripts/routing/service-probe -B routing-service-probe-build -DCMAKE_PREFIX_PATH="${{ runner.temp }}/Qt/6.10.1/gcc_64"
           cmake --build routing-service-probe-build
+          export AMNEZIA_PROXY_QT_ROOT="${{ runner.temp }}/Qt/6.10.1/gcc_64"
+          bash scripts/local-tests/proxy-ipv6-activation.sh deploy/build/client/tests/test_connection_updates_controller 2>&1 | tee proxy-ipv6-activation.log
           cd native/routing
           go build -mod=readonly -tags with_gvisor -o "$RUNNER_TEMP/installed-routing-peer" ./cmd/android-fixture
       - name: Install RUN package and verify actual Qt service and system resolver
