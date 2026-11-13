@@ -198,8 +198,9 @@ print('ORIGINAL_IPV6_TCP_RETAINED',flush=True)
         # reported ready. Snapshot a settled tunnel, not that unrelated transition.
         settled = time.monotonic() + 5
         while True:
-            rows = json.loads(run('ip','-n',names[0],'-j','-6','addr','show','dev','tun0'))
-            tentative = any('tentative' in entry.get('flags', []) for row in rows for entry in row['addr_info'])
+            rows = json.loads(run('ip','-n',names[0],'-j','-6','addr','show'))
+            tentative = any(entry.get('tentative', False) or 'tentative' in entry.get('flags', [])
+                            for row in rows for entry in row['addr_info'])
             if not tentative: break
             assert time.monotonic() < settled, 'IPv6 tunnel DAD did not settle'
             time.sleep(.05)

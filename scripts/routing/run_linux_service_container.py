@@ -24,6 +24,7 @@ def main():
     parser.add_argument('--ubuntu-version', choices=('22.04','24.04'), default='22.04')
     parser.add_argument('--peer', type=Path, required=True)
     parser.add_argument('--qt-probe', type=Path, required=True)
+    parser.add_argument('--openvpn-route-fixture', type=Path, help='production Linux IPv6 host-route driver')
     parser.add_argument('--openvpn-policies', type=Path, help='Qt-generated synthetic full/include/exclude profiles')
     parser.add_argument('--report', type=Path, required=True)
     parser.add_argument('--diagnose-capture-mark', action='store_true')
@@ -32,7 +33,7 @@ def main():
     args = parser.parse_args()
     repo = Path(__file__).resolve().parents[2]
     runtime = Path(os.environ['RUNNER_TEMP']).resolve()
-    for path in (args.package, args.peer, args.qt_probe, args.openvpn_policies, args.helper, args.service):
+    for path in (args.package, args.peer, args.qt_probe, args.openvpn_policies, args.openvpn_route_fixture, args.helper, args.service):
         if path is not None:
             path.resolve(strict=True)
             if not (path.resolve().is_relative_to(repo) or path.resolve().is_relative_to(runtime)):
@@ -75,6 +76,8 @@ def main():
                         'AMNEZIA_OPENVPN_BINARY=/opt/AmneziaVPN/bin/openvpn',
                         'AMNEZIA_OPENVPN_CLIENT_POLICIES=' + str(args.openvpn_policies.resolve()),
                         'AMNEZIA_OPENVPN_POLICY_MODE=' + mode,
+                        *(['AMNEZIA_OPENVPN_ROUTE_FIXTURE=' + str(args.openvpn_route_fixture.resolve())]
+                          if args.openvpn_route_fixture else []),
                         'unshare', '--mount', '--net', '--fork', 'bash', '-ec',
                         'mount --make-rprivate /; mkdir -p /run/netns; mount -t tmpfs tmpfs /run/netns; exec python3 "$1"',
                         'sh', str(repo / 'server/ipv6/lab/test_openvpn.py'), timeout=90)

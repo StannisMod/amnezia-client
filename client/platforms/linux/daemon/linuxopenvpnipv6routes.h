@@ -15,7 +15,7 @@
 // old DNS destinations until the process exits so existing TCP keeps its path.
 class LinuxOpenVpnIpv6Routes {
 public:
-    ~LinuxOpenVpnIpv6Routes() { clear(); }
+    ~LinuxOpenVpnIpv6Routes() = default;
     LinuxOpenVpnIpv6Routes() = default;
     LinuxOpenVpnIpv6Routes(const LinuxOpenVpnIpv6Routes &) = delete;
     LinuxOpenVpnIpv6Routes &operator=(const LinuxOpenVpnIpv6Routes &) = delete;
@@ -38,6 +38,9 @@ public:
             prefixes << address.toString() + "/128";
         }
         prefixes.removeDuplicates();
+        // Install the destination table first. Source pins added afterwards
+        // take priority and keep established tunnel sockets on their old path.
+        if (!m_routesTable.ensureFamily("-6")) return false;
         if (m_sourcePins.empty()) {
             for (const auto &entry : QNetworkInterface::interfaceFromName(tunnel).addressEntries()) {
                 const auto address = entry.ip();
@@ -64,7 +67,7 @@ public:
                 if (device.isEmpty() || device == tunnel || metric >= bestMetric) continue;
                 if (!gateway.isEmpty() && QHostAddress(gateway).protocol() != QAbstractSocket::IPv6Protocol) continue;
                 path = {"dev", device};
-                if (!gateway.isEmpty()) path << "via" << gateway;
+                if (!gateway.isEmpty()) path << "via" << gateway << "onlink";
                 bestMetric = metric;
             }
             if (path.isEmpty()) return false;
@@ -75,7 +78,7 @@ public:
                 if (m_owned[prefix] != path) { rollback(added); return false; }
                 continue;
             }
-            if (!run(QStringList{"-6", "route", "add", prefix, "proto", "196", "metric", "1"} + path)) {
+            if (!run(QStringList{"-6", "route", "add", prefix, "table", QString::number(m_routesTable.table()), "metric", "1"} + path)) {
                 rollback(added); return false;
             }
             m_owned.insert(prefix, path);
@@ -83,12 +86,11 @@ public:
         }
         return true;
     }
-    void clear() { rollback(m_owned.keys()); }
 private:
     void rollback(const QStringList &prefixes)
     {
         for (const auto &prefix : prefixes)
-            if (run(QStringList{"-6", "route", "del", prefix, "proto", "196", "metric", "1"} + m_owned.value(prefix)))
+            if (run(QStringList{"-6", "route", "del", prefix, "table", QString::number(m_routesTable.table()), "metric", "1"} + m_owned.value(prefix)))
                 m_owned.remove(prefix);
     }
     static bool run(const QStringList &arguments, QByteArray *output = nullptr)
@@ -103,4 +105,7 @@ private:
     }
     QMap<QString, QStringList> m_owned;
     std::vector<std::unique_ptr<LinuxRoutingTable>> m_sourcePins;
+    // Destroy the destination table before releasing source pins. Cleanup is
+    // bounded by table count, not the number of historical DNS destinations.
+    LinuxRoutingTable m_routesTable;
 };

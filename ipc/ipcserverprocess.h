@@ -4,7 +4,7 @@
 #include "ipc.h"
 #include <QObject>
 #if defined(Q_OS_LINUX) && !defined(Q_OS_ANDROID)
-#include "client/platforms/linux/daemon/linuxopenvpnipv6routes.h"
+#include "../client/platforms/linux/daemon/linuxopenvpnipv6routes.h"
 #include <memory>
 #endif
 

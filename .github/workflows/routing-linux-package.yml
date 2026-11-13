@@ -96,7 +96,7 @@ jobs:
           packages=(deploy/build/AmneziaVPN_*_linux_x64.run)
           chmod +x "${packages[0]}"
           sudo modprobe tun
-          python3 -u scripts/routing/run_linux_service_container.py --package "${packages[0]}" --peer "$RUNNER_TEMP/installed-routing-peer" --qt-probe "$GITHUB_WORKSPACE/routing-service-probe-build/routing-service-probe" --openvpn-policies "$RUNNER_TEMP/openvpn-qt-policies.json" --report "$GITHUB_WORKSPACE/linux-installed-service.json"
+          python3 -u scripts/routing/run_linux_service_container.py --package "${packages[0]}" --peer "$RUNNER_TEMP/installed-routing-peer" --qt-probe "$GITHUB_WORKSPACE/routing-service-probe-build/routing-service-probe" --openvpn-policies "$RUNNER_TEMP/openvpn-qt-policies.json" --openvpn-route-fixture "$GITHUB_WORKSPACE/deploy/build/client/tests/routing/openvpn_ipv6_route_fixture" --report "$GITHUB_WORKSPACE/linux-installed-service.json"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
