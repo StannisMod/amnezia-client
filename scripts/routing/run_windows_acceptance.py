@@ -140,6 +140,8 @@ def main():
         for cycle in range(args.cycles):
             stop(); start(bool(cycle & 1))
             assert tcp(resolve("vpn.test")) == "VPN"
+            if not cycle & 1:
+                assert tcp(resolve("ipv6.test", 28)) == "VPN"
             if (cycle + 1) % 10 == 0:
                 print("PASS reconnect cycles:", cycle + 1, flush=True)
         child.stdin.close(); assert child.wait(timeout=20) == 0; child = None
@@ -194,6 +196,7 @@ def main():
     finally:
         try:
             report["diagnostics"] = {
+                "addresses": powershell("Get-NetIPAddress | Select-Object InterfaceAlias,IPAddress,AddressState,PrefixLength,SkipAsSource | ConvertTo-Json -Compress"),
                 "routes": powershell("Get-NetRoute | Select-Object InterfaceAlias,DestinationPrefix,NextHop,RouteMetric | ConvertTo-Json -Compress"),
                 "observers": control("/stats"),
             }

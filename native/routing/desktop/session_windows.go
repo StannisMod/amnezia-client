@@ -113,6 +113,10 @@ func Start(ctx context.Context, raw []byte, manageDNS bool) (*Session, error) {
 				return nil, errors.New("native Wintun adapter configuration failed")
 			}
 			luid = t.(*tun.NativeTun).LUID()
+			if err := prepareCaptureIPv6(luid, opts.Inet6Address); err != nil {
+				t.Close()
+				return nil, err
+			}
 			if err := s.guard.allowCapture(luid); err != nil {
 				t.Close()
 				return nil, err
