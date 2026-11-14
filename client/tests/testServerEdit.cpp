@@ -6,6 +6,7 @@
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QThreadPool>
+#include <QFile>
 #include <libssh/libssh.h>
 
 #include "utils/testCoreController.h"
@@ -15,6 +16,7 @@
 #include "vpnConnection.h"
 #include "secureQSettings.h"
 #include "core/controllers/connectionController.h"
+#include "core/controllers/selfhosted/installController.h"
 
 using namespace amnezia;
 using namespace amnezia::test;
@@ -54,6 +56,24 @@ private slots:
         if (m_coreController->m_serversModel) {
             m_coreController->m_serversModel->updateModel(QVector<ServerDescription>(), QString{});
         }
+    }
+
+    void testProtocolSoftwareUpdateOverSsh() {
+        const auto fixturePath = qEnvironmentVariable("AMNEZIA_PROTOCOL_UPDATE_SSH_FIXTURE");
+        if (fixturePath.isEmpty())
+            QSKIP("Requires the disposable IPsec SSH acceptance fixture");
+        QFile fixture(fixturePath);
+        QVERIFY(fixture.open(QIODevice::ReadOnly));
+        const auto config = QJsonDocument::fromJson(fixture.readAll()).object();
+        QCOMPARE(config.value("host").toString(), QStringLiteral("127.0.0.1"));
+        const auto port = config.value("port").toInt();
+        QVERIFY(port > 0 && port <= 65535);
+        QFile key(config.value("keyFile").toString());
+        QVERIFY(key.open(QIODevice::ReadOnly));
+        const ServerCredentials credentials { config.value("host").toString(),
+            config.value("user").toString(), QString::fromUtf8(key.readAll()), port };
+        QVERIFY(credentials.isValid());
+        QCOMPARE(InstallController::updateProtocolSoftware(credentials, DockerContainer::Ipsec), ErrorCode::NoError);
     }
 
     void testVpnDomainPreservesSshAndRoundTrips() {

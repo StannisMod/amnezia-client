@@ -71,6 +71,13 @@ jobs:
           AMNEZIA_OPENVPN_POLICY_FIXTURE: ${{ runner.temp }}/openvpn-qt-policies.json
           AMNEZIA_OPENVPN_TUN_BUILDER_FIXTURE: ${{ runner.temp }}/openvpn-tun-builder-policies.json
         run: ctest --test-dir deploy/build/client/tests -V --timeout 120 --output-junit qt-regression.xml
+      - name: Production SSH IPsec update and unchanged-client regression
+        shell: bash
+        env:
+          AMNEZIA_PROTOCOL_UPDATE_QT_ROOT: ${{ runner.temp }}/Qt/6.10.1/gcc_64
+        run: |
+          set -o pipefail
+          bash scripts/local-tests/protocol-update-ssh.sh deploy/build/client/tests/test_server_edit 2>&1 | tee ipsec-update-ssh.log
       - name: Real SSH probe-address migration regression
         shell: bash
         run: |
@@ -104,6 +111,7 @@ jobs:
           name: routing-linux-verified-package
           path: |
             client-build.log
+            ipsec-update-ssh.log
             path-probe-ssh.log
             ipv6-activation.log
             ipv6-activation.json

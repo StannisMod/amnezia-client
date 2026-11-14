@@ -1,0 +1,11 @@
+ARG DAEMON_IMAGE=docker:29-dind
+ARG QT_IMAGE=ubuntu:22.04
+FROM ${DAEMON_IMAGE} AS daemon
+FROM ${QT_IMAGE}
+COPY --from=daemon /usr/local/bin/ /usr/local/bin/
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    openssh-server openssh-client sudo iptables iproute2 util-linux python3 \
+    libsecret-1-0 libxkbcommon-x11-0 libegl1 libgl1 libdbus-1-3 fontconfig \
+    && rm -rf /var/lib/apt/lists/*
+ENV DOCKER_TLS_CERTDIR=""
+ENTRYPOINT ["dockerd"]

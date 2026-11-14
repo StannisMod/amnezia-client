@@ -18,6 +18,28 @@ container, checks rollback of a failed replacement, and reconnects an independen
 IKEv2 client with unchanged credentials. It checks TCP/UDP traffic and retained
 IPv4 NAT after rollback and the new container's restart.
 
+To exercise the application's actual C++ SSH uploader as well as the server
+transaction, use the full build's existing Qt test executable:
+
+```sh
+AMNEZIA_PROTOCOL_UPDATE_QT_ROOT=/absolute/path/to/Qt/6.10.1/gcc_64 \
+  bash scripts/local-tests/protocol-update-ssh.sh /absolute/path/to/build/client/tests/test_server_edit
+```
+
+This runs the same IPsec rollback and unchanged-client TCP/UDP acceptance, then
+performs the successful replacement through `InstallController` and SCP over
+a private loopback SSH fixture. The full Linux package jobs use this wrapper
+in their existing jobs. Ordinary CTest skips the externally provisioned SSH
+slot; a skip is never accepted by the wrapper. Test keys, user accounts,
+sudo permissions and all Docker resources exist only inside its disposable
+runner. No host Docker socket or host port is exposed.
+
+For an existing local full-build volume, set
+`AMNEZIA_PROTOCOL_UPDATE_BUILD_VOLUME=amnezia-local-full-build-ubuntu22`,
+`AMNEZIA_PROTOCOL_UPDATE_QT_IMAGE=amnezia-local-full-build-ubuntu22:latest`, and
+pass `/work/build/client/tests/test_server_edit` as the executable. The wrapper
+mounts that volume read-only; it does not rebuild the application.
+
 The second command builds the Linux application, service and Qt regression tests
 with Go 1.27.1 and Qt 6.10.1, then runs the regression suite. It downloads SDKs
 and Conan dependencies on the first run. Initialize the pinned Linux submodules

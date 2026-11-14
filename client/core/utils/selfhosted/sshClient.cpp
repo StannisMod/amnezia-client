@@ -225,6 +225,8 @@ namespace libssh {
 
     ErrorCode Client::scpFileCopy(const ScpOverwriteMode overwriteMode, const QString& localPath, const QString& remotePath, const QString &fileDesc)
     {
+        Q_UNUSED(overwriteMode);
+        Q_UNUSED(fileDesc);
         m_scpSession = ssh_scp_new(m_session, SSH_SCP_WRITE, remotePath.toStdString().c_str());
 
         if (m_scpSession == nullptr) {
@@ -239,8 +241,10 @@ namespace libssh {
 
         QFutureWatcher<ErrorCode> watcher;
         connect(&watcher, &QFutureWatcher<ErrorCode>::finished, this, &Client::scpFileCopyFinished);
-        QFuture<ErrorCode> future = QtConcurrent::run([this, overwriteMode, &localPath, &remotePath, &fileDesc]() {
-            const int accessType = O_WRONLY | O_CREAT | overwriteMode;
+        QFuture<ErrorCode> future = QtConcurrent::run([this, &localPath, &remotePath]() {
+            // SCP expects POSIX permission bits, not open(2) flags. Uploads
+            // may contain credentials and must be readable only by their owner.
+            constexpr int accessType = 0600;
             const int localFileSize = QFileInfo(localPath).size();
 
             int result = ssh_scp_push_file(m_scpSession, remotePath.toStdString().c_str(), localFileSize, accessType);

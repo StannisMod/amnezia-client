@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Real IPsec replacement; fixed names require a disposable Docker daemon."""
+import argparse
 import json
 from pathlib import Path
 import re
@@ -107,6 +108,10 @@ for kind in (socket.SOCK_STREAM,socket.SOCK_DGRAM):
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--qt-update-test', type=Path,
+                        help='test_server_edit binary: execute the successful update through production C++ SSH')
+    args = parser.parse_args()
     labels = json.loads(run('docker', 'info', '--format', '{{json .Labels}}'))
     assert 'amnezia.test-environment=disposable' in labels, 'requires private disposable daemon'
     assert not run('docker', 'ps', '-aq'), 'requires empty disposable daemon'
@@ -185,13 +190,17 @@ def main():
         '-s', '192.168.43.0/24', '-o', 'eth0', '-m', 'policy', '--dir', 'out', '--pol', 'none', '-j', 'MASQUERADE')
     print('PASS: failed candidate restores original old image, daemon and unchanged IPv4 configuration', flush=True)
     probe('after rollback')
-    result = subprocess.run(['sh', str(source / 'update_ipsec.sh'), 'ipsec', str(stage)],
-                            text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=300)
-    print(result.stdout, flush=True)
-    work = Path('/var/lib/amnezia/updates/amnezia-ipsec-' + stage.name.removeprefix('amnezia-update-'))
-    if result.returncode or 'amnezia_update=ok' not in result.stdout:
-        print((work / 'update.log').read_text(), flush=True)
-        raise AssertionError('replacement failed')
+    if args.qt_update_test:
+        from ipsec_ssh_client import update_with_qt
+        update_with_qt(args.qt_update_test)
+    else:
+        result = subprocess.run(['sh', str(source / 'update_ipsec.sh'), 'ipsec', str(stage)],
+                                text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=300)
+        print(result.stdout, flush=True)
+        work = Path('/var/lib/amnezia/updates/amnezia-ipsec-' + stage.name.removeprefix('amnezia-update-'))
+        if result.returncode or 'amnezia_update=ok' not in result.stdout:
+            print((work / 'update.log').read_text(), flush=True)
+            raise AssertionError('replacement failed')
     assert run('docker', 'inspect', '-f', '{{.Id}}', 'amnezia-ipsec') != container
     assert run('docker', 'inspect', '-f', '{{.State.Running}}', container) == 'false'
     assert run('docker', 'exec', 'amnezia-ipsec', 'cat', '/etc/ipsec.secrets') == '# fixture: preserve verbatim'
