@@ -46,6 +46,66 @@ logs = []
 rpc_updater = None
 native6_before = None
 names = ('ovpn-client', 'ovpn-origin')
+
+def legacy_ipv6_acceptance(mode):
+    # Native origins remain reachable outside the VPN. A timeout or a policy
+    # string alone cannot prove that block-ipv6 stopped a bypass.
+    peer = '''import socket,sys,threading
+family,address,port,kind=sys.argv[1:];family=int(family);port=int(port)
+def serve(c):
+ try:
+  if kind=='native':c.sendall(b'NATIVE');return
+  while True:
+   data=c.recv(4096)
+   if not data:return
+   c.sendall(data)
+ finally:c.close()
+if kind=='native':
+ def udp(address,ready):
+  s=socket.socket(family,socket.SOCK_DGRAM);s.bind((address,port))
+  ready.set()
+  while True:
+   data,a=s.recvfrom(4096);s.sendto(b'NATIVE',a)
+ for udpaddress in ('fd88::1','2001:db8:88::1','64:ff9b::c000:201'):
+  ready=threading.Event()
+  threading.Thread(target=udp,args=(udpaddress,ready),daemon=True).start()
+  assert ready.wait(3),'UDP origin did not bind'
+s=socket.socket(family);s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1);s.bind((address,port));s.listen()
+print('READY',flush=True)
+while True:
+ c,a=s.accept();threading.Thread(target=serve,args=(c,),daemon=True).start()
+'''
+    for prefix, family, address, port, kind in (([], '2', '10.66.0.1', '18080', 'echo'),
+            (['ip','netns','exec',names[1]], '10', '::', '18081', 'native')):
+        process = subprocess.Popen([*prefix,'python3','-u','-c',peer,family,address,port,kind],stdout=subprocess.PIPE,text=True)
+        processes.append(process)
+        assert select.select([process.stdout],[],[],5)[0] and process.stdout.readline().strip()=='READY'
+    probe = '''import errno,socket,sys,time
+mode=sys.argv[1]
+old=[socket.create_connection(('10.66.0.1',18080),3) for _ in range(2)]
+for s in old:s.sendall(b'before');assert s.recv(6)==b'before'
+for address in ('fd88::1','2001:db8:88::1','64:ff9b::c000:201'):
+ blocked=mode in ('legacy-full','legacy-export') or ((address=='fd88::1')==(mode=='legacy-include'))
+ for udp in (False,True):
+  start=time.monotonic()
+  try:
+   with socket.socket(socket.AF_INET6,socket.SOCK_DGRAM if udp else socket.SOCK_STREAM) as s:
+    # Linux treats ICMPv6 no-route as a soft UDP error unless the socket
+    # requests its error queue. Observe the actual rejection, not a recv timeout.
+    if udp:s.setsockopt(socket.IPPROTO_IPV6,getattr(socket,'IPV6_RECVERR',25),1)
+    s.settimeout(3);s.connect((address,18081))
+    if udp:s.send(b'probe')
+    data=s.recv(64)
+  except OSError as e:
+   assert blocked and e.errno in (errno.ENETUNREACH,errno.EHOSTUNREACH),repr((address,udp,e))
+   assert time.monotonic()-start<1.5,'blocked IPv6 timed out instead of failing fast'
+  else:
+   assert not blocked and data==b'NATIVE',repr(('IPv6 bypass',address,udp,data))
+for s in old:s.sendall(b'after');assert s.recv(5)==b'after';s.close()
+print('PASS: IPv4-only server blocks selected IPv6 TCP/UDP GUA/ULA/NAT64, preserves DIRECT exclusions and two original IPv4 TCP sockets',flush=True)
+'''
+    print(run('ip','netns','exec',names[0],'python3','-c',probe,mode),flush=True)
+
 try:
     for name in names:
         run('ip', 'netns', 'add', name)
@@ -120,6 +180,8 @@ try:
     run(*migrate[:-1],str(custom))
     assert custom.read_bytes()==custom_before,'migration replaced administrator IPv6 pool'
     print('PASS: existing IPv4 server migrated idempotently; identities, permissions and custom IPv6 pool preserved',flush=True)
+    if policy_mode.startswith('legacy-'):
+        (root/'server.conf').write_text(legacy)
     (root/'client.conf').write_text(f'''{native_policy}
 dev tun0
 proto udp
@@ -176,6 +238,9 @@ verb 3
         if any(p.poll() is not None for p in processes): raise RuntimeError('OpenVPN exited: '+(root/'server.log').read_text()+(root/'client.log').read_text())
         time.sleep(.1)
     else: raise RuntimeError('OpenVPN TLS handshake timed out: '+(root/'client.log').read_text())
+    if policy_mode.startswith('legacy-'):
+        legacy_ipv6_acceptance(policy_mode)
+        raise SystemExit(0)
     client_links = json.loads(run('ip', '-n', names[0], '-j', '-6', 'addr', 'show'))
     # OpenVPN 2.6 net30 and 2.7 DCO/subnet allocate different IPv4 addresses.
     # Find the actual tunnel using the negotiated IPv6 pool, not a fixed .2.

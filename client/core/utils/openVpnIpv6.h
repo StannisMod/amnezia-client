@@ -10,6 +10,11 @@ inline QRegularExpression captureBlock()
     return QRegularExpression("^# amnezia-ipv6-capture-begin\\n.*?^# amnezia-ipv6-capture-end[ \\t]*(?:\\n|$)",
         QRegularExpression::MultilineOption | QRegularExpression::DotMatchesEverythingOption);
 }
+inline QRegularExpression blockingBlock()
+{
+    return QRegularExpression(R"(^# amnezia-ipv6-block-begin\n.*?^# amnezia-ipv6-block-end[ \t]*(?:\n|$))",
+        QRegularExpression::MultilineOption | QRegularExpression::DotMatchesEverythingOption);
+}
 inline QRegularExpression serverPoolDirective()
 {
     return QRegularExpression("^[ \\t]*(?:--)?server-ipv6[ \\t]+([^\\s#]+)[ \\t]*(?:#.*)?$",
@@ -53,5 +58,23 @@ inline QString captureDirectives(RouteMode mode, const QStringList &sites, const
     QString output = "\n# amnezia-ipv6-capture-begin\n";
     for (const auto &route : routes) output += "\nroute-ipv6 " + route;
     return output + "\n# amnezia-ipv6-capture-end\n";
+}
+
+// block-ipv6 only acts on packets entering OpenVPN. IPv4-only servers do not
+// supply an IPv6 interface address, so establish a local capture address too.
+// Keep this entire fallback distinguishable from authenticated IPv6 capability.
+inline QString blockingDirectives(const QString &nativeConfig, RouteMode mode,
+                                  const QStringList &sites, const QStringList &dns)
+{
+    QString output = "\n# amnezia-ipv6-block-begin\n";
+    const QRegularExpression explicitAddress(R"(^[ \t]*(?:--)?ifconfig-ipv6[ \t]+)",
+                                             QRegularExpression::MultilineOption);
+    if (!explicitAddress.match(nativeConfig).hasMatch())
+        output += "ifconfig-ipv6 fd15:53b6:dead::2/64 fd15:53b6:dead::1\n";
+    // DCO bypasses the userspace ICMP rejection implemented by block-ipv6.
+    // Older/non-DCO cores may ignore this one optional directive.
+    output += "setenv opt disable-dco\nblock-ipv6\n";
+    output += captureDirectives(mode, sites, dns);
+    return output + "# amnezia-ipv6-block-end\n";
 }
 }

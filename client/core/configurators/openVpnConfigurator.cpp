@@ -202,10 +202,12 @@ ProtocolConfig OpenVpnConfigurator::processConfigWithLocalSettings(const Connect
     QString config = protocolConfig.nativeConfig();
     const auto *openVpn = protocolConfig.as<OpenVpnProtocolConfig>();
     const bool ipv6Tunnel = openVpn && openVpn->clientConfig && openVpn->clientConfig->ipv6Tunnel;
-    if (ipv6Tunnel) config.remove(openVpnIpv6::captureBlock());
+    if (ipv6Tunnel && settings.isApiConfig) config.remove(openVpnIpv6::captureBlock());
 
 
     if (!settings.isApiConfig) {
+        config.remove(openVpnIpv6::blockingBlock());
+        config.remove(openVpnIpv6::captureBlock());
         QRegularExpression regex("redirect-gateway.*");
         config.replace(regex, "");
 
@@ -216,22 +218,13 @@ ProtocolConfig OpenVpnConfigurator::processConfigWithLocalSettings(const Connect
 
         if (!settings.splitTunneling.isSitesSplitTunnelingEnabled) {
             config.append("\nredirect-gateway def1 ipv6 bypass-dhcp\n");
-            if (!ipv6Tunnel) config.append("block-ipv6\n");
-        } else if (settings.splitTunneling.routeMode == RouteMode::VpnOnlyForwardSites) {
-            // no redirect-gateway
-        } else if (settings.splitTunneling.routeMode == RouteMode::VpnAllExceptSites) {
-#if !defined(Q_OS_ANDROID) && !defined(Q_OS_IOS) && !defined(MACOS_NE)
-            if (!ipv6Tunnel) config.append("\nredirect-gateway ipv6 !ipv4 bypass-dhcp\n");
-#endif
-            if (!ipv6Tunnel) config.append("block-ipv6\n");
         }
-        if (ipv6Tunnel) {
-            const auto &split = settings.splitTunneling;
-            const auto mode = !split.isSitesSplitTunnelingEnabled || split.siteRoutes.isEmpty()
-                ? RouteMode::VpnAllSites : split.routeMode;
-            config.append(openVpnIpv6::captureDirectives(mode, split.siteRoutes,
-                {settings.dns.primaryDns, settings.dns.secondaryDns}));
-        }
+        const auto &split = settings.splitTunneling;
+        const auto mode = !split.isSitesSplitTunnelingEnabled || split.siteRoutes.isEmpty()
+            ? RouteMode::VpnAllSites : split.routeMode;
+        const QStringList dns{settings.dns.primaryDns, settings.dns.secondaryDns};
+        config.append(ipv6Tunnel ? openVpnIpv6::captureDirectives(mode, split.siteRoutes, dns)
+            : openVpnIpv6::blockingDirectives(config, mode, split.siteRoutes, dns));
     }
 
 #ifndef MZ_WINDOWS
@@ -257,7 +250,8 @@ ProtocolConfig OpenVpnConfigurator::processConfigWithExportSettings(const Export
     QString config = protocolConfig.nativeConfig();
     const auto *openVpn = protocolConfig.as<OpenVpnProtocolConfig>();
     const bool ipv6Tunnel = openVpn && openVpn->clientConfig && openVpn->clientConfig->ipv6Tunnel;
-    if (ipv6Tunnel) config.remove(openVpnIpv6::captureBlock());
+    config.remove(openVpnIpv6::blockingBlock());
+    config.remove(openVpnIpv6::captureBlock());
 
 
     QRegularExpression regex("redirect-gateway.*");
@@ -269,8 +263,8 @@ ProtocolConfig OpenVpnConfigurator::processConfigWithExportSettings(const Export
     }
 
     config.append("\nredirect-gateway def1 ipv6 bypass-dhcp\n");
-    if (!ipv6Tunnel) config.append("block-ipv6\n");
-    if (ipv6Tunnel) config.append(openVpnIpv6::captureDirectives(RouteMode::VpnAllSites, {}, {}));
+    config.append(ipv6Tunnel ? openVpnIpv6::captureDirectives(RouteMode::VpnAllSites, {}, {})
+        : openVpnIpv6::blockingDirectives(config, RouteMode::VpnAllSites, {}, {}));
     config.replace("block-outside-dns", "");
 
     protocolConfig.setNativeConfig(config);

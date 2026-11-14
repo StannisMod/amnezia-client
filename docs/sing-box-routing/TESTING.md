@@ -167,3 +167,25 @@ saved hostname and keys are retained. This bypasses system DNS caches and tunnel
 DNS, but private/split-horizon names and networks blocking both public UDP DNS
 resolvers are not supported by this bootstrap path. Truncated DNS replies fail
 closed; there is no TCP fallback. Destination-routing DNS is separate.
+
+### IPv4-only OpenVPN servers
+
+The installed Linux suite also runs `legacy-full`, `legacy-export`,
+`legacy-include` and `legacy-exclude` using configurations emitted by the actual
+Qt configurator. The server has no IPv6 pool, while an independent native path
+can reach GUA, ULA and NAT64 origins. Selected IPv6 must be rejected, DIRECT
+exceptions must still carry TCP/UDP, and two original IPv4 TCP sockets must
+survive. The old configuration fails this test by reaching the native origin.
+
+`block-ipv6` needs IPv6 capture, as shown in the
+[OpenVPN manual](https://openvpn.net/community-docs/community-articles/openvpn-2-7-manual/).
+The managed blocking fallback supplies a local IPv6 address when no explicit
+one exists, installs the selected routes, and uses `setenv opt disable-dco`
+because DCO bypasses userspace ICMP rejection. Its separate marker prevents an
+exported blocking profile from being mistaken for authenticated IPv6 support.
+After support is confirmed, regeneration removes only this managed fallback;
+explicit administrator addresses and blocks remain intact.
+
+The UDP witness enables Linux `IPV6_RECVERR` to observe the ICMPv6 rejection.
+Ordinary UDP applications may ignore that soft error; this test does not claim
+that every application's UDP receive call fails immediately.

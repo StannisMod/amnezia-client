@@ -115,7 +115,8 @@ OpenVpnClientConfig OpenVpnClientConfig::fromJson(const QJsonObject& json)
     config.clientId = json.value(configKey::clientId).toString();
     config.blockOutsideDns = json.value(configKey::blockOutsideDns).toBool(false);
     config.ipv6Tunnel = json.contains("ipv6Tunnel") ? json.value("ipv6Tunnel").toBool(false)
-        : openVpnIpv6::captureBlock().match(config.nativeConfig).hasMatch();
+        : openVpnIpv6::captureBlock().match(config.nativeConfig).hasMatch()
+            && !openVpnIpv6::blockingBlock().match(config.nativeConfig).hasMatch();
     
     return config;
 }
