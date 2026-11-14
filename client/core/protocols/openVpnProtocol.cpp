@@ -386,12 +386,17 @@ void OpenVpnProtocol::updateVpnGateway(const QString &line)
     // line looks like
     // PUSH: Received control message: 'PUSH_REPLY,route 10.8.0.1,topology net30,ping 10,ping-restart
     // 120,ifconfig 10.8.0.6 10.8.0.5,peer-id 0,cipher AES-256-GCM'
-    QStringList params = line.split(",");
+    const auto payload = line.endsWith('\'') ? line.chopped(1) : line;
+    const QStringList params = payload.split(",");
     for (const QString &l : params) {
-        if (l.contains("ifconfig")) {
-            if (l.split(" ").size() == 3) {
-                m_vpnLocalAddress = l.split(" ").at(1);
-                m_vpnGateway = l.split(" ").at(2);
+        const auto fields = l.simplified().split(' ');
+        // ifconfig-ipv6 is a separate directive, never an IPv4 gateway update.
+        if (fields.value(0) == QLatin1String("ifconfig")) {
+            if (fields.size() == 3
+                && QHostAddress(fields[1]).protocol() == QAbstractSocket::IPv4Protocol
+                && QHostAddress(fields[2]).protocol() == QAbstractSocket::IPv4Protocol) {
+                m_vpnLocalAddress = fields[1];
+                m_vpnGateway = fields[2];
 #ifdef Q_OS_WIN
                 QThread::msleep(300);
                 IpcClient::withInterface([&](QSharedPointer<IpcInterfaceReplica> iface) {

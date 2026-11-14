@@ -13,6 +13,7 @@
 class OpenVpnProtocol : public VpnProtocol
 {
     Q_OBJECT
+    friend class TestConnection;
 public:
     void addResolvedIpv6Hosts(const QStringList &hosts, bool throughVpn, std::function<void(bool)> done) override;
     bool supportsIpv6HostUpdates() const override;

@@ -16,6 +16,7 @@
 #include "core/utils/networkUtilities.h"
 #include "core/configurators/openVpnConfigurator.h"
 #include "core/utils/selfhosted/scriptsRegistry.h"
+#include "core/protocols/openVpnProtocol.h"
 
 using namespace amnezia;
 using namespace amnezia::test;
@@ -129,6 +130,26 @@ private slots:
         settings.clearSettings();
     }
 #endif
+    void openVpnDualStackPushPreservesIpv4Gateway()
+    {
+#if defined(Q_OS_LINUX) && !defined(Q_OS_ANDROID)
+        OpenVpnProtocol protocol({});
+        protocol.updateVpnGateway("PUSH: Received control message: 'PUSH_REPLY,ifconfig 10.8.0.6 10.8.0.5,ifconfig-ipv6 fd00::2/64 fd00::1,peer-id 0'");
+        QCOMPARE(protocol.vpnLocalAddress(), QString("10.8.0.6"));
+        QCOMPARE(protocol.vpnGateway(), QString("10.8.0.5"));
+        protocol.updateVpnGateway("PUSH: Received control message: 'PUSH_REPLY,ifconfig-ipv6 fd00::3/64 fd00::1'");
+        QCOMPARE(protocol.vpnLocalAddress(), QString("10.8.0.6"));
+        QCOMPARE(protocol.vpnGateway(), QString("10.8.0.5"));
+        protocol.updateVpnGateway("PUSH: Received control message: 'PUSH_REPLY,ifconfig 10.8.0.8 255.255.255.0'");
+        QCOMPARE(protocol.vpnLocalAddress(), QString("10.8.0.8"));
+        QCOMPARE(protocol.vpnGateway(), QString("255.255.255.0"));
+        protocol.updateVpnGateway("PUSH: Received control message: 'PUSH_REPLY,ifconfig not-an-address 10.8.0.1'");
+        QCOMPARE(protocol.vpnLocalAddress(), QString("10.8.0.8"));
+        QCOMPARE(protocol.vpnGateway(), QString("255.255.255.0"));
+#else
+        QSKIP("Desktop management parser; Linux avoids native driver setup in this fixture");
+#endif
+    }
     void ipsecServerResourcesArePackaged()
     {
         QFile image(":/server_scripts/ipsec/Dockerfile");
