@@ -1,6 +1,11 @@
 name: Installed Windows service acceptance
 on:
   workflow_dispatch:
+    inputs:
+      build_run_id:
+        description: Successful full-client build run containing the Windows installers
+        type: string
+        required: true
 permissions:
   contents: read
   actions: read
@@ -31,14 +36,18 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: routing-client-windows-baseline
-          run-id: 39966881951
+          run-id: ${{ inputs.build_run_id }}
           github-token: ${{ github.token }}
           path: installed-fixture
       - name: Verify current installer provenance and build test clients
         shell: pwsh
+        env:
+          EXPECTED_BUILD_RUN: ${{ inputs.build_run_id }}
         run: |
+          if ($env:EXPECTED_BUILD_RUN -cnotmatch '^[1-9][0-9]*$') { throw 'Invalid build run ID' }
           $manifest = Get-Content installed-fixture/routing-build-manifest.json | ConvertFrom-Json
-          if ($manifest.source_sha -ne '5fd7a8e0ce7a91455a971e61b11688b281815216') { throw 'Installer source mismatch' }
+          if ([string]$manifest.workflow_run -ne $env:EXPECTED_BUILD_RUN) { throw 'Installer build run mismatch' }
+          if ($manifest.source_sha -cnotmatch '^[0-9a-f]{40}$') { throw 'Invalid installer source revision' }
           if ($manifest.client_baseline_compile -ne 'PASS' -or !$manifest.routing_core_packaged_with_service) { throw 'Package build did not pass' }
           foreach ($row in $manifest.artifacts) {
             $packagePath = Join-Path installed-fixture $row.path
@@ -46,7 +55,7 @@ jobs:
           }
           git fetch --no-tags --depth=1 origin $manifest.source_sha
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          git diff --exit-code $manifest.source_sha HEAD -- client service native/routing deploy cmake recipes conanfile.py CMakeLists.txt
+          git diff --exit-code $manifest.source_sha HEAD -- client service common ipc third_party native/routing deploy cmake recipes conanfile.py CMakeLists.txt CMakePresets.json .gitmodules
           if ($LASTEXITCODE -ne 0) { throw 'Production source differs from the pinned installer' }
           cmake -S scripts/routing/service-probe -B routing-service-probe-build -DCMAKE_PREFIX_PATH="$env:RUNNER_TEMP/Qt/6.10.1/msvc2022_64"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
