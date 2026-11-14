@@ -199,3 +199,39 @@ notification, so it does not trigger the local proxy's ordinary configuration
 restart handler. It applies to the next connection; an authoritative provider
 profile refresh can replace the cached observation. This test does not claim
 that the current blocked session gains IPv6 without reconnecting.
+
+### Android OpenVPN3 configuration compatibility
+
+`ConnectionTest::openVpnTunBuilderIpv6Compatibility` runs in the ordinary Qt
+suite. Android local profile generation removes only the owned OpenVPN2
+fallback `ifconfig-ipv6` line: shipped OpenVPN3 rejects that client-side option
+even with `setenv opt`. The block marker, `block-ipv6`, routes, credentials and
+explicit administrator configuration are retained. Desktop OpenVPN2 profiles
+and exports retain their capture address.
+
+To check the real JNI library from a normal APK on an owned emulator, first
+generate profiles with the compiled Qt test, then run:
+
+```sh
+QT_QPA_PLATFORM=offscreen AMNEZIA_OPENVPN_TUN_BUILDER_FIXTURE=/tmp/openvpn-tun-builder-policies.json \
+  deploy/build/client/tests/test_connection openVpnIpv6ProfileAndExport openVpnTunBuilderIpv6Compatibility
+AMNEZIA_ANDROID_NATIVE_CONFIG_PROBE=owned-emulator \
+  python3 scripts/routing/run_android_openvpn_config_probe.py \
+  --sdk "$ANDROID_HOME" --apk /path/to/normal-x86_64.apk \
+  --policies /tmp/openvpn-tun-builder-policies.json --report /tmp/openvpn3-startup.json
+```
+
+This extracts the unchanged APK's JNI libraries and compiles the repository's
+SWIG wrappers plus a separate probe. It neither installs nor modifies the APK.
+`eval_config` alone is insufficient: the probe initializes native connection
+options and refuses the socket before transport. A structural invalid control
+must fail. The optional `--tls-fixture` mode accepts only the fixed local
+emulator gateway/port, records native TUN callbacks after a fixture TLS
+handshake, and returns no TUN descriptor. Neither mode proves actual Android
+TUN routing or packet forwarding.
+
+The local IPv4-only server probe showed that OpenVPN3 drops IPv6 route callbacks
+without a server-assigned IPv6 address and asks the adapter to block the whole
+family. Selective IPv6 DIRECT exceptions for this case still need implementation
+and real Android packet acceptance. Apple adapters also require separate
+validation; the Android adaptation is deliberately not enabled for them yet.

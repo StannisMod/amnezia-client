@@ -15,6 +15,22 @@ inline QRegularExpression blockingBlock()
     return QRegularExpression(R"(^# amnezia-ipv6-block-begin\n.*?^# amnezia-ipv6-block-end[ \t]*(?:\n|$))",
         QRegularExpression::MultilineOption | QRegularExpression::DotMatchesEverythingOption);
 }
+// OpenVPN3 obtains interface addresses from authenticated PUSH options and
+// rejects a client-side ifconfig-ipv6 even when prefixed with "setenv opt".
+// Android's adapter leaves an unconfigured family blocked by the OS. Keep
+// the block/routes and remove only our OpenVPN2 capture address, never a user's
+// explicit interface configuration or data inside an inline credential block.
+inline QString forTunBuilder(QString config)
+{
+    const auto match = blockingBlock().match(config);
+    if (!match.hasMatch()) return config;
+    auto managed = match.captured();
+    managed.remove(QRegularExpression(
+        R"(^ifconfig-ipv6 fd15:53b6:dead::2/64 fd15:53b6:dead::1\n)",
+        QRegularExpression::MultilineOption));
+    config.replace(match.capturedStart(), match.capturedLength(), managed);
+    return config;
+}
 inline QRegularExpression serverPoolDirective()
 {
     return QRegularExpression("^[ \\t]*(?:--)?server-ipv6[ \\t]+([^\\s#]+)[ \\t]*(?:#.*)?$",

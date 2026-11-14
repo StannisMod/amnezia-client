@@ -226,6 +226,10 @@ ProtocolConfig OpenVpnConfigurator::processConfigWithLocalSettings(const Connect
     config.append(ipv6Tunnel ? openVpnIpv6::captureDirectives(mode, split.siteRoutes, dns)
         : openVpnIpv6::blockingDirectives(config, mode, split.siteRoutes, dns));
 
+#ifdef MZ_ANDROID
+    config = openVpnIpv6::forTunBuilder(config);
+#endif
+
 #ifndef MZ_WINDOWS
     config.replace("block-outside-dns", "");
 #endif

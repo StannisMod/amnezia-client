@@ -17,6 +17,7 @@
 #include "core/configurators/openVpnConfigurator.h"
 #include "core/utils/selfhosted/scriptsRegistry.h"
 #include "core/protocols/openVpnProtocol.h"
+#include "core/utils/openVpnIpv6.h"
 
 using namespace amnezia;
 using namespace amnezia::test;
@@ -469,7 +470,38 @@ private slots:
             const auto bytes = QJsonDocument(policies).toJson();
             QCOMPARE(file.write(bytes), qint64(bytes.size()));
         }
+        const auto builderFixturePath = qEnvironmentVariable("AMNEZIA_OPENVPN_TUN_BUILDER_FIXTURE");
+        if (!builderFixturePath.isEmpty()) {
+            QJsonObject builderPolicies;
+            for (auto it = policies.constBegin(); it != policies.constEnd(); ++it)
+                builderPolicies[it.key()] = openVpnIpv6::forTunBuilder(it.value().toString());
+            QFile file(builderFixturePath);
+            QVERIFY(file.open(QIODevice::WriteOnly));
+            const auto bytes = QJsonDocument(builderPolicies).toJson();
+            QCOMPARE(file.write(bytes), qint64(bytes.size()));
+        }
         QVERIFY(!OpenVpnClientConfig::fromJson({}).ipv6Tunnel);
+    }
+    void openVpnTunBuilderIpv6Compatibility()
+    {
+        const QString credentials = "<key>\nUNCHANGED-PRIVATE-KEY\n</key>\n";
+        const QString explicitConfig = "client\nifconfig-ipv6 fd77::2/64 fd77::1\n" + credentials;
+        QCOMPARE(openVpnIpv6::forTunBuilder(explicitConfig), explicitConfig);
+        const QString base = "client\n" + credentials;
+        for (const auto mode : {RouteMode::VpnAllSites, RouteMode::VpnOnlyForwardSites, RouteMode::VpnAllExceptSites}) {
+            const auto fallback = openVpnIpv6::blockingDirectives(base, mode, {"fd00::/8"}, {"fd55::53"});
+            const QString address = "ifconfig-ipv6 fd15:53b6:dead::2/64 fd15:53b6:dead::1\n";
+            QVERIFY(fallback.contains(address));
+            const auto result = openVpnIpv6::forTunBuilder(base + fallback);
+            auto expected = base + fallback;
+            expected.remove(address);
+            QCOMPARE(result, expected); // Only the owned address may change.
+            QCOMPARE(openVpnIpv6::forTunBuilder(result), result);
+            QVERIFY(result.contains("block-ipv6\n"));
+            QVERIFY(!OpenVpnClientConfig::fromJson({{configKey::config, result}}).ipv6Tunnel);
+            // Explicit administrator configuration outside the owned block is retained.
+            QCOMPARE(openVpnIpv6::forTunBuilder(explicitConfig + fallback), explicitConfig + expected.mid(base.size()));
+        }
     }
     void initTestCase() {
         QString testOrg = "AmneziaVPN-Test-" + QUuid::createUuid().toString();
