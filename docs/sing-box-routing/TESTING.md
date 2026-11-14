@@ -245,3 +245,12 @@ without a server-assigned IPv6 address and asks the adapter to block the whole
 family. Selective IPv6 DIRECT exceptions for this case still need implementation
 and real Android packet acceptance. Apple adapters also require separate
 validation; the Android adaptation is deliberately not enabled for them yet.
+
+`ProtocolConfigIpv6Test` exercises the actual common Android configuration
+builder: full capture includes GUA, ULA and NAT64, excluding an IPv4 endpoint
+preserves IPv6 capture, and an IPv4-only inclusion list does not capture IPv6.
+Full `::/0` is represented by `::/1` and `8000::/1`, rather than narrowed to
+`2000::/3`. The local JVM Android stub selects the pre-API33 exclusion compiler;
+these unit checks do not substitute for real API33+ route acceptance. Both
+existing Android package workflows run `:protocolApi:testDebugUnitTest` beside
+the existing `:utils:testDebugUnitTest`, without another job.

@@ -523,7 +523,7 @@ jobs:
           candidates = sorted(p for p in Path('deploy/build/client').rglob('gradlew') if (p.parent / 'utils').is_dir())
           assert candidates, 'Generated Android Gradle project missing'
           wrapper = candidates[0].resolve()
-          subprocess.run([str(wrapper), ':utils:testDebugUnitTest', '--no-daemon'], cwd=wrapper.parent, check=True, timeout=300)
+          subprocess.run([str(wrapper), ':utils:testDebugUnitTest', ':protocolApi:testDebugUnitTest', '--no-daemon'], cwd=wrapper.parent, check=True, timeout=300)
           PYCODE
       - name: Inspect native JNI in the actual APK
         id: payload

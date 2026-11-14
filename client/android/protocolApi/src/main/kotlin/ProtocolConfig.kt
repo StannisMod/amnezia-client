@@ -131,18 +131,20 @@ open class ProtocolConfig protected constructor(
             } else if (excludedAddresses.isNotEmpty()) {
                 prependRoutes {
                     addRoute(InetNetwork("0.0.0.0", 0))
-                    addRoute(InetNetwork("2000::", 3))
+                    addRoute(InetNetwork("::", 0))
                     excludeRoutes(excludedAddresses)
                 }
             }
         }
 
         private fun processRoutes() {
-            // replace ::/0 as it may cause LAN connection issues
+            // Keep the full IPv6 space when avoiding a single default route.
+            // 2000::/3 omits ULA and NAT64 destinations selected for the VPN.
             val ipv6DefaultRoute = InetNetwork("::", 0)
             if (routes.removeIf { it.include && it.inetNetwork == ipv6DefaultRoute }) {
                 prependRoutes {
-                    addRoute(InetNetwork("2000::", 3))
+                    addRoute(InetNetwork("::", 1))
+                    addRoute(InetNetwork("8000::", 1))
                 }
             }
             // for older versions of Android, build a list of subnets without excluded routes
