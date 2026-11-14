@@ -14,6 +14,14 @@ scope changes; this remains a failing gate until an application fix is proved.
 Root cache flushing is a separate causal experiment, never part of a passing
 regression or a production fix. An API35 pass alone does not close this gate.
 
+The failing destination and case can vary with the preceding cache state; the
+observed bypass is not limited to the exclusion case or IPv4-only servers.
+Local experiments with an intermediate full-IPv6 TUN, a new NetworkAgent, and
+waiting for its LinkProperties callback still reproduced the bypass. One
+polling-based intermediate-TUN run passed all seven cases, but the subsequent
+callback-based run failed. None of these experiments is an accepted fix, and
+none is part of the application's production connection path.
+
 ## Run locally
 
 Use an owned disposable, rooted x86_64 emulator container with an isolated
