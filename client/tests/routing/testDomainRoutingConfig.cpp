@@ -7,10 +7,139 @@
 #include "../../core/utils/openVpnIpv6.h"
 #include "../../platforms/macos/daemon/macproxyipv6.h"
 #include "../../platforms/windows/daemon/windowsproxyipv6.h"
+#include "../../platforms/windows/daemon/windowsopenvpnipv6policy.h"
+#include "../../platforms/windows/daemon/windowsopenvpnipv6routes.h"
+
+namespace win6 = amnezia::windowsOpenVpnIpv6;
+struct WindowsOpenVpnRouteFixture {
+    std::vector<win6::Route> routes;
+    int creates = 0, failCreate = 0, sourceQueries = 0;
+    bool weak = false, changeSourcePath = false, changeDirectSourcePath = false;
+    static win6::Address address(unsigned char value) {
+        win6::Address result{}; result[0] = 0x20; result[1] = 1; result[15] = value; return result;
+    }
+    static win6::Path path(bool vpn) { return {vpn ? 1u : 2u, address(vpn ? 1 : 2), 0}; }
+    static bool same(const win6::Route &a, const win6::Route &b) {
+        return a.destination == b.destination && a.path == b.path && a.metric == b.metric;
+    }
+    win6::Api api() {
+        win6::Api result;
+        result.interfaceLuid = [](std::uint32_t index) -> std::optional<std::uint64_t> {
+            if (index == 42) return 1; return {};
+        };
+        result.strongHost = [this](std::uint64_t) { return !weak; };
+        result.sources = [] { return std::optional<std::vector<win6::Source>>{
+            std::vector<win6::Source>{{address(10), 1}, {address(20), 2}}}; };
+        result.path = [](std::uint64_t, const win6::Address &, bool vpn) { return std::optional<win6::Path>{path(vpn)}; };
+        result.fromSource = [this](const win6::Address &source, const win6::Address &) {
+            ++sourceQueries;
+            bool vpn = source == address(10);
+            if ((changeSourcePath && !routes.empty()) || (changeDirectSourcePath &&
+                std::any_of(routes.begin(), routes.end(), [](const win6::Route &row) {
+                    return row.path.luid == 2;
+                }))) vpn = !vpn;
+            return std::optional<win6::Path>{path(vpn)};
+        };
+        result.foreignHostRouteExists = [this](const win6::Address &host, const std::optional<win6::Route> &ours) {
+            return std::optional<bool>{std::any_of(routes.begin(), routes.end(), [&](const win6::Route &row) {
+                return row.destination == host && (!ours || !same(row, *ours));
+            })};
+        };
+        result.owns = [this](const win6::Route &row) {
+            return std::any_of(routes.begin(), routes.end(), [&](const win6::Route &current) { return same(row, current); });
+        };
+        result.create = [this](const win6::Route &row) {
+            if (++creates == failCreate) return false;
+            if (std::any_of(routes.begin(), routes.end(), [&](const win6::Route &current) {
+                    return current.destination == row.destination && current.path.luid == row.path.luid;
+                })) return false;
+            routes.push_back(row); return true;
+        };
+        result.removeOwned = [this](const win6::Route &row) {
+            routes.erase(std::remove_if(routes.begin(), routes.end(),
+                [&](const win6::Route &current) { return same(row, current); }), routes.end());
+            return true;
+        };
+        return result;
+    }
+};
 
 class DomainRoutingConfigTest : public QObject {
     Q_OBJECT
 private slots:
+    void windowsOpenVpnValidatesQtAddressesBeforeNativeChanges()
+    {
+        WindowsOpenVpnRouteFixture fixture;
+        WindowsOpenVpnIpv6Routes routes(fixture.api(), [](const QHostAddress &local) -> std::uint32_t {
+            return local == QHostAddress("10.8.0.6") ? 42 : 0;
+        }, 555);
+        QVERIFY(!routes.add("not-an-address", {"2001::1e"}, true));
+        QVERIFY(!routes.add("10.8.0.7", {"2001::1e"}, true));
+        QVERIFY(!routes.add("10.8.0.6", {"fe80::1%foreign"}, true));
+        QVERIFY(!routes.add("10.8.0.6", {"::ffff:192.0.2.1"}, true));
+        QCOMPARE(fixture.creates, 0);
+        QVERIFY(routes.add("10.8.0.6", {"2001::1e"}, true));
+        QCOMPARE(fixture.routes.size(), std::size_t(1));
+        QCOMPARE(fixture.routes[0].destination, fixture.address(30));
+    }
+    void windowsOpenVpnUpdatesPreserveBothSourcePaths()
+    {
+        WindowsOpenVpnRouteFixture fixture;
+        win6::Policy policy(fixture.api(), 555);
+        const auto host = fixture.address(30);
+        QVERIFY(policy.add(42, {host, host}, true));
+        QCOMPARE(fixture.routes.size(), std::size_t(1));
+        QCOMPARE(fixture.routes[0].path.luid, std::uint64_t(1));
+        QVERIFY(policy.add(42, {host, host}, false));
+        QCOMPARE(fixture.routes.size(), std::size_t(1));
+        QCOMPARE(fixture.routes[0].path.luid, std::uint64_t(2));
+        QCOMPARE(fixture.sourceQueries, 8); // Both sources before/after each update.
+        QVERIFY(policy.clear());
+        QVERIFY(fixture.routes.empty());
+    }
+    void windowsOpenVpnRollsBackAndKeepsForeignRows()
+    {
+        WindowsOpenVpnRouteFixture fixture;
+        win6::Policy policy(fixture.api(), 555);
+        const auto first = fixture.address(30), second = fixture.address(40);
+        fixture.failCreate = 2;
+        QVERIFY(!policy.add(42, {first, second}, true));
+        QVERIFY(fixture.routes.empty());
+        fixture.failCreate = 0; fixture.changeSourcePath = true;
+        QVERIFY(!policy.add(42, {first}, true));
+        QVERIFY(fixture.routes.empty());
+        fixture.changeSourcePath = false;
+        fixture.routes.push_back({second, fixture.path(false), 999});
+        fixture.creates = 0;
+        QVERIFY(!policy.add(42, {first, second}, true));
+        QCOMPARE(fixture.creates, 0); // Validate the whole batch before mutation.
+        QCOMPARE(fixture.routes.size(), std::size_t(1));
+        QVERIFY(policy.add(42, {first}, true));
+        fixture.routes.back().metric = 777; // Administrator replaced our row.
+        QVERIFY(policy.clear());
+        QCOMPARE(fixture.routes.size(), std::size_t(2));
+        fixture.weak = true;
+        QVERIFY(!policy.add(42, {fixture.address(50)}, true));
+        QCOMPARE(fixture.routes.size(), std::size_t(2));
+    }
+    void windowsOpenVpnFailedDirectionChangeRestoresPreviousRoute()
+    {
+        WindowsOpenVpnRouteFixture fixture;
+        win6::Policy policy(fixture.api(), 555);
+        const auto host = fixture.address(30);
+        QVERIFY(policy.add(42, {host}, true));
+        const auto original = fixture.routes.front();
+        fixture.changeDirectSourcePath = true;
+        QVERIFY(!policy.add(42, {host}, false));
+        QCOMPARE(fixture.routes.size(), std::size_t(1));
+        QVERIFY(fixture.same(fixture.routes.front(), original));
+        fixture.changeDirectSourcePath = false;
+        QVERIFY(policy.add(42, {host}, false));
+        QCOMPARE(fixture.routes.size(), std::size_t(1));
+        QCOMPARE(fixture.routes.front().path.luid, std::uint64_t(2));
+        QVERIFY(policy.clear());
+        QVERIFY(fixture.routes.empty());
+    }
     void openVpnCapabilityRequiresAnActiveTunnel()
     {
         const QString config = "server-ipv6 fd6e:a81b:704f:1101::/64\n";

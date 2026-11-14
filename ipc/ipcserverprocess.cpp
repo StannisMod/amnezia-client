@@ -19,6 +19,10 @@ IpcServerProcess::IpcServerProcess(QObject *parent) :
                 m_openVpnDevice.reset();
             });
 #endif
+#ifdef Q_OS_WIN
+    connect(m_process.data(), QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
+            [this] { m_windowsIpv6Routes.reset(); });
+#endif
     connect(m_process.data(), QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this, &IpcServerProcess::finished);
     connect(m_process.data(), &QProcess::readyRead, this, &IpcServerProcess::readyRead);
     connect(m_process.data(), &QProcess::readyReadStandardError, this, &IpcServerProcess::readyReadStandardError);
@@ -35,6 +39,13 @@ IpcServerProcess::IpcServerProcess(QObject *parent) :
 IpcServerProcess::~IpcServerProcess()
 {
     m_process->disconnect(this);
+#ifdef Q_OS_WIN
+    if (m_windowsIpv6Routes) {
+        m_process->kill();
+        if (m_process->state() != QProcess::NotRunning) m_process->waitForFinished(3000);
+        m_windowsIpv6Routes.reset();
+    }
+#endif
 #if defined(Q_OS_LINUX) && !defined(Q_OS_ANDROID)
     if (m_openVpnDevice) {
         m_process->kill();
@@ -50,6 +61,9 @@ void IpcServerProcess::start()
 {
     if (m_process->state() != QProcess::NotRunning) return;
     m_process->setArguments(m_arguments);
+#ifdef Q_OS_WIN
+    m_windowsIpv6Routes.reset();
+#endif
 #if defined(Q_OS_LINUX) && !defined(Q_OS_ANDROID)
     m_ipv6Routes.reset();
     m_openVpnDevice.reset();
@@ -88,6 +102,11 @@ bool IpcServerProcess::addOpenVpnIpv6Hosts(const QString &localIpv4, const QStri
     if (m_program != amnezia::PermittedProcess::OpenVPN || m_process->state() != QProcess::Running) return false;
     if (!m_ipv6Routes) m_ipv6Routes = std::make_unique<LinuxOpenVpnIpv6Routes>();
     return m_ipv6Routes->add(localIpv4, hosts, throughVpn);
+#elif defined(Q_OS_WIN)
+    if (m_program != amnezia::PermittedProcess::OpenVPN || m_process->state() != QProcess::Running) return false;
+    if (!m_windowsIpv6Routes) m_windowsIpv6Routes = std::make_unique<WindowsOpenVpnIpv6Routes>(
+        amnezia::windowsOpenVpnIpv6::nativeApi());
+    return m_windowsIpv6Routes->add(localIpv4, hosts, throughVpn);
 #else
     Q_UNUSED(localIpv4)
     Q_UNUSED(hosts)

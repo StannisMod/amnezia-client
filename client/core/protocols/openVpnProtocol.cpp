@@ -41,7 +41,7 @@ void OpenVpnProtocol::addResolvedIpv6Hosts(const QStringList &hosts, bool throug
 
 bool OpenVpnProtocol::supportsIpv6HostUpdates() const
 {
-#if defined(Q_OS_LINUX) && !defined(Q_OS_ANDROID)
+#if (defined(Q_OS_LINUX) && !defined(Q_OS_ANDROID)) || defined(Q_OS_WIN)
     return m_configData.value(ProtocolUtils::key_proto_config_data(Proto::OpenVpn)).toObject().value("ipv6Tunnel").toBool();
 #else
     return false;

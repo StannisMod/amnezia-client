@@ -8,6 +8,11 @@
 #include "../client/platforms/linux/daemon/linuxopenvpndevice.h"
 #include <memory>
 #endif
+#ifdef Q_OS_WIN
+#include "../client/platforms/windows/daemon/windowsopenvpnipv6api.h"
+#include "../client/platforms/windows/daemon/windowsopenvpnipv6routes.h"
+#include <memory>
+#endif
 
 #ifndef Q_OS_IOS
 #include "rep_ipc_process_interface_source.h"
@@ -50,6 +55,9 @@ private:
 #if defined(Q_OS_LINUX) && !defined(Q_OS_ANDROID)
     std::unique_ptr<LinuxOpenVpnIpv6Routes> m_ipv6Routes;
     std::unique_ptr<LinuxOpenVpnDevice> m_openVpnDevice;
+#endif
+#ifdef Q_OS_WIN
+    std::unique_ptr<WindowsOpenVpnIpv6Routes> m_windowsIpv6Routes;
 #endif
 };
 
