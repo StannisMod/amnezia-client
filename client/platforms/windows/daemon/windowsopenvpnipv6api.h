@@ -108,12 +108,34 @@ inline Api nativeApi()
             MIB_IPFORWARD_ROW2 row{};
             if (GetBestRoute2(&luid, 0, nullptr, &to, 0, &row, &selected) == NO_ERROR
                 && row.InterfaceLuid.Value == tunnel) return routePath(row);
-            // A raw L3 adapter needs no neighbor gateway. Do not assume that
-            // for Ethernet/TAP: those require an observed OpenVPN route.
+            // TAP also reports IF_TYPE_PROP_VIRTUAL, but still resolves
+            // Ethernet neighbors. Only a MAC-less L3 adapter can omit a hop.
             MIB_IF_ROW2 iface{}; iface.InterfaceLuid = luid;
-            if (GetIfEntry2(&iface) == NO_ERROR && iface.Type == IF_TYPE_PROP_VIRTUAL)
+            if (GetIfEntry2(&iface) == NO_ERROR && iface.Type == IF_TYPE_PROP_VIRTUAL
+                && iface.PhysicalAddressLength == 0)
                 return Path{tunnel, {}, 0};
-            return {};
+            // A new DNS destination need not match an existing include
+            // prefix. Reuse the unambiguous on-link peer from the tunnel's
+            // observed routes instead of treating the destination as a peer.
+            PMIB_IPFORWARD_TABLE2 table = nullptr;
+            if (GetIpForwardTable2(AF_INET6, &table) != NO_ERROR) return {};
+            const std::unique_ptr<MIB_IPFORWARD_TABLE2, decltype(&FreeMibTable)> owned(table, FreeMibTable);
+            std::optional<Path> gateway;
+            for (ULONG i = 0; i < table->NumEntries; ++i) {
+                const auto &observed = table->Table[i];
+                if (observed.InterfaceLuid.Value != tunnel || observed.Loopback
+                    || observed.NextHop.Ipv6.sin6_family != AF_INET6
+                    || IN6_IS_ADDR_UNSPECIFIED(&observed.NextHop.Ipv6.sin6_addr)) continue;
+                MIB_IPFORWARD_ROW2 peer{};
+                SOCKADDR_INET source{};
+                if (GetBestRoute2(&luid, 0, nullptr, &observed.NextHop, 0, &peer, &source) != NO_ERROR
+                    || peer.InterfaceLuid.Value != tunnel || peer.Loopback
+                    || !IN6_IS_ADDR_UNSPECIFIED(&peer.NextHop.Ipv6.sin6_addr)) continue;
+                const auto path = routePath(observed);
+                if (gateway && *gateway != path) return {}; // Do not guess between peers.
+                gateway = path;
+            }
+            return gateway;
         }
         PMIB_IPFORWARD_TABLE2 table = nullptr;
         if (GetIpForwardTable2(AF_INET6, &table) != NO_ERROR) return {};

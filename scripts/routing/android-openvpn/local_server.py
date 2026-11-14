@@ -22,12 +22,17 @@ def main():
     parser.add_argument('--policies', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--ipv6', action='store_true')
-    parser.add_argument('--case', choices=('full','include','exclude','stale-full'), help='focused local diagnosis; default runs all applicable cases')
+    parser.add_argument('--client-platform', choices=('android','windows'), default='android')
+    parser.add_argument('--persistent-ipv6', action='store_true', help='retain IPv6 echo sockets for the Windows old-TCP acceptance')
+    parser.add_argument('--case', choices=('full','include','exclude','stale-full','api-full','legacy-full','legacy-include','legacy-exclude','legacy-export','legacy-api'), help='focused local diagnosis; default runs all applicable cases')
     args = parser.parse_args()
     mode = os.environ.get('AMNEZIA_ANDROID_OPENVPN_FIXTURE')
     assert mode in ('owned-container', 'github-hosted')
     if mode == 'owned-container': assert Path('/.dockerenv').exists()
     else: assert os.environ.get('GITHUB_ACTIONS')=='true' and os.environ.get('RUNNER_ENVIRONMENT')=='github-hosted'
+    if args.client_platform == 'windows':
+        assert mode == 'owned-container' and os.environ.get('AMNEZIA_WINDOWS_OPENVPN_FIXTURE') == 'owned-vm-network'
+    assert not args.persistent_ipv6 or args.client_platform == 'windows'
     links = json.loads(subprocess.check_output(['ip', '-d', '-j', 'link'], text=True))
     assert 'tun-ovpn3test' not in {row['ifname'] for row in links}, 'refusing an existing interface'
     if mode == 'owned-container':
@@ -97,7 +102,14 @@ verb 3
                             continue
                         tag = 'VPN' if ipaddress.ip_address(peer[0]) in pool else 'NATIVE'
                         print('ORIGIN_TCP', listener.getsockname()[0], peer[0], tag, flush=True)
-                        with connection: connection.sendall((tag+'\n').encode())
+                        def send_origin(connection, tag):
+                            with connection:
+                                connection.sendall((tag+'\n').encode())
+                                if args.persistent_ipv6: echo(connection)
+                        if args.persistent_ipv6:
+                            threading.Thread(target=send_origin,args=(connection,tag),daemon=True).start()
+                        else:
+                            send_origin(connection, tag)
                 except OSError:
                     if not stop.is_set(): raise
             def udp_loop(listener):
@@ -110,6 +122,8 @@ verb 3
                 except OSError:
                     if not stop.is_set(): raise
             endpoints=[(socket.AF_INET,'10.76.0.1',18080)]
+            if args.client_platform == 'windows':
+                endpoints.append((socket.AF_INET,'127.0.0.1',18080))
             endpoints += [(socket.AF_INET6,target,21944) for target in targets]
             for family, address, port in endpoints:
                 listener=socket.socket(family)
@@ -124,12 +138,17 @@ verb 3
             cases=[]
             modes=[('full',0),('include',1),('exclude',2)]
             if not args.ipv6: modes.append(('stale-full',0))
+            if args.client_platform == 'windows':
+                modes = ([('full',0),('include',1),('exclude',2),('api-full',0)] if args.ipv6 else
+                         [('legacy-full',0),('legacy-include',1),('legacy-exclude',2),('legacy-export',0),('legacy-api',0),('stale-full',0)])
             for mode, split in modes:
                 if args.case and args.case!=mode: continue
-                content=policies['full' if mode=='stale-full' else mode if args.ipv6 else 'legacy-'+mode]
+                policy_key = ('full' if mode=='stale-full' else mode) if args.client_platform == 'windows' else ('full' if mode=='stale-full' else mode if args.ipv6 else 'legacy-'+mode)
+                content=policies[policy_key]
                 content='\n'.join(line for line in content.splitlines()
                                   if not line.startswith(('remote ', 'up ', 'down ', 'script-security ')))
-                assert 'ifconfig-ipv6 fd15:' not in content, 'use Qt TUN-builder fixture, not OpenVPN2 policy'
+                if args.client_platform == 'android':
+                    assert 'ifconfig-ipv6 fd15:' not in content, 'use Qt TUN-builder fixture, not OpenVPN2 policy'
                 config={'protocol':'openvpn','hostName':'10.0.2.2','dns1':'1.1.1.1','dns2':'8.8.8.8',
                         'splitTunnelType':split,'splitTunnelSites':['fd99::4/128' if split==2 else 'fd00::/8','192.0.2.0/24']+(['10.76.0.1/32'] if split==1 else []),
                         'openvpn_config_data':{'port':21943,'config':content+'\nremote 10.0.2.2 21943\nproto udp\ndev tun\nremote-cert-tls server\n'+credentials}}
