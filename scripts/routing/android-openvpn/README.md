@@ -15,9 +15,10 @@ The API28 regression exposed a stale IPv6 kernel route cache after scope changes
 The compiler now retains `::/0` when there is no IPv6 exception, instead of
 artificially subdividing the default and subtracting kernel-owned loopback.
 The ordinary x86_64 APK from `9a64032` passed all seven cases on API28 and API35,
-including local IPv6 TCP/UDP. The DIRECT IPv6 exception in this fixture is
-`fd00::/8`; this result does not yet prove a narrow `/128` exclusion, which still
-requires its own packet check before closing the general route-cache issue.
+including local IPv6 TCP/UDP. The exclusion case now uses `fd99::4/128` and
+checks that adjacent `fd99::5` remains captured. Both exact Qt-produced exclusion
+profiles contain 128 IPv6 routes. The previous broad `fd00::/8` exception also
+passed before this fixture was strengthened; no extra cases were added.
 Root cache flushing is a separate causal experiment, never part of a passing
 regression or a production fix. An API35 pass alone does not close this gate.
 

@@ -41,7 +41,7 @@ def main():
     addresses, listeners = [], []
     server = None
     pool = ipaddress.ip_network('fd6e:a81b:704f:1101::/64')
-    targets = ('fd99::4','2001:db8:42::4','64:ff9b::c000:201')
+    targets = ('fd99::4','fd99::5','2001:db8:42::4','64:ff9b::c000:201')
     with tempfile.TemporaryDirectory(prefix='amnezia-android-openvpn-') as tmp:
         root = Path(tmp)
         def run(*argv):
@@ -131,9 +131,12 @@ verb 3
                                   if not line.startswith(('remote ', 'up ', 'down ', 'script-security ')))
                 assert 'ifconfig-ipv6 fd15:' not in content, 'use Qt TUN-builder fixture, not OpenVPN2 policy'
                 config={'protocol':'openvpn','hostName':'10.0.2.2','dns1':'1.1.1.1','dns2':'8.8.8.8',
-                        'splitTunnelType':split,'splitTunnelSites':['fd00::/8','192.0.2.0/24']+(['10.76.0.1/32'] if split==1 else []),
+                        'splitTunnelType':split,'splitTunnelSites':['fd99::4/128' if split==2 else 'fd00::/8','192.0.2.0/24']+(['10.76.0.1/32'] if split==1 else []),
                         'openvpn_config_data':{'port':21943,'config':content+'\nremote 10.0.2.2 21943\nproto udp\ndev tun\nremote-cert-tls server\n'+credentials}}
-                expected={address:('VPN' if args.ipv6 else 'BLOCKED') if (split==0 or (address=='fd99::4')==(split==1)) else 'NATIVE'
+                def captured(address):
+                    if split==1: return ipaddress.ip_address(address) in ipaddress.ip_network('fd00::/8')
+                    return split==0 or address!='fd99::4'
+                expected={address:('VPN' if args.ipv6 else 'BLOCKED') if captured(address) else 'NATIVE'
                           for address in targets}
                 cases.append({'name':mode,'config':config,'expected':expected})
             assert cases, 'selected case is not applicable to this server'

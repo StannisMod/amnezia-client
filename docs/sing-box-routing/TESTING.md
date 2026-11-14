@@ -246,8 +246,10 @@ family. The actual packet suite additionally tests the site prefixes supplied
 to the common Android builder, including selective DIRECT exceptions. API35
 packet acceptance passed. The old compiler failed the API28 scope-transition
 gate; the ordinary `9a64032` APK passes the seven current cases on API28 and
-API35 with exact IPv6 defaults and kernel-owned loopback. Narrow `/128` DIRECT
-exceptions still require packet validation before generalizing this result.
+API35 with exact IPv6 defaults and kernel-owned loopback. The same seven cases
+also pass with a narrow `/128` DIRECT exception: the excluded IPv6 address stays
+native, and its adjacent address stays captured. The two exclusion profiles
+come from the actual Qt producer and each contain 128 IPv6 routes.
 Apple adapters have a separate
 Swift capture/filter implementation and require their own SDK/runtime validation.
 

@@ -385,8 +385,10 @@ private slots:
         QVERIFY(!captured(config, "2001:db8::1"));
         policies["include"] = config;
         settings.splitTunneling.routeMode = RouteMode::VpnAllExceptSites;
+        settings.splitTunneling.siteRoutes = {"fd99::4/128", "192.0.2.0/24"};
         config = configurator.processConfigWithLocalSettings(settings, profile).nativeConfig();
-        QVERIFY(!captured(config, "fd12::1"));
+        QVERIFY(!captured(config, "fd99::4"));
+        QVERIFY(captured(config, "fd99::5"));
         QVERIFY(captured(config, "2001:db8::1"));
         QVERIFY(!config.contains("redirect-gateway ipv6"));
         policies["exclude"] = config;
@@ -445,8 +447,10 @@ private slots:
         QVERIFY(!captured(config, "2001:db8:88::1"));
         policies["legacy-include"] = config;
         settings.splitTunneling.routeMode = RouteMode::VpnAllExceptSites;
+        settings.splitTunneling.siteRoutes = {"fd99::4/128", "192.0.2.0/24"};
         config = configurator.processConfigWithLocalSettings(settings, profile).nativeConfig();
-        QVERIFY(!captured(config, "fd88::1"));
+        QVERIFY(!captured(config, "fd99::4"));
+        QVERIFY(captured(config, "fd99::5"));
         QVERIFY(captured(config, "2001:db8:88::1"));
         QVERIFY(!config.contains("redirect-gateway ipv6"));
         policies["legacy-exclude"] = config;
@@ -484,13 +488,14 @@ private slots:
         }
         QFile builderGolden(QFINDTESTDATA("data/openvpn-tun-builder-policies.json"));
         QVERIFY(builderGolden.open(QIODevice::ReadOnly));
-        QCOMPARE(builderPolicies, QJsonDocument::fromJson(builderGolden.readAll()).object());
+        const auto expectedBuilderPolicies = QJsonDocument::fromJson(builderGolden.readAll()).object();
         if (!builderFixturePath.isEmpty()) {
             QFile file(builderFixturePath);
             QVERIFY(file.open(QIODevice::WriteOnly));
             const auto bytes = QJsonDocument(builderPolicies).toJson();
             QCOMPARE(file.write(bytes), qint64(bytes.size()));
         }
+        QCOMPARE(builderPolicies, expectedBuilderPolicies);
         QVERIFY(!OpenVpnClientConfig::fromJson({}).ipv6Tunnel);
     }
     void openVpnTunBuilderIpv6Compatibility()
