@@ -151,7 +151,10 @@ private slots:
         const QJsonObject administrator{{"format_version",1},{"description","Proxy IPv6 fixture"},{"hostName","proxy.example.test"},
             {"userName","root"},{"password","synthetic-admin-secret"},{"port",22},{"defaultContainer","amnezia-xray"},
             {"containers",QJsonArray{container.toJson()}}};
-        const auto id=servers.addServer({},administrator,serverConfigUtils::SelfHostedAdmin);servers.setDefaultServer(id);
+        const auto kind = scenario == "third-party" ? serverConfigUtils::Native : serverConfigUtils::SelfHostedAdmin;
+        const auto fixture = scenario == "third-party" ? NativeServerConfig::fromJson(administrator).toJson() : administrator;
+        const auto id=servers.addServer({},fixture,kind);servers.setDefaultServer(id);
+        QVERIFY(servers.serverJsonById(id).has_value());
         const auto original=*servers.serverJsonById(id);
         QSemaphore gate;std::atomic<int> calls{0};std::atomic<bool> correctArguments{false};
         ConnectionUpdatesController updates(&servers,&connection,nullptr,{}, {},[&](const ServerCredentials &credentials,DockerContainer backend,QJsonObject &outcome) {

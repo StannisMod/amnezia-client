@@ -165,6 +165,20 @@ private slots:
         OpenVpnClientConfig client;
         client.clientId = "existing-client";
         client.nativeConfig = "client\n<key>\nKEEP-PRIVATE-KEY\n</key>\n";
+        const auto pushLog = qEnvironmentVariable("AMNEZIA_OPENVPN_PUSH_LOG");
+        if (!pushLog.isEmpty()) {
+            QFile log(pushLog);
+            QVERIFY(log.open(QIODevice::ReadOnly));
+            QVERIFY(log.size() < 4 * 1024 * 1024);
+            OpenVpnProtocol observed({});
+            for (const auto &line : QString::fromUtf8(log.readAll()).split('\n'))
+                if (line.contains("PUSH: Received control message:")) observed.updateVpnGateway(line);
+            QVERIFY(observed.serverAssignedIpv6());
+            QVERIFY(QHostAddress(observed.vpnLocalAddress()).protocol() == QAbstractSocket::IPv4Protocol);
+            QFile native(qEnvironmentVariable("AMNEZIA_OPENVPN_CLIENT_PROFILE"));
+            QVERIFY(native.open(QIODevice::ReadOnly));
+            client.nativeConfig = QString::fromUtf8(native.readAll());
+        }
         profile.setClientConfig(client);
         ContainerConfig container;
         container.container = DockerContainer::OpenVpn;

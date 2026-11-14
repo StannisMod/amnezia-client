@@ -126,7 +126,11 @@ private slots:
             QVERIFY(startup.contains("amnezia_enable_ipv6 \"$2\" required || exit 1"));
             QVERIFY(startup.contains("AMNEZIA_IPV6_FORWARDING_STATUS"));
         }
-        QVERIFY(!scriptData(ProtocolScriptType::run_container, DockerContainer::OpenVpn).contains("AMNEZIA_IPV6_NETWORK_STATUS"));
+        for (const auto container : {DockerContainer::OpenVpn, DockerContainer::Ipsec}) {
+            const auto script = scriptData(ProtocolScriptType::run_container, container);
+            QVERIFY(script.contains("AMNEZIA_IPV6_NETWORK_STATUS"));
+            QVERIFY(script.contains("amnezia_attach_ipv6_network \"$CONTAINER_NAME\" || exit 1"));
+        }
     }
     void testIPv6ScriptAddressIsCanonical()
     {

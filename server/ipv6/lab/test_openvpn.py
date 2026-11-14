@@ -124,6 +124,9 @@ data-ciphers AES-256-GCM
 auth SHA256
 verb 3
 ''')
+    capability_test = os.environ.get('AMNEZIA_OPENVPN_CAPABILITY_TEST')
+    if capability_test:
+        with (root/'client.conf').open('a') as config_file: config_file.write('\nverb 4\n')
     ipc_service = os.environ.get('AMNEZIA_OPENVPN_IPC_SERVICE')
     def rpc_request(updater, message, expected='OK'):
         updater.stdin.write(json.dumps(message)+'\n');updater.stdin.flush()
@@ -197,6 +200,12 @@ print('ORIGINAL_TCP_RETAINED',flush=True)
     observer = subprocess.Popen(['ip','netns','exec',names[0],'python3','-u','-c',old4],stdin=subprocess.PIPE,stdout=subprocess.PIPE,text=True)
     processes.append(observer)
     assert select.select([observer.stdout], [], [], 5)[0] and observer.stdout.readline().strip()=='READY', 'original IPv4 TCP setup failed'
+    if capability_test:
+        probe_env = dict(os.environ, QT_QPA_PLATFORM='offscreen',
+                         AMNEZIA_OPENVPN_PUSH_LOG=str(root/'client.log'),
+                         AMNEZIA_OPENVPN_CLIENT_PROFILE=str(root/'client.conf'))
+        print(run(capability_test, 'openVpnLearnsCapabilityWithoutReplacingImportedIdentity', env=probe_env), flush=True)
+        print('PASS: real authenticated server PUSH parsed and capability saved for unchanged profiles with original IPv4 TCP open', flush=True)
     before4=run('ip','-4','route','show','table','all')+run('iptables','-S')+run('iptables','-t','nat','-S')
     run('ip', '-6', 'route', 'delete', 'default')
     missing = subprocess.run(['bash', '-ec', '. "$1"; amnezia_enable_ipv6 tun0 required', 'sh', str(source_root/'client/server_scripts/enable_ipv6_forwarding.sh')],

@@ -9,10 +9,14 @@ bash scripts/local-tests/build-full.sh
 
 The first command runs the production-shell fault-injection tests, Qt endpoint
 and routing contract tests, and real WireGuard/AWG update/rollback acceptance.
-Use `qt`, `vpn`, `wireguard`, `awg` or `awg2` instead of `all` to select a suite.
+Use `qt`, `vpn`, `wireguard`, `awg`, `awg2` or `ipsec` instead of `all` to select a suite.
 `awg2` runs both real AWG 2-to-3 compatible-update profiles; `all`/`vpn` also
 include standard WireGuard and protected AWG 3 updates. The old daemon/tools are
 built from pinned source commits in `client/tests/protocol-update/Dockerfile.awg2`.
+The `ipsec` suite (also included in `all`/`vpn`) replaces the pinned Libreswan 4.5
+container, checks rollback of a failed replacement, and reconnects an independent
+IKEv2 client with unchanged credentials. It checks TCP/UDP traffic and retained
+IPv4 NAT after rollback and the new container's restart.
 
 The second command builds the Linux application, service and Qt regression tests
 with Go 1.27.1 and Qt 6.10.1, then runs the regression suite. It downloads SDKs
