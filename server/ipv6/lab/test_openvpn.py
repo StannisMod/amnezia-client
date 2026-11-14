@@ -145,7 +145,9 @@ verb 3
         if name == 'client' and ipc_service:
             assert policy_file and os.environ.get('AMNEZIA_OPENVPN_ROUTE_FIXTURE')
             with (root/'client.conf').open('a') as config_file:config_file.write('\nlog '+str(root/'client.log')+'\n')
-            (root/'client.log').touch()
+            # Sequential installed-package cases reuse this directory. Clear
+            # readiness from the previous session before starting the child.
+            (root/'client.log').write_text('')
             service_log=(root/'service.log').open('w');logs.append(service_log)
             service_env=dict(os.environ,LD_LIBRARY_PATH=os.environ.get('AMNEZIA_OPENVPN_QT_LIBRARY_PATH','/opt/AmneziaVPN/lib:/opt/AmneziaVPN/bin'))
             processes.append(subprocess.Popen([*prefix,'unshare','--pid','--fork','--mount-proc','--kill-child=SIGKILL',ipc_service,'--console'],env=service_env,cwd=root,stdout=service_log,stderr=subprocess.STDOUT))
