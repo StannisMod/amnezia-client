@@ -35,6 +35,48 @@ if((CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT ANDROID) OR WIN32)
     endif()
 endif()
 
+# Native acceptance is opt-in because it installs routes through the actual
+# service. The caller must provision an isolated VM and its Linux fixture;
+# ordinary desktop unit tests never change the developer machine's routes.
+if(WIN32)
+    set(AMNEZIA_WINDOWS_OPENVPN_FIXTURE_URL "" CACHE STRING "Owned VM OpenVPN fixture URL")
+    set(AMNEZIA_WINDOWS_OPENVPN_VM_NAME "" CACHE STRING "Disposable Windows VM computer name")
+    set(AMNEZIA_WINDOWS_OPENVPN_CASES "" CACHE STRING "Profile names provided by the fixture")
+    if(AMNEZIA_WINDOWS_OPENVPN_FIXTURE_URL)
+        if(NOT AMNEZIA_ROUTE_FIXTURE_IPC OR NOT AMNEZIA_WINDOWS_OPENVPN_VM_NAME OR NOT AMNEZIA_WINDOWS_OPENVPN_CASES)
+            message(FATAL_ERROR "Native OpenVPN acceptance requires IPC, an explicit owned VM name, and profile cases")
+        endif()
+        find_package(Python3 REQUIRED COMPONENTS Interpreter)
+        set(_openvpn_acceptance "${CMAKE_CURRENT_SOURCE_DIR}/../../../scripts/routing/run_windows_openvpn_acceptance.py")
+        set(_openvpn_cases full include exclude api-full legacy-full legacy-include legacy-exclude legacy-export legacy-api stale-full)
+        foreach(_case IN LISTS AMNEZIA_WINDOWS_OPENVPN_CASES)
+            if(NOT _case IN_LIST _openvpn_cases)
+                message(FATAL_ERROR "Unknown Windows OpenVPN profile case: ${_case}")
+            endif()
+            add_test(NAME WindowsOpenVpnProfile_${_case}
+                COMMAND "${Python3_EXECUTABLE}" "${_openvpn_acceptance}"
+                --fixture-url "${AMNEZIA_WINDOWS_OPENVPN_FIXTURE_URL}"
+                --ipc-driver "$<TARGET_FILE:openvpn_ipv6_route_fixture>"
+                --work "${CMAKE_CURRENT_BINARY_DIR}/openvpn-acceptance"
+                --owned-vm-name "${AMNEZIA_WINDOWS_OPENVPN_VM_NAME}" --case "${_case}")
+            set_tests_properties(WindowsOpenVpnProfile_${_case} PROPERTIES
+                RUN_SERIAL TRUE TIMEOUT 180 LABELS "native;installed-service;openvpn"
+                ENVIRONMENT "AMNEZIA_IPV6_LAB=owned-windows-vm")
+        endforeach()
+        if("include" IN_LIST AMNEZIA_WINDOWS_OPENVPN_CASES)
+            add_test(NAME WindowsOpenVpnRoutePreservation
+                COMMAND "${Python3_EXECUTABLE}" "${_openvpn_acceptance}"
+                --fixture-url "${AMNEZIA_WINDOWS_OPENVPN_FIXTURE_URL}"
+                --ipc-driver "$<TARGET_FILE:openvpn_ipv6_route_fixture>"
+                --work "${CMAKE_CURRENT_BINARY_DIR}/openvpn-acceptance"
+                --owned-vm-name "${AMNEZIA_WINDOWS_OPENVPN_VM_NAME}" --case include --route-updates)
+            set_tests_properties(WindowsOpenVpnRoutePreservation PROPERTIES
+                RUN_SERIAL TRUE TIMEOUT 180 LABELS "native;installed-service;openvpn"
+                ENVIRONMENT "AMNEZIA_IPV6_LAB=owned-windows-vm")
+        endif()
+    endif()
+endif()
+
 # Export the production Qt-generated DNS policy for the real TUN acceptance.
 add_executable(dns_policy_fixture dnsPolicyFixture.cpp)
 target_link_libraries(dns_policy_fixture PRIVATE Qt6::Core)

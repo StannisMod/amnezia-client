@@ -292,3 +292,69 @@ checks actual NE settings construction and address preservation. Existing Apple
 jobs run these tests and typecheck the helper against the iOS SDK. Linux syntax
 parsing alone is not an Apple SDK build, a real TUN packet test, or evidence of
 native Apple acceptance; those remain required gates before release.
+
+
+### Installed Windows OpenVPN packet regression
+
+`run_windows_openvpn_acceptance.py` uses the ordinary installed service through
+`openvpn_ipv6_route_fixture --ipc-process`. It requires Windows, an explicitly
+named disposable VM, and `AMNEZIA_IPV6_LAB=owned-windows-vm`. It never installs a
+substitute service or changes the developer host's networking. The VM must use
+an isolated SLIRP network whose Linux-side host is `10.0.2.2`; the fixture URL is
+restricted to that host or loopback. The Qt runtime DLLs and Python must be on
+PATH. Install the ordinary MSI before running this suite.
+
+Export native Windows policies from the actual `test_connection.exe` test
+`openVpnIpv6ProfileAndExport` with `AMNEZIA_OPENVPN_POLICY_FIXTURE` set to the
+output JSON path. Run `scripts/routing/android-openvpn/local_server.py` on the
+Linux side with `--client-platform windows --persistent-ipv6`, that policy file,
+and `--output` pointing to a private synthetic fixture JSON. Windows mode
+requires `AMNEZIA_ANDROID_OPENVPN_FIXTURE=owned-container` and
+`AMNEZIA_WINDOWS_OPENVPN_FIXTURE=owned-vm-network`. The existing server refuses
+an external network interface: share only the owned VM's otherwise empty
+Docker namespace, with NET_ADMIN and `/dev/net/tun`, not the host network.
+Serve the JSON only through the VM's loopback-bound SLIRP fixture endpoint;
+remove it on completion. Never publish the generated private TLS credentials.
+Windows fixture mode also exposes read-only origin counters on Linux loopback
+port 21945. The guest checks their per-run deltas, including zero deliveries
+for blocked probes; this endpoint contains no TLS credentials.
+
+With `--ipv6`, the server emits `full`, `include`, `exclude`, and `api-full`.
+Without it, it emits `legacy-full`, `legacy-include`, `legacy-exclude`,
+`legacy-export`, `legacy-api`, and `stale-full`. Configure the normal CTest
+suite for the cases provided by the currently running server, for example:
+
+```powershell
+cmake -S client/tests/routing -B openvpn-tests `
+  -DCMAKE_PREFIX_PATH="$env:QT_ROOT_PATH/msvc2022_64" `
+  -DAMNEZIA_ROUTE_FIXTURE_IPC=ON `
+  -DAMNEZIA_WINDOWS_OPENVPN_VM_NAME=YOUR_OWNED_VM_NAME `
+  -DAMNEZIA_WINDOWS_OPENVPN_FIXTURE_URL=http://10.0.2.2:8080/private-fixture.json `
+  '-DAMNEZIA_WINDOWS_OPENVPN_CASES=full;include;exclude;api-full'
+cmake --build openvpn-tests --config Release
+ctest --test-dir openvpn-tests -C Release -L openvpn --output-on-failure
+```
+
+The same cache options work in the full client test build. Tests are registered
+only when the explicit fixture URL, VM name and case list are configured;
+unconfigured unit runs do not claim native acceptance. CTest serializes these
+tests. Reconfigure with the six legacy names for the IPv4-only server phase.
+No GitHub run is dispatched by this integration.
+
+Each profile first proves all four native TCP/UDP origins are reachable, then
+checks the real VPN, DIRECT or BLOCKED outcome. The `/128` exception must leave
+the adjacent IPv6 address captured. Independent server origin counts must match
+the native baselines plus delivered probes; a blocked probe must never reach an
+origin. The include case also registers `WindowsOpenVpnRoutePreservation`:
+six original native/VPN IPv4/IPv6 TCP sockets stay open through bidirectional
+and repeated host-route changes, while new sockets must use the selected path.
+A separately owned native host route must reject a conflicting VPN update and
+survive service-process cleanup; the test then removes only its exact fixture
+row. This catches both the TAP on-link-gateway mistake and removal of the sole route
+available to an established VPN-source socket.
+
+Each run writes `openvpn-acceptance/<case>-*/report.json`, stops OpenVPN through
+its management channel, releases the real service process, deletes its private
+profile, and compares the OS routes with the pre-start snapshot. Cleanup or
+restoration errors fail the test. These Windows results do not establish Apple
+runtime behavior or the cause of a physical Telegram/OpenCode incident.

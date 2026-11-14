@@ -5,6 +5,8 @@ No Docker socket or host network: share only the owned emulator's otherwise
 empty network namespace. Test PKI and fixture JSON are removed on normal stop.
 """
 import argparse
+from collections import Counter
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import ipaddress
 import json
 import os
@@ -18,6 +20,8 @@ import time
 
 
 def main():
+    if not __debug__:
+        raise SystemExit('Fixture safety checks require Python assertions enabled')
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--policies', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
@@ -45,6 +49,7 @@ def main():
         signal.signal(sig, lambda *_: stop.set())
     addresses, listeners = [], []
     server = None
+    origin_server = None
     pool = ipaddress.ip_network('fd6e:a81b:704f:1101::/64')
     targets = ('fd99::4','fd99::5','2001:db8:42::4','64:ff9b::c000:201')
     with tempfile.TemporaryDirectory(prefix='amnezia-android-openvpn-') as tmp:
@@ -86,6 +91,24 @@ verb 3
                 assert server.poll() is None and time.monotonic()<until, (root/'server.log').read_text()
                 time.sleep(.05)
 
+            origin_counts, origin_lock = Counter(), threading.Lock()
+            def observe(protocol, address, peer, tag):
+                if args.client_platform == 'windows':
+                    with origin_lock: origin_counts[protocol+'|'+address+'|'+tag] += 1
+                print('ORIGIN_'+protocol, address, peer, tag, flush=True)
+            if args.client_platform == 'windows':
+                class Origins(BaseHTTPRequestHandler):
+                    def log_message(self, *_): pass
+                    def do_GET(self):
+                        if self.path != '/origins': self.send_error(404); return
+                        with origin_lock: body=json.dumps(dict(origin_counts)).encode()
+                        self.send_response(200)
+                        self.send_header('Content-Type','application/json')
+                        self.send_header('Content-Length',str(len(body)))
+                        self.end_headers();self.wfile.write(body)
+                origin_server=ThreadingHTTPServer(('127.0.0.1',21945),Origins)
+                threading.Thread(target=origin_server.serve_forever,daemon=True).start()
+
             def echo(connection):
                 try:
                     while True:
@@ -101,7 +124,7 @@ verb 3
                             threading.Thread(target=echo, args=(connection,), daemon=True).start()
                             continue
                         tag = 'VPN' if ipaddress.ip_address(peer[0]) in pool else 'NATIVE'
-                        print('ORIGIN_TCP', listener.getsockname()[0], peer[0], tag, flush=True)
+                        observe('TCP', listener.getsockname()[0], peer[0], tag)
                         def send_origin(connection, tag):
                             with connection:
                                 connection.sendall((tag+'\n').encode())
@@ -117,7 +140,7 @@ verb 3
                     while not stop.is_set():
                         data, peer = listener.recvfrom(2048)
                         tag = 'VPN' if ipaddress.ip_address(peer[0]) in pool else 'NATIVE'
-                        print('ORIGIN_UDP', listener.getsockname()[0], peer[0], tag, flush=True)
+                        observe('UDP', listener.getsockname()[0], peer[0], tag)
                         listener.sendto(tag.encode(), peer)
                 except OSError:
                     if not stop.is_set(): raise
@@ -173,6 +196,8 @@ verb 3
         finally:
             stop.set()
             args.output.unlink(missing_ok=True)
+            if origin_server is not None:
+                origin_server.shutdown();origin_server.server_close()
             for listener in listeners: listener.close()
             if server is not None:
                 server.terminate()
