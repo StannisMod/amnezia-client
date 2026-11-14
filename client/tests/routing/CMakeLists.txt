@@ -10,6 +10,10 @@ add_executable(test_domain_routing_contract
 target_link_libraries(test_domain_routing_contract PRIVATE Qt6::Core Qt6::Network Qt6::Test)
 target_include_directories(test_domain_routing_contract PRIVATE ../..)
 add_test(NAME DomainRoutingContractTest COMMAND test_domain_routing_contract)
+add_executable(test_mac_openvpn_ipv6_policy testMacOpenVpnIpv6Policy.cpp)
+target_link_libraries(test_mac_openvpn_ipv6_policy PRIVATE Qt6::Core Qt6::Network Qt6::Test)
+add_test(NAME MacOpenVpnIpv6PolicyTest COMMAND test_mac_openvpn_ipv6_policy)
+
 if(WIN32)
     add_executable(windows_openvpn_ipv6_api_compile windowsOpenVpnIpv6Compile.cpp)
     target_link_libraries(windows_openvpn_ipv6_api_compile PRIVATE iphlpapi ws2_32)

@@ -159,6 +159,22 @@ namespace, and uses source-policy rules instead. Linux results and Darwin
 cross-compilation do not prove macOS runtime behavior, production OpenVPN
 integration, or physical network handover.
 
+`MacOpenVpnIpv6PolicyTest` is a portable transaction test for desktop OpenVPN.
+It prepares interface-scoped source pins before changing the unscoped route,
+retains them across repeated direction changes, borrows matching foreign scoped
+rows without adopting ownership, and rejects foreign unscoped host routes.
+Failed operations are rolled back even if the mutation reached the kernel before
+its reply failed. An unsuccessful cleanup keeps source pins until the primary
+route can be removed. The native adapter must make owned changes idempotent and
+must distinguish a missing route from an unsuccessful query.
+
+These tests currently run with an injected route API. They do not supply the
+missing macOS native adapter, enable `supportsIpv6HostUpdates()` on macOS, or
+prove native TCP preservation. That integration and the native probe above remain
+required. In particular, [Apple network_cmds route.c](https://github.com/apple-oss-distributions/network_cmds/blob/main/route.tproj/route.c) can return a zero process
+status even when its route request fails; an adapter must reconcile the actual
+kernel result rather than treating the process status as proof of mutation.
+
 Desktop endpoint bootstrap queries only the peer hostname through the privileged
 service's private UDP socket, using public resolvers 1.1.1.1 and 8.8.8.8 on
 alternating attempts. Linux/PF exceptions are restricted to its owned source port,

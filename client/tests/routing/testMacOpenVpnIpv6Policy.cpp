@@ -1,0 +1,180 @@
+#include <QtTest>
+#include "../../platforms/macos/daemon/macopenvpnipv6policy.h"
+
+namespace mac6 = amnezia::macOpenVpnIpv6;
+namespace {
+const QString host = QStringLiteral("2001:db8:42::4");
+const QString secondHost = QStringLiteral("64:ff9b::c000:201");
+const mac6::Path vpn{QStringLiteral("utun7"), {}};
+const mac6::Path native{QStringLiteral("en0"), QHostAddress("fe80::1%en0")};
+QString key(const mac6::Route &route) { return route.host + '|' + route.scope; }
+struct Fixture {
+    QMap<QString, mac6::Route> rows;
+    QList<mac6::Route> created;
+    int creates = 0, changes = 0, failCreate = 0, failChange = 0;
+    int failCreateAfterCommit = 0, failChangeAfterCommit = 0;
+    bool failRemoval = false, failPrimaryRemoval = false, corruptSources = false, wrongSelection = false;
+    mac6::Api api()
+    {
+        mac6::Api api;
+        api.select = [this](const QString &, const QString &, bool throughVpn) {
+            return std::optional<mac6::Path>{throughVpn && !wrongSelection ? vpn : native};
+        };
+        api.sources = [this](const QString &address) {
+            QList<mac6::Path> paths{vpn, native};
+            if (corruptSources && rows.contains(address + '|')) paths[1] = vpn;
+            return std::optional<QList<mac6::Path>>{paths};
+        };
+        api.read = [this](const QString &address, const QString &scope) {
+            const auto it = rows.constFind(address + '|' + scope);
+            return std::optional<mac6::Observed>{{it == rows.cend()
+                ? std::optional<mac6::Route>{} : std::optional<mac6::Route>{it.value()}}};
+        };
+        api.create = [this](const mac6::Route &route) {
+            if (++creates == failCreate || rows.contains(key(route))) return false;
+            rows.insert(key(route), route); created.append(route);
+            return creates != failCreateAfterCommit;
+        };
+        api.changeOwned = [this](const mac6::Route &before, const mac6::Route &after) {
+            if (++changes == failChange || !rows.contains(key(before))) return false;
+            if (rows[key(before)] == after) return true;
+            if (!(rows[key(before)] == before) || !before.managed) return false;
+            rows.insert(key(after), after);
+            return changes != failChangeAfterCommit;
+        };
+        api.removeOwned = [this](const mac6::Route &route) {
+            if (failRemoval || (failPrimaryRemoval && route.scope.isEmpty())) return false;
+            if (rows.contains(key(route)) && rows[key(route)] == route && route.managed) rows.remove(key(route));
+            return true;
+        };
+        return api;
+    }
+};
+}
+
+class MacOpenVpnIpv6PolicyTest : public QObject {
+    Q_OBJECT
+private slots:
+    void pinsPrecedeUnscopedChangesAndSurviveSwitches()
+    {
+        Fixture fixture;
+        mac6::Policy policy(fixture.api());
+        QVERIFY(policy.add("utun7", {host, host}, true));
+        QCOMPARE(fixture.rows.size(), 3);
+        QCOMPARE(fixture.created.size(), 3);
+        QVERIFY(!fixture.created[0].scope.isEmpty());
+        QVERIFY(!fixture.created[1].scope.isEmpty());
+        QVERIFY(fixture.created[2].scope.isEmpty());
+        for (int i = 0; i < 6; ++i) {
+            const bool throughVpn = i % 2 != 0;
+            QVERIFY(policy.add("utun7", {host}, throughVpn));
+            QCOMPARE(fixture.rows.size(), 3);
+            QVERIFY(fixture.rows[host + '|'].path == (throughVpn ? vpn : native));
+            QVERIFY(fixture.rows[host + "|en0"].path == native);
+            QVERIFY(fixture.rows[host + "|utun7"].path == vpn);
+        }
+        QVERIFY(!policy.add("utun8", {host}, true));
+        QVERIFY(policy.clear());
+        QVERIFY(fixture.rows.isEmpty());
+    }
+    void rejectsInvalidBatchBeforeAnyMutation()
+    {
+        Fixture fixture;
+        mac6::Policy policy(fixture.api());
+        for (const auto &invalid : {"192.0.2.1", "::", "::1", "ff02::1", "fe80::1", "2001:db8::1%en0", "::ffff:192.0.2.1"})
+            QVERIFY(!policy.add("utun7", {host, invalid}, true));
+        fixture.wrongSelection = true;
+        QVERIFY(!policy.add("utun7", {host}, true));
+        QCOMPARE(fixture.creates, 0);
+        QCOMPARE(fixture.changes, 0);
+        QVERIFY(!mac6::validPath({"-ifscope", {}}));
+        QVERIFY(!mac6::validPath({"en0", QHostAddress("fe80::1%en1")}));
+    }
+    void foreignUnscopedRouteRejectsWholeBatch()
+    {
+        Fixture fixture;
+        const mac6::Route foreign{secondHost, {}, native, false};
+        fixture.rows.insert(key(foreign), foreign);
+        mac6::Policy policy(fixture.api());
+        QVERIFY(!policy.add("utun7", {host, secondHost}, true));
+        QCOMPARE(fixture.creates, 0);
+        QCOMPARE(fixture.rows.size(), 1);
+        QVERIFY(policy.clear());
+        QVERIFY(fixture.rows[key(foreign)] == foreign);
+    }
+    void borrowsScopedRouteAndNeverDeletesExternalReplacement()
+    {
+        Fixture fixture;
+        const mac6::Route borrowed{host, "en0", native, false};
+        fixture.rows.insert(key(borrowed), borrowed);
+        mac6::Policy policy(fixture.api());
+        QVERIFY(policy.add("utun7", {host}, true));
+        QCOMPARE(fixture.rows.size(), 3);
+        auto replacement = fixture.rows[host + '|'];
+        replacement.managed = false;
+        fixture.rows[host + '|'] = replacement;
+        QVERIFY(!policy.add("utun7", {host}, false));
+        QVERIFY(policy.clear());
+        QCOMPARE(fixture.rows.size(), 2);
+        QVERIFY(fixture.rows[key(borrowed)] == borrowed);
+        QVERIFY(fixture.rows[key(replacement)] == replacement);
+    }
+    void secondChangeFailureRestoresWholeBatch()
+    {
+        Fixture fixture;
+        mac6::Policy policy(fixture.api());
+        QVERIFY(policy.add("utun7", {host, secondHost}, true));
+        const auto original = fixture.rows;
+        fixture.failChange = 2;
+        QVERIFY(!policy.add("utun7", {host, secondHost}, false));
+        QVERIFY(fixture.rows == original);
+        fixture.failChange = 0;
+        fixture.failChangeAfterCommit = fixture.changes + 1;
+        QVERIFY(!policy.add("utun7", {host, secondHost}, false));
+        QVERIFY(fixture.rows == original);
+        fixture.failChangeAfterCommit = 0;
+        QVERIFY(policy.add("utun7", {host, secondHost}, false));
+        QVERIFY(policy.clear());
+        QVERIFY(fixture.rows.isEmpty());
+    }
+    void failedCleanupBlocksUpdatesUntilReleased()
+    {
+        Fixture fixture;
+        mac6::Policy policy(fixture.api());
+        fixture.failCreate = 2;
+        fixture.failRemoval = true;
+        QVERIFY(!policy.add("utun7", {host}, true));
+        QCOMPARE(fixture.rows.size(), 1);
+        const auto creates = fixture.creates;
+        QVERIFY(!policy.add("utun7", {secondHost}, true));
+        QCOMPARE(fixture.creates, creates);
+        fixture.failRemoval = false;
+        QVERIFY(policy.clear());
+        QVERIFY(fixture.rows.isEmpty());
+        fixture.failCreate = 0;
+        fixture.failCreateAfterCommit = fixture.creates + 1;
+        QVERIFY(!policy.add("utun7", {host}, true));
+        QVERIFY(fixture.rows.isEmpty());
+        fixture.failCreateAfterCommit = 0;
+        QVERIFY(policy.add("utun7", {host}, true));
+        fixture.failPrimaryRemoval = true;
+        QVERIFY(!policy.clear());
+        QCOMPARE(fixture.rows.size(), 3); // Retain pins while the primary remains.
+        fixture.failPrimaryRemoval = false;
+        QVERIFY(policy.clear());
+        QVERIFY(fixture.rows.isEmpty());
+    }
+    void changedSourcePathRollsBackRatherThanLosingOldSockets()
+    {
+        Fixture fixture;
+        mac6::Policy policy(fixture.api());
+        fixture.corruptSources = true;
+        QVERIFY(!policy.add("utun7", {host}, true));
+        QVERIFY(fixture.rows.isEmpty());
+        fixture.corruptSources = false;
+        QVERIFY(policy.add("utun7", {host}, true));
+        QVERIFY(policy.clear());
+    }
+};
+QTEST_GUILESS_MAIN(MacOpenVpnIpv6PolicyTest)
+#include "testMacOpenVpnIpv6Policy.moc"
