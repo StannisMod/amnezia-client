@@ -138,15 +138,6 @@ open class ProtocolConfig protected constructor(
         }
 
         private fun processRoutes() {
-            // Keep the full IPv6 space when avoiding a single default route.
-            // 2000::/3 omits ULA and NAT64 destinations selected for the VPN.
-            val ipv6DefaultRoute = InetNetwork("::", 0)
-            if (routes.removeIf { it.include && it.inetNetwork == ipv6DefaultRoute }) {
-                prependRoutes {
-                    addRoute(InetNetwork("::", 1))
-                    addRoute(InetNetwork("8000::", 1))
-                }
-            }
             // for older versions of Android, build a list of subnets without excluded routes
             // and add them to routes
             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU && routes.any { !it.include }) {
@@ -156,7 +147,8 @@ open class ProtocolConfig protected constructor(
                     else ipRangeSet.remove(IpRange(it.inetNetwork))
                 }
                 ipRangeSet.remove(IpRange("127.0.0.0", 8))
-                ipRangeSet.remove(IpRange("::1", 128))
+                // Loopback belongs to the kernel's local table. Subtracting
+                // ::1 needlessly fragments an IPv6 default into many routes.
                 routes.clear()
                 ipRangeSet.subnets().forEach(::addRoute)
             }

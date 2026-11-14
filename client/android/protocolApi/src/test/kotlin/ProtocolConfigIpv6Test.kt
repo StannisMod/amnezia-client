@@ -4,6 +4,7 @@ import org.amnezia.vpn.util.net.InetNetwork
 import java.math.BigInteger
 import java.net.InetAddress
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -50,5 +51,23 @@ class ProtocolConfigIpv6Test {
         assertTrue(result.captures("192.0.2.1"))
         for (address in listOf("2001:db8::1", "fd88::1", "64:ff9b::c000:201"))
             assertFalse(address, result.captures(address))
+    }
+
+    @Test fun ipv4ExclusionDoesNotFragmentIpv6Default() {
+        val result = config {
+            addRoute(InetNetwork("::", 0))
+            excludeRoute(InetNetwork("198.51.100.1", 32))
+        }
+        // This is the route handed to Android, not just equivalent coverage:
+        // artificial loopback subtraction fragmented capture on old kernels.
+        assertEquals(listOf(InetNetwork("::", 0)), result.routes
+            .filter { it.include && it.inetNetwork.isIpv6 }.map { it.inetNetwork })
+    }
+
+    @Test fun explicitIpv6ExclusionStillRemainsDirect() {
+        val result = config { excludeAddress(InetNetwork("fd99::", 16)) }
+        assertFalse(result.captures("fd99::4"))
+        for (address in listOf("2001:db8::1", "fd88::1", "64:ff9b::c000:201"))
+            assertTrue(address, result.captures(address))
     }
 }

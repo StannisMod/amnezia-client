@@ -496,6 +496,41 @@ public final class RoutingInstrumentation extends Instrumentation {
         }
     }
 
+    private void openVpnLoopbackIpv6() throws Exception {
+        InetAddress loopback=InetAddress.getByName("::1");
+        ExecutorService io=Executors.newSingleThreadExecutor();
+        try {
+            try(ServerSocket server=new ServerSocket(0,1,loopback)) {
+                server.setSoTimeout(2000);
+                Future<Boolean> echo=io.submit(() -> {
+                    try(Socket peer=server.accept()) {
+                        peer.setSoTimeout(2000);int value=peer.getInputStream().read();
+                        peer.getOutputStream().write(value);return value==17;
+                    }
+                });
+                try(Socket client=new Socket()) {
+                    client.setSoTimeout(2000);client.connect(new InetSocketAddress(loopback,server.getLocalPort()),2000);
+                    client.getOutputStream().write(17);
+                    require(client.getInputStream().read()==17 && loopback.equals(client.getLocalAddress()),"IPv6 loopback TCP entered the tunnel");
+                }
+                require(echo.get(3,TimeUnit.SECONDS),"IPv6 loopback TCP echo failed");
+            }
+            try(DatagramSocket server=new DatagramSocket(new InetSocketAddress(loopback,0));
+                DatagramSocket client=new DatagramSocket(new InetSocketAddress(loopback,0))) {
+                server.setSoTimeout(2000);client.setSoTimeout(2000);
+                Future<Boolean> echo=io.submit(() -> {
+                    DatagramPacket packet=new DatagramPacket(new byte[1],1);server.receive(packet);
+                    server.send(packet);return loopback.equals(packet.getAddress()) && packet.getData()[0]==23;
+                });
+                client.send(new DatagramPacket(new byte[]{23},1,loopback,server.getLocalPort()));
+                DatagramPacket reply=new DatagramPacket(new byte[1],1);client.receive(reply);
+                require(reply.getData()[0]==23 && loopback.equals(reply.getAddress()),"IPv6 loopback UDP entered the tunnel");
+                require(echo.get(3,TimeUnit.SECONDS),"IPv6 loopback UDP echo failed");
+            }
+        } finally { io.shutdownNow(); }
+        progress("OPENVPN_LOOPBACK_IPV6 TCP_UDP_LOCAL");
+    }
+
     private void openVpnIpv6() throws Exception {
         JSONArray cases = fixture.getJSONArray("openvpn_cases");
         JSONArray targets = fixture.getJSONArray("ipv6_test_destinations");
@@ -527,6 +562,7 @@ public final class RoutingInstrumentation extends Instrumentation {
                     socket.getOutputStream().write('a');require(socket.getInputStream().read()=='a',"IPv4 tunnel echo before IPv6 check failed");
                 }
                 JSONObject expected=test.getJSONObject("expected");
+                openVpnLoopbackIpv6();
                 for (int target=0; target<targets.length(); target++) for (boolean udp : new boolean[]{false,true}) {
                     String address=targets.getString(target);
                     String answer=null;Exception failure=null;
@@ -540,7 +576,7 @@ public final class RoutingInstrumentation extends Instrumentation {
                     socket.getOutputStream().write('z');require(socket.getInputStream().read()=='z',"original IPv4 TCP was lost");
                 }
             }
-            progress("OPENVPN_IPV6_CASE "+new JSONObject().put("name",test.getString("name")).put("expected",test.getJSONObject("expected")).put("old_ipv4_tcp_retained",true));
+            progress("OPENVPN_IPV6_CASE "+new JSONObject().put("name",test.getString("name")).put("expected",test.getJSONObject("expected")).put("old_ipv4_tcp_retained",true).put("loopback_ipv6_local",true));
             disconnect();
             long until=SystemClock.elapsedRealtime()+5000;
             while(java.util.Objects.equals(network,openVpnNetwork(manager)) && SystemClock.elapsedRealtime()<until)SystemClock.sleep(25);

@@ -7,6 +7,8 @@ cached IPv6 capability. GUA, ULA and NAT64 origins answer `VPN` only when the
 sender belongs to the authenticated tunnel pool. Each origin must first be
 reachable as `NATIVE` without VPN. Two original IPv4 TCP sockets must remain
 usable throughout every case.
+TCP and UDP on the application's IPv6 loopback (`::1`) must also remain local;
+capturing the IPv6 default must not redirect local listeners into the tunnel.
 
 It does not test DNS, MTU recovery, physical devices or other VPN protocols.
 The API28 regression currently exposes a stale IPv6 kernel route cache after

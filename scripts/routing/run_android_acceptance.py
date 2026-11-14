@@ -504,6 +504,8 @@ def main():
             assert 'INSTRUMENTATION_RESULT: routing_result=PASS_OPENVPN_IPV6_ONLY' in output
             cases = [json.loads(line.split('OPENVPN_IPV6_CASE ', 1)[1]) for line in output.splitlines() if 'OPENVPN_IPV6_CASE ' in line]
             assert len(cases) == len(fixture['openvpn_cases']) and all(row['old_ipv4_tcp_retained'] for row in cases)
+            assert all(row['loopback_ipv6_local'] for row in cases)
+            assert output.count('OPENVPN_LOOPBACK_IPV6 TCP_UDP_LOCAL') == len(cases)
             report['openvpn_ipv6'] = {'server_ipv6': fixture['server_ipv6'], 'cases': cases}
             report['native_vpn_acceptance'] = 'NOT_RUN_OPENVPN_IPV6_ONLY'
             return
