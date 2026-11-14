@@ -12,9 +12,10 @@ struct Entry {
     bool up = false;
     bool blocked = false;
     bool managed = false;
+    bool transient = false;
     bool usable() const { return prefix >= 0 && prefix <= 128
         && destination.protocol() == QAbstractSocket::IPv6Protocol && up && !blocked && validPath(path); }
-    Route row() const { return {destination.toString(), scope, path, managed && usable()}; }
+    Route row() const { return {destination.toString(), scope, path, managed && usable() && !transient, transient}; }
 };
 struct PathChoice { std::optional<Path> path; bool ambiguous = false; };
 inline PathChoice sourcePath(const QList<Entry> &entries, QHostAddress host, const QString &device)

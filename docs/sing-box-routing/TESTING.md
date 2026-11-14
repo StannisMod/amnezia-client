@@ -163,6 +163,11 @@ integration, or physical network handover.
 It prepares interface-scoped source pins before changing the unscoped route,
 retains them across repeated direction changes, borrows matching foreign scoped
 rows without adopting ownership, and rejects foreign unscoped host routes.
+Temporary protocol-cloned cache rows are not borrowed as durable pins: a
+matching scoped clone is replaced through the kernel's `RTM_ADD` operation,
+without deleting a route first. Permanent foreign scoped routes remain borrowed
+and untouched. The [XNU replacement path](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/net/route.c)
+checks the clone's parent while holding the routing table lock.
 Failed operations are rolled back even if the mutation reached the kernel before
 its reply failed. An unsuccessful cleanup keeps source pins until the primary
 route can be removed. The native adapter must make owned changes idempotent and

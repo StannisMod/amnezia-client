@@ -31,7 +31,10 @@ struct Fixture {
                 ? std::optional<mac6::Route>{} : std::optional<mac6::Route>{it.value()}}};
         };
         api.create = [this](const mac6::Route &route) {
-            if (++creates == failCreate || rows.contains(key(route))) return false;
+            if (++creates == failCreate) return false;
+            const auto existing = rows.constFind(key(route));
+            if (existing != rows.cend() && (route.scope.isEmpty() || !existing->transient
+                || existing->managed || existing->path != route.path)) return false;
             rows.insert(key(route), route); created.append(route);
             return creates != failCreateAfterCommit;
         };
@@ -146,6 +149,23 @@ private slots:
         QCOMPARE(fixture.rows.size(), 2);
         QVERIFY(fixture.rows[key(borrowed)] == borrowed);
         QVERIFY(fixture.rows[key(replacement)] == replacement);
+    }
+    void transientKernelCloneBecomesDurablePin()
+    {
+        Fixture fixture;
+        const mac6::Route cache{host, "en0", native, false, true};
+        fixture.rows.insert(key(cache), cache);
+        mac6::Policy policy(fixture.api());
+        QVERIFY(policy.add("utun7", {host}, true));
+        const auto pin = fixture.rows[host + "|en0"];
+        QVERIFY(pin.managed && !pin.transient && pin.path == native);
+        // Simulated expiry removes only cached entries, not the source pin.
+        for (auto it = fixture.rows.begin(); it != fixture.rows.end();)
+            if (it->transient) it = fixture.rows.erase(it); else ++it;
+        QCOMPARE(fixture.rows.size(), 3);
+        QVERIFY(policy.add("utun7", {host}, false));
+        QVERIFY(policy.clear());
+        QVERIFY(fixture.rows.isEmpty());
     }
     void secondChangeFailureRestoresWholeBatch()
     {

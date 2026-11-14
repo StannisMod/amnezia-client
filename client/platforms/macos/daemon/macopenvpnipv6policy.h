@@ -26,8 +26,9 @@ struct Route {
     QString scope; // Empty for the route used by new, unbound sockets.
     Path path;
     bool managed = true;
+    bool transient = false; // Kernel-generated clone, not a durable source pin.
     bool operator==(const Route &other) const {
-        return host == other.host && scope == other.scope && path == other.path && managed == other.managed;
+        return host == other.host && scope == other.scope && path == other.path && managed == other.managed && transient == other.transient;
     }
 };
 struct Observed { std::optional<Route> exact; };
@@ -124,8 +125,12 @@ public:
                     // An existing matching scoped path can be used, never
                     // adopted as ours. A foreign unscoped row cannot be changed.
                     if (route.scope.isEmpty() || found->exact->path != route.path) return false;
-                    borrowed.append(*found->exact);
-                    continue;
+                    if (!found->exact->transient) {
+                        borrowed.append(*found->exact);
+                        continue;
+                    }
+                    // Let the kernel replace its matching cloned cache row
+                    // with our durable pin; never delete a foreign row first.
                 }
                 planned.insert(key, route);
             }

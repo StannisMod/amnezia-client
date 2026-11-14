@@ -44,7 +44,11 @@ public:
         result.read = [this](const QString &host, const QString &scope) { return read(host, scope); };
         result.create = [this](const Route &route) {
             const auto before = read(route.host, route.scope);
-            if (!before || before->exact) return false;
+            if (!before) return false;
+            if (before->exact && (route.scope.isEmpty() || !before->exact->transient
+                || before->exact->managed || before->exact->path != route.path)) return false;
+            // XNU RTM_ADD replaces a protocol-generated clone under the route
+            // table lock. A static foreign row still fails with EEXIST.
             return mutate(RTM_ADD, route);
         };
         result.changeOwned = [this](const Route &before, const Route &after) {
@@ -129,6 +133,9 @@ private:
             entry.blocked = (header.rtm_flags & (RTF_REJECT | RTF_BLACKHOLE)) != 0;
             entry.managed = (header.rtm_flags & (RTF_STATIC | RTF_PROTO1 | RTF_PROTO2 | RTF_HOST))
                 == (RTF_STATIC | RTF_PROTO1 | RTF_PROTO2 | RTF_HOST);
+            entry.transient = (header.rtm_flags & (RTF_HOST | RTF_WASCLONED | RTF_IFSCOPE))
+                == (RTF_HOST | RTF_WASCLONED | RTF_IFSCOPE)
+                && !(header.rtm_flags & (RTF_STATIC | RTF_REJECT | RTF_BLACKHOLE | RTF_LOCAL));
             entry.path.device = device;
             if (header.rtm_flags & RTF_IFSCOPE) entry.scope = device;
             if (header.rtm_flags & RTF_HOST) entry.prefix = 128;
@@ -292,7 +299,7 @@ private:
         return false;
     }
     bool mutate(int type, const Route &route) {
-        if (!route.managed || !validHost(QHostAddress(route.host)) || !validPath(route.path)) return false;
+        if (!route.managed || route.transient || !validHost(QHostAddress(route.host)) || !validPath(route.path)) return false;
         if (!exchange(type, route)) return false;
         const auto after = read(route.host, route.scope);
         if (!after) return false;
