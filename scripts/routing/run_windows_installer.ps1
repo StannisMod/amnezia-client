@@ -30,4 +30,16 @@ $p.Refresh()
 $allowed = @(0,3010)
 if ($Uninstall -and $Kind -eq 'msi') { $allowed += 1605 }
 if ($p.ExitCode -notin $allowed) { throw "Installer failed: $($p.ExitCode)" }
+# IFW schedules deletion of its running maintenance executable after exit.
+# A short-lived remote test session can otherwise leave that child cleanup
+# unfinished and make the next clean installation look like an upgrade.
+if ($Uninstall -and $Kind -eq 'exe' -and $p.ExitCode -eq 0) {
+    $deadline = [DateTime]::UtcNow.AddSeconds(15)
+    while ((Test-Path -LiteralPath $Package -PathType Leaf) -and [DateTime]::UtcNow -lt $deadline) {
+        Start-Sleep -Milliseconds 200
+    }
+    if (Test-Path -LiteralPath $Package -PathType Leaf) {
+        throw 'EXE uninstaller exited successfully but its deferred cleanup did not finish'
+    }
+}
 Write-Host "Installer process completed: $($p.ExitCode)"
