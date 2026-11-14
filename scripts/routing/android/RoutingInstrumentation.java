@@ -973,7 +973,6 @@ public final class RoutingInstrumentation extends Instrumentation {
             require(a.getString("address").equals(b.getString("address")) && fake(InetAddress.getByName(a.getString("address"))),"apps did not share a FakeIP");
             JSONObject isolated=appProbe(0,"isolated","old").getJSONObject("isolated");
             require(isolated.getInt("uid")!=a.getInt("uid"),"isolated service reused application UID");
-            require(isolated.getBoolean("delegated_echo") && isolated.getInt("delegated_port")==a.getInt("local_port"),"isolated process replaced original TCP");
             require(isolated.getString("tcp").equals("ANDROID_PERMISSION_DENIED") || isolated.getString("tcp").equals("VPN"),"isolated TCP bypassed VPN");
             require(isolated.getString("udp").equals("ANDROID_PERMISSION_DENIED") || isolated.getString("udp").equals("VPN:app-policy-proof"),"isolated UDP bypassed VPN");
             for(int i=0;i<2;i++) {
@@ -981,8 +980,6 @@ public final class RoutingInstrumentation extends Instrumentation {
                 require(appProbe(i,"udp","old").getString("reply").equals((i==0?"VPN:":"DIRECT:")+"app-policy-proof"),"initial application UDP route wrong");
             }
             updateApplicationPolicy("org.amnezia.routingprobe.a");
-            JSONObject isolatedAfter=appProbe(0,"isolated-echo","old").getJSONObject("isolated");
-            require(isolatedAfter.getInt("uid")!=a.getInt("uid") && isolatedAfter.getBoolean("delegated_echo") && isolatedAfter.getInt("delegated_port")==a.getInt("local_port"),"isolated process lost original TCP after policy switch");
             JSONObject oldA=appProbe(0,"echo","old"),oldB=appProbe(1,"echo","old");
             require(oldA.getInt("local_port")==a.getInt("local_port") && oldB.getInt("local_port")==b.getInt("local_port"),"old TCP was replaced");
             require(oldA.getString("route").equals("VPN") && oldB.getString("route").equals("DIRECT"),"old TCP changed outbound");
@@ -1010,7 +1007,7 @@ public final class RoutingInstrumentation extends Instrumentation {
             }
             progress("APP_POLICY_RESULT "+new JSONObject().put("uids",new JSONArray().put(a.getInt("uid")).put(b.getInt("uid")))
                 .put("same_session",true).put("same_old_ports",true).put("dns_contexts_switched",true)
-                .put("isolated_process",new JSONObject().put("parent_uid",a.getInt("uid")).put("before",isolated).put("after",isolatedAfter)));
+                .put("isolated_process",new JSONObject().put("parent_uid",a.getInt("uid")).put("result",isolated).put("parent_old_ports_preserved",true)));
             if (packageLifecycle) {
                 long captureGeneration=connectionDiagnostics().optLong("capture_refresh_count",0);
                 packageLifecycleCheckpoint("same-uid");

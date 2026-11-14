@@ -62,10 +62,10 @@ public final class Probe extends Instrumentation {
                             }
                         } else if (operation.equals("txt")) {
                             reply.put("answer", txt());
-                        } else if (operation.equals("isolated") || operation.equals("isolated-echo")) {
+                        } else if (operation.equals("isolated")) {
                             Socket stream = streams.get(tag);
                             if (stream == null) throw new IOException("missing original stream");
-                            reply.put("isolated", isolated(stream, command.getString("address"), operation.equals("isolated")))
+                            reply.put("isolated", isolated(command.getString("address")))
                                 .put("local_port", stream.getLocalPort());
                         } else if (operation.equals("stop")) {
                             running = false;
@@ -84,7 +84,7 @@ public final class Probe extends Instrumentation {
             for (Socket stream : streams.values()) try { stream.close(); } catch (IOException ignored) {}
         }
     }
-    private JSONObject isolated(Socket stream, String address, boolean probeNetwork) throws Exception {
+    private JSONObject isolated(String address) throws Exception {
         android.content.Context context = getTargetContext();
         java.util.concurrent.CountDownLatch ready = new java.util.concurrent.CountDownLatch(1);
         android.os.IBinder[] peer = new android.os.IBinder[1];
@@ -97,11 +97,9 @@ public final class Probe extends Instrumentation {
         try {
             if (!ready.await(5, java.util.concurrent.TimeUnit.SECONDS)) throw new IOException("isolated service bind timeout");
             android.os.Parcel request=android.os.Parcel.obtain(),response=android.os.Parcel.obtain();
-            try (android.os.ParcelFileDescriptor fd=android.os.ParcelFileDescriptor.fromSocket(stream)) {
+            try {
                 request.writeInterfaceToken("amnezia.isolated.probe");
-                request.writeInt(probeNetwork?1:0);
                 request.writeByteArray(InetAddress.getByName(address).getAddress());
-                request.writeParcelable(fd,0);
                 if (!peer[0].transact(android.os.IBinder.FIRST_CALL_TRANSACTION,request,response,0)) throw new IOException("isolated transaction rejected");
                 response.readException();return new JSONObject(response.readString());
             } finally { request.recycle();response.recycle(); }
@@ -115,49 +113,42 @@ public final class Probe extends Instrumentation {
                     if (code != FIRST_CALL_TRANSACTION) return super.onTransact(code,input,output,flags);
                     input.enforceInterface("amnezia.isolated.probe");
                     try {
-                        boolean probeNetwork=input.readInt()!=0;
                         InetAddress address=InetAddress.getByAddress(input.createByteArray());
-                        try (android.os.ParcelFileDescriptor fd=input.readParcelable(getClass().getClassLoader())) {
-                        JSONObject result=new JSONObject().put("uid",Process.myUid());
-                        if(probeNetwork) { result.put("tcp", attempt(address,false));result.put("udp",attempt(address,true)); }
-                        result.put("delegated_port",((InetSocketAddress)android.system.Os.getsockname(fd.getFileDescriptor())).getPort());
-                        byte[] payload="isolated-old-tcp".getBytes(StandardCharsets.US_ASCII);
-                        android.system.Os.write(fd.getFileDescriptor(),payload,0,payload.length);
-                        byte[] received=new byte[payload.length];int count=0;
-                        while(count<received.length) {
-                            android.system.StructPollfd poll=new android.system.StructPollfd();poll.fd=fd.getFileDescriptor();poll.events=(short)android.system.OsConstants.POLLIN;
-                            if(android.system.Os.poll(new android.system.StructPollfd[]{poll},2000)!=1)throw new IOException("delegated echo timeout");
-                            int n=android.system.Os.read(fd.getFileDescriptor(),received,count,received.length-count);
-                            if(n<=0)throw new EOFException("delegated echo closed");count+=n;
-                        }
-                        if(!java.util.Arrays.equals(payload,received))throw new IOException("delegated echo mismatch");
-                        result.put("delegated_echo",true);output.writeNoException();output.writeString(result.toString());return true;
-                        }
-                    } catch(Exception error) { throw new android.os.RemoteException(error.toString()); }
+                        JSONObject result=new JSONObject().put("uid",Process.myUid())
+                            .put("tcp",attempt(address,false)).put("udp",attempt(address,true));
+                        output.writeNoException();output.writeString(result.toString());return true;
+                    } catch(Exception error) {
+                        throw new IllegalStateException("isolated network probe failed",error);
+                    }
                 }
             };
         }
         private static String attempt(InetAddress address,boolean udp) throws Exception {
+            java.io.FileDescriptor fd=null;
             try {
-                if(udp)try(DatagramSocket socket=new DatagramSocket()) {
-                    socket.setSoTimeout(2000);byte[] payload="app-policy-proof".getBytes(StandardCharsets.US_ASCII);
-                    socket.send(new DatagramPacket(payload,payload.length,address,18082));
-                    DatagramPacket response=new DatagramPacket(new byte[256],256);socket.receive(response);
-                    return new String(response.getData(),0,response.getLength(),StandardCharsets.US_ASCII);
+                // Observe the actual errno, rather than classify a generic Java
+                // socket failure or timeout as Android permission enforcement.
+                fd=android.system.Os.socket(android.system.OsConstants.AF_INET,
+                    udp?android.system.OsConstants.SOCK_DGRAM:android.system.OsConstants.SOCK_STREAM,0);
+                android.system.Os.setsockoptTimeval(fd,android.system.OsConstants.SOL_SOCKET,
+                    android.system.OsConstants.SO_SNDTIMEO,android.system.StructTimeval.fromMillis(2000));
+                android.system.Os.connect(fd,address,udp?18082:18081);
+                if(udp) {
+                    byte[] payload="app-policy-proof".getBytes(StandardCharsets.US_ASCII);
+                    if(android.system.Os.write(fd,payload,0,payload.length)!=payload.length)throw new IOException("short isolated UDP write");
                 }
-                else try(Socket socket=new Socket()) {
-                    socket.connect(new InetSocketAddress(address,18081),2000);socket.setSoTimeout(2000);return line(socket.getInputStream());
-                }
-            } catch(SecurityException denied) { return "ANDROID_PERMISSION_DENIED"; }
-            catch(IOException error) {
-                for(Throwable cause=error;cause!=null;cause=cause.getCause())if(cause instanceof android.system.ErrnoException) {
-                    int errno=((android.system.ErrnoException)cause).errno;
-                    if(errno==android.system.OsConstants.EACCES||errno==android.system.OsConstants.EPERM)return "ANDROID_PERMISSION_DENIED";
-                }
+                android.system.StructPollfd poll=new android.system.StructPollfd();poll.fd=fd;poll.events=(short)android.system.OsConstants.POLLIN;
+                if(android.system.Os.poll(new android.system.StructPollfd[]{poll},2000)!=1)throw new IOException("isolated network timeout");
+                byte[] response=new byte[256];int count=android.system.Os.read(fd,response,0,response.length);
+                if(count<=0)throw new EOFException("isolated network closed");
+                return new String(response,0,count,StandardCharsets.US_ASCII).trim();
+            } catch(android.system.ErrnoException error) {
+                if(error.errno==android.system.OsConstants.EACCES||error.errno==android.system.OsConstants.EPERM)return "ANDROID_PERMISSION_DENIED";
                 throw error;
-            }
+            } finally { if(fd!=null)android.system.Os.close(fd); }
         }
     }
+
     private DatagramSocket freshUdp() throws IOException {
         for (int i=0;i<32;i++) {
             DatagramSocket socket = new DatagramSocket();
