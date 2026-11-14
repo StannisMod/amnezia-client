@@ -245,8 +245,8 @@ without a server-assigned IPv6 address and asks the adapter to block the whole
 family. The actual packet suite additionally tests the site prefixes supplied
 to the common Android builder, including selective DIRECT exceptions. API35
 packet acceptance passed; the API28 scope-transition gate exposes a stale
-IPv6 kernel route cache and remains unresolved. Apple adapters also require
-separate validation; the Android adaptation is not enabled for them yet.
+IPv6 kernel route cache and remains unresolved. Apple adapters have a separate
+Swift capture/filter implementation and require their own SDK/runtime validation.
 
 `ProtocolConfigIpv6Test` exercises the actual common Android configuration
 builder: full capture includes GUA, ULA and NAT64, excluding an IPv4 endpoint
@@ -262,3 +262,26 @@ runs real TLS/TUN packet checks using an ordinary x86_64 APK and the Qt-checked
 policy fixture. It requires no QUIC/Go probe and reports focused runs separately
 from the complete seven-case suite. The existing API28/API35 Android acceptance
 lanes include it; no new jobs or remote runs are needed.
+
+Apple OpenVPN uses `OpenVPNIPv6Policy.swift` for full/include/exclude IPv6
+scope, selected IPv6 DNS routes, exact managed OpenVPN2 option adaptation, and
+packet-family blocking. The provider retains authenticated IPv6 addresses or
+uses a local capture-only /128 when absent. It no longer clears IPv6 settings
+on macOS. IPv4-only inclusion leaves unselected IPv6 direct; IPv6 server transport
+gets a direct host exception. The flow adapter blocks both directions when the
+profile requests blocking or the server supplies no IPv6 address. This prevents
+native bypass; it does not promise fast ICMP rejection of blocked IPv6 flows.
+
+Run the shared production logic locally with Swift 6.1 (Swift 5 language mode):
+
+```sh
+swiftc -swift-version 5 -warnings-as-errors client/platforms/ios/OpenVPNIPv6Policy.swift client/tests/openvpn-ipv6-policy/main.swift -o /tmp/openvpn-ipv6-policy
+/tmp/openvpn-ipv6-policy client/tests/data/openvpn-tun-builder-policies.json
+```
+
+On Linux this checks real Swift route/packet/config logic and all nine Qt-checked
+profiles, but cannot import NetworkExtension. On macOS the same executable also
+checks actual NE settings construction and address preservation. Existing Apple
+jobs run these tests and typecheck the helper against the iOS SDK. Linux syntax
+parsing alone is not an Apple SDK build, a real TUN packet test, or evidence of
+native Apple acceptance; those remain required gates before release.

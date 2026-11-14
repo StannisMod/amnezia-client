@@ -69,6 +69,8 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
     var openVpnDnsServers: [String] = []
     var openVpnRemoteAddress: String?
     var openVpnRedirectGatewayDef1 = false
+    var openVpnBlocksIPv6 = false
+    var openVpnStopping = true
     var openVpnLocalAddress: String?
     var openVpnLocalMask: String?
     var openVpnGatewayAddress: String?
@@ -85,6 +87,10 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
 
     func openVPNPacketFlow() -> OpenVPNAdapterPacketFlow {
         openVPNPacketFlowAdapter
+    }
+
+    func setOpenVPNIPv6Blocked(_ blocked: Bool) {
+        openVPNPacketFlowAdapter.setIPv6Blocked(blocked)
     }
 
     override init() {
@@ -503,12 +509,28 @@ extension WireGuardLogLevel {
 
 final class PacketTunnelFlowAdapter: NSObject, OpenVPNAdapterPacketFlow {
   private let flow: NEPacketTunnelFlow
+  private let policyLock = NSLock()
+  private var blockIPv6 = true
   private var readLogCounter = 0
   private var writeLogCounter = 0
 
   init(flow: NEPacketTunnelFlow) {
     self.flow = flow
     super.init()
+  }
+
+  func setIPv6Blocked(_ blocked: Bool) {
+    policyLock.lock()
+    blockIPv6 = blocked
+    policyLock.unlock()
+  }
+
+  private func permitted(_ packets: [Data], _ protocols: [NSNumber]) -> ([Data], [NSNumber]) {
+    policyLock.lock()
+    let blocked = blockIPv6
+    policyLock.unlock()
+    return OpenVPNIPv6Policy.permittedPackets(packets, protocols: protocols, blockIPv6: blocked,
+                                              ipv6Family: Int(AF_INET6))
   }
 
   @objc(readPacketsWithCompletionHandler:)
@@ -522,7 +544,8 @@ final class PacketTunnelFlowAdapter: NSObject, OpenVPNAdapterPacketFlow {
         self.readLogCounter += 1
       }
 #endif
-      completionHandler(packets, protocols)
+      let (accepted, families) = self.permitted(packets, protocols)
+      completionHandler(accepted, families)
     }
   }
 
@@ -536,7 +559,8 @@ final class PacketTunnelFlowAdapter: NSObject, OpenVPNAdapterPacketFlow {
       writeLogCounter += 1
     }
 #endif
-    return flow.writePackets(packets, withProtocols: protocols)
+    let (accepted, families) = permitted(packets, protocols)
+    return accepted.isEmpty || flow.writePackets(accepted, withProtocols: families)
   }
 
   private static func describePacketHeader(_ packet: Data) -> String {
