@@ -125,6 +125,14 @@ def app_policy_metrics(output, report):
     metrics = report['per_application_policy'] = json.loads(match[1])
     assert len(metrics['uids']) == 2 and len(set(metrics['uids'])) == 2 and min(metrics['uids']) > 0
     assert metrics['same_session'] and metrics['same_old_ports'] and metrics['dns_contexts_switched']
+    isolated=metrics['isolated_process']
+    assert isolated['parent_uid']==metrics['uids'][0]
+    for phase in ('before','after'):
+        assert isolated[phase]['uid']>0 and isolated[phase]['uid']!=isolated['parent_uid'], 'probe did not run under an isolated UID'
+        assert isolated[phase]['delegated_echo'] and isolated[phase]['delegated_port']>0
+    assert isolated['before']['delegated_port']==isolated['after']['delegated_port'], 'isolated process replaced the original TCP'
+    assert isolated['before']['tcp'] in ('ANDROID_PERMISSION_DENIED','VPN')
+    assert isolated['before']['udp'] in ('ANDROID_PERMISSION_DENIED','VPN:app-policy-proof')
     a,b = (report['retained_resources'][key] for key in ('app_policy_before','app_policy_after'))
     assert a['pid'] == b['pid'] and a['capture_links'] and a['capture_links'] == b['capture_links']
     assert a['capture_fds'] == b['capture_fds'] == 1

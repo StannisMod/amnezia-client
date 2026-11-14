@@ -872,7 +872,7 @@ public final class RoutingInstrumentation extends Instrumentation {
         return appProbe(index, operation, tag, true);
     }
     private JSONObject appProbe(int index, String operation, String tag, boolean requireSuccess) throws Exception {
-        JSONObject command = new JSONObject().put("op", operation).put("tag", tag).put("payload", "old TCP after live policy switch");
+        JSONObject command = new JSONObject().put("op", operation).put("tag", tag).put("address",observerIP).put("payload", "old TCP after live policy switch");
         try (Socket socket = new Socket()) {
             socket.connect(new InetSocketAddress("127.0.0.1", 19091 + index), 2000);socket.setSoTimeout(12000);
             socket.getOutputStream().write((command.toString()+"\n").getBytes(StandardCharsets.UTF_8));
@@ -971,11 +971,18 @@ public final class RoutingInstrumentation extends Instrumentation {
             if(personal != null) require(a.getInt("uid")-personal.getInt("uid")==androidUser*100000,"same package did not retain its full per-profile UID");
             require(a.getString("route").equals("VPN") && b.getString("route").equals("DIRECT"),"initial per-app routing wrong");
             require(a.getString("address").equals(b.getString("address")) && fake(InetAddress.getByName(a.getString("address"))),"apps did not share a FakeIP");
+            JSONObject isolated=appProbe(0,"isolated","old").getJSONObject("isolated");
+            require(isolated.getInt("uid")!=a.getInt("uid"),"isolated service reused application UID");
+            require(isolated.getBoolean("delegated_echo") && isolated.getInt("delegated_port")==a.getInt("local_port"),"isolated process replaced original TCP");
+            require(isolated.getString("tcp").equals("ANDROID_PERMISSION_DENIED") || isolated.getString("tcp").equals("VPN"),"isolated TCP bypassed VPN");
+            require(isolated.getString("udp").equals("ANDROID_PERMISSION_DENIED") || isolated.getString("udp").equals("VPN:app-policy-proof"),"isolated UDP bypassed VPN");
             for(int i=0;i<2;i++) {
                 require(appProbe(i,"txt","old").getString("answer").equals(i==0?"VPN":"DIRECT"),"initial application DNS context wrong");
                 require(appProbe(i,"udp","old").getString("reply").equals((i==0?"VPN:":"DIRECT:")+"app-policy-proof"),"initial application UDP route wrong");
             }
             updateApplicationPolicy("org.amnezia.routingprobe.a");
+            JSONObject isolatedAfter=appProbe(0,"isolated-echo","old").getJSONObject("isolated");
+            require(isolatedAfter.getInt("uid")!=a.getInt("uid") && isolatedAfter.getBoolean("delegated_echo") && isolatedAfter.getInt("delegated_port")==a.getInt("local_port"),"isolated process lost original TCP after policy switch");
             JSONObject oldA=appProbe(0,"echo","old"),oldB=appProbe(1,"echo","old");
             require(oldA.getInt("local_port")==a.getInt("local_port") && oldB.getInt("local_port")==b.getInt("local_port"),"old TCP was replaced");
             require(oldA.getString("route").equals("VPN") && oldB.getString("route").equals("DIRECT"),"old TCP changed outbound");
@@ -987,7 +994,7 @@ public final class RoutingInstrumentation extends Instrumentation {
                 require(appProbe(i,"udp","fresh").getString("reply").equals((i==0?"DIRECT:":"VPN:")+"app-policy-proof"),"new UDP flow ignored policy update");
             }
             JSONObject after=retainedCheckpoint("app_policy_after");
-            require(after.getLong("vpn_tcp")==before.getLong("vpn_tcp")+2 && after.getLong("direct_tcp")==before.getLong("direct_tcp")+2,"unexpected TCP redial or observer");
+            require(after.getLong("vpn_tcp")==before.getLong("vpn_tcp")+2+(isolated.getString("tcp").equals("VPN")?1:0) && after.getLong("direct_tcp")==before.getLong("direct_tcp")+2,"unexpected TCP redial or observer");
             require(after.getLong("native_dns_queries")>before.getLong("native_dns_queries") && after.getLong("dns_queries")>before.getLong("dns_queries"),"both DNS observers were not exercised");
             if (privateDnsOpportunistic || privateDnsStrict) {
                 require(after.getLong("native_tls_queries")>before.getLong("native_tls_queries"), "DIRECT network DNS did not use TLS");
@@ -1002,7 +1009,8 @@ public final class RoutingInstrumentation extends Instrumentation {
                 progress("WORK_PROFILE_RESULT "+new JSONObject().put("user",androidUser).put("personal_uid",personal.getInt("uid")).put("work_uid",a.getInt("uid")).put("personal_tcp_preserved",true).put("personal_new_tcp_direct",true));
             }
             progress("APP_POLICY_RESULT "+new JSONObject().put("uids",new JSONArray().put(a.getInt("uid")).put(b.getInt("uid")))
-                .put("same_session",true).put("same_old_ports",true).put("dns_contexts_switched",true));
+                .put("same_session",true).put("same_old_ports",true).put("dns_contexts_switched",true)
+                .put("isolated_process",new JSONObject().put("parent_uid",a.getInt("uid")).put("before",isolated).put("after",isolatedAfter)));
             if (packageLifecycle) {
                 long captureGeneration=connectionDiagnostics().optLong("capture_refresh_count",0);
                 packageLifecycleCheckpoint("same-uid");
