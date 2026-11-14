@@ -346,6 +346,15 @@ private slots:
         QVERIFY(captured(config, "2001:db8::1"));
         QVERIFY(!config.contains("redirect-gateway ipv6"));
         policies["exclude"] = config;
+        client.ipv6Tunnel = false;
+        profile.setClientConfig(client);
+        settings.splitTunneling.isSitesSplitTunnelingEnabled = false;
+        config = configurator.processConfigWithLocalSettings(settings, profile).nativeConfig();
+        QVERIFY(config.contains("block-ipv6"));
+        policies["legacy-full"] = config;
+        config = configurator.processConfigWithExportSettings({settings.dns}, profile).nativeConfig();
+        QVERIFY(config.contains("block-ipv6"));
+        policies["legacy-export"] = config;
         const auto fixturePath = qEnvironmentVariable("AMNEZIA_OPENVPN_POLICY_FIXTURE");
         if (!fixturePath.isEmpty()) {
             QFile file(fixturePath);
@@ -353,11 +362,6 @@ private slots:
             const auto bytes = QJsonDocument(policies).toJson();
             QCOMPARE(file.write(bytes), qint64(bytes.size()));
         }
-        client.ipv6Tunnel = false;
-        profile.setClientConfig(client);
-        settings.splitTunneling.isSitesSplitTunnelingEnabled = false;
-        QVERIFY(configurator.processConfigWithLocalSettings(settings, profile).nativeConfig().contains("block-ipv6"));
-        QVERIFY(configurator.processConfigWithExportSettings({settings.dns}, profile).nativeConfig().contains("block-ipv6"));
         QVERIFY(!OpenVpnClientConfig::fromJson({}).ipv6Tunnel);
     }
     void initTestCase() {
