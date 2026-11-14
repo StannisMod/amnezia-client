@@ -471,10 +471,21 @@ private slots:
             QCOMPARE(file.write(bytes), qint64(bytes.size()));
         }
         const auto builderFixturePath = qEnvironmentVariable("AMNEZIA_OPENVPN_TUN_BUILDER_FIXTURE");
+        QJsonObject builderPolicies;
+        for (auto it = policies.constBegin(); it != policies.constEnd(); ++it) {
+            QStringList lines;
+            for (const auto &line : openVpnIpv6::forTunBuilder(it.value().toString()).split('\n')) {
+                const auto trimmed = line.trimmed();
+                if (trimmed.isEmpty() || trimmed.startsWith("up ") || trimmed.startsWith("down ")
+                    || trimmed.startsWith("script-security ")) continue; // Desktop-only hooks.
+                lines.append(trimmed);
+            }
+            builderPolicies[it.key()] = lines.join('\n') + '\n';
+        }
+        QFile builderGolden(QFINDTESTDATA("data/openvpn-tun-builder-policies.json"));
+        QVERIFY(builderGolden.open(QIODevice::ReadOnly));
+        QCOMPARE(builderPolicies, QJsonDocument::fromJson(builderGolden.readAll()).object());
         if (!builderFixturePath.isEmpty()) {
-            QJsonObject builderPolicies;
-            for (auto it = policies.constBegin(); it != policies.constEnd(); ++it)
-                builderPolicies[it.key()] = openVpnIpv6::forTunBuilder(it.value().toString());
             QFile file(builderFixturePath);
             QVERIFY(file.open(QIODevice::WriteOnly));
             const auto bytes = QJsonDocument(builderPolicies).toJson();

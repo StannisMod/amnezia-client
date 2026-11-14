@@ -25,6 +25,8 @@ on:
       - scripts/routing/xray_ipv6_fixture.py
       - scripts/routing/build_xray_fixture.py
       - scripts/routing/run_android_acceptance.py
+      - scripts/routing/run_android_openvpn_acceptance.py
+      - scripts/routing/android-openvpn/**
       - native/routing/cmd/android-fixture/**
       - native/routing/cmd/traffic-probe/**
       - native/routing/internal/fixturequic/**
@@ -74,6 +76,9 @@ jobs:
         run: sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT python3 scripts/routing/ci_apt_mirrors.py
       - name: Install isolated fault-test tools
         run: sudo apt-get update && sudo apt-get install -y nftables
+      - name: Install local OpenVPN fixture server
+        if: ${{ matrix.transport == 'awg' && (matrix.api == 35 || matrix.api == 28) }}
+        run: sudo apt-get install -y openvpn
       - uses: actions/setup-go@v5
         with:
           go-version-file: native/routing/go.mod
@@ -236,6 +241,9 @@ jobs:
               for i in $(seq 1 30); do sudo test -s "$RUNNER_TEMP/xray-peer/fixture.json" && break; sleep 1; done
               sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT env "PATH=$PATH" "ANDROID_HOME=$ANDROID_HOME" "ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT:-$ANDROID_HOME}" python3 scripts/routing/run_android_acceptance.py --xray-ipv6-only --apk "$FEATURE_APK" --fixture "$RUNNER_TEMP/xray-peer/fixture.json" --quic-probe "$RUNNER_TEMP/android-traffic-probe" --quic-ca "$RUNNER_TEMP/xray-peer/quic.der" --work "$RUNNER_TEMP/android-xray-ipv6" --apk-source-sha "$(python3 -c 'import json;print(json.load(open("tested-apk-source.json"))["head_sha"])')"
             fi
+            if [ "${{ matrix.transport }}" = awg ] && { [ "${{ matrix.api }}" = 35 ] || [ "${{ matrix.api }}" = 28 ]; }; then
+              sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT env "PATH=$PATH" "ANDROID_HOME=$ANDROID_HOME" "ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT:-$ANDROID_HOME}" python3 scripts/routing/run_android_openvpn_acceptance.py --apk "$FEATURE_APK" --work "$RUNNER_TEMP/android-openvpn-ipv6" --apk-source-sha "$(python3 -c 'import json;print(json.load(open("tested-apk-source.json"))["head_sha"])')"
+            fi
       - name: Stop the local peer and remove ephemeral private configuration
         if: always()
         run: |
@@ -269,3 +277,7 @@ jobs:
             xray-server.log
             ${{ runner.temp }}/android-xray-ipv6/android-acceptance.json
             ${{ runner.temp }}/android-xray-ipv6/*.log
+            ${{ runner.temp }}/android-openvpn-ipv6/openvpn-acceptance.json
+            ${{ runner.temp }}/android-openvpn-ipv6/*-server.log
+            ${{ runner.temp }}/android-openvpn-ipv6/*/android-acceptance.json
+            ${{ runner.temp }}/android-openvpn-ipv6/*/*.log

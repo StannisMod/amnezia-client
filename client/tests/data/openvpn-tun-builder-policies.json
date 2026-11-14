@@ -1,0 +1,11 @@
+{
+  "api-full": "client\nremote 198.51.100.1 1194\nredirect-gateway def1 bypass-dhcp\nroute 192.0.2.0 255.255.255.0\n# amnezia-ipv6-capture-begin\nroute-ipv6 ::/1\nroute-ipv6 8000::/1\n# amnezia-ipv6-capture-end\n",
+  "exclude": "client\nremote 198.51.100.1 1194\n# amnezia-ipv6-capture-begin\nroute-ipv6 ::/1\nroute-ipv6 8000::/2\nroute-ipv6 c000::/3\nroute-ipv6 e000::/4\nroute-ipv6 f000::/5\nroute-ipv6 f800::/6\nroute-ipv6 fe00::/7\nroute-ipv6 fc00::/8\n# amnezia-ipv6-capture-end\n",
+  "full": "client\nremote 198.51.100.1 1194\nredirect-gateway def1 ipv6 bypass-dhcp\n# amnezia-ipv6-capture-begin\nroute-ipv6 ::/1\nroute-ipv6 8000::/1\n# amnezia-ipv6-capture-end\n",
+  "include": "client\nremote 198.51.100.1 1194\n# amnezia-ipv6-capture-begin\nroute-ipv6 fd00::/8\n# amnezia-ipv6-capture-end\n",
+  "legacy-api": "client\nremote 198.51.100.1 1194\nredirect-gateway def1 bypass-dhcp\nroute 192.0.2.0 255.255.255.0\n# amnezia-ipv6-block-begin\nsetenv opt disable-dco\nblock-ipv6\n# amnezia-ipv6-capture-begin\nroute-ipv6 ::/1\nroute-ipv6 8000::/1\n# amnezia-ipv6-capture-end\n# amnezia-ipv6-block-end\n",
+  "legacy-exclude": "client\nremote 198.51.100.1 1194\n# amnezia-ipv6-block-begin\nsetenv opt disable-dco\nblock-ipv6\n# amnezia-ipv6-capture-begin\nroute-ipv6 ::/1\nroute-ipv6 8000::/2\nroute-ipv6 c000::/3\nroute-ipv6 e000::/4\nroute-ipv6 f000::/5\nroute-ipv6 f800::/6\nroute-ipv6 fe00::/7\nroute-ipv6 fc00::/8\n# amnezia-ipv6-capture-end\n# amnezia-ipv6-block-end\n",
+  "legacy-export": "client\nremote 198.51.100.1 1194\nredirect-gateway def1 ipv6 bypass-dhcp\n# amnezia-ipv6-block-begin\nsetenv opt disable-dco\nblock-ipv6\n# amnezia-ipv6-capture-begin\nroute-ipv6 ::/1\nroute-ipv6 8000::/1\n# amnezia-ipv6-capture-end\n# amnezia-ipv6-block-end\n",
+  "legacy-full": "client\nremote 198.51.100.1 1194\nredirect-gateway def1 ipv6 bypass-dhcp\n# amnezia-ipv6-block-begin\nsetenv opt disable-dco\nblock-ipv6\n# amnezia-ipv6-capture-begin\nroute-ipv6 ::/1\nroute-ipv6 8000::/1\n# amnezia-ipv6-capture-end\n# amnezia-ipv6-block-end\n",
+  "legacy-include": "client\nremote 198.51.100.1 1194\n# amnezia-ipv6-block-begin\nsetenv opt disable-dco\nblock-ipv6\n# amnezia-ipv6-capture-begin\nroute-ipv6 fd00::/8\n# amnezia-ipv6-capture-end\n# amnezia-ipv6-block-end\n"
+}

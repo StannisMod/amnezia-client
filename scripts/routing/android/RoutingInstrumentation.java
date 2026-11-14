@@ -73,6 +73,7 @@ public final class RoutingInstrumentation extends Instrumentation {
     private boolean privateDnsStrict;
     private boolean privateDnsPolicyOnly;
     private boolean xrayIpv6Only;
+    private boolean openVpnIpv6Only;
     private volatile boolean policyPaused;
     private boolean api28CompatOnly;
     private boolean diagnoseControl;
@@ -100,6 +101,7 @@ public final class RoutingInstrumentation extends Instrumentation {
         appPolicyOnly = Boolean.parseBoolean(args.getString("app_policy_only", "false"));
         privateDnsStrict = Boolean.parseBoolean(args.getString("private_dns_strict", "false"));
         xrayIpv6Only = Boolean.parseBoolean(args.getString("xray_ipv6_only", "false"));
+        openVpnIpv6Only = Boolean.parseBoolean(args.getString("openvpn_ipv6_only", "false"));
         privateDnsPolicyOnly = Boolean.parseBoolean(args.getString("private_dns_policy_only", "false"));
         privateDnsOpportunistic = Boolean.parseBoolean(args.getString("private_dns_opportunistic", "false"));
         androidUser = Integer.parseInt(args.getString("android_user", "0"));
@@ -144,11 +146,14 @@ public final class RoutingInstrumentation extends Instrumentation {
                 }
                 return true;
             }));
-            Intent intent = new Intent().setComponent(new ComponentName("org.amnezia.vpn", "org.amnezia.vpn."+(xrayIpv6Only?"XrayService":"AwgService")));
+            Intent intent = new Intent().setComponent(new ComponentName("org.amnezia.vpn", "org.amnezia.vpn."+serviceClass()));
             didBind = getTargetContext().bindService(intent, connection, Context.BIND_AUTO_CREATE);
             require(didBind && bound.await(15, TimeUnit.SECONDS), "AwgService binding failed");
             Bundle registration = new Bundle(); registration.putString("CLIENT_NAME", "routing-acceptance");
             send(REGISTER, registration);
+            if (openVpnIpv6Only) {
+                openVpnIpv6();result.putString("routing_result","PASS_OPENVPN_IPV6_ONLY");code=0;return;
+            }
             if (xrayIpv6Only) {
                 xrayIpv6();result.putString("routing_result","PASS_XRAY_IPV6_ONLY");code=0;return;
             }
@@ -315,12 +320,13 @@ public final class RoutingInstrumentation extends Instrumentation {
             result.putString("test_stack", stack.toString());
             // Capture the blocked native/JNI path before another network call
             // or cleanup changes it. The rooted driver collects debuggerd.
-            if (applicationFailureDiagnostics != null) result.putString("connection_diagnostics", applicationFailureDiagnostics.toString());
+            if (openVpnIpv6Only) { progress("RESOURCE_CHECKPOINT failure");SystemClock.sleep(10000); }
+            else if (applicationFailureDiagnostics != null) result.putString("connection_diagnostics", applicationFailureDiagnostics.toString());
             else {
                 try { result.putString("connection_diagnostics", connectionDiagnostics().toString()); } catch (Exception ignored) {}
                 progress("RESOURCE_CHECKPOINT failure"); SystemClock.sleep(10000);
             }
-            try { result.putString("observers", control("/stats", false).toString()); } catch (Exception ignored) {}
+            if (!openVpnIpv6Only) try { result.putString("observers", control("/stats", false).toString()); } catch (Exception ignored) {}
         } finally {
             if (service != null) try { send(DISCONNECT, new Bundle()); send(UNREGISTER, new Bundle()); } catch (Exception ignored) {}
             if (didBind) getTargetContext().unbindService(connection);
@@ -436,6 +442,111 @@ public final class RoutingInstrumentation extends Instrumentation {
                 require("XRAY".equals(answer),"Xray TCP failed for "+address);
             }
             require("XRAY:route-proof".equals(udp(InetAddress.getByName(address))),"Xray UDP failed for "+address);
+    }
+
+    private String serviceClass() { return openVpnIpv6Only ? "OpenVpnService" : xrayIpv6Only ? "XrayService" : "AwgService"; }
+
+    private Network openVpnNetwork(ConnectivityManager manager) throws Exception {
+        for (Network network : manager.getAllNetworks()) {
+            NetworkCapabilities caps=manager.getNetworkCapabilities(network);
+            android.net.LinkProperties links=manager.getLinkProperties(network);
+            if (caps==null || !caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) || links==null) continue;
+            for (android.net.LinkAddress address : links.getLinkAddresses())
+                if (InetAddress.getByName("10.76.0.2").equals(address.getAddress())) return network;
+        }
+        return null;
+    }
+
+    private String openVpnObserved(String address, String answer, String expected, InetAddress local) throws Exception {
+        if (!(expected.equals("BLOCKED") ? answer==null : expected.equals(answer))) {
+            progress("OPENVPN_UNEXPECTED_SOCKET "+address+" local="+local+" actual="+answer+" state="+state);
+            progress("RESOURCE_CHECKPOINT failure_socket");
+            // Optional causal experiment driven only by the root-owned emulator
+            // monitor after a failed packet. Never turns the original failure
+            // into a pass and never changes routes from the application.
+            File replay=new File(getTargetContext().getFilesDir(),"routing-ipv6-cache-flushed.ready");
+            long until=SystemClock.elapsedRealtime()+10000;
+            while(!replay.exists() && SystemClock.elapsedRealtime()<until)SystemClock.sleep(25);
+            if(replay.exists()) {
+                replay.delete();
+                try(Socket retry=new Socket()) {
+                    retry.setSoTimeout(1500);retry.connect(new InetSocketAddress(address,21944),1500);
+                    String after=new BufferedReader(new InputStreamReader(retry.getInputStream(),StandardCharsets.US_ASCII)).readLine();
+                    progress("OPENVPN_CACHE_RETRY "+address+" local="+retry.getLocalAddress()+" after="+after);
+                } catch(java.io.IOException error) { progress("OPENVPN_CACHE_RETRY "+address+" error="+error.getClass().getSimpleName()); }
+            }
+        }
+        return answer;
+    }
+
+    private String openVpnOrigin(String address, boolean udp, String expected) throws Exception {
+        if (udp) {
+            try (DatagramSocket socket = new DatagramSocket()) {
+                socket.setSoTimeout(1500);
+                socket.connect(InetAddress.getByName(address), 21944);
+                byte[] probe = "route-proof".getBytes(StandardCharsets.US_ASCII);
+                socket.send(new DatagramPacket(probe, probe.length));
+                DatagramPacket reply = new DatagramPacket(new byte[64], 64);socket.receive(reply);
+                return openVpnObserved(address,new String(reply.getData(), 0, reply.getLength(), StandardCharsets.US_ASCII).trim(),expected,socket.getLocalAddress());
+            }
+        }
+        try (Socket socket = new Socket()) {
+            socket.setSoTimeout(1500);socket.connect(new InetSocketAddress(address, 21944), 1500);
+            return openVpnObserved(address,new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.US_ASCII)).readLine(),expected,socket.getLocalAddress());
+        }
+    }
+
+    private void openVpnIpv6() throws Exception {
+        JSONArray cases = fixture.getJSONArray("openvpn_cases");
+        JSONArray targets = fixture.getJSONArray("ipv6_test_destinations");
+        for (int index = 0; index < cases.length(); index++) {
+            JSONObject test = cases.getJSONObject(index), config = test.getJSONObject("config");
+            for (int target=0; target<targets.length(); target++) {
+                String address=targets.getString(target);
+                for (boolean udp : new boolean[]{false,true}) require("NATIVE".equals(openVpnOrigin(address,udp,"NATIVE")), "native baseline unavailable: " + address);
+            }
+            config.put("appSplitTunnelType",1).put("splitTunnelApps",new JSONArray().put("org.amnezia.vpn"));
+            state=-1;serviceError=false;startService(config);awaitState(CONNECTED,false);
+            ConnectivityManager manager=getTargetContext().getSystemService(ConnectivityManager.class);
+            Network network=null;long captureDeadline=SystemClock.elapsedRealtime()+5000;
+            while (SystemClock.elapsedRealtime()<captureDeadline && !serviceError) {
+                network=openVpnNetwork(manager);
+                if (network!=null) {
+                    try (DatagramSocket route=new DatagramSocket()) {
+                        route.connect(InetAddress.getByName("10.76.0.1"),18080);
+                        if (InetAddress.getByName("10.76.0.2").equals(route.getLocalAddress())) break;
+                    }
+                }
+                network=null;SystemClock.sleep(25);
+            }
+            require(network!=null && !serviceError,"OpenVPN capture/source route is not installed");
+            progress("OPENVPN_CAPTURE " + test.getString("name") + " " + manager.getLinkProperties(network));
+            try (Socket first = new Socket(); Socket second = new Socket()) {
+                for (Socket socket : new Socket[]{first,second}) {
+                    socket.setSoTimeout(3000);socket.connect(new InetSocketAddress("10.76.0.1",18080),3000);
+                    socket.getOutputStream().write('a');require(socket.getInputStream().read()=='a',"IPv4 tunnel echo before IPv6 check failed");
+                }
+                JSONObject expected=test.getJSONObject("expected");
+                for (int target=0; target<targets.length(); target++) for (boolean udp : new boolean[]{false,true}) {
+                    String address=targets.getString(target);
+                    String answer=null;Exception failure=null;
+                    String want=expected.getString(address);
+                    try { answer=openVpnOrigin(address,udp,want); } catch (java.io.IOException error) { failure=error; }
+                    if (want.equals("BLOCKED")) require(failure!=null || answer==null,"selected IPv6 escaped blocking: "+address+" "+answer);
+                    else require(failure==null && want.equals(answer),"IPv6 scope mismatch: "+address+" udp="+udp+" expected="+want+" actual="+answer+" error="+failure);
+                }
+                require(state==CONNECTED && java.util.Objects.equals(network,openVpnNetwork(manager)),"IPv6 check replaced the VPN network");
+                for (Socket socket : new Socket[]{first,second}) {
+                    socket.getOutputStream().write('z');require(socket.getInputStream().read()=='z',"original IPv4 TCP was lost");
+                }
+            }
+            progress("OPENVPN_IPV6_CASE "+new JSONObject().put("name",test.getString("name")).put("expected",test.getJSONObject("expected")).put("old_ipv4_tcp_retained",true));
+            disconnect();
+            long until=SystemClock.elapsedRealtime()+5000;
+            while(java.util.Objects.equals(network,openVpnNetwork(manager)) && SystemClock.elapsedRealtime()<until)SystemClock.sleep(25);
+            require(!java.util.Objects.equals(network,openVpnNetwork(manager)),"old VPN network survived disconnect");
+        }
+        pass("OpenVpnService IPv6 scope and original IPv4 TCP on actual Android TUN");
     }
 
     private void xrayIpv6() throws Exception {
@@ -1017,7 +1128,7 @@ public final class RoutingInstrumentation extends Instrumentation {
         startService(configuration(inverse)); awaitState(CONNECTED, false);
     }
     private void startService(JSONObject config) {
-        Intent intent = new Intent().setComponent(new ComponentName("org.amnezia.vpn", "org.amnezia.vpn."+(xrayIpv6Only?"XrayService":"AwgService")));
+        Intent intent = new Intent().setComponent(new ComponentName("org.amnezia.vpn", "org.amnezia.vpn."+serviceClass()));
         intent.putExtra("VPN_CONFIG", config.toString());
         getTargetContext().startForegroundService(intent);
     }

@@ -242,9 +242,11 @@ TUN routing or packet forwarding.
 
 The local IPv4-only server probe showed that OpenVPN3 drops IPv6 route callbacks
 without a server-assigned IPv6 address and asks the adapter to block the whole
-family. Selective IPv6 DIRECT exceptions for this case still need implementation
-and real Android packet acceptance. Apple adapters also require separate
-validation; the Android adaptation is deliberately not enabled for them yet.
+family. The actual packet suite additionally tests the site prefixes supplied
+to the common Android builder, including selective DIRECT exceptions. API35
+packet acceptance passed; the API28 scope-transition gate exposes a stale
+IPv6 kernel route cache and remains unresolved. Apple adapters also require
+separate validation; the Android adaptation is not enabled for them yet.
 
 `ProtocolConfigIpv6Test` exercises the actual common Android configuration
 builder: full capture includes GUA, ULA and NAT64, excluding an IPv4 endpoint
@@ -254,3 +256,9 @@ Full `::/0` is represented by `::/1` and `8000::/1`, rather than narrowed to
 these unit checks do not substitute for real API33+ route acceptance. Both
 existing Android package workflows run `:protocolApi:testDebugUnitTest` beside
 the existing `:utils:testDebugUnitTest`, without another job.
+
+The separate [Android OpenVPN Docker package](../../scripts/routing/android-openvpn/README.md)
+runs real TLS/TUN packet checks using an ordinary x86_64 APK and the Qt-checked
+policy fixture. It requires no QUIC/Go probe and reports focused runs separately
+from the complete seven-case suite. The existing API28/API35 Android acceptance
+lanes include it; no new jobs or remote runs are needed.
