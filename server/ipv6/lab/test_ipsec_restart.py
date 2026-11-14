@@ -43,10 +43,18 @@ if ! ip link show fixture0 >/dev/null 2>&1; then
 fi
 '''
         run('docker', 'exec', '-i', container, 'bash', '-se', input=underlay)
-        initialize = re.search(r'amnezia_ipsec_initialize_nss\(\) \{.*?^\}', configuration, re.MULTILINE | re.DOTALL).group(0)
-        factory = configuration.split('if [ "$IPSEC_VPN_DISABLE_IKEV2" != "yes" ]; then\n', 1)[1].split('cat > /etc/ipsec.d/ikev2.conf <<EOF', 1)[0]
-        run('docker', 'exec', '-i', container, 'bash', '-se', input=(
-            'export SERVER_IP_ADDRESS=198.51.100.1\n' + initialize + '\namnezia_ipsec_initialize_nss\n' + factory))
+        registry = (source.parents[1] / 'core/utils/selfhosted/scriptsRegistry.cpp').read_text()
+        values = dict(re.findall(r'\{ "(\$IPSEC_VPN_[A-Z0-9_]+)", "([^"]+)" \}', registry))
+        values.update({'$SERVER_IP_ADDRESS': '198.51.100.1', '$PRIMARY_SERVER_DNS': '1.1.1.1',
+                       '$SECONDARY_SERVER_DNS': '8.8.8.8'})
+        rendered = configuration
+        for variable, value in values.items():
+            rendered = rendered.replace(variable, value)
+        run('docker', 'exec', '-i', container, 'bash', '-se', input=helper + '\n' + rendered)
+        run('docker', 'exec', container, 'test', '-s', '/opt/amnezia/ipsec-ipv4.rules')
+        run('docker', 'exec', container, 'test', '-s', '/opt/amnezia/ipsec-ipv4.sysctl')
+        run('docker', 'exec', container, 'ipsec', 'whack', '--shutdown')
+        run('docker', 'exec', container, 'sh', '-ec', 'while pidof pluto >/dev/null; do sleep .1; done')
         body = configuration.split('cat > /etc/ipsec.d/ikev2.conf <<EOF\n', 1)[1].split('\nEOF', 1)[0]
         for variable, value in {'SERVER_IP_ADDRESS': '198.51.100.1', 'PRIMARY_SERVER_DNS': '1.1.1.1',
                                 'SECONDARY_SERVER_DNS': '8.8.8.8', 'IPSEC_IKEV2_SUBNETS': '0.0.0.0/0',
@@ -99,16 +107,25 @@ openssl pkcs12 -legacy -in /tmp/restart-identity.p12 -passin pass:fixture-passwo
             return values
 
         ready()
+        run('docker', 'exec', container, 'pidof', 'xl2tpd')
+        def ipv4_nat():
+            run('docker', 'exec', container, 'iptables', '-t', 'nat', '-C', 'POSTROUTING',
+                '-s', '192.168.43.0/24', '-o', 'fixture0', '-m', 'policy', '--dir', 'out', '--pol', 'none', '-j', 'MASQUERADE')
+            assert run('docker', 'exec', container, 'sysctl', '-n', 'net.ipv4.ip_forward') == '1'
+        ipv4_nat()
         before = identities()
         stored = run('docker', 'exec', container, 'cat', '/etc/ipsec.d/ikev2.conf')
         run('docker', 'restart', '--time', '3', container)
         ready()
+        run('docker', 'exec', container, 'pidof', 'xl2tpd')
+        ipv4_nat()
         assert identities() == before, 'restart replaced a certificate or private key'
         assert run('docker', 'exec', container, 'cat', '/etc/ipsec.d/ikev2.conf') == stored
         args.report.parent.mkdir(parents=True, exist_ok=True)
         args.report.write_text(json.dumps({'status': 'PASS', 'image': image, 'identities': before,
-            'scope': 'daemon and loaded configuration after Docker restart; peer traffic is tested separately'}, indent=2) + '\n')
-        print('PASS: real Docker restart restores IPsec daemon and loaded config; CA/server certificates and private keys unchanged')
+            'fresh_configuration': True, 'ipv4_nat_and_forwarding': True, 'xl2tpd_running': True,
+            'scope': 'full production configure and daemon/network policy after Docker restart; peer traffic is tested separately'}, indent=2) + '\n')
+        print('PASS: full production configure and Docker restart restore IPsec, L2TP, IPv4 NAT/forwarding; identities unchanged')
     finally:
         subprocess.run(['docker', 'rm', '-f', container], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15)
 
