@@ -47,11 +47,24 @@ rpc_updater = None
 native6_before = None
 names = ('ovpn-client', 'ovpn-origin')
 
+def selected_ipv6(mode, address):
+    if mode in ('full', 'api-full', 'legacy-full', 'legacy-export', 'legacy-api'):
+        return True
+    if mode in ('include', 'legacy-include'):
+        return ipaddress.IPv6Address(address) in ipaddress.IPv6Network('fd00::/8')
+    assert mode in ('exclude', 'legacy-exclude'), mode
+    return address != 'fd99::4'
+
 def legacy_ipv6_acceptance(mode, stale=False):
+    links = json.loads(run('ip', '-n', names[0], '-j', '-4', 'addr', 'show'))
+    pool = ipaddress.IPv4Network('10.66.0.0/24')
+    tunnels = [link['ifname'] for link in links if 'POINTOPOINT' in link['flags'] and any(
+        ipaddress.IPv4Address(address['local']) in pool for address in link.get('addr_info', []))]
+    assert len(tunnels) == 1, ('negotiated OpenVPN IPv4 tunnel', tunnels)
     # Native origins remain reachable outside the VPN. A timeout or a policy
     # string alone cannot prove that block-ipv6 stopped a bypass.
-    peer = '''import socket,sys,threading
-family,address,port,kind=sys.argv[1:];family=int(family);port=int(port)
+    peer = '''import socket,sys,threading,json
+family,address,port,kind,targets=sys.argv[1:];family=int(family);port=int(port)
 def serve(c):
  try:
   if kind=='native':c.sendall(b'NATIVE');return
@@ -66,7 +79,7 @@ if kind=='native':
   ready.set()
   while True:
    data,a=s.recvfrom(4096);s.sendto(b'NATIVE',a)
- for udpaddress in ('fd88::1','2001:db8:88::1','64:ff9b::c000:201'):
+ for udpaddress in json.loads(targets):
   ready=threading.Event()
   threading.Thread(target=udp,args=(udpaddress,ready),daemon=True).start()
   assert ready.wait(3),'UDP origin did not bind'
@@ -77,23 +90,22 @@ while True:
 '''
     for prefix, family, address, port, kind in (([], '2', '10.66.0.1', '18080', 'echo'),
             (['ip','netns','exec',names[1]], '10', '::', '18081', 'native')):
-        process = subprocess.Popen([*prefix,'python3','-u','-c',peer,family,address,port,kind],stdout=subprocess.PIPE,text=True)
+        process = subprocess.Popen([*prefix,'python3','-u','-c',peer,family,address,port,kind,json.dumps(destinations)],stdout=subprocess.PIPE,text=True)
         processes.append(process)
         assert select.select([process.stdout],[],[],5)[0] and process.stdout.readline().strip()=='READY'
-    probe = '''import errno,socket,sys,time
-mode=sys.argv[1];stale=sys.argv[2]=='stale'
+    probe = '''import errno,socket,sys,time,json
+mode=sys.argv[1];stale=sys.argv[2]=='stale';selection=json.loads(sys.argv[3]);tunnel=sys.argv[4]
 old=[socket.create_connection(('10.66.0.1',18080),3) for _ in range(2)]
 for s in old:s.sendall(b'before');assert s.recv(6)==b'before'
-for address in ('fd88::1','2001:db8:88::1','64:ff9b::c000:201'):
+for address,blocked in selection.items():
  # Prove that a live native IPv6 path exists independently of VPN selection.
  with socket.socket(socket.AF_INET6) as native:
   native.setsockopt(socket.SOL_SOCKET,socket.SO_BINDTODEVICE,b'native0\\0')
   native.settimeout(2);native.connect((address,18081));assert native.recv(64)==b'NATIVE'
- blocked=mode in ('legacy-full','legacy-export','legacy-api','full','api-full') or ((address=='fd88::1')==(mode in ('legacy-include','include')))
  if stale and blocked:
   import subprocess,json
   route=json.loads(subprocess.check_output(['ip','-j','-6','route','get',address],text=True))[0]
-  assert route['dev']=='tun0',repr(('selected IPv6 bypasses tunnel',address,route))
+  assert route['dev']==tunnel,repr(('selected IPv6 bypasses tunnel',address,route,tunnel))
  for udp in (False,True):
   start=time.monotonic()
   try:
@@ -114,7 +126,8 @@ for address in ('fd88::1','2001:db8:88::1','64:ff9b::c000:201'):
 for s in old:s.sendall(b'after');assert s.recv(5)==b'after';s.close()
 print('PASS: '+('stale IPv6 capability retains selected routes in tunnel (timeouts allowed; no fast-reject claim)' if stale else 'IPv4-only server rejects selected IPv6 TCP/UDP GUA/ULA/NAT64')+', live native path and DIRECT exceptions verified; two original IPv4 TCP sockets retained',flush=True)
 '''
-    print(run('ip','netns','exec',names[0],'python3','-c',probe,mode,'stale' if stale else 'legacy'),flush=True)
+    print(run('ip','netns','exec',names[0],'python3','-c',probe,mode,'stale' if stale else 'legacy',
+              json.dumps({address:selected_ipv6(mode,address) for address in destinations}),tunnels[0]),flush=True)
 
 try:
     for name in names:
@@ -133,6 +146,11 @@ try:
     run('ip', '-6', 'route', 'add', 'default', 'via', 'fd88::1', 'dev', 'uplink0')
     policy_file = os.environ.get('AMNEZIA_OPENVPN_CLIENT_POLICIES')
     policy_mode = os.environ.get('AMNEZIA_OPENVPN_POLICY_MODE', 'full')
+    destinations = ['fd88::1', '2001:db8:88::1', '64:ff9b::c000:201']
+    if policy_mode in ('exclude', 'legacy-exclude'):
+        # Match the Qt fixture's real /128 site exception. Its adjacent host
+        # must remain captured; a broad ULA exception would miss that contract.
+        destinations += ['fd99::4', 'fd99::5']
     stale_capability = os.environ.get('AMNEZIA_OPENVPN_STALE_CAPABILITY') == '1'
     assert not stale_capability or (policy_file and policy_mode in ('full','include','exclude','api-full'))
     native_policy = 'client\nremote 198.51.100.1 1194\n'
@@ -153,6 +171,8 @@ try:
         run('ip', '-n', names[0], '-4', 'route', 'add', 'default', 'via', '198.51.100.1', 'dev', 'client0')
         for addr in ('2001:db8:88::1/128', '64:ff9b::c000:201/128'):
             run('ip', '-n', names[1], '-6', 'addr', 'add', addr, 'dev', 'origin0', 'nodad')
+        for address in destinations[3:]:
+            run('ip', '-n', names[1], '-6', 'addr', 'add', address+'/128', 'dev', 'direct0', 'nodad')
 
     run('openssl', 'req', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:P-256', '-nodes',
         '-days', '1', '-subj', '/CN=Isolated OpenVPN CA', '-keyout', str(root/'ca.key'), '-out', str(root/'ca.crt'))
@@ -331,14 +351,14 @@ s=socket.socket(socket.AF_INET6);s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEA
 while True:
  c,a=s.accept();threading.Thread(target=tcp,args=(c,a[0]),daemon=True).start()
 '''
-    processes.append(subprocess.Popen(['ip', 'netns', 'exec', names[1], 'python3', '-u', '-c', echo, 'fd88::1', *(['2001:db8:88::1','64:ff9b::c000:201'] if policy_file else [])]))
+    processes.append(subprocess.Popen(['ip', 'netns', 'exec', names[1], 'python3', '-u', '-c', echo, *(destinations if policy_file else ['fd88::1'])]))
     if not policy_file: run('ip', '-n', names[0], '-6', 'route', 'add', 'fd88::/64', 'dev', client_tun)
     probe = "import socket,time;time.sleep(.1);s=socket.create_connection(('fd88::1',18081),3);assert s.recv(64)==b'fd88::2';u=socket.socket(socket.AF_INET6,socket.SOCK_DGRAM);u.settimeout(3);u.sendto(b'OPENVPN_IPV6_UDP',('fd88::1',18081));assert u.recv(64)==b'OPENVPN_IPV6_UDP'"
     if not policy_file:
         run('ip', 'netns', 'exec', names[0], 'python3', '-c', probe)
     else:
-        for destination in ('fd88::1', '2001:db8:88::1', '64:ff9b::c000:201'):
-            tunneled = policy_mode in ('full', 'api-full') or (destination == 'fd88::1') == (policy_mode == 'include')
+        for destination in destinations:
+            tunneled = selected_ipv6(policy_mode, destination)
             expected = 'fd88::2' if tunneled else 'fd99::2'
             check = """import socket,sys,time
 time.sleep(.1)
