@@ -17,6 +17,7 @@
 #include <core/configurators/wireguardConfigurator.h>
 
 #ifdef AMNEZIA_DESKTOP
+    #include <core/protocols/openVpnProtocol.h>
     #include "core/utils/ipcClient.h"
     #include <core/protocols/wireGuardProtocol.h>
     #include <QRemoteObjectPendingCallWatcher>
@@ -471,9 +472,45 @@ void VpnConnection::connectToVpn(const QString &serverId, DockerContainer contai
 
     createProtocolConnections();
 
+#ifdef AMNEZIA_DESKTOP
+    if (auto *openvpn = qobject_cast<OpenVpnProtocol *>(m_vpnProtocol.data()); openvpn && container == DockerContainer::OpenVpn) {
+        const auto expected = m_serversRepository->serverJsonById(serverId);
+        if (expected) {
+            connect(openvpn, &VpnProtocol::connectionStateChanged, this,
+                [this, openvpn, serverId, expected = *expected](Vpn::ConnectionState state) {
+                    if (m_vpnProtocol.data() == openvpn && state == Vpn::ConnectionState::Connected
+                        && openvpn->serverAssignedIpv6()) rememberOpenVpnIpv6Capability(serverId, expected);
+                });
+        }
+    }
+#endif
+
     if (ErrorCode err = m_vpnProtocol->start(); err != ErrorCode::NoError) {
         setConnectionState(Vpn::ConnectionState::Error);
         emit vpnProtocolError(err);
+    }
+}
+
+void VpnConnection::rememberOpenVpnIpv6Capability(const QString &serverId, const QJsonObject &expected)
+{
+    if (!m_serversRepository || m_serversRepository->serverJsonById(serverId) != std::optional<QJsonObject>(expected)) return;
+    const auto kind = m_serversRepository->serverKind(serverId);
+    auto record = [&](auto config) {
+        if (!config) return;
+        auto container = config->containerConfig(DockerContainer::OpenVpn);
+        auto *profile = container.protocolConfig.template as<OpenVpnProtocolConfig>();
+        if (!profile || !profile->clientConfig || profile->clientConfig->ipv6Tunnel) return;
+        // Learn only for the next connection. No active process, route, key or
+        // socket is replaced while recording authenticated server capability.
+        profile->clientConfig->ipv6Tunnel = true;
+        config->updateContainerConfig(DockerContainer::OpenVpn, container);
+        m_serversRepository->editServer(serverId, config->toJson(), kind);
+    };
+    switch (kind) {
+    case serverConfigUtils::ConfigType::SelfHostedAdmin: record(m_serversRepository->selfHostedAdminConfig(serverId)); break;
+    case serverConfigUtils::ConfigType::SelfHostedUser: record(m_serversRepository->selfHostedUserConfig(serverId)); break;
+    case serverConfigUtils::ConfigType::Native: record(m_serversRepository->nativeConfig(serverId)); break;
+    default: break;
     }
 }
 

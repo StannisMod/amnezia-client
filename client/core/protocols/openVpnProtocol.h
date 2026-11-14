@@ -17,6 +17,7 @@ class OpenVpnProtocol : public VpnProtocol
 public:
     void addResolvedIpv6Hosts(const QStringList &hosts, bool throughVpn, std::function<void(bool)> done) override;
     bool supportsIpv6HostUpdates() const override;
+    bool serverAssignedIpv6() const { return m_serverAssignedIpv6; }
     explicit OpenVpnProtocol(const QJsonObject& configuration, QObject* parent = nullptr);
     virtual ~OpenVpnProtocol() override;
 
@@ -49,6 +50,7 @@ private:
     QString m_configFileName;
     QJsonObject m_configData;
     QTemporaryFile m_configFile;
+    bool m_serverAssignedIpv6 = false;
 
     uint selectMgmtPort();
 

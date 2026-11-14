@@ -206,6 +206,7 @@ void OpenVpnProtocol::updateRouteGateway(QString line)
 ErrorCode OpenVpnProtocol::start()
 {
     resetStopGuard();
+    m_serverAssignedIpv6 = false;
 
     cleanupResources();
 
@@ -343,6 +344,7 @@ void OpenVpnProtocol::onReadyReadDataFromManagementServer()
                 setConnectionState(Vpn::ConnectionState::Disconnecting);
                 continue;
             } else if (line.contains("RECONNECTING")) {
+                m_serverAssignedIpv6 = false;
                 setConnectionState(Vpn::ConnectionState::Reconnecting);
                 continue;
             }
@@ -390,6 +392,15 @@ void OpenVpnProtocol::updateVpnGateway(const QString &line)
     const QStringList params = payload.split(",");
     for (const QString &l : params) {
         const auto fields = l.simplified().split(' ');
+        if (fields.value(0) == QLatin1String("ifconfig-ipv6") && fields.size() == 3) {
+            const auto subnet = QHostAddress::parseSubnet(fields[1]);
+            const QHostAddress peer(fields[2]);
+            m_serverAssignedIpv6 = subnet.first.protocol() == QAbstractSocket::IPv6Protocol
+                && subnet.second > 0 && !subnet.first.isNull() && !subnet.first.isMulticast()
+                && !subnet.first.isLoopback() && !subnet.first.isLinkLocal()
+                && peer.protocol() == QAbstractSocket::IPv6Protocol && !peer.isNull()
+                && !peer.isMulticast() && !peer.isLoopback() && !peer.isLinkLocal();
+        }
         // ifconfig-ipv6 is a separate directive, never an IPv4 gateway update.
         if (fields.value(0) == QLatin1String("ifconfig")) {
             if (fields.size() == 3

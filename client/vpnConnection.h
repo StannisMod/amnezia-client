@@ -72,6 +72,7 @@ protected slots:
     void onConnectionStateChanged(Vpn::ConnectionState state);
 
 protected:
+    void rememberOpenVpnIpv6Capability(const QString &serverId, const QJsonObject &expected);
     virtual int lookupSiteAddresses(const QString &site, std::function<void(const QHostInfo &)> done);
     QSharedPointer<VpnProtocol> m_vpnProtocol;
 

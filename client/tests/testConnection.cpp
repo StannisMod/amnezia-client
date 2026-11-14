@@ -58,6 +58,7 @@ class RefreshConnection : public VpnConnection {
 public:
     using VpnConnection::VpnConnection;
     using VpnConnection::refreshIpv6Sites;
+    using VpnConnection::rememberOpenVpnIpv6Capability;
     void attach(const QSharedPointer<VpnProtocol> &protocol) { m_vpnProtocol = protocol; }
     QList<std::function<void(const QHostInfo &)>> lookups;
     int lookupSiteAddresses(const QString &, std::function<void(const QHostInfo &)> done) override
@@ -137,17 +138,78 @@ private slots:
         protocol.updateVpnGateway("PUSH: Received control message: 'PUSH_REPLY,ifconfig 10.8.0.6 10.8.0.5,ifconfig-ipv6 fd00::2/64 fd00::1,peer-id 0'");
         QCOMPARE(protocol.vpnLocalAddress(), QString("10.8.0.6"));
         QCOMPARE(protocol.vpnGateway(), QString("10.8.0.5"));
+        QVERIFY(protocol.serverAssignedIpv6());
         protocol.updateVpnGateway("PUSH: Received control message: 'PUSH_REPLY,ifconfig-ipv6 fd00::3/64 fd00::1'");
         QCOMPARE(protocol.vpnLocalAddress(), QString("10.8.0.6"));
         QCOMPARE(protocol.vpnGateway(), QString("10.8.0.5"));
         protocol.updateVpnGateway("PUSH: Received control message: 'PUSH_REPLY,ifconfig 10.8.0.8 255.255.255.0'");
         QCOMPARE(protocol.vpnLocalAddress(), QString("10.8.0.8"));
         QCOMPARE(protocol.vpnGateway(), QString("255.255.255.0"));
+        protocol.updateVpnGateway("PUSH: Received control message: 'PUSH_REPLY,ifconfig-ipv6 not-a-subnet fd00::1'");
+        QVERIFY(!protocol.serverAssignedIpv6());
         protocol.updateVpnGateway("PUSH: Received control message: 'PUSH_REPLY,ifconfig not-an-address 10.8.0.1'");
         QCOMPARE(protocol.vpnLocalAddress(), QString("10.8.0.8"));
         QCOMPARE(protocol.vpnGateway(), QString("255.255.255.0"));
 #else
         QSKIP("Desktop management parser; Linux avoids native driver setup in this fixture");
+#endif
+    }
+    void openVpnLearnsCapabilityWithoutReplacingImportedIdentity()
+    {
+#if defined(Q_OS_LINUX) && !defined(Q_OS_ANDROID)
+        SecureQSettings settings("OpenVPN-Capability-" + QUuid::createUuid().toString(), "test", nullptr, false);
+        SecureServersRepository servers(&settings);
+        SecureAppSettingsRepository app(&settings);
+        RefreshConnection connection(&servers, &app);
+        OpenVpnProtocolConfig profile;
+        OpenVpnClientConfig client;
+        client.clientId = "existing-client";
+        client.nativeConfig = "client\n<key>\nKEEP-PRIVATE-KEY\n</key>\n";
+        profile.setClientConfig(client);
+        ContainerConfig container;
+        container.container = DockerContainer::OpenVpn;
+        container.protocolConfig = profile;
+        for (auto kind : {serverConfigUtils::ConfigType::Native, serverConfigUtils::ConfigType::SelfHostedUser,
+                          serverConfigUtils::ConfigType::SelfHostedAdmin}) {
+            NativeServerConfig base;
+            base.hostName = "unchanged.test";
+            base.defaultContainer = DockerContainer::OpenVpn;
+            base.containers[DockerContainer::OpenVpn] = container;
+            base.containers[DockerContainer::OpenVpn].protocolConfig.as<OpenVpnProtocolConfig>()->serverConfig.isThirdPartyConfig = kind == serverConfigUtils::ConfigType::Native;
+            QJsonObject initial = base.toJson();
+            if (kind == serverConfigUtils::ConfigType::SelfHostedUser) initial = SelfHostedUserServerConfig::fromJson(initial).toJson();
+            if (kind == serverConfigUtils::ConfigType::SelfHostedAdmin) {
+                auto admin = SelfHostedAdminServerConfig::fromJson(initial);
+                admin.userName = "fixture"; admin.password = "fixture-only"; admin.port = 22;
+                initial = admin.toJson();
+            }
+            const auto id = servers.addServer(QUuid::createUuid().toString(), initial, kind);
+            QVERIFY(servers.serverJsonById(id).has_value());
+            const auto before = *servers.serverJsonById(id);
+            QSignalSpy edits(&servers, &SecureServersRepository::serverEdited);
+            connection.rememberOpenVpnIpv6Capability(id, before);
+            QCOMPARE(edits.count(), 1);
+            auto verify = [&](auto config) {
+                QVERIFY(config.has_value());
+                const auto learned = config->containerConfig(DockerContainer::OpenVpn).protocolConfig;
+                const auto *openvpn = learned.template as<OpenVpnProtocolConfig>();
+                QVERIFY(openvpn && openvpn->clientConfig);
+                QVERIFY(openvpn->clientConfig->ipv6Tunnel);
+                QCOMPARE(openvpn->clientConfig->nativeConfig, client.nativeConfig);
+                QCOMPARE(openvpn->clientConfig->clientId, client.clientId);
+            };
+            if (kind == serverConfigUtils::ConfigType::Native) verify(servers.nativeConfig(id));
+            if (kind == serverConfigUtils::ConfigType::SelfHostedUser) verify(servers.selfHostedUserConfig(id));
+            if (kind == serverConfigUtils::ConfigType::SelfHostedAdmin) verify(servers.selfHostedAdminConfig(id));
+            const auto after = *servers.serverJsonById(id);
+            connection.rememberOpenVpnIpv6Capability(id, before); // Stale generation.
+            connection.rememberOpenVpnIpv6Capability(id, after); // Already recorded.
+            QCOMPARE(edits.count(), 1);
+            QCOMPARE(*servers.serverJsonById(id), after);
+        }
+        settings.clearSettings();
+#else
+        QSKIP("Desktop cached-profile capability learning");
 #endif
     }
     void ipsecServerResourcesArePackaged()
