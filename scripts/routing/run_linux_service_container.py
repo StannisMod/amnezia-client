@@ -80,7 +80,7 @@ def main():
                         'AMNEZIA_OPENVPN_POLICY_MODE=' + mode,
                         'AMNEZIA_OPENVPN_STOP_OPERATION=kill',
                         *(['AMNEZIA_OPENVPN_IPC_SERVICE=/opt/AmneziaVPN/bin/AmneziaVPN-service']
-                          if args.openvpn_route_fixture and mode == 'full' else []),
+                          if args.openvpn_route_fixture and mode in ('full', 'include') else []),
                         *(['AMNEZIA_OPENVPN_ROUTE_FIXTURE=' + str(args.openvpn_route_fixture.resolve())]
                           if args.openvpn_route_fixture else []),
                         'unshare', '--mount', '--net', '--fork', 'bash', '-ec',

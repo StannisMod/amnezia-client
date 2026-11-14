@@ -7,8 +7,11 @@
 #include <QNetworkInterface>
 #include <QProcess>
 #include <QMap>
+#include <QSet>
+#include <QElapsedTimer>
 #include "linuxroutingtable.h"
 #include <memory>
+#include <map>
 #include <vector>
 
 // Per-OpenVPN-process host routes. Never replace an existing route, and retain
@@ -52,6 +55,10 @@ public:
             }
             if (m_sourcePins.empty()) return false;
         }
+        // Unbound new sockets select their source from the destination route.
+        // Already bound native sockets must retain their previous per-host
+        // path as well; pinning only tunnel sources protects the reverse case.
+        if (!pinNativeSources(prefixes, tunnel)) return false;
         QStringList path{"dev", tunnel};
         if (!throughVpn) {
             QByteArray output;
@@ -87,6 +94,62 @@ public:
         return true;
     }
 private:
+    struct NativePin {
+        std::unique_ptr<LinuxRoutingTable> table;
+        QSet<QString> prefixes;
+    };
+    bool pinNativeSources(const QStringList &prefixes, const QString &tunnel)
+    {
+        QElapsedTimer deadline;
+        deadline.start();
+        for (const auto &iface : QNetworkInterface::allInterfaces()) {
+            if (iface.name() == tunnel || !iface.flags().testFlag(QNetworkInterface::IsUp)
+                || iface.flags().testFlag(QNetworkInterface::IsLoopBack)) continue;
+            for (const auto &entry : iface.addressEntries()) {
+                const auto address = entry.ip();
+                if (address.protocol() != QAbstractSocket::IPv6Protocol || address.isLinkLocal()
+                    || address.isMulticast() || address.isLoopback() || address.isNull()) continue;
+                const auto source = address.toString();
+                for (const auto &prefix : prefixes) {
+                    auto found = m_nativePins.find(source);
+                    if (found != m_nativePins.end() && found->second.prefixes.contains(prefix)) continue;
+                    if (deadline.elapsed() > 15000) return false;
+                    QProcess lookup;
+                    lookup.start("ip", {"-6", "-j", "route", "get", prefix.section('/', 0, 0), "from", source});
+                    if (!lookup.waitForStarted(3000) || !lookup.waitForFinished(3000)) {
+                        lookup.kill(); lookup.waitForFinished(1000); return false;
+                    }
+                    if (lookup.exitStatus() != QProcess::NormalExit) return false;
+                    // iproute2 returns 2 when no path exists. There is then no
+                    // previously usable source path to preserve.
+                    if (lookup.exitCode() == 2) continue;
+                    if (lookup.exitCode() != 0) return false;
+                    QJsonParseError error;
+                    const auto document = QJsonDocument::fromJson(lookup.readAllStandardOutput(), &error);
+                    if (error.error != QJsonParseError::NoError || !document.isArray()
+                        || document.array().size() != 1) return false;
+                    const auto route = document.array().first().toObject();
+                    const auto device = route.value("dev").toString();
+                    const auto gateway = route.value("gateway").toString();
+                    if (device.isEmpty() || (!gateway.isEmpty()
+                        && QHostAddress(gateway).protocol() != QAbstractSocket::IPv6Protocol)) return false;
+                    if (found == m_nativePins.end()) {
+                        if (m_nativePins.size() >= 64) return false;
+                        NativePin pin;
+                        pin.table = std::make_unique<LinuxRoutingTable>();
+                        if (!pin.table->ensureFamily("-6", source + "/128")) return false;
+                        found = m_nativePins.emplace(source, std::move(pin)).first;
+                    }
+                    QStringList arguments{"-6", "route", "add", prefix, "table",
+                        QString::number(found->second.table->table()), "dev", device};
+                    if (!gateway.isEmpty()) arguments << "via" << gateway << "onlink";
+                    if (!run(arguments)) return false;
+                    found->second.prefixes.insert(prefix);
+                }
+            }
+        }
+        return true;
+    }
     void rollback(const QStringList &prefixes)
     {
         for (const auto &prefix : prefixes)
@@ -105,6 +168,7 @@ private:
     }
     QMap<QString, QStringList> m_owned;
     std::vector<std::unique_ptr<LinuxRoutingTable>> m_sourcePins;
+    std::map<QString, NativePin> m_nativePins;
     // Destroy the destination table before releasing source pins. Cleanup is
     // bounded by table count, not the number of historical DNS destinations.
     LinuxRoutingTable m_routesTable;
