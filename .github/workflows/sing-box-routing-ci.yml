@@ -102,6 +102,16 @@ jobs:
           race_mod=$(python prepare_race.py --output "$RUNNER_TEMP")
           go test -mod=readonly -modfile="$race_mod" -tags with_gvisor,amnezia_race_dependency -race -count=3 "${package_args[@]}" -json ./... | tee test-results.jsonl
           go test -mod=readonly -modfile="$race_mod" -tags with_gvisor,amnezia_race_dependency -race -count=3 "${package_args[@]}" -json gvisor.dev/gvisor/pkg/tcpip/transport/tcp gvisor.dev/gvisor/pkg/tcpip/adapters/gonet | tee dependency-test-results.jsonl
+      - name: Verify native IPv6 source-scoped routing on macOS
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -o pipefail
+          go build -mod=readonly -tags with_gvisor -o "$RUNNER_TEMP/native-ipv6-peer" ./cmd/native-ipv6-peer
+          sudo env AMNEZIA_NATIVE_IPV6_LAB=owned-runner GITHUB_ACTIONS="$GITHUB_ACTIONS" \
+            "$(command -v python3)" "$GITHUB_WORKSPACE/scripts/routing/run_native_ipv6_scope.py" \
+            --peer "$RUNNER_TEMP/native-ipv6-peer" \
+            --report "$GITHUB_WORKSPACE/native-ipv6-scope.json" | tee native-ipv6-scope.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -109,6 +119,8 @@ jobs:
           path: |
             native/routing/test-results.jsonl
             native/routing/dependency-test-results.jsonl
+            native/routing/native-ipv6-scope.log
+            native-ipv6-scope.json
           if-no-files-found: error
 
   core-cross-compile:

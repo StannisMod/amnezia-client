@@ -138,6 +138,27 @@ unrelated native traffic stays blocked during strict DNS bootstrap and that an
 ordinary DNS socket remains blocked after the temporary exception is removed.
 This does not replace Android/iOS device handover or macOS PF/WFP acceptance.
 
+### Native IPv6 source/scoped-route probe
+
+`scripts/routing/run_native_ipv6_scope.py` uses `cmd/native-ipv6-peer` to put two
+independent TCP/UDP origins behind two owned TUNs. The sending sockets use the OS
+TCP stack. It changes the unscoped destination route A→B→A while retaining both
+old sockets, checks the new TCP/UDP path and exact server accept counts, then
+removes the owned routes and closes both interfaces. It changes no default
+route, DNS or firewall setting.
+
+macOS uses interface-scoped host routes. XNU's
+[`in6_selectroute`](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/netinet6/in6_src.c)
+selects an interface using an established socket's source address; this probe
+must verify that behavior on each supported native runner before relying on it
+in the OpenVPN route manager. It is wired into the existing macOS core-test
+lanes and requires both the explicit `AMNEZIA_NATIVE_IPV6_LAB=owned-runner`
+opt-in and a GitHub Actions runner. Linux calibration requires
+`AMNEZIA_NATIVE_IPV6_LAB=isolated-container`, root inside an empty network
+namespace, and uses source-policy rules instead. Linux results and Darwin
+cross-compilation do not prove macOS runtime behavior, production OpenVPN
+integration, or physical network handover.
+
 Desktop endpoint bootstrap queries only the peer hostname through the privileged
 service's private UDP socket, using public resolvers 1.1.1.1 and 8.8.8.8 on
 alternating attempts. Linux/PF exceptions are restricted to its owned source port,
