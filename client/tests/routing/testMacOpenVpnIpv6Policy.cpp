@@ -1,5 +1,5 @@
 #include <QtTest>
-#include "../../platforms/macos/daemon/macopenvpnipv6policy.h"
+#include "../../platforms/macos/daemon/macopenvpnipv6table.h"
 
 namespace mac6 = amnezia::macOpenVpnIpv6;
 namespace {
@@ -55,6 +55,34 @@ struct Fixture {
 class MacOpenVpnIpv6PolicyTest : public QObject {
     Q_OBJECT
 private slots:
+    void nativeTableSelectionRespectsScopesAndHandover()
+    {
+        const mac6::Path wifi{"en1", QHostAddress("fe80::2%en1")};
+        QList<mac6::Entry> entries{
+            {QHostAddress("::"), 0, native, {}, true, false, false},
+            {QHostAddress("::"), 0, wifi, "en1", true, false, false},
+            {QHostAddress("::"), 0, vpn, "utun7", true, false, false},
+            {QHostAddress(host), 128, vpn, {}, true, false, true}
+        };
+        const auto live = [](const QString &) { return true; };
+        QCOMPARE(*mac6::nativeDevice(entries, "utun7", "en1", live), QString("en0"));
+        // A VPN global /128 must not hijack the path of an en0-bound socket.
+        const auto oldNative = mac6::sourcePath(entries, QHostAddress(host), "en0");
+        QVERIFY(oldNative.path && *oldNative.path == native && !oldNative.ambiguous);
+        entries.append({QHostAddress(host), 128, native, "en0", true, false, true});
+        QVERIFY(*mac6::sourcePath(entries, QHostAddress(host), "en0").path == native);
+        entries[0].path = vpn; // VPN now owns the unscoped default too.
+        QCOMPARE(*mac6::nativeDevice(entries, "utun7", "en0", live), QString("en0"));
+        const auto afterHandover = [](const QString &name) { return name != "en0"; };
+        QCOMPARE(*mac6::nativeDevice(entries, "utun7", "en0", afterHandover), QString("en1"));
+        entries.append({QHostAddress("::"), 0, {"en2", QHostAddress("fe80::3%en2")}, "en2", true, false, false});
+        QVERIFY(!mac6::nativeDevice(entries, "utun7", "en0", afterHandover));
+        // Conflicting equally specific scoped paths are an error, not a guess.
+        entries.append({QHostAddress(host), 128, {"en0", QHostAddress("fe80::9%en0")}, "en0", true, false, true});
+        QVERIFY(mac6::sourcePath(entries, QHostAddress(host), "en0").ambiguous);
+        entries.last().blocked = true;
+        QVERIFY(!mac6::sourcePath(entries, QHostAddress(host), "en0").ambiguous);
+    }
     void pinsPrecedeUnscopedChangesAndSurviveSwitches()
     {
         Fixture fixture;

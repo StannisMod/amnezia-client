@@ -17,7 +17,7 @@
 namespace amnezia::macOpenVpnIpv6 {
 struct Path {
     QString device;
-    QHostAddress gateway; // Null means a point-to-point interface, not an Ethernet neighbor.
+    QHostAddress gateway; // Null means an interface route; only the native adapter can validate its link semantics.
     bool operator==(const Path &other) const { return device == other.device && gateway == other.gateway; }
     bool operator!=(const Path &other) const { return !(*this == other); }
 };

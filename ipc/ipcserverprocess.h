@@ -14,6 +14,11 @@
 #include <memory>
 #endif
 
+#if defined(Q_OS_MACOS) && !defined(MACOS_NE)
+#include "../client/platforms/macos/daemon/macopenvpnipv6routes.h"
+#include <memory>
+#endif
+
 #ifndef Q_OS_IOS
 #include "rep_ipc_process_interface_source.h"
 
@@ -58,6 +63,9 @@ private:
 #endif
 #ifdef Q_OS_WIN
     std::unique_ptr<WindowsOpenVpnIpv6Routes> m_windowsIpv6Routes;
+#endif
+#if defined(Q_OS_MACOS) && !defined(MACOS_NE)
+    std::unique_ptr<MacOpenVpnIpv6Routes> m_macIpv6Routes;
 #endif
 };
 

@@ -168,10 +168,22 @@ its reply failed. An unsuccessful cleanup keeps source pins until the primary
 route can be removed. The native adapter must make owned changes idempotent and
 must distinguish a missing route from an unsuccessful query.
 
-These tests currently run with an injected route API. They do not supply the
-missing macOS native adapter, enable `supportsIpv6HostUpdates()` on macOS, or
-prove native TCP preservation. That integration and the native probe above remain
-required. In particular, [Apple network_cmds route.c](https://github.com/apple-oss-distributions/network_cmds/blob/main/route.tproj/route.c) can return a zero process
+These transaction tests run with an injected route API. The production
+`macopenvpnipv6native.h` adapter now uses real Darwin SDK routing structures,
+`sysctl` route snapshots and a bounded `PF_ROUTE` exchange. It matches kernel
+replies by process/sequence/type, checks the kernel error and reconciles the
+resulting route. It does not use route metrics as ownership markers. The service
+constructs its route owner before starting OpenVPN and releases it before
+notifying clients of process completion. Portable table-selection tests exercise
+the same source-interface and handover selection functions as the adapter.
+
+This Linux validation does not compile the Darwin-only code. The real SDK target
+`mac_openvpn_ipv6_api_compile`, actual installed-service IPv6 packets and old TCP
+preservation are still required. The existing IPC route fixture can be built on
+macOS and requires `--ipc-process` plus an explicit owned macOS VM/runner guard;
+it cannot substitute a local route owner for the installed service. The client
+still does not advertise `supportsIpv6HostUpdates()` on macOS pending those
+native gates. The native probe above is also still required. In particular, [Apple network_cmds route.c](https://github.com/apple-oss-distributions/network_cmds/blob/main/route.tproj/route.c) can return a zero process
 status even when its route request fails; an adapter must reconcile the actual
 kernel result rather than treating the process status as proof of mutation.
 

@@ -23,6 +23,10 @@ IpcServerProcess::IpcServerProcess(QObject *parent) :
     connect(m_process.data(), QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
             [this] { m_windowsIpv6Routes.reset(); });
 #endif
+#if defined(Q_OS_MACOS) && !defined(MACOS_NE)
+    connect(m_process.data(), QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
+            [this] { m_macIpv6Routes.reset(); });
+#endif
     connect(m_process.data(), QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this, &IpcServerProcess::finished);
     connect(m_process.data(), &QProcess::readyRead, this, &IpcServerProcess::readyRead);
     connect(m_process.data(), &QProcess::readyReadStandardError, this, &IpcServerProcess::readyReadStandardError);
@@ -54,6 +58,13 @@ IpcServerProcess::~IpcServerProcess()
         m_openVpnDevice.reset();
     }
 #endif
+#if defined(Q_OS_MACOS) && !defined(MACOS_NE)
+    if (m_macIpv6Routes) {
+        m_process->kill();
+        if (m_process->state() != QProcess::NotRunning) m_process->waitForFinished(3000);
+        m_macIpv6Routes.reset();
+    }
+#endif
     qDebug() << "IpcServerProcess::~IpcServerProcess";
 }
 
@@ -71,6 +82,11 @@ void IpcServerProcess::start()
         m_openVpnDevice = std::make_unique<LinuxOpenVpnDevice>();
         m_process->setArguments(m_arguments + m_openVpnDevice->arguments());
     }
+#endif
+#if defined(Q_OS_MACOS) && !defined(MACOS_NE)
+    m_macIpv6Routes.reset();
+    if (m_program == amnezia::PermittedProcess::OpenVPN)
+        m_macIpv6Routes = std::make_unique<MacOpenVpnIpv6Routes>();
 #endif
     if (m_process->program().isEmpty()) {
         qDebug() << "IpcServerProcess failed to start, program is empty";
@@ -107,6 +123,10 @@ bool IpcServerProcess::addOpenVpnIpv6Hosts(const QString &localIpv4, const QStri
     if (!m_windowsIpv6Routes) m_windowsIpv6Routes = std::make_unique<WindowsOpenVpnIpv6Routes>(
         amnezia::windowsOpenVpnIpv6::nativeApi());
     return m_windowsIpv6Routes->add(localIpv4, hosts, throughVpn);
+#elif defined(Q_OS_MACOS) && !defined(MACOS_NE)
+    if (m_program != amnezia::PermittedProcess::OpenVPN || m_process->state() != QProcess::Running
+        || !m_macIpv6Routes) return false;
+    return m_macIpv6Routes->add(localIpv4, hosts, throughVpn);
 #else
     Q_UNUSED(localIpv4)
     Q_UNUSED(hosts)

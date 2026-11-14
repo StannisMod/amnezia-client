@@ -6,6 +6,8 @@
 #ifdef Q_OS_WIN
 #include "platforms/windows/daemon/windowsopenvpnipv6api.h"
 #include "platforms/windows/daemon/windowsopenvpnipv6routes.h"
+#elif defined(Q_OS_MACOS) && !defined(MACOS_NE)
+#include "platforms/macos/daemon/macopenvpnipv6routes.h"
 #else
 #include "platforms/linux/daemon/linuxopenvpnipv6routes.h"
 #endif
@@ -24,6 +26,11 @@ int main(int argc, char **argv)
     if (qEnvironmentVariable("AMNEZIA_IPV6_LAB") != "owned-windows-vm"
         || !app.arguments().contains("--ipc-process")) return 64;
     WindowsOpenVpnIpv6Routes routes(amnezia::windowsOpenVpnIpv6::nativeApi());
+#elif defined(Q_OS_MACOS) && !defined(MACOS_NE)
+    const auto lab = qEnvironmentVariable("AMNEZIA_IPV6_LAB");
+    const bool ownedRunner = lab == "owned-macos-runner" && qEnvironmentVariable("GITHUB_ACTIONS") == "true";
+    if ((!ownedRunner && lab != "owned-macos-vm") || !app.arguments().contains("--ipc-process")) return 64;
+    MacOpenVpnIpv6Routes routes;
 #else
     if (qEnvironmentVariable("AMNEZIA_IPV6_LAB") != "isolated-namespace") return 64;
     LinuxOpenVpnIpv6Routes routes;
