@@ -47,7 +47,7 @@ rpc_updater = None
 native6_before = None
 names = ('ovpn-client', 'ovpn-origin')
 
-def legacy_ipv6_acceptance(mode):
+def legacy_ipv6_acceptance(mode, stale=False):
     # Native origins remain reachable outside the VPN. A timeout or a policy
     # string alone cannot prove that block-ipv6 stopped a bypass.
     peer = '''import socket,sys,threading
@@ -81,11 +81,19 @@ while True:
         processes.append(process)
         assert select.select([process.stdout],[],[],5)[0] and process.stdout.readline().strip()=='READY'
     probe = '''import errno,socket,sys,time
-mode=sys.argv[1]
+mode=sys.argv[1];stale=sys.argv[2]=='stale'
 old=[socket.create_connection(('10.66.0.1',18080),3) for _ in range(2)]
 for s in old:s.sendall(b'before');assert s.recv(6)==b'before'
 for address in ('fd88::1','2001:db8:88::1','64:ff9b::c000:201'):
- blocked=mode in ('legacy-full','legacy-export','legacy-api') or ((address=='fd88::1')==(mode=='legacy-include'))
+ # Prove that a live native IPv6 path exists independently of VPN selection.
+ with socket.socket(socket.AF_INET6) as native:
+  native.setsockopt(socket.SOL_SOCKET,socket.SO_BINDTODEVICE,b'native0\\0')
+  native.settimeout(2);native.connect((address,18081));assert native.recv(64)==b'NATIVE'
+ blocked=mode in ('legacy-full','legacy-export','legacy-api','full','api-full') or ((address=='fd88::1')==(mode in ('legacy-include','include')))
+ if stale and blocked:
+  import subprocess,json
+  route=json.loads(subprocess.check_output(['ip','-j','-6','route','get',address],text=True))[0]
+  assert route['dev']=='tun0',repr(('selected IPv6 bypasses tunnel',address,route))
  for udp in (False,True):
   start=time.monotonic()
   try:
@@ -93,18 +101,20 @@ for address in ('fd88::1','2001:db8:88::1','64:ff9b::c000:201'):
     # Linux treats ICMPv6 no-route as a soft UDP error unless the socket
     # requests its error queue. Observe the actual rejection, not a recv timeout.
     if udp:s.setsockopt(socket.IPPROTO_IPV6,getattr(socket,'IPV6_RECVERR',25),1)
-    s.settimeout(3);s.connect((address,18081))
+    s.settimeout(1 if stale else 3);s.connect((address,18081))
     if udp:s.send(b'probe')
     data=s.recv(64)
   except OSError as e:
-   assert blocked and e.errno in (errno.ENETUNREACH,errno.EHOSTUNREACH),repr((address,udp,e))
-   assert time.monotonic()-start<1.5,'blocked IPv6 timed out instead of failing fast'
+   assert blocked,repr((address,udp,e))
+   if not (stale and isinstance(e,TimeoutError)):
+    assert e.errno in (errno.ENETUNREACH,errno.EHOSTUNREACH),repr((address,udp,e))
+    assert time.monotonic()-start<1.5,'blocked IPv6 timed out instead of failing fast'
   else:
    assert not blocked and data==b'NATIVE',repr(('IPv6 bypass',address,udp,data))
 for s in old:s.sendall(b'after');assert s.recv(5)==b'after';s.close()
-print('PASS: IPv4-only server blocks selected IPv6 TCP/UDP GUA/ULA/NAT64, preserves DIRECT exclusions and two original IPv4 TCP sockets',flush=True)
+print('PASS: '+('stale IPv6 capability retains selected routes in tunnel (timeouts allowed; no fast-reject claim)' if stale else 'IPv4-only server rejects selected IPv6 TCP/UDP GUA/ULA/NAT64')+', live native path and DIRECT exceptions verified; two original IPv4 TCP sockets retained',flush=True)
 '''
-    print(run('ip','netns','exec',names[0],'python3','-c',probe,mode),flush=True)
+    print(run('ip','netns','exec',names[0],'python3','-c',probe,mode,'stale' if stale else 'legacy'),flush=True)
 
 try:
     for name in names:
@@ -123,6 +133,8 @@ try:
     run('ip', '-6', 'route', 'add', 'default', 'via', 'fd88::1', 'dev', 'uplink0')
     policy_file = os.environ.get('AMNEZIA_OPENVPN_CLIENT_POLICIES')
     policy_mode = os.environ.get('AMNEZIA_OPENVPN_POLICY_MODE', 'full')
+    stale_capability = os.environ.get('AMNEZIA_OPENVPN_STALE_CAPABILITY') == '1'
+    assert not stale_capability or (policy_file and policy_mode in ('full','include','exclude','api-full'))
     native_policy = 'client\nremote 198.51.100.1 1194\n'
     if policy_file:
         policy_bytes = Path(policy_file).read_bytes()
@@ -180,7 +192,7 @@ try:
     run(*migrate[:-1],str(custom))
     assert custom.read_bytes()==custom_before,'migration replaced administrator IPv6 pool'
     print('PASS: existing IPv4 server migrated idempotently; identities, permissions and custom IPv6 pool preserved',flush=True)
-    if policy_mode.startswith('legacy-'):
+    if policy_mode.startswith('legacy-') or stale_capability:
         (root/'server.conf').write_text(legacy)
     (root/'client.conf').write_text(f'''{native_policy}
 dev tun0
@@ -238,8 +250,8 @@ verb 3
         if any(p.poll() is not None for p in processes): raise RuntimeError('OpenVPN exited: '+(root/'server.log').read_text()+(root/'client.log').read_text())
         time.sleep(.1)
     else: raise RuntimeError('OpenVPN TLS handshake timed out: '+(root/'client.log').read_text())
-    if policy_mode.startswith('legacy-'):
-        legacy_ipv6_acceptance(policy_mode)
+    if policy_mode.startswith('legacy-') or stale_capability:
+        legacy_ipv6_acceptance(policy_mode, stale_capability)
         raise SystemExit(0)
     client_links = json.loads(run('ip', '-n', names[0], '-j', '-6', 'addr', 'show'))
     # OpenVPN 2.6 net30 and 2.7 DCO/subnet allocate different IPv4 addresses.

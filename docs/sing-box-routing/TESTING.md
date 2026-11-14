@@ -200,6 +200,16 @@ restart handler. It applies to the next connection; an authoritative provider
 profile refresh can replace the cached observation. This test does not claim
 that the current blocked session gains IPv6 without reconnecting.
 
+The installed Linux suite also forces an IPv4-only server while keeping the
+Qt-generated `full`, `include` and `exclude` profiles' cached IPv6 capability.
+`AMNEZIA_OPENVPN_STALE_CAPABILITY=1` selects this case in the existing TLS lab.
+An interface-bound native connection proves each GUA/ULA/NAT64 origin is live;
+selected route lookups must point to the actual tunnel, DIRECT TCP/UDP must
+still work, and two original IPv4 TCP sockets must survive. Selected sockets
+may time out in this stale-capability case: this is a capture/fail-closed
+regression, not proof of fast rejection or successful IPv6 service. The strict
+ICMP/fast-rejection assertions for ordinary `legacy-*` profiles remain intact.
+
 ### Android OpenVPN3 configuration compatibility
 
 `ConnectionTest::openVpnTunBuilderIpv6Compatibility` runs in the ordinary Qt

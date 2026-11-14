@@ -73,11 +73,15 @@ def main():
         if args.openvpn_policies:
             listener_before = execute('stat', '-Lc', '%d:%i', '/var/run/amneziavpn/daemon.socket',
                                       capture_output=True, text=True).stdout.strip()
-            for mode in ('full', 'include', 'exclude', 'legacy-full', 'legacy-export', 'legacy-include', 'legacy-exclude', 'legacy-api', 'api-full'):
+            modes = [(mode, False) for mode in ('full', 'include', 'exclude', 'legacy-full', 'legacy-export', 'legacy-include', 'legacy-exclude', 'legacy-api', 'api-full')]
+            modes += [(mode, True) for mode in ('full', 'include', 'exclude')]
+            for mode, stale in modes:
+                print('OpenVPN acceptance:', mode, 'stale capability' if stale else 'declared capability', flush=True)
                 execute('env', 'AMNEZIA_OPENVPN_SOURCE_ROOT=' + str(repo),
                         'AMNEZIA_OPENVPN_BINARY=/opt/AmneziaVPN/bin/openvpn',
                         'AMNEZIA_OPENVPN_CLIENT_POLICIES=' + str(args.openvpn_policies.resolve()),
                         'AMNEZIA_OPENVPN_POLICY_MODE=' + mode,
+                        'AMNEZIA_OPENVPN_STALE_CAPABILITY=' + ('1' if stale else '0'),
                         'AMNEZIA_OPENVPN_STOP_OPERATION=kill',
                         *(['AMNEZIA_OPENVPN_IPC_SERVICE=/opt/AmneziaVPN/bin/AmneziaVPN-service']
                           if args.openvpn_route_fixture and mode in ('full', 'include') else []),
