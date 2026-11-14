@@ -252,7 +252,8 @@ QString SecureServersRepository::addServer(const QString &serverId, const QJsonO
     return id;
 }
 
-void SecureServersRepository::editServer(const QString &serverId, const QJsonObject &serverJson, serverConfigUtils::ConfigType kind)
+void SecureServersRepository::editServer(const QString &serverId, const QJsonObject &serverJson,
+                                       serverConfigUtils::ConfigType kind, EditEffect effect)
 {
     if (indexOfServerId(serverId) < 0 || kind == serverConfigUtils::ConfigType::Invalid) {
         return;
@@ -277,7 +278,8 @@ void SecureServersRepository::editServer(const QString &serverId, const QJsonObj
     m_serverJsonById.insert(serverId, embedStorageServerId(serverId, strippedNew));
 
     syncToStorage();
-    emit serverEdited(serverId);
+    if (effect == EditEffect::ObservedCapability) emit serverCapabilityObserved(serverId);
+    else emit serverEdited(serverId);
 }
 
 void SecureServersRepository::removeServer(const QString &serverId)

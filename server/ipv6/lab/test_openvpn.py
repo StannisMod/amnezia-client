@@ -85,7 +85,7 @@ mode=sys.argv[1]
 old=[socket.create_connection(('10.66.0.1',18080),3) for _ in range(2)]
 for s in old:s.sendall(b'before');assert s.recv(6)==b'before'
 for address in ('fd88::1','2001:db8:88::1','64:ff9b::c000:201'):
- blocked=mode in ('legacy-full','legacy-export') or ((address=='fd88::1')==(mode=='legacy-include'))
+ blocked=mode in ('legacy-full','legacy-export','legacy-api') or ((address=='fd88::1')==(mode=='legacy-include'))
  for udp in (False,True):
   start=time.monotonic()
   try:
@@ -326,7 +326,7 @@ while True:
         run('ip', 'netns', 'exec', names[0], 'python3', '-c', probe)
     else:
         for destination in ('fd88::1', '2001:db8:88::1', '64:ff9b::c000:201'):
-            tunneled = policy_mode == 'full' or (destination == 'fd88::1') == (policy_mode == 'include')
+            tunneled = policy_mode in ('full', 'api-full') or (destination == 'fd88::1') == (policy_mode == 'include')
             expected = 'fd88::2' if tunneled else 'fd99::2'
             check = """import socket,sys,time
 time.sleep(.1)

@@ -5,6 +5,8 @@
 #include <QFile>
 #include <QHostInfo>
 #include <QJsonObject>
+#include <QJsonArray>
+#include <QJsonDocument>
 #include <QObject>
 #include <QSharedPointer>
 #include <QPointer>
@@ -495,23 +497,42 @@ void VpnConnection::rememberOpenVpnIpv6Capability(const QString &serverId, const
 {
     if (!m_serversRepository || m_serversRepository->serverJsonById(serverId) != std::optional<QJsonObject>(expected)) return;
     const auto kind = m_serversRepository->serverKind(serverId);
-    auto record = [&](auto config) {
-        if (!config) return;
-        auto container = config->containerConfig(DockerContainer::OpenVpn);
-        auto *profile = container.protocolConfig.template as<OpenVpnProtocolConfig>();
-        if (!profile || !profile->clientConfig || profile->clientConfig->ipv6Tunnel) return;
-        // Learn only for the next connection. No active process, route, key or
-        // socket is replaced while recording authenticated server capability.
-        profile->clientConfig->ipv6Tunnel = true;
-        config->updateContainerConfig(DockerContainer::OpenVpn, container);
-        m_serversRepository->editServer(serverId, config->toJson(), kind);
-    };
     switch (kind) {
-    case serverConfigUtils::ConfigType::SelfHostedAdmin: record(m_serversRepository->selfHostedAdminConfig(serverId)); break;
-    case serverConfigUtils::ConfigType::SelfHostedUser: record(m_serversRepository->selfHostedUserConfig(serverId)); break;
-    case serverConfigUtils::ConfigType::Native: record(m_serversRepository->nativeConfig(serverId)); break;
-    default: break;
+    case serverConfigUtils::ConfigType::SelfHostedAdmin:
+    case serverConfigUtils::ConfigType::SelfHostedUser:
+    case serverConfigUtils::ConfigType::Native:
+    case serverConfigUtils::ConfigType::AmneziaPremiumV2:
+    case serverConfigUtils::ConfigType::AmneziaFreeV3:
+    case serverConfigUtils::ConfigType::ExternalPremium: break;
+    default: return;
     }
+    // Preserve opaque provider/legacy fields: changing a local observation
+    // must not round-trip the whole record through a narrower typed model.
+    auto containers = expected.value(configKey::containers).toArray();
+    int index = -1;
+    for (int i = 0; i < containers.size(); ++i) {
+        if (containers[i].toObject().value(configKey::container).toString()
+            != ContainerUtils::containerToString(DockerContainer::OpenVpn)) continue;
+        if (index != -1) return; // Ambiguous duplicate owner.
+        index = i;
+    }
+    if (index == -1) return;
+    auto container = containers[index].toObject();
+    const auto protocolName = ProtocolUtils::protoToString(Proto::OpenVpn);
+    auto protocol = container.value(protocolName).toObject();
+    const auto document = QJsonDocument::fromJson(protocol.value(configKey::lastConfig).toString().toUtf8());
+    if (!document.isObject()) return;
+    auto client = document.object();
+    if (!client.value(configKey::config).isString() || client.value("ipv6Tunnel").toBool()) return;
+    client.insert("ipv6Tunnel", true);
+    protocol.insert(configKey::lastConfig, QString::fromUtf8(QJsonDocument(client).toJson(QJsonDocument::Compact)));
+    container.insert(protocolName, protocol);
+    containers[index] = container;
+    auto updated = expected;
+    updated.insert(configKey::containers, containers);
+    // Learn only for the next connection, without notifying transport restart
+    // observers (including an unrelated local proxy owned by this record).
+    m_serversRepository->editServer(serverId, updated, kind, SecureServersRepository::EditEffect::ObservedCapability);
 }
 
 void VpnConnection::createProtocolConnections()

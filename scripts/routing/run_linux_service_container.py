@@ -73,7 +73,7 @@ def main():
         if args.openvpn_policies:
             listener_before = execute('stat', '-Lc', '%d:%i', '/var/run/amneziavpn/daemon.socket',
                                       capture_output=True, text=True).stdout.strip()
-            for mode in ('full', 'include', 'exclude', 'legacy-full', 'legacy-export', 'legacy-include', 'legacy-exclude'):
+            for mode in ('full', 'include', 'exclude', 'legacy-full', 'legacy-export', 'legacy-include', 'legacy-exclude', 'legacy-api', 'api-full'):
                 execute('env', 'AMNEZIA_OPENVPN_SOURCE_ROOT=' + str(repo),
                         'AMNEZIA_OPENVPN_BINARY=/opt/AmneziaVPN/bin/openvpn',
                         'AMNEZIA_OPENVPN_CLIENT_POLICIES=' + str(args.openvpn_policies.resolve()),

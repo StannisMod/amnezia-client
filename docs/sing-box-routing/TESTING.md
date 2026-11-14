@@ -189,3 +189,13 @@ explicit administrator addresses and blocks remain intact.
 The UDP witness enables Linux `IPV6_RECVERR` to observe the ICMPv6 rejection.
 Ordinary UDP applications may ignore that soft error; this test does not claim
 that every application's UDP receive call fails immediately.
+
+`legacy-api` checks the same IPv4-only case with an API-supplied profile.
+Provider-owned IPv4 redirect and subnet directives are retained while IPv6
+capture is enforced. Capability-learning tests cover Native, SelfHostedUser,
+SelfHostedAdmin, PremiumV2, FreeV3 and ExternalPremium records, preserving their
+keys, credentials and API metadata. The observation emits a separate UI
+notification, so it does not trigger the local proxy's ordinary configuration
+restart handler. It applies to the next connection; an authoritative provider
+profile refresh can replace the cached observation. This test does not claim
+that the current blocked session gains IPv6 without reconnecting.

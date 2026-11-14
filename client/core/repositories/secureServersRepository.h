@@ -24,10 +24,12 @@ class SecureServersRepository : public QObject
     Q_OBJECT
 
 public:
+    enum class EditEffect { ConnectionSettings, ObservedCapability };
     explicit SecureServersRepository(SecureQSettings *settings, QObject *parent = nullptr);
 
     QString addServer(const QString &serverId, const QJsonObject &serverJson, serverConfigUtils::ConfigType kind);
-    void editServer(const QString &serverId, const QJsonObject &serverJson, serverConfigUtils::ConfigType kind);
+    void editServer(const QString &serverId, const QJsonObject &serverJson, serverConfigUtils::ConfigType kind,
+                    EditEffect effect = EditEffect::ConnectionSettings);
     void removeServer(const QString &serverId);
     serverConfigUtils::ConfigType serverKind(const QString &serverId) const;
 
@@ -66,6 +68,7 @@ public:
     int unsupportedFormatConfigsCount() const;
 
 signals:
+    void serverCapabilityObserved(const QString &serverId);
     void serverAdded(const QString &serverId);
     void serverEdited(const QString &serverId);
     void serverRemoved(const QString &serverId, int removedIndex);

@@ -184,7 +184,8 @@ private slots:
         container.container = DockerContainer::OpenVpn;
         container.protocolConfig = profile;
         for (auto kind : {serverConfigUtils::ConfigType::Native, serverConfigUtils::ConfigType::SelfHostedUser,
-                          serverConfigUtils::ConfigType::SelfHostedAdmin}) {
+                          serverConfigUtils::ConfigType::SelfHostedAdmin, serverConfigUtils::ConfigType::AmneziaPremiumV2,
+                          serverConfigUtils::ConfigType::AmneziaFreeV3, serverConfigUtils::ConfigType::ExternalPremium}) {
             NativeServerConfig base;
             base.hostName = "unchanged.test";
             base.defaultContainer = DockerContainer::OpenVpn;
@@ -197,12 +198,39 @@ private slots:
                 admin.userName = "fixture"; admin.password = "fixture-only"; admin.port = 22;
                 initial = admin.toJson();
             }
+            const bool apiKind = kind == serverConfigUtils::ConfigType::AmneziaPremiumV2
+                || kind == serverConfigUtils::ConfigType::AmneziaFreeV3 || kind == serverConfigUtils::ConfigType::ExternalPremium;
+            if (apiKind) {
+                auto api = ApiV2ServerConfig::fromJson(initial);
+                api.configVersion = serverConfigUtils::ConfigSource::AmneziaGateway;
+                api.crc = 42;
+                api.apiConfig.serviceType = kind == serverConfigUtils::ConfigType::AmneziaPremiumV2 ? "amnezia-premium"
+                    : kind == serverConfigUtils::ConfigType::AmneziaFreeV3 ? "amnezia-free" : "external-premium";
+                api.apiConfig.serviceProtocol = "openvpn";
+                api.apiConfig.vpnKey = "KEEP-PROVIDER-KEY";
+                api.authData.apiKey = "KEEP-PROVIDER-AUTH";
+                initial = api.toJson();
+            }
+            initial["opaque_root_extension"] = "KEEP-ROOT";
+            auto rawContainers = initial.value(configKey::containers).toArray();
+            auto rawContainer = rawContainers[0].toObject();
+            rawContainer["opaque_container_extension"] = "KEEP-CONTAINER";
+            auto rawProtocol = rawContainer.value("openvpn").toObject();
+            auto rawClient = QJsonDocument::fromJson(rawProtocol.value(configKey::lastConfig).toString().toUtf8()).object();
+            rawClient.remove("ipv6Tunnel"); // Old profiles need not contain the field.
+            rawClient["opaque_client_extension"] = "KEEP-CLIENT";
+            rawProtocol[configKey::lastConfig] = QString::fromUtf8(QJsonDocument(rawClient).toJson());
+            rawContainer["openvpn"] = rawProtocol;
+            rawContainers[0] = rawContainer;
+            initial[configKey::containers] = rawContainers;
             const auto id = servers.addServer(QUuid::createUuid().toString(), initial, kind);
             QVERIFY(servers.serverJsonById(id).has_value());
             const auto before = *servers.serverJsonById(id);
-            QSignalSpy edits(&servers, &SecureServersRepository::serverEdited);
+            QSignalSpy edits(&servers, &SecureServersRepository::serverCapabilityObserved);
+            QSignalSpy runtimeEdits(&servers, &SecureServersRepository::serverEdited);
             connection.rememberOpenVpnIpv6Capability(id, before);
             QCOMPARE(edits.count(), 1);
+            QCOMPARE(runtimeEdits.count(), 0); // Must not restart the owner's local Xray proxy.
             auto verify = [&](auto config) {
                 QVERIFY(config.has_value());
                 const auto learned = config->containerConfig(DockerContainer::OpenVpn).protocolConfig;
@@ -215,11 +243,26 @@ private slots:
             if (kind == serverConfigUtils::ConfigType::Native) verify(servers.nativeConfig(id));
             if (kind == serverConfigUtils::ConfigType::SelfHostedUser) verify(servers.selfHostedUserConfig(id));
             if (kind == serverConfigUtils::ConfigType::SelfHostedAdmin) verify(servers.selfHostedAdminConfig(id));
+            if (apiKind) {
+                verify(servers.apiV2Config(id));
+                auto original = ApiV2ServerConfig::fromJson(before);
+                const auto learned = servers.apiV2Config(id);
+                QVERIFY(learned.has_value());
+                original.containers = learned->containers;
+                QCOMPARE(original.toJson(), learned->toJson()); // Provider metadata/auth/CRC unchanged.
+            }
             const auto after = *servers.serverJsonById(id);
+            QCOMPARE(after.value("opaque_root_extension").toString(), QString("KEEP-ROOT"));
+            const auto savedContainer = after.value(configKey::containers).toArray()[0].toObject();
+            QCOMPARE(savedContainer.value("opaque_container_extension").toString(), QString("KEEP-CONTAINER"));
+            const auto savedClient = QJsonDocument::fromJson(savedContainer.value("openvpn").toObject()
+                .value(configKey::lastConfig).toString().toUtf8()).object();
+            QCOMPARE(savedClient.value("opaque_client_extension").toString(), QString("KEEP-CLIENT"));
             connection.rememberOpenVpnIpv6Capability(id, before); // Stale generation.
             connection.rememberOpenVpnIpv6Capability(id, after); // Already recorded.
             QCOMPARE(edits.count(), 1);
             QCOMPARE(*servers.serverJsonById(id), after);
+            QCOMPARE(runtimeEdits.count(), 0);
         }
         settings.clearSettings();
 #else
@@ -359,6 +402,28 @@ private slots:
         config = configurator.processConfigWithExportSettings({settings.dns}, profile).nativeConfig();
         QVERIFY(config.contains("block-ipv6"));
         policies["legacy-export"] = config;
+        auto apiClient = client;
+        apiClient.nativeConfig += "redirect-gateway def1 bypass-dhcp\nroute 192.0.2.0 255.255.255.0\n";
+        profile.setClientConfig(apiClient);
+        auto apiSettings = settings;
+        apiSettings.isApiConfig = true;
+        const auto apiConfig = configurator.processConfigWithLocalSettings(apiSettings, profile).nativeConfig();
+        QVERIFY(apiConfig.contains("redirect-gateway def1 bypass-dhcp"));
+        QVERIFY(apiConfig.contains("route 192.0.2.0 255.255.255.0"));
+        QVERIFY(apiConfig.contains("block-ipv6"));
+        QVERIFY(apiConfig.contains("ifconfig-ipv6 "));
+        QVERIFY(captured(apiConfig, "fd88::1"));
+        QVERIFY(captured(apiConfig, "64:ff9b::c000:201"));
+        policies["legacy-api"] = apiConfig;
+        apiClient.ipv6Tunnel = true;
+        profile.setClientConfig(apiClient);
+        const auto apiIpv6Config = configurator.processConfigWithLocalSettings(apiSettings, profile).nativeConfig();
+        QVERIFY(!apiIpv6Config.contains("block-ipv6"));
+        QVERIFY(!apiIpv6Config.contains("fd15:53b6:dead"));
+        QVERIFY(apiIpv6Config.contains("redirect-gateway def1 bypass-dhcp"));
+        QVERIFY(captured(apiIpv6Config, "fd88::1"));
+        QVERIFY(captured(apiIpv6Config, "64:ff9b::c000:201"));
+        policies["api-full"] = apiIpv6Config;
         const auto blockedImport = OpenVpnClientConfig::fromJson({{configKey::config, config}});
         QVERIFY(!blockedImport.ipv6Tunnel);
         auto upgraded = blockedImport;

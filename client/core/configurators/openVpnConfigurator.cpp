@@ -202,12 +202,9 @@ ProtocolConfig OpenVpnConfigurator::processConfigWithLocalSettings(const Connect
     QString config = protocolConfig.nativeConfig();
     const auto *openVpn = protocolConfig.as<OpenVpnProtocolConfig>();
     const bool ipv6Tunnel = openVpn && openVpn->clientConfig && openVpn->clientConfig->ipv6Tunnel;
-    if (ipv6Tunnel && settings.isApiConfig) config.remove(openVpnIpv6::captureBlock());
-
-
+    config.remove(openVpnIpv6::blockingBlock());
+    config.remove(openVpnIpv6::captureBlock());
     if (!settings.isApiConfig) {
-        config.remove(openVpnIpv6::blockingBlock());
-        config.remove(openVpnIpv6::captureBlock());
         QRegularExpression regex("redirect-gateway.*");
         config.replace(regex, "");
 
@@ -219,13 +216,15 @@ ProtocolConfig OpenVpnConfigurator::processConfigWithLocalSettings(const Connect
         if (!settings.splitTunneling.isSitesSplitTunnelingEnabled) {
             config.append("\nredirect-gateway def1 ipv6 bypass-dhcp\n");
         }
-        const auto &split = settings.splitTunneling;
-        const auto mode = !split.isSitesSplitTunnelingEnabled || split.siteRoutes.isEmpty()
-            ? RouteMode::VpnAllSites : split.routeMode;
-        const QStringList dns{settings.dns.primaryDns, settings.dns.secondaryDns};
-        config.append(ipv6Tunnel ? openVpnIpv6::captureDirectives(mode, split.siteRoutes, dns)
-            : openVpnIpv6::blockingDirectives(config, mode, split.siteRoutes, dns));
     }
+    // Provider-owned IPv4 directives remain intact, but an API profile must
+    // satisfy the same IPv6 capture contract as native/self-hosted profiles.
+    const auto &split = settings.splitTunneling;
+    const auto mode = !split.isSitesSplitTunnelingEnabled || split.siteRoutes.isEmpty()
+        ? RouteMode::VpnAllSites : split.routeMode;
+    const QStringList dns{settings.dns.primaryDns, settings.dns.secondaryDns};
+    config.append(ipv6Tunnel ? openVpnIpv6::captureDirectives(mode, split.siteRoutes, dns)
+        : openVpnIpv6::blockingDirectives(config, mode, split.siteRoutes, dns));
 
 #ifndef MZ_WINDOWS
     config.replace("block-outside-dns", "");
