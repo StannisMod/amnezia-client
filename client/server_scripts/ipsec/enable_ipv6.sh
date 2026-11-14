@@ -4,6 +4,10 @@ amnezia_ipsec_v6_rule() {
     amnezia_ipsec_table=$1; shift
     ip6tables -t "$amnezia_ipsec_table" -C "$@" 2>/dev/null || ip6tables -t "$amnezia_ipsec_table" -A "$@"
 }
+amnezia_ipsec_dual_stack_policy() {
+    IPSEC_IKEV2_SUBNETS='0.0.0.0/0,::/0'
+    IPSEC_IKEV2_POOL='192.168.43.10-192.168.43.250,fd6e:a81b:704f:1201::1000-fd6e:a81b:704f:1201::1fff'
+}
 amnezia_ipsec_migrate_ipv6_config() {
     amnezia_ipsec_config=$1
     [ -f "$amnezia_ipsec_config" ] || return 0
@@ -100,6 +104,5 @@ amnezia_ipsec_prepare_ipv6() {
     else
         echo 'AMNEZIA_IPSEC_IPV6_STATUS=no-egress'
     fi
-    IPSEC_IKEV2_SUBNETS='0.0.0.0/0,::/0'
-    IPSEC_IKEV2_POOL='192.168.43.10-192.168.43.250,fd6e:a81b:704f:1201::1000-fd6e:a81b:704f:1201::1fff'
+    amnezia_ipsec_dual_stack_policy
 }

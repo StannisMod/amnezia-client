@@ -187,6 +187,16 @@ if [ "$IPSEC_VPN_VPN_ANDROID_MTU_FIX" = "yes" ]; then
 
 fi
 
+# Persist this container's IPv4 policy for the managed cold-start entrypoint.
+# This never reads or restores the Docker host's firewall.
+iptables-save > /opt/amnezia/ipsec-ipv4.rules || exit 1
+sysctl net.ipv4.ip_forward net.ipv4.conf.all.accept_redirects \
+  net.ipv4.conf.all.send_redirects net.ipv4.conf.all.rp_filter \
+  net.ipv4.conf.default.accept_redirects net.ipv4.conf.default.send_redirects \
+  net.ipv4.conf.default.rp_filter "net.ipv4.conf.$NET_IFACE.send_redirects" \
+  "net.ipv4.conf.$NET_IFACE.rp_filter" > /opt/amnezia/ipsec-ipv4.sysctl || exit 1
+chmod 600 /opt/amnezia/ipsec-ipv4.rules /opt/amnezia/ipsec-ipv4.sysctl
+
 # Update file attributes
 touch /etc/ipsec.secrets /etc/ppp/chap-secrets /etc/ipsec.d/passwd
 chmod 600 /etc/ipsec.secrets /etc/ppp/chap-secrets /etc/ipsec.d/passwd

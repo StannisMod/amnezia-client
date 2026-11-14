@@ -140,6 +140,9 @@ private slots:
         QFile helper(":/server_scripts/ipsec/enable_ipv6.sh");
         QVERIFY(helper.open(QIODevice::ReadOnly));
         QVERIFY(!helper.readAll().isEmpty());
+        QFile updater(":/server_scripts/update_ipsec.sh");
+        QVERIFY(updater.open(QIODevice::ReadOnly));
+        QVERIFY(updater.readAll().contains("amnezia_update="));
         for (const auto type : {ProtocolScriptType::configure_container, ProtocolScriptType::container_startup,
                                 ProtocolScriptType::run_container}) {
             const auto script = scriptData(type, DockerContainer::Ipsec);

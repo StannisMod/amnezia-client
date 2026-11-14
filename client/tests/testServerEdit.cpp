@@ -118,6 +118,7 @@ private slots:
         QTest::newRow("wireguard") << static_cast<int>(DockerContainer::WireGuard) << false;
         QTest::newRow("awg2-compatible") << static_cast<int>(DockerContainer::Awg2) << false;
         QTest::newRow("awg3-protected") << static_cast<int>(DockerContainer::Awg2) << true;
+        QTest::newRow("ipsec") << static_cast<int>(DockerContainer::Ipsec) << false;
     }
 
     void testSoftwareUpdateWithSingleGlobalWorker() {
@@ -147,6 +148,8 @@ private slots:
             awg.serverConfig.transportPacketJunkSize = "0";
             if (headerProtection) awg.serverConfig.headerProtectionKey = "test-protection";
             container.protocolConfig = awg;
+        } else if (config.defaultContainer == DockerContainer::Ipsec) {
+            container.protocolConfig = Ikev2ProtocolConfig{};
         } else {
             container.protocolConfig = WireGuardProtocolConfig{};
         }

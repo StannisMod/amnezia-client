@@ -398,7 +398,7 @@ void InstallUiController::updateProtocolSoftware(const QString &serverId, int co
     const DockerContainer container = static_cast<DockerContainer>(containerIndex);
     const auto admin = m_serversController->selfHostedAdminConfig(serverId);
     if (!admin.has_value() || !admin->containers.contains(container)
-        || (container != DockerContainer::WireGuard && container != DockerContainer::Awg2)) {
+        || (container != DockerContainer::WireGuard && container != DockerContainer::Awg2 && container != DockerContainer::Ipsec)) {
         emit installationErrorOccurred(ErrorCode::ProtocolUpdateRejected);
         return;
     }
@@ -443,6 +443,9 @@ void InstallUiController::updateProtocolSoftware(const QString &serverId, int co
     watcher->setFuture(QtConcurrent::run(&m_protocolSoftwareUpdatePool, [credentials, container, deliveryMetadata, hasCachedClient]() -> Outcome {
         const auto error = InstallController::updateProtocolSoftware(credentials, container);
         if (error != ErrorCode::NoError) return {error, {}};
+        // IKEv2 assigns virtual addresses during negotiation; its unchanged
+        // certificate profile has no WireGuard peer-address metadata to refresh.
+        if (container == DockerContainer::Ipsec) return {ErrorCode::NoError, {}};
         QJsonObject ipv6;
         const auto ipv6Error = ConnectionUpdatesController::prepareServerIPv6(credentials, container, ipv6, deliveryMetadata);
         if (ipv6Error != ErrorCode::NoError)

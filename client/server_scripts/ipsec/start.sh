@@ -1,6 +1,15 @@
 #!/bin/bash
+# amnezia-managed-ipsec-startup-v1
 # The image is inert: restore existing daemons after a container restart without
 # executing the installer or replacing the persisted NSS identities.
+if ! pidof pluto >/dev/null; then
+    if [ -f /opt/amnezia/ipsec-ipv4.rules ]; then
+        iptables-restore < /opt/amnezia/ipsec-ipv4.rules || exit 1
+    fi
+    if [ -f /opt/amnezia/ipsec-ipv4.sysctl ]; then
+        sysctl -p /opt/amnezia/ipsec-ipv4.sysctl >/dev/null || exit 1
+    fi
+fi
 amnezia_ipsec_prepare_ipv6 || exit 1
 if [ -f /etc/ipsec.conf ]; then
     if ! pidof pluto >/dev/null; then

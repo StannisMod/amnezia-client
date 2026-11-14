@@ -416,10 +416,11 @@ ErrorCode InstallController::updateServerConfig(const QString &serverId, DockerC
 ErrorCode InstallController::updateProtocolSoftware(const ServerCredentials &credentials, DockerContainer container)
 {
     if (!credentials.isValid()
-        || (container != DockerContainer::Awg2 && container != DockerContainer::WireGuard)) {
+        || (container != DockerContainer::Awg2 && container != DockerContainer::WireGuard && container != DockerContainer::Ipsec)) {
         return ErrorCode::ProtocolUpdateRejected;
     }
-    QFile scriptFile(QStringLiteral(":/server_scripts/update_wireguard.sh"));
+    QFile scriptFile(container == DockerContainer::Ipsec ? QStringLiteral(":/server_scripts/update_ipsec.sh")
+                                                       : QStringLiteral(":/server_scripts/update_wireguard.sh"));
     if (!scriptFile.open(QIODevice::ReadOnly)) {
         return ErrorCode::InternalError;
     }
@@ -448,11 +449,26 @@ ErrorCode InstallController::updateProtocolSoftware(const ServerCredentials &cre
                                          amnezia::scriptData(ProtocolScriptType::dockerfile, container).toUtf8(),
                                          stage + QStringLiteral("/Dockerfile"));
     }
+    if (error == ErrorCode::NoError && container == DockerContainer::Ipsec) {
+        const auto startup = amnezia::scriptData(ProtocolScriptType::container_startup, container).toUtf8();
+        if (startup.isEmpty()) return ErrorCode::InternalError;
+        error = session.uploadFileToHost(credentials, startup, stage + QStringLiteral("/start.sh"));
+        for (const auto &asset : {qMakePair(QStringLiteral("ipsec/enable_ipv6.sh"), QStringLiteral("enable_ipv6.sh")),
+                                  qMakePair(QStringLiteral("prepare_ipv6_network.sh"), QStringLiteral("network.sh"))}) {
+            if (error != ErrorCode::NoError) break;
+            QFile file(QStringLiteral(":/server_scripts/") + asset.first);
+            if (!file.open(QIODevice::ReadOnly)) return ErrorCode::InternalError;
+            const auto contents = file.readAll().replace("\r", "");
+            if (contents.isEmpty()) return ErrorCode::InternalError;
+            error = session.uploadFileToHost(credentials, contents, stage + "/" + asset.second);
+        }
+    }
     if (error != ErrorCode::NoError) {
         return error; // No server state has been touched yet.
     }
     output.clear();
-    const QString kind = container == DockerContainer::Awg2 ? QStringLiteral("awg") : QStringLiteral("wireguard");
+    const QString kind = container == DockerContainer::Ipsec ? QStringLiteral("ipsec")
+                        : container == DockerContainer::Awg2 ? QStringLiteral("awg") : QStringLiteral("wireguard");
     error = session.runScript(credentials,
                               QStringLiteral("sudo sh %1/update.sh %2 %1").arg(stage, kind), collect);
     // libssh's existing runner does not propagate remote exit status. Require an

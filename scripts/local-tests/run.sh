@@ -4,7 +4,7 @@
 set -euo pipefail
 repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 suite=${1:-all}
-case "$suite" in all|qt|vpn|wireguard|awg|awg2) ;; *) echo 'Usage: run.sh [all|qt|vpn|wireguard|awg|awg2]' >&2; exit 2 ;; esac
+case "$suite" in all|qt|vpn|wireguard|awg|awg2|ipsec) ;; *) echo 'Usage: run.sh [all|qt|vpn|wireguard|awg|awg2|ipsec]' >&2; exit 2 ;; esac
 docker info >/dev/null
 runner=''
 cleanup() {
@@ -20,9 +20,10 @@ if [[ "$suite" == all || "$suite" == qt ]]; then
 fi
 if [[ "$suite" != qt ]]; then
     docker build --network host -t amnezia-local-vpn-tests -f "$repo/scripts/local-tests/Dockerfile.vpn" "$repo/scripts/local-tests"
-    protocols=(wireguard awg awg2-basic awg2-ranges)
+    protocols=(wireguard awg awg2-basic awg2-ranges ipsec)
     [[ "$suite" == wireguard || "$suite" == awg ]] && protocols=("$suite")
     [[ "$suite" == awg2 ]] && protocols=(awg2-basic awg2-ranges)
+    [[ "$suite" == ipsec ]] && protocols=(ipsec)
     for protocol in "${protocols[@]}"; do
         runner="amnezia-local-$protocol-$(date +%s)-$RANDOM"
         docker run -d --privileged --name "$runner" \
@@ -43,7 +44,12 @@ if [[ "$suite" != qt ]]; then
         if [[ "$protocol" == awg2-* ]]; then
             protocol_args=(--kind awg2 --legacy-profile "${protocol#awg2-}")
         fi
-        docker exec "$runner" python3 /src/client/tests/protocol-update/acceptance.py "${protocol_args[@]}"
+        if [[ "$protocol" == ipsec ]]; then
+            docker exec "$runner" docker pull amneziavpn/ipsec-server@sha256:080673496751055c76389c76d87329f033ad7b514f52a776651617ba14179540
+            docker exec "$runner" python3 /src/server/ipv6/lab/test_ipsec_update.py
+        else
+            docker exec "$runner" python3 /src/client/tests/protocol-update/acceptance.py "${protocol_args[@]}"
+        fi
         cleanup
         runner=''
     done
