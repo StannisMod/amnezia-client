@@ -155,7 +155,7 @@ inline Api nativeApi()
         }
         return best;
     };
-    api.foreignHostRouteExists = [](const Address &destination, const std::optional<Route> &ours) -> std::optional<bool> {
+    api.foreignHostRouteExists = [](const Address &destination, const std::vector<Route> &ours) -> std::optional<bool> {
         PMIB_IPFORWARD_TABLE2 table = nullptr;
         if (GetIpForwardTable2(AF_INET6, &table) != NO_ERROR) return {};
         const std::unique_ptr<MIB_IPFORWARD_TABLE2, decltype(&FreeMibTable)> owned(table, FreeMibTable);
@@ -164,7 +164,7 @@ inline Api nativeApi()
             if (row.DestinationPrefix.PrefixLength == 128
                 && std::equal(destination.begin(), destination.end(),
                               reinterpret_cast<const unsigned char *>(&row.DestinationPrefix.Prefix.Ipv6.sin6_addr))) {
-                if (!ours || !matches(row, *ours)) return true;
+                if (std::none_of(ours.begin(), ours.end(), [&](const Route &route) { return matches(row, route); })) return true;
             }
         }
         return false;
@@ -176,6 +176,21 @@ inline Api nativeApi()
     api.create = [](const Route &route) {
         const auto row = nativeRow(route);
         return CreateIpForwardEntry2(&row) == NO_ERROR;
+    };
+    api.interfaceMetric = [](std::uint64_t luid) -> std::optional<std::uint32_t> {
+        MIB_IPINTERFACE_ROW row{};
+        InitializeIpInterfaceEntry(&row);
+        row.Family = AF_INET6;
+        row.InterfaceLuid.Value = luid;
+        if (GetIpInterfaceEntry(&row) != NO_ERROR) return {};
+        return row.Metric;
+    };
+    api.updateOwned = [](const Route &before, const Route &after) {
+        if (before.destination != after.destination || before.path != after.path) return false;
+        auto row = nativeRow(before);
+        if (GetIpForwardEntry2(&row) != NO_ERROR || !matches(row, before)) return false;
+        row.Metric = after.metric;
+        return SetIpForwardEntry2(&row) == NO_ERROR;
     };
     api.removeOwned = [](const Route &route) {
         auto row = nativeRow(route);
