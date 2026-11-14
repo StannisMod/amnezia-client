@@ -71,6 +71,8 @@ def main():
                 str(args.package.resolve()), str(args.helper.resolve()) if args.helper else '',
                 str(args.service.resolve()) if args.service else '', timeout=240)
         if args.openvpn_policies:
+            listener_before = execute('stat', '-Lc', '%d:%i', '/var/run/amneziavpn/daemon.socket',
+                                      capture_output=True, text=True).stdout.strip()
             for mode in ('full', 'include', 'exclude'):
                 execute('env', 'AMNEZIA_OPENVPN_SOURCE_ROOT=' + str(repo),
                         'AMNEZIA_OPENVPN_BINARY=/opt/AmneziaVPN/bin/openvpn',
@@ -84,6 +86,10 @@ def main():
                         'unshare', '--mount', '--net', '--fork', 'bash', '-ec',
                         'mount --make-rprivate /; mkdir -p /run/netns; mount -t tmpfs tmpfs /run/netns; exec python3 "$1"',
                         'sh', str(repo / 'server/ipv6/lab/test_openvpn.py'), timeout=90)
+                listener_after = execute('stat', '-Lc', '%d:%i', '/var/run/amneziavpn/daemon.socket',
+                                         capture_output=True, text=True).stdout.strip()
+                if listener_after != listener_before:
+                    raise RuntimeError('OpenVPN fixture replaced the installed service control socket')
         # Exercise the installed Qt service's proxy TUN and dual-stack firewall
         # before the routed-session suite takes its original-state snapshot.
         execute('bash', '-ec', '''

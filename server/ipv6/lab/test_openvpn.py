@@ -2,6 +2,9 @@
 
 Run only in a disposable Docker network namespace with no external interfaces.
 Fixture certificates, DH mode and Unix group are local test substitutions.
+AMNEZIA_OPENVPN_CAPABILITY_TEST optionally points to the compiled test_connection
+Qt executable. Its existing profile-learning test consumes this session's real
+PUSH log while the original IPv4 sockets remain open.
 """
 import json
 import hashlib
@@ -29,6 +32,11 @@ if os.environ.get('AMNEZIA_OPENVPN_IPC_SERVICE'):
             Path(os.environ['AMNEZIA_OPENVPN_ROUTE_FIXTURE']),Path(os.environ['AMNEZIA_OPENVPN_CLIENT_POLICIES'])]
     assert not any(path.resolve().is_relative_to('/tmp') for path in inputs), 'IPC fixture inputs must be outside its private /tmp'
     run('mount','-t','tmpfs','-o','mode=1777','tmpfs','/tmp')
+    # The service also owns Mozilla's Unix socket under /run, independently of
+    # its QtRO sockets in /tmp. Never unlink the parent installed service's
+    # listener when starting the fixture's second service instance.
+    Path('/var/run/amneziavpn').mkdir(parents=True, exist_ok=True)
+    run('mount','-t','tmpfs','-o','mode=0755','tmpfs','/var/run/amneziavpn')
 
 root = Path('/opt/amnezia/openvpn')
 root.mkdir(parents=True, exist_ok=True)
