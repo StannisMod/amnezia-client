@@ -11,8 +11,13 @@ TCP and UDP on the application's IPv6 loopback (`::1`) must also remain local;
 capturing the IPv6 default must not redirect local listeners into the tunnel.
 
 It does not test DNS, MTU recovery, physical devices or other VPN protocols.
-The API28 regression currently exposes a stale IPv6 kernel route cache after
-scope changes; this remains a failing gate until an application fix is proved.
+The API28 regression exposed a stale IPv6 kernel route cache after scope changes.
+The compiler now retains `::/0` when there is no IPv6 exception, instead of
+artificially subdividing the default and subtracting kernel-owned loopback.
+The ordinary x86_64 APK from `9a64032` passed all seven cases on API28 and API35,
+including local IPv6 TCP/UDP. The DIRECT IPv6 exception in this fixture is
+`fd00::/8`; this result does not yet prove a narrow `/128` exclusion, which still
+requires its own packet check before closing the general route-cache issue.
 Root cache flushing is a separate causal experiment, never part of a passing
 regression or a production fix. An API35 pass alone does not close this gate.
 

@@ -244,15 +244,20 @@ The local IPv4-only server probe showed that OpenVPN3 drops IPv6 route callbacks
 without a server-assigned IPv6 address and asks the adapter to block the whole
 family. The actual packet suite additionally tests the site prefixes supplied
 to the common Android builder, including selective DIRECT exceptions. API35
-packet acceptance passed; the API28 scope-transition gate exposes a stale
-IPv6 kernel route cache and remains unresolved. Apple adapters have a separate
+packet acceptance passed. The old compiler failed the API28 scope-transition
+gate; the ordinary `9a64032` APK passes the seven current cases on API28 and
+API35 with exact IPv6 defaults and kernel-owned loopback. Narrow `/128` DIRECT
+exceptions still require packet validation before generalizing this result.
+Apple adapters have a separate
 Swift capture/filter implementation and require their own SDK/runtime validation.
 
 `ProtocolConfigIpv6Test` exercises the actual common Android configuration
 builder: full capture includes GUA, ULA and NAT64, excluding an IPv4 endpoint
 preserves IPv6 capture, and an IPv4-only inclusion list does not capture IPv6.
-Full `::/0` is represented by `::/1` and `8000::/1`, rather than narrowed to
-`2000::/3`. The local JVM Android stub selects the pre-API33 exclusion compiler;
+Full `::/0` stays intact when only IPv4 destinations are excluded. The compiler
+does not subtract `::1`: the kernel local table keeps loopback local, checked
+with actual TCP and UDP in every OpenVPN packet case. Explicit IPv6 exceptions
+still use the pre-API33 CIDR complement where needed. The local JVM Android stub selects that compiler;
 these unit checks do not substitute for real API33+ route acceptance. Both
 existing Android package workflows run `:protocolApi:testDebugUnitTest` beside
 the existing `:utils:testDebugUnitTest`, without another job.
