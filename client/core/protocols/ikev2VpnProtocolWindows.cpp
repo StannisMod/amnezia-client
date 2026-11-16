@@ -199,9 +199,9 @@ bool Ikev2Protocol::setNativeIpv6Blocked(bool blocked)
         for (const auto &address : host.addresses()) endpoints << address.toString();
         endpoints.removeDuplicates();
     }
-    auto interface = IpcClient::Interface();
-    if (!interface || !interface->isInitialized()) return false;
-    auto reply = interface->setNativeIpv6Blocked(blocked, endpoints);
+    auto service = IpcClient::Interface();
+    if (!service || !service->isInitialized()) return false;
+    auto reply = service->setNativeIpv6Blocked(blocked, endpoints);
     return reply.waitForFinished() && reply.returnValue();
 }
 
