@@ -5,6 +5,7 @@
 #include "../../core/utils/splitDnsConfig.h"
 #include "../../core/utils/proxyIpv6Routes.h"
 #include "../../core/utils/openVpnIpv6.h"
+#include "../../core/utils/ipv6Policy.h"
 #include "../../platforms/macos/daemon/macproxyipv6.h"
 #include "../../platforms/windows/daemon/windowsproxyipv6.h"
 #include "../../platforms/windows/daemon/windowsopenvpnipv6policy.h"
@@ -83,6 +84,43 @@ struct WindowsOpenVpnRouteFixture {
 class DomainRoutingConfigTest : public QObject {
     Q_OBJECT
 private slots:
+    void ipv6PreferenceDoesNotInventServerCapability() {
+        QVERIFY(!amnezia::ipv6Policy::tunnelAvailable({}));
+        QJsonObject config{{"protocol", "openvpn"}, {"openvpn_config_data", QJsonObject{{"ipv6Tunnel", true}}}};
+        QVERIFY(amnezia::ipv6Policy::tunnelAvailable(config)); // Missing preference defaults ON.
+        config["ipv6_enabled"] = false;
+        QVERIFY(!amnezia::ipv6Policy::tunnelAvailable(config));
+        config = {{"protocol", "awg"}, {"awg_config_data", QJsonObject{{"client_ip", "10.77.0.2, fd77::2/128"}}}};
+        QVERIFY(amnezia::ipv6Policy::tunnelAvailable(config));
+        config["awg_config_data"] = QJsonObject{{"client_ip", "10.77.0.2"}};
+        QVERIFY(!amnezia::ipv6Policy::tunnelAvailable(config));
+        config = {{"proxyIpv6", true}};
+        QVERIFY(amnezia::ipv6Policy::tunnelAvailable(config));
+        config["ipv6_enabled"] = false;
+        QVERIFY(!amnezia::ipv6Policy::tunnelAvailable(config));
+    }
+    void disabledXrayIpv6PreservesForeignPolicyAndUsesUniqueTag() {
+        const QJsonObject original{
+            {"outbounds", QJsonArray{QJsonObject{{"protocol", "vless"}, {"tag", "amnezia-ipv6-disabled"},
+                                                 {"settings", QJsonObject{{"synthetic", "preserve"}}}}}},
+            {"routing", QJsonObject{{"domainStrategy", "AsIs"}, {"rules", QJsonArray{
+                QJsonObject{{"type", "field"}, {"domain", QJsonArray{"example.test"}}, {"outboundTag", "amnezia-ipv6-disabled"}}}}}}
+        };
+        const auto input = QString::fromUtf8(QJsonDocument(original).toJson());
+        const auto output = QJsonDocument::fromJson(amnezia::ipv6Policy::disableXray(input).toUtf8()).object();
+        const auto outbounds = output.value("outbounds").toArray();
+        QCOMPARE(outbounds.first(), original.value("outbounds").toArray().first());
+        QCOMPARE(outbounds.last().toObject().value("tag").toString(), QString("amnezia-ipv6-disabled_"));
+        QCOMPARE(outbounds.last().toObject().value("protocol").toString(), QString("blackhole"));
+        const auto routing = output.value("routing").toObject();
+        QCOMPARE(routing.value("domainStrategy"), QJsonValue("AsIs"));
+        const auto rules = routing.value("rules").toArray();
+        QCOMPARE(rules.size(), 2);
+        QCOMPARE(rules.first().toObject().value("ip").toArray(), QJsonArray{"::/0"});
+        QCOMPARE(rules.first().toObject().value("outboundTag"), outbounds.last().toObject().value("tag"));
+        QCOMPARE(rules.last(), original.value("routing").toObject().value("rules").toArray().first());
+        QCOMPARE(amnezia::ipv6Policy::disableXray("not-json"), QString("not-json"));
+    }
     void windowsOpenVpnValidatesQtAddressesBeforeNativeChanges()
     {
         WindowsOpenVpnRouteFixture fixture;

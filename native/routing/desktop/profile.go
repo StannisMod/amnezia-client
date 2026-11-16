@@ -36,6 +36,7 @@ func text(v any) string {
 // checked independently by the service.
 func ProfileSession(raw []byte) (engine.SessionConfig, error) {
 	var profile struct {
+		IPv6Enabled  *bool             `json:"ipv6_enabled"`
 		EndpointHost string            `json:"routing_endpoint_host"`
 		Protocol     string            `json:"protocol"`
 		DNS          string            `json:"dns1"`
@@ -59,7 +60,7 @@ func ProfileSession(raw []byte) (engine.SessionConfig, error) {
 	if err != nil && profile.SplitDNS == nil {
 		return engine.SessionConfig{}, errors.New("a numeric DNS resolver is required")
 	}
-	config := engine.SessionConfig{Rules: profile.Rules, Resolver: netip.AddrPortFrom(resolver, 53), ResolverAction: profile.DNSPath, DNS: profile.SplitDNS}
+	config := engine.SessionConfig{IPv6Enabled: profile.IPv6Enabled, Rules: profile.Rules, Resolver: netip.AddrPortFrom(resolver, 53), ResolverAction: profile.DNSPath, DNS: profile.SplitDNS}
 	if profile.EndpointHost != "" {
 		config.EndpointHost, err = rules.NormalizeDomain(profile.EndpointHost)
 		if err != nil {

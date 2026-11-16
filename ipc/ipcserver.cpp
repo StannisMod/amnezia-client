@@ -213,6 +213,17 @@ bool IpcServer::StopRoutingIpv6()
     return Router::StopRoutingIpv6();
 }
 
+bool IpcServer::setNativeIpv6Blocked(bool blocked, QStringList endpoints)
+{
+#if defined(Q_OS_WIN) || defined(Q_OS_MACOS)
+    return KillSwitch::instance()->setNativeIpv6Blocked(blocked, endpoints);
+#else
+    Q_UNUSED(blocked)
+    Q_UNUSED(endpoints)
+    return false;
+#endif
+}
+
 void IpcServer::setLogsEnabled(bool enabled)
 {
 #ifdef MZ_DEBUG

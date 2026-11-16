@@ -338,6 +338,7 @@ final class RoutingPacketTunnel {
         }
         var session: [String: Any] = ["rules": rules, "vpn": ["type": transport, transport: awg],
                     "cache_path": support.appendingPathComponent("routing-fakeip-v1.db").path]
+        session["ipv6_enabled"] = config.ipv6Enabled ?? true
         if let text = config.routingDNSConfig {
             guard let data = text.data(using: .utf8),
                   let policy = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw RoutingError.invalidConfiguration }

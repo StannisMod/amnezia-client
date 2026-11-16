@@ -608,6 +608,7 @@ bool IosController::setupWireGuard()
         wgConfig.insert("routingTransport", "wireguard");
         wgConfig.insert("routingConfig", QString::fromUtf8(QJsonDocument(m_rawConfig.value("sing_box_routing").toObject()).toJson(QJsonDocument::Compact)));
         wgConfig.insert("routingDNSPath", m_rawConfig.value("sing_box_dns_path"));
+        wgConfig.insert("ipv6Enabled", m_rawConfig.value("ipv6_enabled").toBool(true));
         if (m_rawConfig.contains("sing_box_dns"))
             wgConfig.insert("routingDNSConfig", QString::fromUtf8(QJsonDocument(m_rawConfig.value("sing_box_dns").toObject()).toJson(QJsonDocument::Compact)));
     }
@@ -635,6 +636,7 @@ bool IosController::setupXray()
 
     finalConfig.insert(configKey::splitTunnelSites, splitTunnelSites);
     finalConfig.insert(configKey::config, xrayConfigStr);
+    finalConfig.insert("ipv6Enabled", m_rawConfig.value("ipv6_enabled").toBool(true));
 
     QJsonDocument finalConfigDoc(finalConfig);
     QString finalConfigStr(finalConfigDoc.toJson(QJsonDocument::Compact));
@@ -651,6 +653,7 @@ bool IosController::setupSSXray()
     finalConfig.insert(configKey::dns1, m_rawConfig[configKey::dns1]);
     finalConfig.insert(configKey::dns2, m_rawConfig[configKey::dns2]);
     finalConfig.insert(configKey::config, ssXrayConfigStr);
+    finalConfig.insert("ipv6Enabled", m_rawConfig.value("ipv6_enabled").toBool(true));
 
     QJsonDocument finalConfigDoc(finalConfig);
     QString finalConfigStr(finalConfigDoc.toJson(QJsonDocument::Compact));
@@ -705,6 +708,7 @@ bool IosController::setupAwg()
         wgConfig.insert("routingTransport", "awg");
         wgConfig.insert("routingConfig", QString::fromUtf8(QJsonDocument(m_rawConfig.value("sing_box_routing").toObject()).toJson(QJsonDocument::Compact)));
         wgConfig.insert("routingDNSPath", m_rawConfig.value("sing_box_dns_path"));
+        wgConfig.insert("ipv6Enabled", m_rawConfig.value("ipv6_enabled").toBool(true));
         if (m_rawConfig.contains("sing_box_dns"))
             wgConfig.insert("routingDNSConfig", QString::fromUtf8(QJsonDocument(m_rawConfig.value("sing_box_dns").toObject()).toJson(QJsonDocument::Compact)));
     }
@@ -1288,4 +1292,3 @@ bool IosController::isTestFlight() {
     NSURL *receiptURL = [[NSBundle mainBundle] appStoreReceiptURL];
     return receiptURL && [[receiptURL lastPathComponent] isEqualToString:@"sandboxReceipt"];
 }
-

@@ -54,6 +54,38 @@ private slots:
         QVERIFY(!QJsonDocument::fromJson(backup).object().contains("Conf/serverMigration"));
     }
 
+    void testIpv6DefaultAndBackup() {
+        auto *settings = m_coreController->m_settingsController;
+        QVERIFY(settings->isIpv6Enabled());
+        settings->toggleIpv6(false);
+        QVERIFY(!settings->isIpv6Enabled());
+        const auto backup = settings->backupAppConfig();
+        QCOMPARE(QJsonDocument::fromJson(backup).object().value("Conf/ipv6Enabled"), QJsonValue(false));
+        settings->toggleIpv6(true);
+        QCOMPARE(settings->restoreAppConfigFromData(backup), ErrorCode::NoError);
+        QVERIFY(!settings->isIpv6Enabled());
+        auto legacy = QJsonDocument::fromJson(backup).object();
+        legacy.remove("Conf/ipv6Enabled");
+        QCOMPARE(settings->restoreAppConfigFromData(QJsonDocument(legacy).toJson()), ErrorCode::NoError);
+        QVERIFY(settings->isIpv6Enabled());
+        legacy["Conf/ipv6Enabled"] = "false";
+        QCOMPARE(settings->restoreAppConfigFromData(QJsonDocument(legacy).toJson()), ErrorCode::RestoreBackupInvalidError);
+        QVERIFY(settings->isIpv6Enabled());
+    }
+
+    void testIpv6UiPropertyUsesSharedDefaultAndNotifies() {
+        auto *ui = m_coreController->m_settingsUiController;
+        QSignalSpy changes(ui, &SettingsUiController::ipv6EnabledChanged);
+        QVERIFY(ui->property("ipv6Enabled").toBool());
+        QVERIFY(ui->setProperty("ipv6Enabled", false));
+        QVERIFY(!m_coreController->m_settingsController->isIpv6Enabled());
+        QCOMPARE(changes.count(), 1);
+        QVERIFY(ui->setProperty("ipv6Enabled", false));
+        QCOMPARE(changes.count(), 1);
+        QVERIFY(ui->setProperty("ipv6Enabled", true));
+        QCOMPARE(changes.count(), 2);
+    }
+
     void testBackupExportImport() {
         QString backup = getEnvValue("BACKUP_PATH");
 
@@ -80,6 +112,7 @@ private slots:
 
         QJsonObject importedObj = QJsonDocument::fromJson(fileData).object();
         QJsonObject exportedObj = QJsonDocument::fromJson(backupData).object();
+        if (!importedObj.contains("Conf/ipv6Enabled")) importedObj.insert("Conf/ipv6Enabled", true);
         QVERIFY2(!importedObj.isEmpty(), "Backup file should contain valid JSON");
         QVERIFY2(!exportedObj.isEmpty(), "Exported backup should contain valid JSON");
 
@@ -91,7 +124,7 @@ private slots:
         const QStringList volatileKeys = { "AppPlatform", "Conf/autoStart", "Conf/killSwitchEnabled",
                                            "Conf/strictKillSwitchEnabled", "Conf/useAmneziaDns",
                                            "Conf/appsSplitTunnelingEnabled", "Conf/sitesSplitTunnelingEnabled",
-                                           "Conf/startMinimized", "Conf/ExceptApps" };
+                                            "Conf/startMinimized", "Conf/ExceptApps" };
         for (const QString &key : volatileKeys) {
             importedObj.remove(key);
             exportedObj.remove(key);

@@ -371,6 +371,20 @@ private slots:
         QVERIFY(!config.contains("block-ipv6"));
         QVERIFY(captured(config, "fd12::1"));
         QVERIFY(captured(config, "64:ff9b::c000:201"));
+        const auto storedProfile = profile.toJson();
+        for (const auto mode : {RouteMode::VpnAllSites, RouteMode::VpnOnlyForwardSites, RouteMode::VpnAllExceptSites}) {
+            auto disabled = settings;
+            disabled.ipv6Enabled = false;
+            disabled.splitTunneling = {true, mode, {"fd99::/16"}};
+            for (bool api : {false, true}) {
+                disabled.isApiConfig = api;
+                const auto blocked = configurator.processConfigWithLocalSettings(disabled, profile).nativeConfig();
+                QVERIFY(blocked.contains("block-ipv6"));
+                QVERIFY(captured(blocked, "fd99::4"));
+                QVERIFY(captured(blocked, "2001:db8::4"));
+                QCOMPARE(profile.toJson(), storedProfile); // OFF is local, not a server-capability rewrite.
+            }
+        }
         config = configurator.processConfigWithExportSettings({settings.dns}, profile).nativeConfig();
         QVERIFY(!config.contains("block-ipv6"));
         QVERIFY(captured(config, "2001:db8::1"));

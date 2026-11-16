@@ -108,6 +108,12 @@ extension PacketTunnelProvider {
             ? NEDNSSettings(servers: dnsArray)
             : NEDNSSettings(servers: ["1.1.1.1"])
             applyXraySplitTunnel(xrayConfig, settings: settings)
+            if xrayConfig.ipv6Enabled == false {
+                // Keep capture while the connection-local Xray policy rejects
+                // IPv6. Dropping the routes would leak through the native NIC.
+                settings.ipv6Settings?.includedRoutes = [NEIPv6Route.default()]
+                settings.ipv6Settings?.excludedRoutes = []
+            }
 
             let xrayConfigData = xrayConfig.config.data(using: .utf8)
 

@@ -28,7 +28,7 @@ OpenVpnProtocol::~OpenVpnProtocol()
 
 void OpenVpnProtocol::addResolvedIpv6Hosts(const QStringList &hosts, bool throughVpn, std::function<void(bool)> done)
 {
-    if (!isConnected() || !m_openVpnProcess) { done(false); return; }
+    if (!supportsIpv6HostUpdates() || !isConnected() || !m_openVpnProcess) { done(false); return; }
     const auto reply = m_openVpnProcess->addOpenVpnIpv6Hosts(vpnLocalAddress(), hosts, throughVpn);
     auto *watcher = new QRemoteObjectPendingCallWatcher(reply, this);
     connect(watcher, &QRemoteObjectPendingCallWatcher::finished, this,
@@ -41,8 +41,9 @@ void OpenVpnProtocol::addResolvedIpv6Hosts(const QStringList &hosts, bool throug
 
 bool OpenVpnProtocol::supportsIpv6HostUpdates() const
 {
-#if (defined(Q_OS_LINUX) && !defined(Q_OS_ANDROID)) || defined(Q_OS_WIN)
-    return m_configData.value(ProtocolUtils::key_proto_config_data(Proto::OpenVpn)).toObject().value("ipv6Tunnel").toBool();
+#if (defined(Q_OS_LINUX) && !defined(Q_OS_ANDROID)) || defined(Q_OS_WIN) || (defined(Q_OS_MACOS) && !defined(MACOS_NE))
+    return m_configData.value("ipv6_enabled").toBool(true)
+        && m_configData.value(ProtocolUtils::key_proto_config_data(Proto::OpenVpn)).toObject().value("ipv6Tunnel").toBool();
 #else
     return false;
 #endif

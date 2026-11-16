@@ -4,7 +4,7 @@ import subprocess
 # Native Go changes are deliberately separate; Kotlin, Qt, resources and build
 # inputs cannot be replaced by injecting libwg-go.so into an older package.
 HOST_PATHS = (
-    'client', 'common', 'third_party', 'recipes', 'cmake', 'deploy',
+    'client', 'common', 'ipc', 'third_party', 'recipes', 'cmake', 'deploy',
     'CMakeLists.txt', 'CMakePresets.json', '.gitmodules',
     ':(exclude)client/tests/**', ':(exclude)**/src/test/**',
 )

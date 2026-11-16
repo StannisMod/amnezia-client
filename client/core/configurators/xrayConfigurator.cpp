@@ -21,6 +21,7 @@
 #include "core/utils/constants/protocolConstants.h"
 #include "core/models/containerConfig.h"
 #include "core/models/protocols/xrayProtocolConfig.h"
+#include "core/utils/ipv6Policy.h"
 
 namespace {
     Logger logger("XrayConfigurator");
@@ -81,6 +82,8 @@ amnezia::ProtocolConfig XrayConfigurator::processConfigWithLocalSettings(const a
 {
     applyDnsToNativeConfig(settings.dns, protocolConfig);
     sanitizeXrayNativeConfig(protocolConfig);
+    if (!settings.ipv6Enabled)
+        protocolConfig.setNativeConfig(amnezia::ipv6Policy::disableXray(protocolConfig.nativeConfig()));
     return protocolConfig;
 }
 

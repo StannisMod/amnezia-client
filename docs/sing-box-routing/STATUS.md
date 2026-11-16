@@ -1,5 +1,63 @@
 # Implementation checkpoint — automated validation
 
+## In progress — default-on IPv6 preference, 2026-11-16
+
+The user removed historical OpenCode/Telegram incident attribution from the
+completion requirements and requested a default-on IPv6 switch on every
+platform. This is new product work, not covered by the earlier checkpoint.
+
+The preference is stored separately from server capabilities, included in
+backups, defaults to ON for old installations/backups, and applies on the next
+connection. OFF must retain capture and reject IPv6 rather than create a native
+bypass. The shared AWG/WG compiler rejects captured IPv6 before app/destination
+rules and returns AAAA NODATA while retaining IPv4 DNS. Android and Apple NE
+session builders pass the preference even when split DNS is configured.
+OpenVPN, Xray and native desktop WG paths have corresponding connection-local
+policy changes. Native Windows IKEv2 uses an independent dynamic WFP policy
+when OFF; its IPv6 RAS default-gateway option is enabled when ON.
+
+macOS OpenVPN dynamic-host capability is now source-enabled as requested, with
+the existing Darwin adapter. No Apple SDK/native execution is claimed.
+macOS tests remain excluded by the user's explicit decision.
+
+Validation and packaging of these changes are still in progress. Earlier
+packages below do not contain the new preference. Do not treat a green source
+unit test as acceptance of a newly installed package or remove PR draft on that
+basis.
+
+## Current continuation — 2026-11-16
+
+The current task excludes testing on macOS by explicit user decision. Missing
+macOS execution is therefore not a blocker for this task, but remains **NOT RUN**,
+not a successful native check. At the checkpoint below, desktop OpenVPN dynamic
+IPv6 updates on macOS were disabled; the Darwin adapter had not been compiled with the Apple SDK
+or validated against the kernel. Portable policy tests on Linux do not establish
+either result. Apple and physical-device results below are historical and must
+not be applied to the current source.
+
+Current source checkpoint: `2f6f36d791b1eec1bc9cc374ef3df197f87f7d44`.
+The Linux Go suite with `with_gvisor`, the full race suite using the existing
+race-only dependency preparation, and `go vet` passed using Go 1.27.1.
+The current Linux Qt routing build and its two CTest targets passed, as did the
+three Python regressions for Android host compatibility and evidence validation.
+These are source regressions, not newly built application packages.
+
+Available ordinary artifacts retain their original provenance:
+
+- Android: all four ABI APKs at `7795b41`; complete AWG/WG 100-cycle acceptance
+  remains attributed to `9a64032`, with backend byte-equality and focused later
+  APK acceptance recorded separately.
+- Linux: installer at `7795b41`; installed-service acceptance on Ubuntu 22.04
+  and 24.04 includes 100 resolver cycles and 12 OpenVPN cases on each.
+- Windows: MSI/EXE at `4bcde28`; both installed-service checks and uninstallation
+  passed. Native OpenVPN acceptance covers ten profile cases, 80 TCP/UDP probes,
+  six retained TCP connections and foreign-route ownership. The independent
+  100-cycle helper run belongs to earlier `dbff27f`, not these installers.
+
+Historical OpenCode/Telegram failures are not causally resolved by synthetic
+fault tests. No release, push, PR-ready transition or merge is established by
+this checkpoint. The full-plan audit is still in progress.
+
 ## Continuation — 2026-10-27
 
 Production source `d64d8af796602ace13cc971df9c19b05615fd2da` fixes the review's

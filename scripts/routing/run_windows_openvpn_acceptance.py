@@ -15,7 +15,9 @@ parser.add_argument('--work',required=True,type=Path)
 parser.add_argument('--owned-vm-name',required=True)
 parser.add_argument('--case',required=True,choices=('full','include','exclude','api-full','legacy-full','legacy-include','legacy-exclude','legacy-export','legacy-api','stale-full'))
 parser.add_argument('--route-updates',action='store_true')
+parser.add_argument('--native-ipv6-preference',action='store_true')
 args=parser.parse_args()
+assert not args.native_ipv6_preference or (args.case=='full' and not args.route_updates)
 assert platform.system()=='Windows' and os.environ.get('COMPUTERNAME')==args.owned_vm_name
 assert os.environ.get('AMNEZIA_IPV6_LAB')=='owned-windows-vm','requires an explicitly owned disposable VM'
 url=urllib.parse.urlsplit(args.fixture_url)
@@ -160,8 +162,35 @@ try:
     assert reply==origin,('IPv6 UDP origin mismatch',address,origin,reply)
     if origin!='BLOCKED':expected_origins['UDP|'+address+'|'+origin]+=1
    report['ipv6_origins'][address]={'tcp':tcp,'udp':reply}
-  echo(native4);echo(vpn4)
-  report.update(result='PASS',ipv4_native_and_vpn_echo=True)
+   echo(native4);echo(vpn4)
+   report.update(result='PASS',ipv4_native_and_vpn_echo=True)
+   if args.native_ipv6_preference:
+    native_policy_pending=True
+    rpc({'operation':'native_ipv6','blocked':True,'endpoints':[]})
+    # Turning KillSwitch off must not remove the independent IPv6 preference.
+    rpc({'operation':'disable_kill_switch'})
+    for address in expected:
+     try:
+      escaped=socket.create_connection((address,21944),timeout=2)
+     except OSError:pass
+     else:
+      escaped.close();raise AssertionError('native IPv6 preference leaked TCP: '+address)
+     with socket.socket(socket.AF_INET6,socket.SOCK_DGRAM) as udp:
+      udp.settimeout(2)
+      try:
+       udp.sendto(b'disabled-ipv6-preference',(address,21944))
+       udp.recv(32)
+      except OSError:pass
+      else:raise AssertionError('native IPv6 preference leaked UDP: '+address)
+    echo(native4);echo(vpn4)
+    rpc({'operation':'native_ipv6','blocked':False,'endpoints':[]})
+    native_policy_pending=False
+    for address,origin in expected.items():
+     assert origin!='BLOCKED'
+     restored=connect(address,21944,origin);echo(restored)
+     restored.close();sockets.remove(restored)
+    report['native_ipv6_preference']={'blocked_tcp_udp':8,'survived_killswitch_disable':True,
+      'ipv4_native_and_vpn_preserved':True,'ipv6_restored':True}
 
 finally:
  if report['result']!='PASS' and driver is not None:
@@ -187,6 +216,8 @@ finally:
   cleanup('management socket',management.close)
  if management_listener is not None:cleanup('management listener',management_listener.close)
  if driver is not None:
+  if locals().get('native_policy_pending',False):
+   cleanup('native IPv6 preference release',lambda:rpc({'operation':'native_ipv6','blocked':False,'endpoints':[]}))
   cleanup('service process release',lambda:rpc({'operation':'stop'}))
   cleanup('IPC input',driver.stdin.close)
   try:driver.wait(timeout=10)

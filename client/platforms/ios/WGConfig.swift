@@ -25,6 +25,7 @@ struct WGConfig: Decodable {
   let routingTransport: String?
   let routingConfig: String?
   let routingDNSPath: String?
+  let ipv6Enabled: Bool?
   let routingDNSConfig: String?
 
   enum CodingKeys: String, CodingKey {
@@ -55,6 +56,7 @@ struct WGConfig: Decodable {
     case routingTransport
     case routingConfig
     case routingDNSPath
+    case ipv6Enabled
     case routingDNSConfig
   }
 

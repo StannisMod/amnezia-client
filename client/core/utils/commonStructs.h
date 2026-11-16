@@ -52,6 +52,7 @@ namespace amnezia
         DnsSettings dns;
         bool isApiConfig;
         SplitTunnelingSettings splitTunneling;
+        bool ipv6Enabled = true;
     };
 
     struct ExportSettings
@@ -61,5 +62,4 @@ namespace amnezia
 }
 
 #endif // COMMONSTRUCTS_H
-
 

@@ -73,6 +73,17 @@ if(WIN32)
                 RUN_SERIAL TRUE TIMEOUT 180 LABELS "native;installed-service;openvpn"
                 ENVIRONMENT "AMNEZIA_IPV6_LAB=owned-windows-vm")
         endforeach()
+        if("full" IN_LIST AMNEZIA_WINDOWS_OPENVPN_CASES)
+            add_test(NAME WindowsNativeIpv6Preference
+                COMMAND "${Python3_EXECUTABLE}" "${_openvpn_acceptance}"
+                --fixture-url "${AMNEZIA_WINDOWS_OPENVPN_FIXTURE_URL}"
+                --ipc-driver "$<TARGET_FILE:openvpn_ipv6_route_fixture>"
+                --work "${CMAKE_CURRENT_BINARY_DIR}/openvpn-acceptance"
+                --owned-vm-name "${AMNEZIA_WINDOWS_OPENVPN_VM_NAME}" --case full --native-ipv6-preference)
+            set_tests_properties(WindowsNativeIpv6Preference PROPERTIES
+                RUN_SERIAL TRUE TIMEOUT 180 LABELS "native;installed-service;ipv6"
+                ENVIRONMENT "AMNEZIA_IPV6_LAB=owned-windows-vm")
+        endif()
         if("include" IN_LIST AMNEZIA_WINDOWS_OPENVPN_CASES)
             add_test(NAME WindowsOpenVpnRoutePreservation
                 COMMAND "${Python3_EXECUTABLE}" "${_openvpn_acceptance}"

@@ -11,6 +11,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import org.amnezia.vpn.util.Log
 import org.amnezia.vpn.util.net.InetNetwork
 import org.json.JSONObject
+import java.net.Inet6Address
 
 private const val TAG = "Protocol"
 
@@ -118,7 +119,12 @@ abstract class Protocol {
 
         for (i in 0 until splitTunnelSites.length()) {
             val address = InetNetwork.parse(splitTunnelSites.getString(i))
+            if (!config.optBoolean("ipv6_enabled", true) && address.address is Inet6Address) continue
             addressHandlerFunc(address)
+        }
+        if (!config.optBoolean("ipv6_enabled", true)) {
+            addRoute(InetNetwork("::", 1))
+            addRoute(InetNetwork("8000::", 1))
         }
     }
 

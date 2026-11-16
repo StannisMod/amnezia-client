@@ -47,11 +47,13 @@ class WindowsFirewall final : public QObject {
   bool allowTrafficRange(const QStringList& ranges);
   bool allowDomainRouting(const QString& helperPath, quint64 captureLuid);
   bool removeDomainRouting();
+  bool setNativeIpv6Blocked(bool blocked, const QList<QHostAddress>& endpoints);
 
  private:
   static bool initSublayer();
   WindowsFirewall(HANDLE session, QObject* parent);
   HANDLE m_sessionHandle;
+  HANDLE m_ipv6PolicySession = nullptr;
   bool m_init = false;
   QList<uint64_t> m_activeRules;
   QMultiMap<QString, uint64_t> m_peerRules;

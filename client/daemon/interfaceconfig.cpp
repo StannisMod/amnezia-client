@@ -18,6 +18,7 @@ QJsonObject InterfaceConfig::toJson() const {
   json.insert("privateKey", QJsonValue(m_privateKey));
   json.insert("deviceIpv4Address", QJsonValue(m_deviceIpv4Address));
   json.insert("deviceIpv6Address", QJsonValue(m_deviceIpv6Address));
+  json.insert("ipv6_enabled", m_ipv6Enabled);
   json.insert("serverPublicKey", QJsonValue(m_serverPublicKey));
   json.insert("serverPskKey", QJsonValue(m_serverPskKey));
   json.insert("serverIpv4AddrIn", QJsonValue(m_serverIpv4AddrIn));

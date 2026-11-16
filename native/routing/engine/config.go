@@ -14,6 +14,7 @@ const TUNTag = "amnezia-tun"
 // RoutingConfig is independent of the VPN transport. Native hosts still own
 // capture/protection and supply a separately validated transport adapter.
 type RoutingConfig struct {
+	IPv6Enabled         *bool
 	Rules               rules.Config
 	Resolver            netip.AddrPort
 	ResolverAction      rules.Action
@@ -63,6 +64,11 @@ func (c RoutingConfig) compile(vpn map[string]any) ([]byte, error) {
 		return nil, e
 	}
 	preRules := append([]any{map[string]any{"inbound": []string{TUNTag}, "port": 53, "action": "hijack-dns"}}, scopeRules...)
+	if c.IPv6Enabled != nil && !*c.IPv6Enabled {
+		// Keep IPv6 captured: omitting its TUN route would leak via the host.
+		// This mandatory restriction precedes app scope and destination rules.
+		preRules = append([]any{map[string]any{"ip_version": 6, "action": "reject"}}, preRules...)
+	}
 	if c.Applications != nil && c.AndroidApplications != nil {
 		return nil, errors.New("desktop and Android application policies cannot be combined")
 	}
@@ -147,6 +153,13 @@ func (c RoutingConfig) compile(vpn map[string]any) ([]byte, error) {
 		// A fixed default_domain_resolver bypasses per-domain DNS rules in
 		// sing-box dialers. Our outbounds use DNSRouter.Lookup without pinning.
 		delete(route, "default_domain_resolver")
+	}
+	if c.IPv6Enabled != nil && !*c.IPv6Enabled {
+		dns := config["dns"].(map[string]any)
+		dns["strategy"] = "ipv4_only"
+		dns["rules"] = append([]any{map[string]any{
+			"query_type": []string{"AAAA"}, "action": "predefined", "rcode": "NOERROR",
+		}}, dns["rules"].([]any)...)
 	}
 	if err := c.AndroidApplications.applyDNS(config["dns"].(map[string]any), c.DNS, c.ResolverAction); err != nil {
 		return nil, err

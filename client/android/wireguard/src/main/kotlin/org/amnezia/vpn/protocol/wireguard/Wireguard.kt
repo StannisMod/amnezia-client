@@ -224,6 +224,7 @@ open class Wireguard : Protocol() {
             }
             put("cache_path", java.io.File(context.filesDir, "routing-fakeip-v1.db").absolutePath)
             put("rules", config.getJSONObject("sing_box_routing"))
+            put("ipv6_enabled", config.optBoolean("ipv6_enabled", true))
             if (splitDNS != null) {
                 put("dns", splitDNS)
                 if (splitDNS.optBoolean("preserve_network_domains") || splitDNS.getJSONObject("policies").keys().asSequence().any {

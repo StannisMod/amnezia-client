@@ -75,6 +75,7 @@ private:
 
 public:
     static bool setEndpointDnsAllowed(quint16 port, const QString &resolver, bool enabled);
+    static bool setNativeIpv6Rules(const QStringList &rules);
     static void install();
     static void uninstall();
     static bool isInstalled();

@@ -28,6 +28,7 @@ class IpcInterface
 
     SLOT( bool StartRoutingIpv6() );
     SLOT( bool StopRoutingIpv6() );
+    SLOT( bool setNativeIpv6Blocked(bool blocked, QStringList endpoints) );
 
     SLOT( bool disableKillSwitch() );
     SLOT( bool disableAllTraffic() );

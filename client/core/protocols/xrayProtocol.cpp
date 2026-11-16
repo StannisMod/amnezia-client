@@ -301,11 +301,13 @@ ErrorCode XrayProtocol::setupRouting()
 
 #if (defined(Q_OS_LINUX) || defined(Q_OS_MACOS) || defined(Q_OS_WIN)) && !defined(Q_OS_ANDROID)
                 QStringList includedIpv6, excludedIpv6;
-                if (m_routeMode != amnezia::RouteMode::VpnOnlyForwardSites) includedIpv6 << "::/0";
+                const bool ipv6Enabled = m_rawConfig.value("ipv6_enabled").toBool(true);
+                if (!ipv6Enabled || m_routeMode != amnezia::RouteMode::VpnOnlyForwardSites) includedIpv6 << "::/0";
                 const auto sites = m_rawConfig.value(configKey::splitTunnelSites).toArray();
                 for (const auto &site : sites) {
                     const auto subnet = QHostAddress::parseSubnet(site.toString());
                     if (subnet.first.protocol() != QAbstractSocket::IPv6Protocol) continue;
+                    if (!ipv6Enabled) continue; // OFF must not create native IPv6 exclusions.
                     if (m_routeMode == amnezia::RouteMode::VpnOnlyForwardSites) includedIpv6 << site.toString();
                     else if (m_routeMode == amnezia::RouteMode::VpnAllExceptSites) excludedIpv6 << site.toString();
                 }

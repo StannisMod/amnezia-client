@@ -390,6 +390,16 @@ bool SecureAppSettingsRepository::isKillSwitchEnabled() const
     return value("Conf/killSwitchEnabled", true).toBool();
 }
 
+bool SecureAppSettingsRepository::isIpv6Enabled() const
+{
+    return value("Conf/ipv6Enabled", true).toBool();
+}
+
+void SecureAppSettingsRepository::setIpv6Enabled(bool enabled)
+{
+    setValue("Conf/ipv6Enabled", enabled);
+}
+
 void SecureAppSettingsRepository::setKillSwitchEnabled(bool enabled)
 {
     setValue("Conf/killSwitchEnabled", enabled);
@@ -541,6 +551,11 @@ QByteArray SecureAppSettingsRepository::backupAppConfig() const
 bool SecureAppSettingsRepository::restoreAppConfig(const QByteArray &cfg)
 {
     auto document = QJsonDocument::fromJson(cfg).object();
+    if (document.isEmpty()) return false;
+    const auto ipv6Key = QStringLiteral("Conf/ipv6Enabled");
+    if (document.contains(ipv6Key) && !document.value(ipv6Key).isBool()) return false;
+    // Restore old backups to the new default, not a previous local OFF value.
+    if (!document.contains(ipv6Key)) document.insert(ipv6Key, true);
     const auto key = QStringLiteral("Conf/androidAppRoutingV1");
     if (document.contains(key)) {
         bool supported = true;

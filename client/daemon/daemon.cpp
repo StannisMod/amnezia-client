@@ -269,6 +269,10 @@ bool Daemon::parseConfig(const QJsonObject& obj, InterfaceConfig& config) {
 
   config.m_deviceIpv4Address = obj.value("deviceIpv4Address").toString();
   config.m_deviceIpv6Address = obj.value("deviceIpv6Address").toString();
+  if (obj.contains("ipv6_enabled") && !obj.value("ipv6_enabled").isBool()) return false;
+  config.m_ipv6Enabled = obj.value("ipv6_enabled").toBool(true)
+      && !config.m_deviceIpv6Address.isEmpty()
+      && config.m_deviceIpv6Address.section('/', 0, 0) != QStringLiteral("fd58:baa6:dead::1");
   if (config.m_deviceIpv4Address.isNull() &&
       config.m_deviceIpv6Address.isNull()) {
     logger.warning() << "no device addresses found in jsonConfig input";
@@ -533,6 +537,7 @@ bool Daemon::supportServerSwitching(const InterfaceConfig& config) const {
   return current.m_privateKey == config.m_privateKey &&
          current.m_deviceIpv4Address == config.m_deviceIpv4Address &&
          current.m_deviceIpv6Address == config.m_deviceIpv6Address &&
+         current.m_ipv6Enabled == config.m_ipv6Enabled &&
          current.m_serverIpv4Gateway == config.m_serverIpv4Gateway &&
          current.m_serverIpv6Gateway == config.m_serverIpv6Gateway;
 }

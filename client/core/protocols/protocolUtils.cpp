@@ -219,7 +219,7 @@ QString ProtocolUtils::key_proto_config_path(Proto p)
 
 bool amnezia::ProtocolUtils::supportsDomainRouting(Proto p)
 {
-#if defined(Q_OS_ANDROID) || defined(Q_OS_IOS) || defined(Q_OS_LINUX) || defined(Q_OS_WIN)
+#if defined(Q_OS_ANDROID) || defined(Q_OS_IOS) || defined(Q_OS_LINUX) || defined(Q_OS_WIN) || (defined(Q_OS_MACOS) && defined(MACOS_NE))
     return p == Proto::Awg || p == Proto::WireGuard;
 #else
     return false;

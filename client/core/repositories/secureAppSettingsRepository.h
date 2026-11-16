@@ -78,6 +78,9 @@ public:
     void setKillSwitchEnabled(bool enabled);
     bool isStrictKillSwitchEnabled() const;
     void setStrictKillSwitchEnabled(bool enabled);
+
+    bool isIpv6Enabled() const;
+    void setIpv6Enabled(bool enabled);
     
     bool isAutoConnect() const;
     void setAutoConnect(bool enabled);

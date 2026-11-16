@@ -1,4 +1,5 @@
 #include "killswitch.h"
+#include "../../client/core/utils/ipv6Policy.h"
 #include "secureQSettings.h"
 
 
@@ -153,6 +154,12 @@ bool KillSwitch::disableKillSwitch() {
         MacOSFirewall::setAnchorEnabled(QStringLiteral("300.allowLAN"), false);
         MacOSFirewall::setAnchorEnabled(QStringLiteral("310.blockDNS"), false);
         MacOSFirewall::setAnchorEnabled(QStringLiteral("400.allowPIA"), false);
+    } else if (m_nativeIpv6Blocked) {
+        // The explicit IPv6 preference is independent of KillSwitch. Clearing
+        // KillSwitch must not remove the native session's fail-closed anchor.
+        for (const auto &anchor : {"100.blockAll", "110.allowNets", "120.blockNets", "200.allowVPN",
+                                  "250.blockIPv6", "290.allowDHCP", "300.allowLAN", "310.blockDNS", "400.allowPIA"})
+            MacOSFirewall::setAnchorEnabled(QString::fromLatin1(anchor), false);
     } else {
         MacOSFirewall::uninstall();
     }
@@ -168,6 +175,48 @@ bool KillSwitch::disableKillSwitch() {
     m_allowedRanges.clear();
     return true;
 }
+
+#ifdef Q_OS_WIN
+bool KillSwitch::setNativeIpv6Blocked(bool blocked, const QStringList &endpoints)
+{
+    if (endpoints.size() > 64) return false;
+    QList<QHostAddress> addresses;
+    for (const auto &endpoint : endpoints) {
+        const QHostAddress address(endpoint);
+        if (address.isNull() || !address.scopeId().isEmpty() || address.isMulticast()) return false;
+        addresses << address;
+    }
+    auto *firewall = WindowsFirewall::create(this);
+    return firewall && firewall->setNativeIpv6Blocked(blocked, addresses);
+}
+#endif
+
+#ifdef Q_OS_MACOS
+bool KillSwitch::setNativeIpv6Blocked(bool blocked, const QStringList &endpoints)
+{
+    if (!blocked) {
+        if (!MacOSFirewall::setNativeIpv6Rules({})) return false;
+        m_nativeIpv6Blocked = false;
+        return true;
+    }
+    if (endpoints.size() > 64) return false;
+    QStringList rules;
+    for (const auto &endpoint : endpoints) {
+        if (endpoint.isEmpty()) continue;
+        const QHostAddress address(endpoint);
+        if (address.isNull() || !address.scopeId().isEmpty() || address.isMulticast()) return false;
+        if (address.protocol() == QAbstractSocket::IPv6Protocol)
+            rules << QStringLiteral("pass out quick inet6 to %1 keep state").arg(address.toString());
+    }
+    if (!MacOSFirewall::isInstalled()) MacOSFirewall::install();
+    MacOSFirewall::ensureRootAnchorPriority();
+    // The encrypted underlay remains usable when its endpoint is IPv6. No
+    // arbitrary profile text enters pfctl, only QHostAddress's canonical form.
+    rules << QStringLiteral("block return out quick inet6 all");
+    m_nativeIpv6Blocked = true; // Retain intent even if verification fails.
+    return MacOSFirewall::setNativeIpv6Rules(rules);
+}
+#endif
 
 bool KillSwitch::disableAllTraffic() {
 #ifdef Q_OS_WIN
@@ -446,7 +495,7 @@ bool KillSwitch::enableKillSwitch(const QJsonObject &configStr, int vpnAdapterIn
     LinuxFirewall::updateBlockNets(blocknets);
     LinuxFirewall::setAnchorEnabled(LinuxFirewall::Both, QStringLiteral("130.allowMarkedXray"), true);
     LinuxFirewall::setAnchorEnabled(LinuxFirewall::Both, QStringLiteral("200.allowVPN"), true);
-    LinuxFirewall::setAnchorEnabled(LinuxFirewall::IPv6, QStringLiteral("250.blockIPv6"), !configStr.value("proxyIpv6").toBool());
+    LinuxFirewall::setAnchorEnabled(LinuxFirewall::IPv6, QStringLiteral("250.blockIPv6"), !amnezia::ipv6Policy::tunnelAvailable(configStr));
     LinuxFirewall::setAnchorEnabled(LinuxFirewall::Both, QStringLiteral("290.allowDHCP"), true);
     LinuxFirewall::setAnchorEnabled(LinuxFirewall::Both, QStringLiteral("300.allowLAN"), true);
     LinuxFirewall::setAnchorEnabled(LinuxFirewall::Both, QStringLiteral("310.blockDNS"), true);
@@ -481,7 +530,7 @@ bool KillSwitch::enableKillSwitch(const QJsonObject &configStr, int vpnAdapterIn
     MacOSFirewall::setAnchorEnabled(QStringLiteral("120.blockNets"), blockNets);
     MacOSFirewall::setAnchorTable(QStringLiteral("120.blockNets"), blockNets, QStringLiteral("blocknets"), blocknets);
     MacOSFirewall::setAnchorEnabled(QStringLiteral("200.allowVPN"), true);
-    MacOSFirewall::setAnchorEnabled(QStringLiteral("250.blockIPv6"), !configStr.value("proxyIpv6").toBool());
+    MacOSFirewall::setAnchorEnabled(QStringLiteral("250.blockIPv6"), !amnezia::ipv6Policy::tunnelAvailable(configStr));
     MacOSFirewall::setAnchorEnabled(QStringLiteral("290.allowDHCP"), true);
     MacOSFirewall::setAnchorEnabled(QStringLiteral("300.allowLAN"), true);
 

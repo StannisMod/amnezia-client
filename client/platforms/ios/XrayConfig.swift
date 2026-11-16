@@ -7,6 +7,7 @@ struct XrayConfig: Decodable {
     let splitTunnelType: Int?
     let splitTunnelSites: [String]?
     let config: String
+    let ipv6Enabled: Bool?
 }
 
 struct XrayRoute {

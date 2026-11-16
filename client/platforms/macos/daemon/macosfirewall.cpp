@@ -208,6 +208,18 @@ void MacOSFirewall::setAnchorWithRules(const QString& anchor, bool enabled, cons
         return (void)execute(QStringLiteral("echo -e \"%1\" | pfctl -q -a '%2/%3' -f -").arg(ruleList.join('\n'), kRootAnchor, anchor), true);
 }
 
+bool MacOSFirewall::setNativeIpv6Rules(const QStringList &rules)
+{
+    const QString anchor = QStringLiteral("%1/255.nativeIpv6Disabled").arg(kRootAnchor);
+    if (rules.isEmpty())
+        return execute(QStringLiteral("pfctl -q -a '%1' -F rules && "
+            "actual=$(pfctl -q -a '%1' -s rules) && test -z \"$actual\"").arg(anchor)) == 0;
+    // Rules are produced internally, with canonical numeric addresses only.
+    return execute(QStringLiteral("echo -e \"%1\" | pfctl -q -a '%2' -f - && "
+        "actual=$(pfctl -q -a '%2' -s rules) && test -n \"$actual\"")
+        .arg(rules.join('\n'), anchor)) == 0;
+}
+
 bool MacOSFirewall::setEndpointDnsAllowed(quint16 port, const QString &resolver, bool enabled)
 {
     if (!isInstalled()) return true;

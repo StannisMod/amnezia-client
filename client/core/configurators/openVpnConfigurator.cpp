@@ -201,7 +201,7 @@ ProtocolConfig OpenVpnConfigurator::processConfigWithLocalSettings(const Connect
 
     QString config = protocolConfig.nativeConfig();
     const auto *openVpn = protocolConfig.as<OpenVpnProtocolConfig>();
-    const bool ipv6Tunnel = openVpn && openVpn->clientConfig && openVpn->clientConfig->ipv6Tunnel;
+    const bool ipv6Tunnel = settings.ipv6Enabled && openVpn && openVpn->clientConfig && openVpn->clientConfig->ipv6Tunnel;
     config.remove(openVpnIpv6::blockingBlock());
     config.remove(openVpnIpv6::captureBlock());
     if (!settings.isApiConfig) {
@@ -224,7 +224,8 @@ ProtocolConfig OpenVpnConfigurator::processConfigWithLocalSettings(const Connect
         ? RouteMode::VpnAllSites : split.routeMode;
     const QStringList dns{settings.dns.primaryDns, settings.dns.secondaryDns};
     config.append(ipv6Tunnel ? openVpnIpv6::captureDirectives(mode, split.siteRoutes, dns)
-        : openVpnIpv6::blockingDirectives(config, mode, split.siteRoutes, dns));
+        : openVpnIpv6::blockingDirectives(config, settings.ipv6Enabled ? mode : RouteMode::VpnAllSites,
+                                         split.siteRoutes, dns));
 
 #ifdef MZ_ANDROID
     config = openVpnIpv6::forTunBuilder(config);

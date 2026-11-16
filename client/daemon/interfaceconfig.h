@@ -26,6 +26,7 @@ class InterfaceConfig {
   QString m_privateKey;
   QString m_deviceIpv4Address;
   QString m_deviceIpv6Address;
+  bool m_ipv6Enabled = true;
   QString m_serverIpv4Gateway;
   QString m_serverIpv6Gateway;
   QString m_serverPublicKey;

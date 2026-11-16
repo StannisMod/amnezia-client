@@ -288,6 +288,7 @@ QJsonObject ConnectionController::createConnectionConfiguration(const QPair<QStr
             m_appSettingsRepository->routeMode()
         }
     };
+    connectionSettings.ipv6Enabled = m_appSettingsRepository->isIpv6Enabled();
 
     if (proto == Proto::OpenVpn && connectionSettings.splitTunneling.isSitesSplitTunnelingEnabled) {
         const auto sites = m_appSettingsRepository->vpnSites(connectionSettings.splitTunneling.routeMode);
@@ -321,6 +322,7 @@ QJsonObject ConnectionController::createConnectionConfiguration(const QPair<QStr
     vpnConfiguration[configKey::hostName] = hostName;
     vpnConfiguration[configKey::description] = description;
     vpnConfiguration[configKey::configVersion] = configVersion;
+    vpnConfiguration["ipv6_enabled"] = m_appSettingsRepository->isIpv6Enabled();
 
     return vpnConfiguration;
 }

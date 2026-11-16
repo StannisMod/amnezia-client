@@ -63,6 +63,9 @@ int main(int argc, char **argv)
     }
 #endif
     QTextStream input(stdin), output(stdout);
+#if defined(AMNEZIA_ROUTE_FIXTURE_IPC) && defined(Q_OS_WIN)
+    bool nativePolicyPending = false;
+#endif
     output << "READY\n" << Qt::flush;
     while (!input.atEnd()) {
         const auto document = QJsonDocument::fromJson(input.readLine().toUtf8()).object();
@@ -76,6 +79,28 @@ int main(int argc, char **argv)
             continue;
         }
         const auto operation = document.value("operation").toString();
+#ifdef Q_OS_WIN
+        if (service && operation == "native_ipv6") {
+            if (!document.value("blocked").isBool()) {
+                output << "FAIL\n" << Qt::flush;
+                continue;
+            }
+            QStringList endpoints;
+            for (const auto &endpoint : document.value("endpoints").toArray()) endpoints << endpoint.toString();
+            const bool blocked = document.value("blocked").toBool();
+            if (blocked) nativePolicyPending = true; // A failed reply can follow a committed mutation.
+            auto reply = service->setNativeIpv6Blocked(blocked, endpoints);
+            const bool success = reply.waitForFinished(10000) && reply.returnValue();
+            if (success && !blocked) nativePolicyPending = false;
+            output << (success ? "OK\n" : "FAIL\n") << Qt::flush;
+            continue;
+        }
+        if (service && operation == "disable_kill_switch") {
+            auto reply = service->disableKillSwitch();
+            output << (reply.waitForFinished(10000) && reply.returnValue() ? "OK\n" : "FAIL\n") << Qt::flush;
+            continue;
+        }
+#endif
         if (process && (operation == "stop" || operation == "kill" || operation == "close")) {
             if (operation == "kill") process->kill();
             else if (operation == "close") process->close();
@@ -99,4 +124,10 @@ int main(int argc, char **argv)
                                     document.value("through_vpn").toBool());
         output << (success ? "OK\n" : "FAIL\n") << Qt::flush;
     }
+#if defined(AMNEZIA_ROUTE_FIXTURE_IPC) && defined(Q_OS_WIN)
+    if (nativePolicyPending) {
+        auto reply = service->setNativeIpv6Blocked(false, {});
+        if (!reply.waitForFinished(10000) || !reply.returnValue()) return 70;
+    }
+#endif
 }

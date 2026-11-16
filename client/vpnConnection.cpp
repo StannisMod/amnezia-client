@@ -655,8 +655,8 @@ void VpnConnection::appendSplitTunnelingConfig()
     m_vpnConfiguration.insert(configKey::splitTunnelType, routeMode);
     m_vpnConfiguration.insert(configKey::splitTunnelSites, sitesJsonArray);
 
-#if defined(Q_OS_ANDROID) || defined(Q_OS_IOS) || defined(Q_OS_LINUX) || defined(Q_OS_WIN)
-    if (m_appSettingsRepository->isSingBoxRoutingEnabled()
+#if defined(Q_OS_ANDROID) || defined(Q_OS_IOS) || defined(Q_OS_LINUX) || defined(Q_OS_WIN) || (defined(Q_OS_MACOS) && defined(MACOS_NE))
+    if ((m_appSettingsRepository->isSingBoxRoutingEnabled() || !m_appSettingsRepository->isIpv6Enabled())
             && ProtocolUtils::supportsDomainRouting(ProtocolUtils::protoFromString(protocolName))) {
         m_vpnConfiguration.insert("sing_box_routing", m_appSettingsRepository->isSitesSplitTunnelingEnabled()
             ? m_appSettingsRepository->domainRoutingConfig()
