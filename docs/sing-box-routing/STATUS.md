@@ -1,6 +1,6 @@
 # Implementation checkpoint — automated validation
 
-## In progress — default-on IPv6 preference, 2026-11-16
+## Default-on IPv6 preference — local acceptance, 2026-11-16
 
 The user removed historical OpenCode/Telegram incident attribution from the
 completion requirements and requested a default-on IPv6 switch on every
@@ -20,12 +20,48 @@ macOS OpenVPN dynamic-host capability is now source-enabled as requested, with
 the existing Darwin adapter. No Apple SDK/native execution is claimed.
 macOS tests remain excluded by the user's explicit decision.
 
-Validation and packaging of these changes are still in progress. Earlier
-packages below do not contain the new preference. Do not treat a green source
-unit test as acceptance of a newly installed package or remove PR draft on that
-basis.
+Production package source is `93aef020f0ae6ff610d98a9cd5ecd50ddd2eb52d`;
+Android acceptance harness is `66993d8e15660e47de74fd6b4a9172f888b4f859`
+(test-only addition, not a package rebuild).
 
-## Current continuation — 2026-11-16
+Locally executed checks:
+- Four ordinary Android debug ABI packages: signatures, 16-KiB alignment,
+  native pins/notices and Qt payload binding PASS.
+- Actual x86_64 APK on API35, AWG and WireGuard: default/explicit IPv6 ON,
+  OFF AAAA NODATA, cached FakeIP/ULA/NAT64 TCP+UDP rejection, IPv4 VPN/DIRECT
+  preserved and independent observer counters unchanged.
+- Full Android AWG and WG acceptance PASS, each including 100 connection cycles,
+  old interactive/media TCP recovery, aged upload MTU, live per-app DNS/routing,
+  IPv6 scope and always-on/lockdown. These are emulator, not physical-device or
+  battery results.
+- Linux ordinary IFW installer, 32 Qt targets, and installed-service acceptance
+  on Ubuntu 22.04/24.04 PASS. Each installed run includes 100 resolver cycles,
+  endpoint migration, AWG/WG preserving recovery with strict policy on/off,
+  helper crash recovery and OS-state restoration.
+- Installed Linux OpenVPN matrix PASS: full/include/exclude, legacy/API and
+  stale-capability cases with original IPv4 TCP retained.
+- Windows ordinary MSI/EXE builds, 31 Qt targets, actual installed-service
+  acceptance and uninstall PASS for both installer formats.
+- Windows installed OpenVPN full/include/exclude, API, legacy and stale-capability
+  canonical gates PASS. Include route-preservation and the independent native
+  IPv6 preference gate PASS: OFF survives KillSwitch disable, IPv4 remains
+  usable, IPv6 is restored after policy removal.
+
+Earlier failed attempts are retained separately, not overwritten: a WG fixture
+without native DNS 1053, Linux export-mode/probe packaging omissions, and Windows
+fixture IPv6/guest-clock setup failures. TLS validation was not weakened.
+The original WG run changed CPU limits mid-run and is not performance-parity
+evidence. Final AWG/WG retries used the stable reduced resource budget.
+
+Apple SDK/native execution remains NOT RUN; no claim of native macOS/iOS
+acceptance or a newly built Apple package is made. End-to-end IKEv2 negotiation
+and physical-device handover are not established by the independent WFP gate.
+No push, hosted CI, PR-ready transition or merge was performed.
+Earlier artifact/checkpoint sections below are historical and retain their
+original source attribution. Final artifact reconciliation is tracked separately;
+local green results do not authorize publication or removal of PR draft.
+
+## Historical pre-preference continuation — 2026-11-16
 
 The current task excludes testing on macOS by explicit user decision. Missing
 macOS execution is therefore not a blocker for this task, but remains **NOT RUN**,
