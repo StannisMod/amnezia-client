@@ -74,6 +74,7 @@ public final class RoutingInstrumentation extends Instrumentation {
     private boolean privateDnsPolicyOnly;
     private boolean xrayIpv6Only;
     private boolean openVpnIpv6Only;
+    private boolean ipv6PreferenceOnly;
     private volatile boolean policyPaused;
     private boolean api28CompatOnly;
     private boolean diagnoseControl;
@@ -102,6 +103,7 @@ public final class RoutingInstrumentation extends Instrumentation {
         privateDnsStrict = Boolean.parseBoolean(args.getString("private_dns_strict", "false"));
         xrayIpv6Only = Boolean.parseBoolean(args.getString("xray_ipv6_only", "false"));
         openVpnIpv6Only = Boolean.parseBoolean(args.getString("openvpn_ipv6_only", "false"));
+        ipv6PreferenceOnly = Boolean.parseBoolean(args.getString("ipv6_preference_only", "false"));
         privateDnsPolicyOnly = Boolean.parseBoolean(args.getString("private_dns_policy_only", "false"));
         privateDnsOpportunistic = Boolean.parseBoolean(args.getString("private_dns_opportunistic", "false"));
         androidUser = Integer.parseInt(args.getString("android_user", "0"));
@@ -151,6 +153,9 @@ public final class RoutingInstrumentation extends Instrumentation {
             require(didBind && bound.await(15, TimeUnit.SECONDS), "AwgService binding failed");
             Bundle registration = new Bundle(); registration.putString("CLIENT_NAME", "routing-acceptance");
             send(REGISTER, registration);
+            if (ipv6PreferenceOnly) {
+                ipv6Preference();result.putString("routing_result","PASS_IPV6_PREFERENCE_ONLY");code=0;return;
+            }
             if (openVpnIpv6Only) {
                 openVpnIpv6();result.putString("routing_result","PASS_OPENVPN_IPV6_ONLY");code=0;return;
             }
@@ -1168,6 +1173,49 @@ public final class RoutingInstrumentation extends Instrumentation {
         state = -1; serviceError = false;
         startService(configuration(inverse)); awaitState(CONNECTED, false);
     }
+
+    private void ipv6Preference() throws Exception {
+        JSONObject config = configuration(false);
+        config.remove("ipv6_enabled"); // Real old-profile/default path.
+        state=-1;serviceError=false;startService(config);awaitState(CONNECTED,false);
+        InetAddress cached = dns("ipv6.test",28);
+        require(cached.getAddress().length==16 && fake(cached),"default ON lost IPv6 FakeIP");
+        InetAddress ula = InetAddress.getByName("fd77::2");
+        InetAddress nat64 = InetAddress.getByName("64:ff9b::c000:201");
+        for (InetAddress address : new InetAddress[]{cached,ula,nat64}) requireRoute(address,"VPN");
+        disconnect();
+
+        config.put("ipv6_enabled",false);
+        state=-1;serviceError=false;startService(config);awaitState(CONNECTED,false);
+        require(dnsAnswer("ipv6.test",28,true)==null,"OFF still returned AAAA");
+        requireRoute(dns("vpn.test",1),"VPN");
+        requireRoute(dns("direct.ru",1),"DIRECT");
+        JSONObject before = control("/stats",false);
+        for (InetAddress address : new InetAddress[]{cached,ula,nat64}) {
+            String answer=null;
+            try { answer=tcp(address); } catch (Exception expected) {}
+            require(answer==null,"OFF leaked IPv6 TCP");
+            answer=null;
+            try { answer=udp(address); } catch (Exception expected) {}
+            require(answer==null,"OFF leaked IPv6 UDP");
+        }
+        JSONObject after = control("/stats",false);
+        for (String counter : new String[]{"direct_tcp","direct_udp","vpn_tcp","vpn_udp"})
+            require(before.getLong(counter)==after.getLong(counter),"OFF delivered IPv6 to observer: "+counter);
+        requireRoute(dns("vpn.test",1),"VPN");
+        requireRoute(dns("direct.ru",1),"DIRECT");
+        disconnect();
+
+        config.put("ipv6_enabled",true);
+        state=-1;serviceError=false;startService(config);awaitState(CONNECTED,false);
+        requireRoute(dns("ipv6.test",28),"VPN");
+        requireRoute(ula,"VPN");requireRoute(nat64,"VPN");
+        disconnect();
+        progress("IPV6_PREFERENCE_RESULT "+new JSONObject().put("default_on",true).put("explicit_on",true)
+            .put("off_aaaa_nodata",true).put("off_cached_fakeip_and_literals_blocked",true)
+            .put("blocked_tcp_udp_probes",6).put("independent_observers_unchanged",true)
+            .put("ipv4_vpn_and_direct_preserved",true));
+    }
     private void startService(JSONObject config) {
         Intent intent = new Intent().setComponent(new ComponentName("org.amnezia.vpn", "org.amnezia.vpn."+serviceClass()));
         intent.putExtra("VPN_CONFIG", config.toString());
@@ -1248,6 +1296,9 @@ public final class RoutingInstrumentation extends Instrumentation {
         return i + 1;
     }
     private static InetAddress dns(String name, int type) throws Exception {
+        return dnsAnswer(name,type,false);
+    }
+    private static InetAddress dnsAnswer(String name, int type, boolean allowNoData) throws Exception {
         java.io.ByteArrayOutputStream bytes = new java.io.ByteArrayOutputStream();
         java.io.DataOutputStream out = new java.io.DataOutputStream(bytes);
         out.writeShort(123); out.writeShort(0x100); out.writeShort(1); out.writeShort(0); out.writeShort(0); out.writeShort(0);
@@ -1265,6 +1316,7 @@ public final class RoutingInstrumentation extends Instrumentation {
                 if (rrtype == type && length == (type == 1 ? 4 : 16)) return InetAddress.getByAddress(java.util.Arrays.copyOfRange(b, i, i + length));
                 i += length;
             }
+            if (allowNoData && u16(b,6)==0) return null;
             throw new AssertionError("missing DNS address");
         }
     }

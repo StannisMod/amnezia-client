@@ -171,6 +171,7 @@ def main():
     parser.add_argument("--diagnose-control", action="store_true", help="capture slow control-path stacks before timeout; diagnostic result only")
     parser.add_argument("--xray-ipv6-only", action="store_true", help="real Xray VLESS/TLS IPv4 and IPv6 capture/egress fixture; focused acceptance")
     parser.add_argument("--openvpn-ipv6-only", action="store_true", help="real OpenVpnService IPv6 scope and retained IPv4 TCP; owned local TLS fixture")
+    parser.add_argument("--ipv6-preference-only", action="store_true", help="default/explicit ON and fail-closed OFF on the actual AWG/WG VpnService")
     parser.add_argument("--private-dns-policy-only", action="store_true", help="strict DNS startup/live policy refusal and retained-TCP pause/resume on a disposable emulator")
     parser.add_argument("--private-dns-strict", action="store_true", help="with --app-policy-only, require strict Private DNS; disposable fixture CA must be installed in the emulator")
     parser.add_argument("--private-dns-opportunistic", action="store_true", help="with --app-policy-only, require active Android Private DNS and use network DoT for DIRECT DNS")
@@ -185,7 +186,7 @@ def main():
     if not args.openvpn_ipv6_only and (args.quic_probe is None or args.quic_ca is None):
         parser.error('--quic-probe and --quic-ca are required outside OpenVPN-only acceptance')
     assert not args.package_lifecycle or args.app_policy_only, '--package-lifecycle requires --app-policy-only'
-    if sum((args.app_policy_only, args.upload_mtu_only, args.primary_only, args.performance_only, args.api28_compat_only, args.private_dns_policy_only, args.xray_ipv6_only, args.openvpn_ipv6_only)) > 1:
+    if sum((args.app_policy_only, args.upload_mtu_only, args.primary_only, args.performance_only, args.api28_compat_only, args.private_dns_policy_only, args.xray_ipv6_only, args.openvpn_ipv6_only, args.ipv6_preference_only)) > 1:
         parser.error("focused acceptance modes are mutually exclusive")
     assert not (args.private_dns_opportunistic and args.private_dns_strict), "Private DNS modes are mutually exclusive"
     assert not args.private_dns_policy_only or (args.android_user == 0 and not args.private_dns_strict and not args.private_dns_opportunistic), "policy transition mode needs user 0 and initially disabled Private DNS"
@@ -261,7 +262,7 @@ def main():
     sign(aligned, instrument)
 
     probe_apks, probe_processes, probe_logs = [], [], []
-    if not (args.upload_mtu_only or args.primary_only or args.performance_only or args.api28_compat_only or args.private_dns_policy_only or args.xray_ipv6_only or args.openvpn_ipv6_only):
+    if not (args.upload_mtu_only or args.primary_only or args.performance_only or args.api28_compat_only or args.private_dns_policy_only or args.xray_ipv6_only or args.openvpn_ipv6_only or args.ipv6_preference_only):
         probe_apks = build_application_probes(tools, android_jar, work, sign)
 
     assert adb("shell", "getprop", "ro.kernel.qemu") == "1", "only disposable Android emulators are supported"
@@ -321,6 +322,7 @@ def main():
                    "-e", "private_dns_opportunistic", str(args.private_dns_opportunistic).lower(),
                    "-e", "xray_ipv6_only", str(args.xray_ipv6_only).lower(),
                    "-e", "openvpn_ipv6_only", str(args.openvpn_ipv6_only).lower(),
+                   "-e", "ipv6_preference_only", str(args.ipv6_preference_only).lower(),
                    "-e", "private_dns_policy_only", str(args.private_dns_policy_only).lower(),
                    "-e", "private_dns_strict", str(args.private_dns_strict).lower(),
                    "-e", "primary_only", str(args.primary_only).lower(),
@@ -507,6 +509,17 @@ def main():
             assert process.wait(timeout=15) == 0
             timer.cancel()
         output = "".join(output)
+        if args.ipv6_preference_only:
+            assert 'INSTRUMENTATION_RESULT: routing_result=PASS_IPV6_PREFERENCE_ONLY' in output
+            rows = [json.loads(line.split('IPV6_PREFERENCE_RESULT ', 1)[1]) for line in output.splitlines() if 'IPV6_PREFERENCE_RESULT ' in line]
+            assert len(rows) == 1 and rows[0] == {
+                "default_on": True, "explicit_on": True, "off_aaaa_nodata": True,
+                "off_cached_fakeip_and_literals_blocked": True, "blocked_tcp_udp_probes": 6,
+                "independent_observers_unchanged": True, "ipv4_vpn_and_direct_preserved": True,
+            }
+            report['ipv6_preference'] = rows[0]
+            report['native_vpn_acceptance'] = 'NOT_RUN_IPV6_PREFERENCE_ONLY'
+            return
         if args.openvpn_ipv6_only:
             assert 'INSTRUMENTATION_RESULT: routing_result=PASS_OPENVPN_IPV6_ONLY' in output
             cases = [json.loads(line.split('OPENVPN_IPV6_CASE ', 1)[1]) for line in output.splitlines() if 'OPENVPN_IPV6_CASE ' in line]
