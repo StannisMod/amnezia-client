@@ -109,24 +109,24 @@ jobs:
               for attempt in range(4):
                   try:
                       with urllib.request.urlopen(req, timeout=30) as stream: return json.load(stream)
-                   except urllib.error.HTTPError as error:
-                       rate_limited = error.code == 403 and (
-                           error.headers.get('X-RateLimit-Remaining') == '0'
-                           or error.headers.get('Retry-After') is not None)
-                       if (error.code not in (429, 500, 502, 503, 504) and not rate_limited) or attempt == 3:
-                           print('GitHub API request failed:', error.code, path,
-                                 'remaining=', error.headers.get('X-RateLimit-Remaining'), flush=True)
-                           raise
-                       if rate_limited:
-                           delay = min(120, max(1, int(error.headers.get('Retry-After', '60'))))
-                           print('GitHub API rate limit; bounded retry in', delay, 'seconds', flush=True)
-                           time.sleep(delay)
+                  except urllib.error.HTTPError as error:
+                      rate_limited = error.code == 403 and (
+                          error.headers.get('X-RateLimit-Remaining') == '0'
+                          or error.headers.get('Retry-After') is not None)
+                      if (error.code not in (429, 500, 502, 503, 504) and not rate_limited) or attempt == 3:
+                          print('GitHub API request failed:', error.code, path,
+                                'remaining=', error.headers.get('X-RateLimit-Remaining'), flush=True)
+                          raise
+                      if rate_limited:
+                          delay = min(120, max(1, int(error.headers.get('Retry-After', '60'))))
+                          print('GitHub API rate limit; bounded retry in', delay, 'seconds', flush=True)
+                          time.sleep(delay)
                   except urllib.error.URLError:
                       if attempt == 3: raise
                   time.sleep(2 ** attempt)
           override = os.environ.get('APK_OVERRIDE')
-           compatibility = {}
-           terminal_jobs = {}
+          compatibility = {}
+          terminal_jobs = {}
           def compatible(sha):
               if sha not in compatibility:
                   subprocess.run(['git', 'fetch', '--depth', '1', 'origin', sha], check=True)
@@ -146,16 +146,16 @@ jobs:
                       except urllib.error.HTTPError as error:
                           if error.code != 404: raise
                   candidates.sort(key=lambda run: run['created_at'], reverse=True)
-               for candidate in candidates:
-                   if compatibility.get(candidate['head_sha']) is False:
-                       continue
-                   run_id = candidate['id']
-                   if run_id in terminal_jobs:
-                       jobs = terminal_jobs[run_id]
-                   else:
-                       jobs = api(f"actions/runs/{run_id}/jobs?per_page=100")['jobs']
-                       if candidate['status'] == 'completed':
-                           terminal_jobs[run_id] = jobs
+              for candidate in candidates:
+                  if compatibility.get(candidate['head_sha']) is False:
+                      continue
+                  run_id = candidate['id']
+                  if run_id in terminal_jobs:
+                      jobs = terminal_jobs[run_id]
+                  else:
+                      jobs = api(f"actions/runs/{run_id}/jobs?per_page=100")['jobs']
+                      if candidate['status'] == 'completed':
+                          terminal_jobs[run_id] = jobs
                   android = [j for j in jobs if j['name'] == 'client-android (x86_64, android_x86_64)']
                   if not android or android[0]['status'] != 'completed' or android[0]['conclusion'] != 'success':
                       continue
