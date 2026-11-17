@@ -58,6 +58,17 @@ struct Fixture {
 class MacOpenVpnIpv6PolicyTest : public QObject {
     Q_OBJECT
 private slots:
+    void localLinkLocalRouteKeepsItsOwningZoneNotLoopbackIndex()
+    {
+        const auto exists = [](unsigned index) { return index == 1 || index == 7; };
+        QCOMPARE(*mac6::linkLocalZone(7, 0, 1, true, exists), 7u);
+        QCOMPARE(*mac6::linkLocalZone(0, 7, 1, true, exists), 7u);
+        QCOMPARE(*mac6::linkLocalZone(7, 7, 7, false, exists), 7u);
+        QVERIFY(!mac6::linkLocalZone(7, 0, 1, false, exists));
+        QVERIFY(!mac6::linkLocalZone(7, 1, 1, true, exists));
+        QVERIFY(!mac6::linkLocalZone(8, 0, 1, true, exists));
+        QVERIFY(!mac6::linkLocalZone(7, 0, 0, true, exists));
+    }
     void unscopedReplacementPreservesPinsAndRestoresOnlyOwnedState()
     {
         const mac6::Route before{host, {}, vpn, true};

@@ -76,7 +76,8 @@ public:
     }
 private:
     static qsizetype rounded(qsizetype length) { return length ? (length + 3) & ~qsizetype(3) : 4; }
-    static std::optional<QHostAddress> address(const QByteArray &bytes, const QString &device) {
+    static std::optional<QHostAddress> address(const QByteArray &bytes, const QString &device,
+                                              bool localDestination = false) {
         if (bytes.size() < qsizetype(sizeof(sockaddr_in6))) return {};
         sockaddr_in6 value{};
         std::memcpy(&value, bytes.constData(), sizeof(value));
@@ -88,11 +89,14 @@ private:
             // Route messages can contain KAME's embedded link-local zone.
             const auto embedded = (unsigned(ip[2]) << 8) | ip[3];
             const auto index = QNetworkInterface::interfaceIndexFromName(device);
-            if ((embedded && embedded != unsigned(index))
-                || (value.sin6_scope_id && value.sin6_scope_id != unsigned(index))) return {};
+            const auto zone = linkLocalZone(embedded, value.sin6_scope_id, unsigned(index),
+                localDestination, [](unsigned candidate) {
+                    return !QNetworkInterface::interfaceNameFromIndex(candidate).isEmpty();
+                });
+            if (!zone) return {};
             ip[2] = ip[3] = 0;
             result = QHostAddress(ip);
-            result.setScopeId(device);
+            result.setScopeId(QNetworkInterface::interfaceNameFromIndex(*zone));
         }
         return result;
     }
@@ -135,7 +139,8 @@ private:
             }
             offset = end;
             const auto device = QNetworkInterface::interfaceNameFromIndex(header.rtm_index);
-            auto destination = address(addresses.value(RTA_DST), device);
+            auto destination = address(addresses.value(RTA_DST), device,
+                                       (header.rtm_flags & RTF_LOCAL) != 0);
             if (!destination) {
                 qWarning() << "Darwin IPv6 destination decode failed"
                            << "device" << device << "flags" << Qt::hex << header.rtm_flags

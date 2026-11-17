@@ -18,6 +18,16 @@ struct Entry {
     Route row() const { return {destination.toString(), scope, path, managed && usable() && !transient, transient}; }
 };
 struct PathChoice { std::optional<Path> path; bool ambiguous = false; };
+inline std::optional<unsigned> linkLocalZone(unsigned embedded, unsigned explicitZone,
+    unsigned routeIndex, bool localDestination, const std::function<bool(unsigned)> &exists)
+{
+    if (!routeIndex || (embedded && explicitZone && embedded != explicitZone)) return {};
+    const unsigned zone = explicitZone ? explicitZone : embedded ? embedded : routeIndex;
+    // Local host routes use lo0 as their delivery interface, while KAME keeps
+    // the zone of the interface which owns that link-local address.
+    if ((!localDestination && zone != routeIndex) || !exists(zone)) return {};
+    return zone;
+}
 inline bool replaceUnscoped(const Route &before, const Route &after,
     const std::function<std::optional<Observed>()> &read,
     const std::function<bool(const Route &)> &remove,
