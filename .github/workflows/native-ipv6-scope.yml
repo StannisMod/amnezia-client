@@ -28,7 +28,7 @@ jobs:
       - uses: jurplel/install-qt-action@v4.3.1
         with:
           version: '6.10.1'
-          modules: 'qtremoteobjects'
+          modules: 'qtremoteobjects qt5compat'
       - name: Build production Darwin route adapter and policy regression
         run: |
           cmake -S client/tests/routing -B "$RUNNER_TEMP/mac-route-build" -DCMAKE_PREFIX_PATH="$QT_ROOT_DIR"
