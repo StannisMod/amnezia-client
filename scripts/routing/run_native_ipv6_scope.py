@@ -145,7 +145,37 @@ def main():
         route('B')
         old_b = connect('B')
         udp('B')
-        echo(old_a, 'A', 'original-after-A-to-B')
+        try:
+            echo(old_a, 'A', 'original-after-A-to-B')
+        except Exception as error:
+            # Preserve native evidence before ExitStack removes the owned
+            # routes/TUNs. A timeout remains failed acceptance, not a retry.
+            diagnostics = {}
+            if system == 'Darwin':
+                probes = {
+                    'destination': ['/sbin/route', '-n', 'get', '-inet6', remote],
+                    **{f'scope_{tag}': ['/sbin/route', '-n', 'get', '-inet6',
+                                       remote, '-ifscope', device]
+                       for tag, device in devices.items()},
+                    **{f'interface_{tag}': ['/sbin/ifconfig', device]
+                       for tag, device in devices.items()},
+                }
+                for label, argv in probes.items():
+                    result = subprocess.run(argv, text=True, stdout=subprocess.PIPE,
+                                            stderr=subprocess.STDOUT, timeout=10)
+                    diagnostics[label] = {'exit_code': result.returncode, 'output': result.stdout}
+            for tag, peer in peers.items():
+                peer.stdin.write('stats\n')
+                peer.stdin.flush()
+                diagnostics['peer_' + tag] = reply(peer)
+            args.report.parent.mkdir(parents=True, exist_ok=True)
+            args.report.write_text(json.dumps({
+                'os': system, 'status': 'FAIL', 'stage': 'original-after-A-to-B',
+                'error': repr(error), 'remote': remote, 'sources': sources,
+                'original_source': old_a.getsockname()[0],
+                'diagnostics': diagnostics,
+            }, indent=2) + '\n')
+            raise
         route('A')
         new_a = connect('A')
         udp('A')
