@@ -649,7 +649,7 @@ def main():
             "routes": ("shell", "ip", "route", "show", "table", "all"),
             "rules": ("shell", "ip", "rule"),
             "connectivity": ("shell", "dumpsys", "connectivity"),
-            "service-errors": ("logcat", "-d", "-s", "AndroidRuntime:E", "AmneziaVpnService:E", "Go:E", "libc:F"),
+            "service-errors": ("logcat", "-d", "-s", "AndroidRuntime:E", "AmneziaVpnService:E", "AmneziaRoutingHost:W", "Go:E", "libc:F"),
         }.items():
             try:
                 (work / (label + ".log")).write_text(adb(*command))
