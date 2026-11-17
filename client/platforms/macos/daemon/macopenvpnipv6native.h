@@ -136,7 +136,12 @@ private:
             offset = end;
             const auto device = QNetworkInterface::interfaceNameFromIndex(header.rtm_index);
             auto destination = address(addresses.value(RTA_DST), device);
-            if (!destination) return invalid("destination", offset);
+            if (!destination) {
+                qWarning() << "Darwin IPv6 destination decode failed"
+                           << "device" << device << "flags" << Qt::hex << header.rtm_flags
+                           << "sockaddr" << addresses.value(RTA_DST).toHex();
+                return invalid("destination", offset);
+            }
             destination->setScopeId({});
             Entry entry;
             entry.destination = *destination;
