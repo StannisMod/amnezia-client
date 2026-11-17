@@ -22,7 +22,10 @@ import time
 
 
 def command(*args):
-    return subprocess.check_output(args, text=True, stderr=subprocess.STDOUT, timeout=10)
+    output = subprocess.check_output(args, text=True, stderr=subprocess.STDOUT, timeout=10)
+    if args[0] == '/sbin/route':
+        print(json.dumps({'route_command': list(args), 'output': output}), flush=True)
+    return output
 
 
 def reply(peer):
@@ -116,9 +119,22 @@ def main():
                 command('ip', '-6', 'rule', 'add', 'priority', str(32000 + index), 'from', sources[tag] + '/128', 'lookup', table)
                 cleanup.callback(command, 'ip', '-6', 'rule', 'del', 'priority', str(32000 + index), 'from', sources[tag] + '/128', 'lookup', table)
 
+        route_history = []
+
+        def record_routes(stage):
+            if system != 'Darwin':
+                return
+            table = command('/usr/sbin/netstat', '-rn', '-f', 'inet6')
+            rows = [line for line in table.splitlines() if remote in line or prefix in line]
+            entry = {'stage': stage, 'owned_destination_routes': rows}
+            route_history.append(entry)
+            print(json.dumps(entry), flush=True)
+
         def route(tag, initial=False):
             if system == 'Darwin':
+                record_routes('before-' + tag)
                 command('/sbin/route', '-n', 'add' if initial else 'change', '-inet6', '-host', remote, '-interface', devices[tag])
+                record_routes('after-' + tag)
                 if initial:
                     cleanup.callback(command, '/sbin/route', '-n', 'delete', '-inet6', '-host', remote)
             else:
@@ -173,6 +189,7 @@ def main():
                 'os': system, 'status': 'FAIL', 'stage': 'original-after-A-to-B',
                 'error': repr(error), 'remote': remote, 'sources': sources,
                 'original_source': old_a.getsockname()[0],
+                'route_history': route_history,
                 'diagnostics': diagnostics,
             }, indent=2) + '\n')
             raise

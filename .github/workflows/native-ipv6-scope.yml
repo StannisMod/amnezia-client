@@ -1,0 +1,37 @@
+name: Native IPv6 scope diagnostic
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  native-scope:
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        os: [macos-26, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.1'
+      - name: Build peer and exercise native OS TCP routing
+        shell: bash
+        run: |
+          set -o pipefail
+          cd native/routing
+          go build -mod=readonly -tags with_gvisor -o "$RUNNER_TEMP/native-ipv6-peer" ./cmd/native-ipv6-peer
+          sudo env AMNEZIA_NATIVE_IPV6_LAB=owned-runner GITHUB_ACTIONS="$GITHUB_ACTIONS" \
+            "$(command -v python3)" "$GITHUB_WORKSPACE/scripts/routing/run_native_ipv6_scope.py" \
+            --peer "$RUNNER_TEMP/native-ipv6-peer" \
+            --report "$GITHUB_WORKSPACE/native-ipv6-scope.json" | tee "$GITHUB_WORKSPACE/native-ipv6-scope.log"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-ipv6-scope-${{ matrix.os }}
+          path: |
+            native-ipv6-scope.json
+            native-ipv6-scope.log
+          if-no-files-found: error
