@@ -112,27 +112,31 @@ private:
         }
         if (!loaded) return {};
         QList<Entry> entries;
+        const auto invalid = [](const char *stage, qsizetype offset) -> std::optional<QList<Entry>> {
+            qWarning() << "Darwin IPv6 routing snapshot rejected" << stage << offset;
+            return {};
+        };
         for (qsizetype offset = 0; offset < data.size();) {
-            if (data.size() - offset < qsizetype(sizeof(rt_msghdr))) return {};
+            if (data.size() - offset < qsizetype(sizeof(rt_msghdr))) return invalid("short-header", offset);
             rt_msghdr header{};
             std::memcpy(&header, data.constData() + offset, sizeof(header));
             if (header.rtm_version != RTM_VERSION || header.rtm_errno
-                || header.rtm_msglen < sizeof(header) || header.rtm_msglen > data.size() - offset) return {};
+                || header.rtm_msglen < sizeof(header) || header.rtm_msglen > data.size() - offset) return invalid("header", offset);
             QMap<int, QByteArray> addresses;
             qsizetype cursor = offset + sizeof(header), end = offset + header.rtm_msglen;
             for (int bit = 0; bit < RTAX_MAX; ++bit) {
                 if (!(header.rtm_addrs & (1 << bit))) continue;
-                if (end - cursor < 2) return {};
+                if (end - cursor < 2) return invalid("short-address", cursor);
                 const auto length = static_cast<unsigned char>(data[cursor]);
                 const auto step = rounded(length);
-                if (step > end - cursor) return {};
+                if (step > end - cursor) return invalid("address-length", cursor);
                 addresses.insert(1 << bit, QByteArray(data.constData() + cursor, length));
                 cursor += step;
             }
             offset = end;
             const auto device = QNetworkInterface::interfaceNameFromIndex(header.rtm_index);
             auto destination = address(addresses.value(RTA_DST), device);
-            if (!destination) return {};
+            if (!destination) return invalid("destination", offset);
             destination->setScopeId({});
             Entry entry;
             entry.destination = *destination;
@@ -152,13 +156,19 @@ private:
                 for (int i = 0; i < 128; ++i) {
                     const int byte = int(offsetof(sockaddr_in6, sin6_addr)) + i / 8;
                     const bool one = byte < mask.size() && (static_cast<unsigned char>(mask[byte]) & (0x80 >> (i % 8)));
-                    if (one && zero) return {};
+                    if (one && zero) return invalid("noncontiguous-mask", offset);
                     if (one) ++entry.prefix; else zero = true;
                 }
             }
             if (header.rtm_flags & RTF_GATEWAY) {
                 const auto gateway = address(addresses.value(RTA_GATEWAY), device);
-                if (!gateway) return {};
+                if (!gateway) {
+                    const auto bytes = addresses.value(RTA_GATEWAY);
+                    qWarning() << "Darwin IPv6 snapshot gateway family/length"
+                               << (bytes.size() >= 2 ? int(static_cast<unsigned char>(bytes[1])) : -1)
+                               << bytes.size() << header.rtm_index;
+                    return invalid("gateway", offset);
+                }
                 entry.path.gateway = *gateway;
             }
             entries.append(entry);
