@@ -57,6 +57,12 @@ public:
             if (!found || !found->exact) return false;
             if (*found->exact == after) return true;
             if (!(*found->exact == before)) return false;
+            if (before.scope.isEmpty()) {
+                return replaceUnscoped(before, after,
+                    [this, &before] { return read(before.host, {}); },
+                    [this](const Route &route) { return mutate(RTM_DELETE, route); },
+                    [this](const Route &route) { return mutate(RTM_ADD, route); });
+            }
             return mutate(RTM_CHANGE, after);
         };
         result.removeOwned = [this](const Route &route) {

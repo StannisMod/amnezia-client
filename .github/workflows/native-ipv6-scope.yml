@@ -5,6 +5,9 @@ on:
     paths:
       - '.github/workflows/native-ipv6-scope.yml'
       - 'scripts/routing/run_native_ipv6_scope.py'
+      - 'client/platforms/macos/daemon/macopenvpnipv6*.h'
+      - 'client/tests/routing/macIpv6RouteDriver.cpp'
+      - 'client/tests/routing/testMacOpenVpnIpv6Policy.cpp'
   workflow_dispatch:
 permissions:
   contents: read
@@ -22,6 +25,15 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.27.1'
+      - uses: jurplel/install-qt-action@v4.3.1
+        with:
+          version: '6.10.1'
+          modules: 'qtremoteobjects'
+      - name: Build production Darwin route adapter and policy regression
+        run: |
+          cmake -S client/tests/routing -B "$RUNNER_TEMP/mac-route-build" -DCMAKE_PREFIX_PATH="$QT_ROOT_DIR"
+          cmake --build "$RUNNER_TEMP/mac-route-build" --target mac_ipv6_route_driver test_mac_openvpn_ipv6_policy --parallel 2
+          ctest --test-dir "$RUNNER_TEMP/mac-route-build" -R MacOpenVpn --output-on-failure
       - name: Build peer and exercise native OS TCP routing
         shell: bash
         run: |
@@ -30,7 +42,8 @@ jobs:
           go build -mod=readonly -tags with_gvisor -o "$RUNNER_TEMP/native-ipv6-peer" ./cmd/native-ipv6-peer
           sudo env AMNEZIA_NATIVE_IPV6_LAB=owned-runner GITHUB_ACTIONS="$GITHUB_ACTIONS" \
             "$(command -v python3)" "$GITHUB_WORKSPACE/scripts/routing/run_native_ipv6_scope.py" \
-            --peer "$RUNNER_TEMP/native-ipv6-peer" \
+             --peer "$RUNNER_TEMP/native-ipv6-peer" \
+             --route-driver "$RUNNER_TEMP/mac-route-build/mac_ipv6_route_driver" \
             --report "$GITHUB_WORKSPACE/native-ipv6-scope.json" | tee "$GITHUB_WORKSPACE/native-ipv6-scope.log"
       - uses: actions/upload-artifact@v4
         if: always()

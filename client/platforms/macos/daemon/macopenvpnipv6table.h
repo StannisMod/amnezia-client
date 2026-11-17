@@ -18,6 +18,26 @@ struct Entry {
     Route row() const { return {destination.toString(), scope, path, managed && usable() && !transient, transient}; }
 };
 struct PathChoice { std::optional<Path> path; bool ambiguous = false; };
+inline bool replaceUnscoped(const Route &before, const Route &after,
+    const std::function<std::optional<Observed>()> &read,
+    const std::function<bool(const Route &)> &remove,
+    const std::function<bool(const Route &)> &create)
+{
+    if (!before.managed || !after.managed || before.host != after.host
+        || !before.scope.isEmpty() || !after.scope.isEmpty()) return false;
+    auto found = read();
+    if (!found || !found->exact || !(*found->exact == before)) return false;
+    if (before == after) return true;
+    // Keep all source-path pins intact. RTM_CHANGE cannot safely select the
+    // unscoped key on XNU: its lookup may modify one of those pins instead.
+    if (!remove(before)) return false;
+    if (create(after)) return true;
+    found = read();
+    if (!found) return false;
+    if (found->exact && *found->exact == after) return true; // Committed, lost acknowledgement.
+    if (!found->exact) create(before); // Restore only an empty key, never overwrite foreign state.
+    return false;
+}
 inline PathChoice sourcePath(const QList<Entry> &entries, QHostAddress host, const QString &device)
 {
     host.setScopeId({});

@@ -58,6 +58,47 @@ struct Fixture {
 class MacOpenVpnIpv6PolicyTest : public QObject {
     Q_OBJECT
 private slots:
+    void unscopedReplacementPreservesPinsAndRestoresOnlyOwnedState()
+    {
+        const mac6::Route before{host, {}, vpn, true};
+        const mac6::Route after{host, {}, native, true};
+        const mac6::Route foreign{host, {}, native, false};
+        for (int failure = 0; failure < 5; ++failure) {
+            QMap<QString, mac6::Route> rows;
+            rows.insert(key(before), before);
+            const mac6::Route pin{host, vpn.device, vpn, true};
+            rows.insert(key(pin), pin);
+            int creates = 0;
+            auto read = [&]() -> std::optional<mac6::Observed> {
+                mac6::Observed result;
+                if (rows.contains(key(before))) result.exact = rows.value(key(before));
+                return result;
+            };
+            auto remove = [&](const mac6::Route &row) {
+                if (failure == 1) return false;
+                if (!(rows.value(key(row)) == row)) return false;
+                rows.remove(key(row));
+                return true;
+            };
+            auto create = [&](const mac6::Route &row) {
+                ++creates;
+                if (creates == 1 && failure == 2) return false;
+                if (creates == 1 && failure == 3) {
+                    rows.insert(key(row), foreign);
+                    return false;
+                }
+                if (rows.contains(key(row))) return false;
+                rows.insert(key(row), row);
+                return !(creates == 1 && failure == 4);
+            };
+            QCOMPARE(mac6::replaceUnscoped(before, after, read, remove, create),
+                     failure == 0 || failure == 4);
+            QVERIFY(rows.value(key(pin)) == pin);
+            QVERIFY(rows.value(key(before)) == (failure == 3 ? foreign
+                : failure == 0 || failure == 4 ? after : before));
+            QCOMPARE(creates, failure == 1 ? 0 : failure == 2 ? 2 : 1);
+        }
+    }
     void nativeTableSelectionRespectsScopesAndHandover()
     {
         const mac6::Path wifi{"en1", QHostAddress("fe80::2%en1")};

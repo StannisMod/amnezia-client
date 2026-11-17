@@ -99,5 +99,9 @@ if(WIN32)
 endif()
 
 # Export the production Qt-generated DNS policy for the real TUN acceptance.
+if(APPLE)
+    add_executable(mac_ipv6_route_driver macIpv6RouteDriver.cpp)
+    target_link_libraries(mac_ipv6_route_driver PRIVATE Qt6::Core Qt6::Network)
+endif()
 add_executable(dns_policy_fixture dnsPolicyFixture.cpp)
 target_link_libraries(dns_policy_fixture PRIVATE Qt6::Core)

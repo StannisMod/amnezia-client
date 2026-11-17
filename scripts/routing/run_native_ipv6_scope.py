@@ -67,6 +67,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--peer', type=Path, required=True)
     parser.add_argument('--report', type=Path, required=True)
+    parser.add_argument('--route-driver', type=Path,
+                        help='Darwin production Qt route adapter driver; hosted owned lab only')
     args = parser.parse_args()
     system = platform.system()
     assert os.geteuid() == 0, 'requires privileges only inside the owned lab'
@@ -91,6 +93,14 @@ def main():
             if line.strip().startswith('destination:'):
                 assert line.split(':', 1)[1].strip() != remote, 'destination already has a host route'
     peers, devices = {}, {}
+    primary = {}
+
+    def native_route(operation, scope, device, before=None):
+        argv = [str(args.route_driver.resolve()), operation, remote, scope, device, 'managed']
+        if before is not None:
+            argv.append(before)
+        assert command(*argv).strip() == 'OK', 'production native route adapter rejected mutation'
+
     with ExitStack() as cleanup:
         for index, tag in enumerate(('A', 'B')):
             peer = subprocess.Popen([str(args.peer.resolve()), '--address', remote, '--tag', tag],
@@ -108,8 +118,12 @@ def main():
                 while 'tentative' in command('/sbin/ifconfig', name):
                     assert time.monotonic() < deadline, 'owned IPv6 DAD did not finish'
                     time.sleep(.05)
-                command('/sbin/route', '-n', 'add', '-inet6', '-host', remote, '-ifscope', name, '-interface', name)
-                cleanup.callback(command, '/sbin/route', '-n', 'delete', '-inet6', '-host', remote, '-ifscope', name)
+                if args.route_driver:
+                    native_route('create', name, name)
+                    cleanup.callback(native_route, 'remove', name, name)
+                else:
+                    command('/sbin/route', '-n', 'add', '-inet6', '-host', remote, '-ifscope', name, '-interface', name)
+                    cleanup.callback(command, '/sbin/route', '-n', 'delete', '-inet6', '-host', remote, '-ifscope', name)
             else:
                 command('ip', 'link', 'set', name, 'up')
                 command('ip', '-6', 'addr', 'add', sources[tag] + '/128', 'dev', name, 'nodad')
@@ -132,6 +146,14 @@ def main():
 
         def route(tag, initial=False):
             if system == 'Darwin':
+                if args.route_driver:
+                    native_route('create' if initial else 'change', '', devices[tag],
+                                 None if initial else primary['device'])
+                    primary['device'] = devices[tag]
+                    if initial:
+                        cleanup.callback(lambda: native_route('remove', '', primary['device']))
+                    record_routes('after-' + tag)
+                    return
                 record_routes('before-' + tag)
                 # XNU RTM_CHANGE uses rt_lookup(), which can select a scoped
                 # row even for a scope-less request. RTM_DELETE uses the exact
@@ -219,6 +241,7 @@ def main():
         else:
             raise AssertionError('owned TUN remains after closing peer: ' + name)
     report = {'os': system, 'status': 'PASS', 'native_sender_tcp': True,
+              'route_adapter': 'production-qt' if args.route_driver else 'route-command',
               'source_scoped_paths': 'PASS', 'original_tcp_both_directions': 'PASS',
               'new_tcp_udp_paths': 'PASS', 'accepted_tcp': accepted, 'owned_tuns_removed': True,
               'not_proven': ['production OpenVPN integration', 'physical network handover']}
