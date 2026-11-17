@@ -22,7 +22,12 @@ import time
 
 
 def command(*args):
-    output = subprocess.check_output(args, text=True, stderr=subprocess.STDOUT, timeout=10)
+    try:
+        output = subprocess.check_output(args, text=True, stderr=subprocess.STDOUT, timeout=10)
+    except subprocess.CalledProcessError as error:
+        print(json.dumps({'failed_command': list(args), 'output': error.output,
+                          'exit_code': error.returncode}), flush=True)
+        raise
     if args[0] == '/sbin/route':
         print(json.dumps({'route_command': list(args), 'output': output}), flush=True)
     return output

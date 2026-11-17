@@ -1,6 +1,7 @@
 #include <QCoreApplication>
 #include <QTextStream>
 #include <QRegularExpression>
+#include <QProcess>
 #include "../../platforms/macos/daemon/macopenvpnipv6native.h"
 
 int main(int argc, char **argv)
@@ -29,6 +30,17 @@ int main(int argc, char **argv)
         const Route before{host, scope, Path{args[6], {}}, true};
         result = api.changeOwned(before, after);
     } else return 64;
+    if (!result) {
+        const auto observed = api.read(host, scope);
+        qWarning() << "Native probe read available" << bool(observed)
+                   << "exact row" << (observed && bool(observed->exact));
+        QProcess table;
+        table.start("/usr/sbin/netstat", {"-rn", "-f", "inet6"});
+        if (table.waitForFinished(10000)) {
+            for (const auto &line : table.readAllStandardOutput().split('\n'))
+                if (line.contains(host.toUtf8())) qWarning().noquote() << line;
+        }
+    }
     QTextStream(stdout) << (result ? "OK\n" : "FAIL\n");
     return result ? 0 : 1;
 }

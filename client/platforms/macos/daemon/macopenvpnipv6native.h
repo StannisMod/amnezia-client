@@ -3,6 +3,7 @@
 
 #if defined(Q_OS_MACOS) && !defined(MACOS_NE)
 #include <QElapsedTimer>
+#include <QDebug>
 #include <QNetworkInterface>
 #include <QScopeGuard>
 #include <atomic>
@@ -300,15 +301,23 @@ private:
                 && reply.rtm_type != RTM_DELETE && reply.rtm_type != RTM_GET) continue;
             if (reply.rtm_pid != header.rtm_pid || reply.rtm_seq != header.rtm_seq) continue;
             if (reply.rtm_version != RTM_VERSION || reply.rtm_msglen < sizeof(reply) || reply.rtm_msglen > received) return false;
+            if (reply.rtm_errno)
+                qWarning() << "Darwin IPv6 route mutation rejected" << type << reply.rtm_errno;
             return reply.rtm_type == type && reply.rtm_errno == 0;
         }
         return false;
     }
     bool mutate(int type, const Route &route) {
         if (!route.managed || route.transient || !validHost(QHostAddress(route.host)) || !validPath(route.path)) return false;
-        if (!exchange(type, route)) return false;
+        if (!exchange(type, route)) {
+            qWarning() << "Darwin IPv6 route exchange failed" << type;
+            return false;
+        }
         const auto after = read(route.host, route.scope);
-        if (!after) return false;
+        if (!after) {
+            qWarning() << "Darwin IPv6 route verification snapshot unavailable" << type;
+            return false;
+        }
         return type == RTM_DELETE ? (!after->exact || !(*after->exact == route))
             : after->exact && *after->exact == route;
     }
