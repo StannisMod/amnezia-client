@@ -133,7 +133,13 @@ def main():
         def route(tag, initial=False):
             if system == 'Darwin':
                 record_routes('before-' + tag)
-                command('/sbin/route', '-n', 'add' if initial else 'change', '-inet6', '-host', remote, '-interface', devices[tag])
+                # XNU RTM_CHANGE uses rt_lookup(), which can select a scoped
+                # row even for a scope-less request. RTM_DELETE uses the exact
+                # radix key, so replace only the owned unscoped row and leave
+                # both source-path pins intact.
+                if not initial:
+                    command('/sbin/route', '-n', 'delete', '-inet6', '-host', remote)
+                command('/sbin/route', '-n', 'add', '-inet6', '-host', remote, '-interface', devices[tag])
                 record_routes('after-' + tag)
                 if initial:
                     cleanup.callback(command, '/sbin/route', '-n', 'delete', '-inet6', '-host', remote)
