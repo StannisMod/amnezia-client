@@ -11,6 +11,14 @@ import subprocess
 def run(*args, data=None, ok=True):
     result = subprocess.run(args, input=data, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
     if ok and result.returncode:
+        if args[:2] == ('docker', 'exec'):
+            for name in ('amnezia-wireguard', 'amnezia-awg2'):
+                if name not in args:
+                    continue
+                state = subprocess.run(
+                    ['docker', 'inspect', '--format', '{{json .State}}', name],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+                print('FAILED_CONTAINER_STATE', name, state.stdout.decode(errors='replace'), flush=True)
         raise RuntimeError(f"fixture command failed: {args[0:3]}: {result.stderr.decode(errors='replace')}")
     return result
 
@@ -63,6 +71,11 @@ for container, binary, interface, path in (
                      'startup-file-transaction' if startup else 'config-file-transaction',
                      data=json.dumps(request).encode(), ok=ok)
         if not ok:
+            state = json.loads(run('docker', 'inspect', '--format', '{{json .State}}', container).stdout)
+            assert state['Running'], ('negative case lost its live fixture', action, state)
+            assert b'Error response from daemon:' not in result.stderr, (
+                'Docker failure is not a production helper rejection', action,
+                result.stderr.decode(errors='replace'))
             assert result.returncode and not result.stdout, 'invalid request was accepted'
             return None
         if lost_reply:

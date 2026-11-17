@@ -60,9 +60,12 @@ for kind in wireguard awg2; do
     if [[ "$kind" == awg2 ]]; then
         setup='mkdir -p /dev/net; test -c /dev/net/tun || mknod /dev/net/tun c 10 200; amneziawg-go awg0; umask 077; awg genkey > /tmp/private; a=$(printf DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD | base64 | wg pubkey); b=$(printf BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB | base64); c=$(printf CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC | base64); awg set awg0 private-key /tmp/private peer "$a" allowed-ips 10.88.0.2/32,fd88::2/128 peer "$b" allowed-ips 10.88.0.3/32 peer "$c" persistent-keepalive 25; rm /tmp/private'
     fi
+    # These children are owned by the disposable daemon and removed with it by
+    # cleanup/CI timeout. Their uptime must not expire halfway through receipt,
+    # migration and rollback tests on slower runners.
     docker exec "$fixture" docker run --pull=never -d --name "amnezia-$kind" --network none --privileged -e AMNEZIA_PROTOCOL_LOSS_FIXTURE=disposable --cap-add NET_ADMIN --cap-add MKNOD --device /dev/net/tun \
         --sysctl net.ipv6.conf.all.disable_ipv6=0 --entrypoint sh "$loaded_image" -ec \
-        "$setup; $addresses; ip link set $iface up; touch /ready; exec sleep 300" >/dev/null
+        "$setup; $addresses; ip link set $iface up; touch /ready; exec sleep infinity" >/dev/null
     ready=false
     for attempt in {1..30}; do
         if docker exec "$fixture" docker exec "amnezia-$kind" test -f /ready >/dev/null 2>&1; then ready=true; break; fi
