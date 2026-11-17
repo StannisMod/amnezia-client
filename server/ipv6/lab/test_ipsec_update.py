@@ -12,7 +12,7 @@ import uuid
 from test_ipsec_restart import run
 
 
-def prepare_peer(container, source):
+def prepare_peer(container, base_image):
     """Independent client and echo origin, entirely inside the private daemon."""
     gateway = json.loads(run('docker', 'network', 'inspect', 'bridge'))[0]['IPAM']['Config'][0]['Gateway']
     run('docker', 'exec', container, 'bash', '-ec', '''
@@ -25,8 +25,12 @@ openssl pkcs12 -in /tmp/client.p12 -passin pass:fixture-password -nodes -nocerts
 ''')
     with tempfile.TemporaryDirectory() as directory:
         files = Path(directory)
-        base = (source / 'ipsec/Dockerfile').read_text().splitlines()[0]
-        (files / 'Dockerfile').write_text(base + '\nRUN apk add --no-cache strongswan python3\nENTRYPOINT ["tail", "-f", "/dev/null"]\n')
+        # Reuse the already loaded immutable Alpine/Libreswan baseline instead
+        # of fetching the product Dockerfile's unrelated upstream base again.
+        # The separate peer runs strongSwan, never the server's Libreswan daemon.
+        assert re.fullmatch(r'amneziavpn/ipsec-server@sha256:[0-9a-f]{64}', base_image)
+        run('docker', 'image', 'inspect', base_image)
+        (files / 'Dockerfile').write_text('FROM ' + base_image + '\nRUN apk add --no-cache strongswan python3\nENTRYPOINT ["tail", "-f", "/dev/null"]\n')
         run('docker', 'build', '-t', 'ipsec-update-peer:local', str(files), timeout=180)
         client = run('docker', 'run', '-d', '--privileged', '--name', 'ipsec-update-peer', 'ipsec-update-peer:local')
         run('docker', 'exec', client, 'mkdir', '-p', '/etc/swanctl/x509ca', '/etc/swanctl/x509', '/etc/swanctl/private')
@@ -160,7 +164,7 @@ def main():
         raise AssertionError('old backend did not load')
     for connection in ('l2tp-psk', 'xauth-psk'):
         assert '"' + connection + '"' in run('docker', 'exec', container, 'ipsec', 'auto', '--status')
-    probe, origin = prepare_peer(container, source)
+    probe, origin = prepare_peer(container, old_image)
     import atexit
     atexit.register(origin.terminate)
     probe('before update')
