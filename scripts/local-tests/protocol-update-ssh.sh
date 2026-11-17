@@ -5,6 +5,15 @@ binary=${1:?Usage: protocol-update-ssh.sh /absolute/path/to/test_server_edit}
 qt_root=${AMNEZIA_PROTOCOL_UPDATE_QT_ROOT:-/opt/Qt/6.10.1/gcc_64}
 image=${AMNEZIA_PROTOCOL_UPDATE_IMAGE:-amnezia-protocol-update-qt:local}
 mounts=(--mount "type=bind,source=$repo,target=/src,readonly")
+trust_env=()
+if [[ -r /etc/ssl/certs/ca-certificates.crt ]]; then
+    # The nested daemon must use the runner's configured trust roots too
+    # (including a runner-managed registry proxy CA). Never disable TLS or
+    # import a certificate downloaded from the failing endpoint.
+    host_ca=$(realpath /etc/ssl/certs/ca-certificates.crt)
+    mounts+=(--mount "type=bind,source=$host_ca,target=/run/amnezia-host-ca.crt,readonly")
+    trust_env+=(-e SSL_CERT_FILE=/run/amnezia-host-ca.crt)
+fi
 if [[ -n ${AMNEZIA_PROTOCOL_UPDATE_BUILD_VOLUME:-} ]]; then
     mounts+=(--mount "type=volume,source=$AMNEZIA_PROTOCOL_UPDATE_BUILD_VOLUME,target=/work,readonly")
 else
@@ -27,6 +36,7 @@ cleanup() {
 trap cleanup EXIT
 runner=$(docker run -d --privileged --name "$runner_name" --label amnezia.local-tests=ipsec-ssh \
     --dns 1.1.1.1 --dns 8.8.8.8 "${mounts[@]}" \
+    "${trust_env[@]}" \
     -e LANG=C.UTF-8 -e QT_QPA_PLATFORM=offscreen \
     -e "QT_QPA_PLATFORM_PLUGIN_PATH=$qt_root/plugins/platforms" \
     -e "LD_LIBRARY_PATH=$qt_root/lib" \
