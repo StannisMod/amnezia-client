@@ -301,6 +301,49 @@ func TestBootForwardingRunsAfterTunnelUp(t *testing.T) {
 	}
 }
 
+func TestPreviousOpenVpnStartupBlocksRemainRecognized(t *testing.T) {
+	current, err := os.ReadFile("../enable_ipv6_forwarding.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Exact inverse of 1c903b1's reviewed no-egress OpenVPN addition.
+	addition := []byte("        # OpenVPN may allocate an inner IPv6 address on an IPv4-only server.\n" +
+		"        # Let the kernel return ICMPv6 no-route instead of silently dropping it.\n" +
+		"        if [ \"$amnezia_v6_tunnel\" = tun0 ]; then\n" +
+		"            sysctl -w net.ipv6.conf.all.forwarding=1 >/dev/null || return 1\n" +
+		"            amnezia_ipv6_rule filter INPUT -i tun0 -j ACCEPT || return 1\n" +
+		"            amnezia_ipv6_rule filter OUTPUT -o tun0 -j ACCEPT || return 1\n" +
+		"        fi\n")
+	if bytes.Count(current, addition) != 1 {
+		t.Fatal("review historical startup fixture after changing its source")
+	}
+	openvpn := append(bytes.Replace(current, addition, nil, 1), '\n')
+	previous := bytes.Replace(openvpn, []byte("wg0|awg0|tun0)"), []byte("wg0|awg0)"), 1)
+	for _, fixture := range []struct {
+		body []byte
+		size int
+		hash string
+	}{
+		{openvpn, openVpnForwardingBodySize, openVpnForwardingBodyHash},
+		{previous, previousForwardingBodySize, previousForwardingBodyHash},
+	} {
+		if len(fixture.body) != fixture.size || configHash(fixture.body) != fixture.hash {
+			t.Fatal("historical source fingerprint differs")
+		}
+		body := []byte("# preserved administrator hook\nexit 23\n")
+		original := append(append([]byte("#!/bin/bash\n"), fixture.body...), body...)
+		got, ok := startupBody(original)
+		if !ok || !bytes.Equal(got, body) {
+			t.Fatal("previous block not removed without changing administrator body")
+		}
+		tampered := bytes.Clone(original)
+		tampered[len("#!/bin/bash\n")+bytes.Index(fixture.body, []byte("amnezia_ipv6_rule"))] = 'X'
+		if _, ok := startupBody(tampered); ok {
+			t.Fatal("unrecognized forwarding definition accepted")
+		}
+	}
+}
+
 func TestHistoricalStartupPrefixReplacement(t *testing.T) {
 	legacy, err := os.ReadFile("testdata/ipv6-forwarding-legacy.sh")
 	if err != nil {

@@ -16,8 +16,8 @@ import (
 )
 
 // Checked against the packaged shared startup resource by ordinary tests.
-const forwardingPrefixSize = 2554
-const forwardingPrefixHash = "411736a20ba6cdada055e7364efea14cbd88ee15158568a9beaebcc708800758"
+const forwardingPrefixSize = 3000
+const forwardingPrefixHash = "fb801ab78f2591aedd20107d5194862aa9faaed997a971f2240022d9ec0b0666"
 
 func verifiedForwardingProgram(path string) ([]byte, error) {
 	parent, err := filepath.EvalSymlinks(filepath.Dir(path))
@@ -266,8 +266,12 @@ func startupBootCall(iface string) string {
 
 // Exact fingerprints of the shared blocks emitted by released installer paths.
 // Strip recognized old definitions instead of leaving them to shadow new ones.
-const currentForwardingBodySize = 2542
-const currentForwardingBodyHash = "e43c1908792f787467bb8d05ae4001a19e70a0e046b918e78a8915a3ead6826f"
+const currentForwardingBodySize = 2988
+const currentForwardingBodyHash = "cded7cbba9e7167e67273600358bb7b8e31f752fc07aed782701a27009d34221"
+const previousForwardingBodySize = 2542
+const previousForwardingBodyHash = "e43c1908792f787467bb8d05ae4001a19e70a0e046b918e78a8915a3ead6826f"
+const openVpnForwardingBodySize = 2547
+const openVpnForwardingBodyHash = "05cfda45db89a4d9a9293c6a72899a3df3910d84e01fbbfb289267c83ab593e3"
 const legacyForwardingBodySize = 1923
 const legacyForwardingBodyHash = "91b5c7b6840daa721a8337a3102b1fed0e66f59498d66df3d2a0e53bfa3c7f5e"
 
@@ -281,6 +285,12 @@ func startupBody(original []byte) ([]byte, bool) {
 		size := 0
 		if len(body) >= currentForwardingBodySize && configHash(body[:currentForwardingBodySize]) == currentForwardingBodyHash {
 			size = currentForwardingBodySize
+		}
+		if len(body) >= previousForwardingBodySize && configHash(body[:previousForwardingBodySize]) == previousForwardingBodyHash {
+			size = previousForwardingBodySize
+		}
+		if len(body) >= openVpnForwardingBodySize && configHash(body[:openVpnForwardingBodySize]) == openVpnForwardingBodyHash {
+			size = openVpnForwardingBodySize
 		}
 		if len(body) >= legacyForwardingBodySize && configHash(body[:legacyForwardingBodySize]) == legacyForwardingBodyHash {
 			size = legacyForwardingBodySize
