@@ -616,6 +616,13 @@ def main():
         report['control_diagnostics'] = {'enabled':args.diagnose_control,'captures':[p.name for p in work.glob('slow-control-*.log')]}
         # Fault injection can abort before instrumentation switches the peer
         # back on. Leave the persistent disposable fixture ready for a rerun.
+        if not args.openvpn_ipv6_only and not args.xray_ipv6_only:
+            try:
+                with urllib.request.urlopen('http://127.0.0.1:18080/acceptance-packets', timeout=5) as response:
+                    packets = json.load(response)
+                (work / 'failure-peer-packets.log').write_text(json.dumps(packets, indent=2) + '\n')
+            except (OSError, ValueError) as error:
+                report['peer_packet_diagnostics'] = type(error).__name__
         try:
             request = urllib.request.Request('http://127.0.0.1:18080/peer?state=on', data=b'', method='POST')
             if not args.openvpn_ipv6_only:

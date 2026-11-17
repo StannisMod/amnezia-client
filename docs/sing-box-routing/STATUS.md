@@ -1,5 +1,33 @@
 # Implementation checkpoint — automated validation
 
+## Hosted continuation — 2026-11-17, final gate still open
+
+The user subsequently authorized push, PR updates and hosted Mac checks.
+Local Mac execution remains excluded. PR #18 remains draft; no merge is
+authorized. The dated local checkpoint below is historical, not current CI status.
+
+- Native Darwin production Qt route adapter: run `44073792451`, source
+  `941715d011fd52e52ec7c7915d3b7263d964a545`, PASS on macOS 26 and macOS 15 Intel.
+  Original TCP survives A→B→A; new TCP/UDP use the selected paths; exact TCP
+  accept counts are A=2/B=1 and owned TUN cleanup passes. This is not full
+  production OpenVPN integration or physical network handover acceptance.
+- Main run `44142519288`, source
+  `ca9fb945aa3ae4f6c4209b0aff71efa4a1f43353`: Linux client lane PASS, including
+  production SSH IPsec update/rollback with unchanged independent strongSwan
+  client traffic and subsequent Linux acceptance. Production IPsec now pins
+  upstream OCI index `21f2a1b28dbbe69c4331571941df548eee2f4e1cba16af8b161248d66db8d490`
+  (revision `f48cd8db`, checked amd64 Libreswan 5.4.1).
+  Overall first attempt FAIL: Intel Apple TCP recovery took 439 ms against
+  the unchanged 250 ms bound; ARM jobs were cancelled. Failed evidence is retained.
+- Android run `44153915121`, source
+  `8d232fc`: both API28 lanes and AWG API29 PASS after correcting shell scope.
+  WG API29 app-policy and both API35 full lanes FAIL. API35 fails during
+  reconnect cycles with missing TCP/UDP responses; these are unresolved failures,
+  not successful retries or physical-device results.
+
+Hosted artifacts and later source fixes do not relabel the local `93aef02`
+packages below. Final full-gate success and artifact reconciliation are pending.
+
 ## Default-on IPv6 preference — local acceptance, 2026-11-16
 
 The user removed historical OpenCode/Telegram incident attribution from the

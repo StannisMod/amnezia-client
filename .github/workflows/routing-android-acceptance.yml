@@ -226,7 +226,7 @@ jobs:
           go build -mod=readonly -tags amnezia_android_probe -buildmode=pie -o "$RUNNER_TEMP/android-traffic-probe" ./cmd/traffic-probe
       - name: Build the disposable AWG peer and independent egress observers
         working-directory: native/routing
-        run: go build -mod=readonly -tags with_gvisor -o "$RUNNER_TEMP/android-fixture" ./cmd/android-fixture
+        run: go build -mod=readonly -tags with_gvisor,acceptance_trace -o "$RUNNER_TEMP/android-fixture" ./cmd/android-fixture
       - name: Build the Xray peer from the Android libxray dependency pin
         if: ${{ matrix.transport == 'awg' && matrix.api != 28 }}
         run: python3 scripts/routing/build_xray_fixture.py --work "$RUNNER_TEMP/xray-source" --output "$RUNNER_TEMP/xray-fixture" --report "$RUNNER_TEMP/xray-fixture-provenance.json"
