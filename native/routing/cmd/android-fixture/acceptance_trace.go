@@ -21,6 +21,8 @@ type acceptancePacket struct {
 	Source    uint16    `json:"source_port"`
 	Target    uint16    `json:"target_port"`
 	Flags     byte      `json:"tcp_flags,omitempty"`
+	Sequence  uint32    `json:"tcp_sequence,omitempty"`
+	Ack       uint32    `json:"tcp_ack,omitempty"`
 	Length    int       `json:"length"`
 }
 
@@ -61,11 +63,18 @@ func (t *acceptanceTrace) record(direction string, packet []byte) {
 	row := acceptancePacket{At: time.Now(), Direction: direction, Protocol: protocol,
 		Source: binary.BigEndian.Uint16(header), Target: binary.BigEndian.Uint16(header[2:]),
 		Length: len(packet)}
+	// Background Android DNS can fill the entire ring during a failed connect.
+	// Keep the tested echo flows rather than evicting their SYN/UDP evidence.
+	if row.Source != tcpPort && row.Target != tcpPort && row.Source != udpPort && row.Target != udpPort {
+		return
+	}
 	if protocol == 6 {
 		if len(header) < 20 {
 			return
 		}
 		row.Flags = header[13]
+		row.Sequence = binary.BigEndian.Uint32(header[4:8])
+		row.Ack = binary.BigEndian.Uint32(header[8:12])
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
