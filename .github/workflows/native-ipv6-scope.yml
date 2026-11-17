@@ -1,5 +1,10 @@
 name: Native IPv6 scope diagnostic
 on:
+  push:
+    branches: [feature/android-primary-awg-core]
+    paths:
+      - '.github/workflows/native-ipv6-scope.yml'
+      - 'scripts/routing/run_native_ipv6_scope.py'
   workflow_dispatch:
 permissions:
   contents: read
