@@ -1,7 +1,9 @@
 package engine
 
 import (
+	"context"
 	"encoding/json"
+	"runtime/pprof"
 	"strings"
 	"testing"
 
@@ -10,6 +12,20 @@ import (
 )
 
 type diagnosticOutbound struct{ adapter.Outbound }
+
+func TestStalledDNSProfileIsBoundedAndExcludesApplicationLabels(t *testing.T) {
+	const secret = "private-query-identity.invalid"
+	var snapshot string
+	pprof.Do(context.Background(), pprof.Labels("private-domain", secret), func(context.Context) {
+		snapshot = stalledDNSStacks()
+	})
+	if !strings.Contains(snapshot, "goroutine profile:") || len(snapshot) > 128*1024 {
+		t.Fatal("invalid bounded goroutine profile")
+	}
+	if strings.Contains(snapshot, secret) || strings.Contains(snapshot, "# labels:") {
+		t.Fatal("application labels escaped into diagnostic profile")
+	}
+}
 
 func (diagnosticOutbound) Tag() string { return "vpn" }
 

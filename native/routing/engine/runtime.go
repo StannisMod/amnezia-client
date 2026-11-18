@@ -195,6 +195,9 @@ func (s *Runtime) Diagnostics() DiagnosticSnapshot {
 	}
 	if s.dns != nil {
 		s.dns.diagnostics(&result)
+		if result.DNSOldestMS >= 1000 {
+			result.StalledDNSStacks = stalledDNSStacks()
+		}
 	}
 	if s.flowPolicy != nil {
 		result.NewFlowsPaused = s.flowPolicy.paused.Load()

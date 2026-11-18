@@ -1,8 +1,11 @@
 package engine
 
 import (
+	"bytes"
 	"context"
 	"net"
+	"runtime/pprof"
+	"strings"
 	"sync"
 
 	"github.com/sagernet/sing-box/adapter"
@@ -13,6 +16,7 @@ import (
 // Diagnostics reports routing choices rather than transport success. Counters
 // and the last reason stay in memory; no destination names or addresses are kept.
 type DiagnosticSnapshot struct {
+	StalledDNSStacks string `json:"stalled_dns_stacks,omitempty"`
 	VPNRXBytes       uint64 `json:"vpn_rx_bytes"`
 	VPNTXBytes       uint64 `json:"vpn_tx_bytes"`
 	VPNHandshakeNano uint64 `json:"vpn_handshake_ns"`
@@ -37,6 +41,28 @@ type DiagnosticSnapshot struct {
 	LastNetwork      string `json:"last_network,omitempty"`
 	LastDomainSource string `json:"last_domain_source,omitempty"`
 }
+
+// Aggregated (debug=1) profiles contain symbols, not argument contents. Exclude
+// optional pprof labels as those may contain application-provided identity.
+func stalledDNSStacks() string {
+	var raw bytes.Buffer
+	if profile := pprof.Lookup("goroutine"); profile != nil {
+		_ = profile.WriteTo(&raw, 1)
+	}
+	var result strings.Builder
+	for _, line := range strings.Split(raw.String(), "\n") {
+		if strings.HasPrefix(line, "# labels:") {
+			continue
+		}
+		if result.Len()+len(line)+1 > 128*1024 {
+			break
+		}
+		result.WriteString(line)
+		result.WriteByte('\n')
+	}
+	return result.String()
+}
+
 type Diagnostics struct {
 	mu       sync.Mutex
 	snapshot DiagnosticSnapshot
