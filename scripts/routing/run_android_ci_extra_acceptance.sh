@@ -20,6 +20,12 @@ if [[ "$transport" == awg && "$api" != 28 ]]; then
         --xray-ipv6-only --apk "$FEATURE_APK" --fixture "$RUNNER_TEMP/xray-peer/fixture.json" \
         --quic-probe "$RUNNER_TEMP/android-traffic-probe" --quic-ca "$RUNNER_TEMP/xray-peer/quic.der" \
         --work "$RUNNER_TEMP/android-xray-ipv6" --apk-source-sha "$source_sha"
+    # OpenVPN owns some of the same synthetic loopback destinations. Let
+    # Xray's SIGTERM/finally cleanup release them before the next fixture.
+    xray_pid=$(cat "$RUNNER_TEMP/xray-fixture.pid")
+    sudo kill -TERM "$xray_pid"
+    wait "$xray_pid" || [[ $? == 143 ]]
+    rm -f "$RUNNER_TEMP/xray-fixture.pid"
 fi
 if [[ "$transport" == awg && ( "$api" == 35 || "$api" == 28 ) ]]; then
     sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT env "PATH=$PATH" "ANDROID_HOME=$ANDROID_HOME" \
