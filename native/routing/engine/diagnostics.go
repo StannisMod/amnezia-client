@@ -13,6 +13,9 @@ import (
 // Diagnostics reports routing choices rather than transport success. Counters
 // and the last reason stay in memory; no destination names or addresses are kept.
 type DiagnosticSnapshot struct {
+	VPNRXBytes       uint64 `json:"vpn_rx_bytes"`
+	VPNTXBytes       uint64 `json:"vpn_tx_bytes"`
+	VPNHandshakeNano uint64 `json:"vpn_handshake_ns"`
 	DNSPending       uint64 `json:"dns_pending"`
 	DNSOldestMS      int64  `json:"dns_oldest_ms"`
 	DNSCompleted     uint64 `json:"dns_completed"`

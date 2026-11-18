@@ -189,6 +189,10 @@ func (s *Runtime) Stats() (tunnel.Stats, error) {
 }
 func (s *Runtime) Diagnostics() DiagnosticSnapshot {
 	result := s.diagnostics.Snapshot()
+	if stats, err := s.Stats(); err == nil {
+		result.VPNRXBytes, result.VPNTXBytes = stats.RXBytes, stats.TXBytes
+		result.VPNHandshakeNano = stats.LastHandshakeNano
+	}
 	if s.dns != nil {
 		s.dns.diagnostics(&result)
 	}

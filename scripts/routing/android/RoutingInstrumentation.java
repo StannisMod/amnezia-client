@@ -847,6 +847,15 @@ public final class RoutingInstrumentation extends Instrumentation {
                 .put("emulated_cellular_handover", cellular ? "PASS" : "NOT_AVAILABLE")
                 .put("elapsed_ms", SystemClock.elapsedRealtime() - start);
             pass("ordinary app-only core: original interactive/late-media TCP survive UDP blackholes and Wi-Fi return; IPv6 ULA/NAT64 use VPN");
+        } catch (Exception | AssertionError error) {
+            // Preserve the live owner before finally closes sockets/session.
+            // A post-cleanup "backend=stopped" cannot diagnose recovery loss.
+            try {
+                applicationFailureDiagnostics = connectionDiagnostics();
+                applicationFailureDiagnostics.put("retained_age_ms", SystemClock.elapsedRealtime() - start);
+                progress("RETAIN_FAILURE " + applicationFailureDiagnostics);
+            } catch (Exception ignored) {}
+            throw error;
         } finally {
             retainedCheck = false;if (interactive != null) interactive.close();if (media != null) media.close();
             io.shutdownNow();disconnect();

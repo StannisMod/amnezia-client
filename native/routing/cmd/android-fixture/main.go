@@ -485,7 +485,17 @@ func main() {
 	control.HandleFunc("/stats", func(w http.ResponseWriter, _ *http.Request) {
 		// Datagram counts identify delivery/peer response failures without
 		// persisting handshake payloads, keys or private UAPI configuration.
-		json.NewEncoder(w).Encode(map[string]int64{"direct_tcp": f.directTCP.Load(), "direct_udp": f.directUDP.Load(), "vpn_tcp": f.vpnTCP.Load(), "bulk_tcp": f.bulkTCP.Load(), "vpn_udp": f.vpnUDP.Load(), "dns_queries": f.dnsQueries.Load(), "native_dns_queries": f.nativeDNSQueries.Load(), "native_tls_queries": f.nativeTLSQueries.Load(), "vpn_tls_queries": f.vpnTLSQueries.Load(), "outer_received": f.outerRX.Load(), "outer_sent": f.outerTX.Load()})
+		counters := map[string]int64{"direct_tcp": f.directTCP.Load(), "direct_udp": f.directUDP.Load(), "vpn_tcp": f.vpnTCP.Load(), "bulk_tcp": f.bulkTCP.Load(), "vpn_udp": f.vpnUDP.Load(), "dns_queries": f.dnsQueries.Load(), "native_dns_queries": f.nativeDNSQueries.Load(), "native_tls_queries": f.nativeTLSQueries.Load(), "vpn_tls_queries": f.vpnTLSQueries.Load(), "outer_received": f.outerRX.Load(), "outer_sent": f.outerTX.Load()}
+		f.mu.Lock()
+		if f.peer != nil {
+			if status, err := f.peer.IpcGet(); err == nil {
+				for key, value := range publicPeerCounters(status) {
+					counters[key] = value
+				}
+			}
+		}
+		f.mu.Unlock()
+		json.NewEncoder(w).Encode(counters)
 	})
 	control.HandleFunc("/endpoint-dns", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
