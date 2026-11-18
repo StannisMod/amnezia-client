@@ -62,6 +62,28 @@ func TestNetworkDNSDiagnosticsTrackPendingAndCompletedWithoutQueryIdentity(t *te
 	if failed.DNSPending != 0 || failed.DNSCompleted != 2 || failed.DNSFailed != 1 {
 		t.Fatalf("lookup failure not visible: %+v", failed)
 	}
+	if failed.DNSLastFailure != "generation-unavailable" {
+		t.Fatalf("suspension was misclassified: %s", failed.DNSLastFailure)
+	}
+}
+
+func TestNetworkDNSFailureClassesDoNotRetainErrorContents(t *testing.T) {
+	for _, test := range []struct {
+		err  error
+		want string
+	}{
+		{errNetworkDNSUnavailable, "generation-unavailable"},
+		{errNetworkDNSChanged, "generation-changed"},
+		{context.Canceled, "cancelled"},
+		{context.DeadlineExceeded, "deadline"},
+		{net.ErrClosed, "socket-closed"},
+		{&net.OpError{Op: "dial", Err: errors.New("private-query.invalid")}, "socket-error"},
+		{errors.New("private-query.invalid"), "resolver-error"},
+	} {
+		if got := networkDNSFailureClass(test.err); got != test.want {
+			t.Fatalf("unexpected failure class: %s", got)
+		}
+	}
 }
 
 func (l *dnsTestLifetime) Close() error { l.closed.Store(true); return nil }

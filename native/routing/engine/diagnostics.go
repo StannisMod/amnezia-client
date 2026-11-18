@@ -26,6 +26,7 @@ type DiagnosticSnapshot struct {
 	DNSFailed        uint64 `json:"dns_failed"`
 	DNSDeadline      uint64 `json:"dns_deadline"`
 	DNSLastMS        int64  `json:"dns_last_ms"`
+	DNSLastFailure   string `json:"dns_last_failure,omitempty"`
 	NewFlowsPaused   bool   `json:"new_flows_paused"`
 	UnknownOwner     uint64 `json:"unknown_owner"`
 	LastOwnerKnown   bool   `json:"last_owner_known"`

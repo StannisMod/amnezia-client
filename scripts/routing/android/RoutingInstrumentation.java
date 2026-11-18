@@ -855,7 +855,7 @@ public final class RoutingInstrumentation extends Instrumentation {
                 applicationFailureDiagnostics.put("retained_age_ms", SystemClock.elapsedRealtime() - start);
                 progress("RETAIN_FAILURE " + applicationFailureDiagnostics);
                 retainedCheckpoint("failure");
-            } catch (Exception ignored) {}
+            } catch (Exception | AssertionError ignored) {}
             throw error;
         } finally {
             retainedCheck = false;if (interactive != null) interactive.close();if (media != null) media.close();

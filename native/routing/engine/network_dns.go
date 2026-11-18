@@ -19,6 +19,11 @@ import (
 
 const borrowedDNSVPNType = "amnezia-dns-vpn"
 
+var (
+	errNetworkDNSUnavailable = errors.New("network DNS is waiting for a valid snapshot")
+	errNetworkDNSChanged     = errors.New("network DNS generation changed")
+)
+
 type runtimeHost struct{ underlay Underlay }
 type borrowedDNSVPNState struct{ outbound adapter.Outbound }
 type borrowedDNSVPN struct {
@@ -155,6 +160,7 @@ type networkDNSProxy struct {
 	failed         uint64
 	deadline       uint64
 	lastMS         int64
+	lastFailure    string
 }
 
 func newNetworkDNSProxy(ctx context.Context) *networkDNSProxy {
@@ -216,6 +222,7 @@ func (p *networkDNSProxy) exchange(caller context.Context, message *mDNS.Msg) (a
 		p.lastMS = time.Since(start).Milliseconds()
 		if exchangeErr != nil {
 			p.failed++
+			p.lastFailure = networkDNSFailureClass(exchangeErr)
 			if errors.Is(exchangeErr, context.DeadlineExceeded) {
 				p.deadline++
 			}
@@ -243,7 +250,7 @@ func (p *networkDNSProxy) exchange(caller context.Context, message *mDNS.Msg) (a
 		p.mu.RUnlock()
 	}
 	if g == nil {
-		return nil, errors.New("network DNS is waiting for a valid snapshot")
+		return nil, errNetworkDNSUnavailable
 	}
 	// Carry cancellation/deadline, not the caller's main-Box service registry.
 	ctx, cancel := context.WithCancel(g.ctx)
@@ -266,7 +273,7 @@ func (p *networkDNSProxy) exchange(caller context.Context, message *mDNS.Msg) (a
 	valid := p.current == g
 	p.mu.RUnlock()
 	if !valid {
-		return nil, errors.New("network DNS generation changed")
+		return nil, errNetworkDNSChanged
 	}
 	return response, err
 }
@@ -279,11 +286,32 @@ func (p *networkDNSProxy) diagnostics(result *DiagnosticSnapshot) {
 	result.DNSPending = uint64(len(p.pending))
 	result.DNSCompleted, result.DNSFailed = p.completed, p.failed
 	result.DNSDeadline, result.DNSLastMS = p.deadline, p.lastMS
+	result.DNSLastFailure = p.lastFailure
 	for _, started := range p.pending {
 		if age := time.Since(started).Milliseconds(); age > result.DNSOldestMS {
 			result.DNSOldestMS = age
 		}
 	}
+}
+
+func networkDNSFailureClass(err error) string {
+	switch {
+	case errors.Is(err, errNetworkDNSUnavailable):
+		return "generation-unavailable"
+	case errors.Is(err, errNetworkDNSChanged):
+		return "generation-changed"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "deadline"
+	case errors.Is(err, context.Canceled):
+		return "cancelled"
+	case errors.Is(err, net.ErrClosed):
+		return "socket-closed"
+	}
+	var operation *net.OpError
+	if errors.As(err, &operation) {
+		return "socket-error"
+	}
+	return "resolver-error"
 }
 
 type networkDNSRegistry struct{ adapter.DNSTransportRegistry }
