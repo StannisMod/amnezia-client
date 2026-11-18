@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net"
 	"sync"
+	"time"
 
 	mDNS "github.com/miekg/dns"
 	"github.com/sagernet/sing-box/adapter"
@@ -148,6 +149,12 @@ type networkDNSProxy struct {
 	mu             sync.RWMutex
 	current        *dnsGeneration
 	version        uint64
+	queryID        uint64
+	pending        map[uint64]time.Time
+	completed      uint64
+	failed         uint64
+	deadline       uint64
+	lastMS         int64
 }
 
 func newNetworkDNSProxy(ctx context.Context) *networkDNSProxy {
@@ -192,7 +199,29 @@ func (p *networkDNSProxy) replaceWith(g *dnsGeneration, version uint64, commit f
 	}
 	return true
 }
-func (p *networkDNSProxy) exchange(caller context.Context, message *mDNS.Msg) (*mDNS.Msg, error) {
+func (p *networkDNSProxy) exchange(caller context.Context, message *mDNS.Msg) (answer *mDNS.Msg, exchangeErr error) {
+	start := time.Now()
+	p.mu.Lock()
+	p.queryID++
+	id := p.queryID
+	if p.pending == nil {
+		p.pending = make(map[uint64]time.Time)
+	}
+	p.pending[id] = start
+	p.mu.Unlock()
+	defer func() {
+		p.mu.Lock()
+		delete(p.pending, id)
+		p.completed++
+		p.lastMS = time.Since(start).Milliseconds()
+		if exchangeErr != nil {
+			p.failed++
+			if errors.Is(exchangeErr, context.DeadlineExceeded) {
+				p.deadline++
+			}
+		}
+		p.mu.Unlock()
+	}()
 	p.mu.RLock()
 	g := p.current
 	startup := p.startup
@@ -240,6 +269,21 @@ func (p *networkDNSProxy) exchange(caller context.Context, message *mDNS.Msg) (*
 		return nil, errors.New("network DNS generation changed")
 	}
 	return response, err
+}
+
+// Only timings/counters are retained; no query names, addresses, UIDs or DNS
+// message contents. This separates pre-route resolution stalls from egress loss.
+func (p *networkDNSProxy) diagnostics(result *DiagnosticSnapshot) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	result.DNSPending = uint64(len(p.pending))
+	result.DNSCompleted, result.DNSFailed = p.completed, p.failed
+	result.DNSDeadline, result.DNSLastMS = p.deadline, p.lastMS
+	for _, started := range p.pending {
+		if age := time.Since(started).Milliseconds(); age > result.DNSOldestMS {
+			result.DNSOldestMS = age
+		}
+	}
 }
 
 type networkDNSRegistry struct{ adapter.DNSTransportRegistry }

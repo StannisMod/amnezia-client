@@ -189,6 +189,9 @@ func (s *Runtime) Stats() (tunnel.Stats, error) {
 }
 func (s *Runtime) Diagnostics() DiagnosticSnapshot {
 	result := s.diagnostics.Snapshot()
+	if s.dns != nil {
+		s.dns.diagnostics(&result)
+	}
 	if s.flowPolicy != nil {
 		result.NewFlowsPaused = s.flowPolicy.paused.Load()
 	}

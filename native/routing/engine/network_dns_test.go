@@ -22,6 +22,48 @@ import (
 
 type dnsTestLifetime struct{ closed atomic.Bool }
 
+func TestNetworkDNSDiagnosticsTrackPendingAndCompletedWithoutQueryIdentity(t *testing.T) {
+	p := newNetworkDNSProxy(context.Background())
+	router := &delayedGenerationRouter{started: make(chan struct{}), release: make(chan struct{})}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	g := &dnsGeneration{box: &dnsTestLifetime{}, router: router, ctx: ctx, cancel: cancel, stopParent: func() bool { return true }}
+	if !p.replace(g, 0) {
+		t.Fatal("generation rejected")
+	}
+	done := make(chan error, 1)
+	go func() {
+		query := new(dns.Msg)
+		query.SetQuestion("private-query-identity.test.", dns.TypeA)
+		_, err := p.exchange(context.Background(), query)
+		done <- err
+	}()
+	<-router.started
+	var pending DiagnosticSnapshot
+	p.diagnostics(&pending)
+	if pending.DNSPending != 1 || pending.DNSCompleted != 0 {
+		t.Fatalf("pending lookup not visible: %+v", pending)
+	}
+	close(router.release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	var completed DiagnosticSnapshot
+	p.diagnostics(&completed)
+	if completed.DNSPending != 0 || completed.DNSCompleted != 1 || completed.DNSFailed != 0 {
+		t.Fatalf("lookup completion not visible: %+v", completed)
+	}
+	p.freeze()
+	if _, err := p.exchange(context.Background(), new(dns.Msg)); err == nil {
+		t.Fatal("suspended DNS accepted query")
+	}
+	var failed DiagnosticSnapshot
+	p.diagnostics(&failed)
+	if failed.DNSPending != 0 || failed.DNSCompleted != 2 || failed.DNSFailed != 1 {
+		t.Fatalf("lookup failure not visible: %+v", failed)
+	}
+}
+
 func (l *dnsTestLifetime) Close() error { l.closed.Store(true); return nil }
 
 type delayedGenerationRouter struct {

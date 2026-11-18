@@ -13,6 +13,12 @@ import (
 // Diagnostics reports routing choices rather than transport success. Counters
 // and the last reason stay in memory; no destination names or addresses are kept.
 type DiagnosticSnapshot struct {
+	DNSPending       uint64 `json:"dns_pending"`
+	DNSOldestMS      int64  `json:"dns_oldest_ms"`
+	DNSCompleted     uint64 `json:"dns_completed"`
+	DNSFailed        uint64 `json:"dns_failed"`
+	DNSDeadline      uint64 `json:"dns_deadline"`
+	DNSLastMS        int64  `json:"dns_last_ms"`
 	NewFlowsPaused   bool   `json:"new_flows_paused"`
 	UnknownOwner     uint64 `json:"unknown_owner"`
 	LastOwnerKnown   bool   `json:"last_owner_known"`
