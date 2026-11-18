@@ -40,7 +40,7 @@ func Context(ctx context.Context, host Underlay) context.Context {
 	awg.Register(out, host.ListenPacket)
 	wireguard.Register(out, host.ListenPacket)
 	d := dns.NewTransportRegistry()
-	transport.RegisterUDP(d)
+	registerRetryingUDP(d)
 	transport.RegisterTCP(d)
 	transport.RegisterTLS(d)
 	transport.RegisterHTTPS(d)

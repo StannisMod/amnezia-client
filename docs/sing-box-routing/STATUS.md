@@ -1,5 +1,23 @@
 # Implementation checkpoint — automated validation
 
+## Android DNS stall investigation — 2026-11-18
+
+Run `44326437543` at branch source `9ace22a` passed five Android lanes.
+AWG/API35 failed with two real-DNS requests still pending for 4001 ms before
+the application TCP connect timed out; the peer did not receive its TCP SYN.
+This establishes a pre-connect DNS stall, not a slow Android owner lookup.
+The exact location of the original lost/stalled DNS reply is not yet proven.
+
+A deterministic real-UDP-socket regression drops the first DNS datagram:
+the pinned UDP transport does not retransmit and reaches the caller deadline.
+The shared-core UDP decorator recovers by issuing at most three copies over
+the same transport, one second apart. The original attempt remains valid;
+first DNS reply wins, including NXDOMAIN/NODATA. Caller cancellation/deadline,
+resolver selection and path are preserved; non-query operations are not retried.
+The full local Go engine suite and focused real-socket/retry regressions passed
+without QEMU or Android emulators. Hosted APK acceptance of this correction
+is pending; no final green-gate or PR-readiness claim is made.
+
 ## Hosted continuation — 2026-11-17, final gate still open
 
 The user subsequently authorized push, PR updates and hosted Mac checks.
