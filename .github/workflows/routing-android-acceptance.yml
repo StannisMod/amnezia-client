@@ -25,6 +25,7 @@ on:
       - scripts/routing/xray_ipv6_fixture.py
       - scripts/routing/build_xray_fixture.py
       - scripts/routing/run_android_acceptance.py
+      - scripts/routing/run_android_ci_extra_acceptance.sh
       - scripts/routing/run_android_openvpn_acceptance.py
       - scripts/routing/android-openvpn/**
       - native/routing/cmd/android-fixture/**
