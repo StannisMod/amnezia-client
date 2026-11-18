@@ -395,7 +395,16 @@ def main():
                     if request_id in control_timers: control_timers[request_id].cancel()
                 if "RETAIN_CHECKPOINT " in line:
                     name = line.strip().split("RETAIN_CHECKPOINT ", 1)[1]
-                    assert name in ('before', 'after', 'restore_mtu', 'drop_mtu', 'drop_before_media', 'restore_before_media', 'drop_with_media', 'restore_with_media', 'wifi_off', 'wifi_on', 'safe_policy_before', 'safe_policy_after', 'perf_legacy_before', 'perf_legacy_after', 'perf_shared_before', 'perf_shared_after', 'upload_mtu_before', 'drop_upload_mtu', 'upload_mtu_after', 'restore_upload_mtu', 'app_policy_before', 'app_policy_after', 'package_refreshed', 'strict_dns_on', 'strict_dns_off')
+                    assert name in ('before', 'after', 'failure', 'restore_mtu', 'drop_mtu', 'drop_before_media', 'restore_before_media', 'drop_with_media', 'restore_with_media', 'wifi_off', 'wifi_on', 'safe_policy_before', 'safe_policy_after', 'perf_legacy_before', 'perf_legacy_after', 'perf_shared_before', 'perf_shared_after', 'upload_mtu_before', 'drop_upload_mtu', 'upload_mtu_after', 'restore_upload_mtu', 'app_policy_before', 'app_policy_after', 'package_refreshed', 'strict_dns_on', 'strict_dns_off')
+                    if name == 'failure':
+                        # The instrumentation waits at this barrier before
+                        # disconnecting; do not diagnose a torn-down VPN.
+                        for label, command in {
+                            'connectivity': ('shell', 'dumpsys', 'connectivity'),
+                            'tcp-sockets': ('shell', 'ss', '-tnpe'),
+                            'network-events': ('shell', 'logcat', '-d', '-t', '2000', '-v', 'threadtime', '-s', 'ConnectivityService:D', 'Vpn:D', 'Netd:D', 'netd:D'),
+                        }.items():
+                            (work / ('failure-active-' + label + '.log')).write_text(adb(*command))
                     if name in ('strict_dns_on', 'strict_dns_off'):
                         assert args.private_dns_policy_only, 'unexpected strict DNS policy checkpoint'
                         if name == 'strict_dns_on':
