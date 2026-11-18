@@ -37,6 +37,9 @@ def main():
         assert os.environ.get("GITHUB_ACTIONS") == "true" and os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted", "only disposable Docker/GitHub runners are supported"
     work = args.work.resolve(); work.mkdir(parents=True, exist_ok=True)
     os.chmod(work, 0o700)
+    # The launcher may be a sudo monitor process. Publish the actual owned
+    # Python PID so shutdown does not depend on sudo's signal forwarding.
+    (work/"fixture.pid").write_text(str(os.getpid()) + "\n")
     added, listeners = [], []
     peer = None
     peer_log = None

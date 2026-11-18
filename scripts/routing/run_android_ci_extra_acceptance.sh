@@ -23,7 +23,12 @@ if [[ "$transport" == awg && "$api" != 28 ]]; then
     # OpenVPN owns some of the same synthetic loopback destinations. Let
     # Xray's SIGTERM/finally cleanup release them before the next fixture.
     xray_pid=$(cat "$RUNNER_TEMP/xray-fixture.pid")
-    sudo kill -TERM "$xray_pid"
+    fixture_pid=$(sudo cat "$RUNNER_TEMP/xray-peer/fixture.pid")
+    [[ "$fixture_pid" =~ ^[1-9][0-9]*$ ]]
+    sudo kill -TERM "$fixture_pid"
+    # Bound teardown independently of acceptance; a stuck fixture is a failed
+    # run, not grounds to continue while its addresses remain installed.
+    timeout 30 tail --pid="$xray_pid" -f /dev/null
     wait "$xray_pid" || [[ $? == 143 ]]
     rm -f "$RUNNER_TEMP/xray-fixture.pid"
 fi
