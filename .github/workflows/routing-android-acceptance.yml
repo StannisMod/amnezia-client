@@ -242,12 +242,22 @@ jobs:
           api-level: ${{ matrix.api }}
           target: google_apis
           arch: x86_64
+          avd-name: amnezia-routing
           cores: 2
           ram-size: 3072M
           heap-size: 512M
+          # The action writes hw.heapSize, but AVD uses vm.heapSize (integer
+          # MiB). Normalize RAM too instead of relying on integer parsing of M.
+          pre-emulator-launch-script: |
+            sed -i -E '/^(hw.ramSize|hw.heapSize|vm.heapSize)=/d' "$ANDROID_AVD_HOME/amnezia-routing.avd/config.ini"
+            printf 'hw.ramSize=3072\nvm.heapSize=512\n' >> "$ANDROID_AVD_HOME/amnezia-routing.avd/config.ini"
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           script: |
+            adb shell getprop dalvik.vm.heapsize
+            adb shell getprop dalvik.vm.heapgrowthlimit
+            adb shell cat /proc/meminfo | head -n 3
+            python3 -c 'import subprocess,re; mem=subprocess.check_output(["adb","shell","cat","/proc/meminfo"],text=True); assert int(re.search(r"MemTotal:\s+(\d+)",mem)[1]) >= 2*1024*1024, "AVD RAM configuration was not applied"; heap=subprocess.check_output(["adb","shell","getprop","dalvik.vm.heapsize"],text=True).strip().lower(); assert re.fullmatch(r"\d+m",heap) and int(heap[:-1]) >= 256, "AVD heap configuration was not applied: "+heap'
             sudo ip addr add 198.51.100.2/32 dev lo
             "$RUNNER_TEMP/android-fixture" --shared-ip 198.51.100.2 --endpoint-host 10.0.2.2 --transport "${{ matrix.transport }}" --persistent --bulk --native-dns-port 1053 --native-dot-port 8853 --config "$RUNNER_TEMP/fixture.json" --quic-ca "$RUNNER_TEMP/quic.der" > fixture-server.log 2>&1 & echo $! > "$RUNNER_TEMP/fixture.pid"
             for i in $(seq 1 30); do test -s "$RUNNER_TEMP/fixture.json" && break; sleep 1; done
