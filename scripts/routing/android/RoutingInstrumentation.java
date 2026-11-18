@@ -717,11 +717,42 @@ public final class RoutingInstrumentation extends Instrumentation {
     }
 
     private Socket retainedSocket(InetAddress address) throws Exception {
+        return retainedSocket(address, null);
+    }
+
+    private Socket retainedVpnSocket(InetAddress address, String captureAddress) throws Exception {
+        ConnectivityManager manager = getTargetContext().getSystemService(ConnectivityManager.class);
+        InetAddress expected = InetAddress.getByName(captureAddress);
+        long until = SystemClock.elapsedRealtime() + 10000;
+        do {
+            for (Network network : manager.getAllNetworks()) {
+                NetworkCapabilities caps = manager.getNetworkCapabilities(network);
+                android.net.LinkProperties links = manager.getLinkProperties(network);
+                if (caps == null || !caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) || links == null) continue;
+                for (android.net.LinkAddress local : links.getLinkAddresses()) {
+                    if (expected.equals(local.getAddress())) return retainedSocket(address, network);
+                }
+            }
+            SystemClock.sleep(25);
+        } while (SystemClock.elapsedRealtime() < until);
+        throw new AssertionError("retained socket capture VPN unavailable");
+    }
+
+    private Socket retainedSocket(InetAddress address, Network capture) throws Exception {
         Socket socket = new Socket(); socket.setSoTimeout(30000);
-        socket.connect(new InetSocketAddress(address, 18081), 10000);
-        byte[] banner = new byte[4]; new DataInputStream(socket.getInputStream()).readFully(banner);
-        require("VPN\n".equals(new String(banner, StandardCharsets.US_ASCII)), "retained socket reached non-VPN observer");
-        return socket;
+        try {
+            // Instrumentation shares the VPN-owner UID. Its implicit socket
+            // netId can be an underlay which Android destroys after handover.
+            // Bind only test-owned VPN streams, never process-wide/native probes.
+            if (capture != null) capture.bindSocket(socket);
+            socket.connect(new InetSocketAddress(address, 18081), 10000);
+            byte[] banner = new byte[4]; new DataInputStream(socket.getInputStream()).readFully(banner);
+            require("VPN\n".equals(new String(banner, StandardCharsets.US_ASCII)), "retained socket reached non-VPN observer");
+            return socket;
+        } catch (Exception | AssertionError error) {
+            socket.close();
+            throw error;
+        }
     }
 
     private void exchange(ExecutorService executor, Socket socket, byte[] payload) throws Exception {
@@ -779,11 +810,11 @@ public final class RoutingInstrumentation extends Instrumentation {
         long start = SystemClock.elapsedRealtime(); boolean cellular = false;
         try {
             retainedStateChanged = false; retainedCheck = true;
-            interactive = retainedSocket(dns("vpn.test", 1));
+            interactive = retainedVpnSocket(dns("vpn.test", 1), "172.19.0.1");
             exchange(io, interactive, "before-fault".getBytes(StandardCharsets.US_ASCII));
             retainedCheckpoint("drop_before_media");SystemClock.sleep(3000);retainedCheckpoint("restore_before_media");
             exchange(io, interactive, "after-first-loss".getBytes(StandardCharsets.US_ASCII));
-            media = retainedSocket(dns("ipv6.test", 28));
+            media = retainedVpnSocket(dns("ipv6.test", 28), "172.19.0.1");
             byte[] payload = new byte[256 * 1024];for (int i = 0; i < payload.length; ++i) payload[i] = (byte)(i * 31 + 7);
             exchange(io, media, payload);
             // Age both streams through a normal WireGuard rekey interval.
@@ -1098,8 +1129,8 @@ public final class RoutingInstrumentation extends Instrumentation {
         Socket interactive = null, media = null;
         boolean fault = false;
         try {
-            interactive = retainedSocket(dns("vpn.test", 1));
-            media = retainedSocket(dns("vpn.test", 1)); media.setSoTimeout(60000);
+            interactive = retainedVpnSocket(dns("vpn.test", 1), "172.19.0.1");
+            media = retainedVpnSocket(dns("vpn.test", 1), "172.19.0.1"); media.setSoTimeout(60000);
             // Keep both original sockets through at least two normal worker
             // periods. The impairment must exercise a changed established path,
             // rather than just the first probe after connecting the VPN.

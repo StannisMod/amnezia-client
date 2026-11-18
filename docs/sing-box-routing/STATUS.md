@@ -1,5 +1,21 @@
 # Implementation checkpoint — automated validation
 
+## Retained Android socket attribution — 2026-11-18
+
+Run `44346633233` at `9b97207` passed five of six lanes. AWG/API35
+failed during retained warmup with session 107 still alive, no capture refresh
+and no pending/failed DNS. Preserved pre-cleanup Android events show cellular
+network 209 becoming inactive at 16:31:30.915, then Netd destroying one socket
+for that netId at 16:32:00.914; the Java abort followed at 16:32:01.990.
+The surviving media socket carried Wi-Fi netId 100. This implicates test-owned
+sockets inheriting different underlay netIds under the VPN-owner UID.
+
+The retained shared-core probes now explicitly bind each original socket to
+the VPN Network identified by its capture address before connecting. There is
+no reconnect, process-wide binding, timeout increase or observer relaxation.
+OpenVPN split-scope probes remain implicitly routed. Hosted verification is
+still required; this is not a final acceptance or PR-readiness claim.
+
 ## Android DNS stall investigation — 2026-11-18
 
 Run `44326437543` at branch source `9ace22a` passed five Android lanes.
