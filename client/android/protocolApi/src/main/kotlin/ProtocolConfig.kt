@@ -62,6 +62,10 @@ open class ProtocolConfig protected constructor(
         internal var allowSplitTunneling: Boolean = true
             private set
 
+        private var fullIpv6CaptureRequired: Boolean = false
+
+        fun requireFullIpv6Capture() = apply { fullIpv6CaptureRequired = true }
+
         open var mtu: Int = 0
             protected set
 
@@ -175,6 +179,13 @@ open class ProtocolConfig protected constructor(
 
         protected fun configBuild() {
             processSplitTunneling()
+            if (fullIpv6CaptureRequired) {
+                // OFF is an enforcement policy, not a destination include
+                // rule. Install it after split processing removes defaults.
+                routes.removeIf { it.inetNetwork.isIpv6 }
+                addRoute(InetNetwork("::", 1))
+                addRoute(InetNetwork("8000::", 1))
+            }
             processRoutes()
             validate()
         }

@@ -1,5 +1,29 @@
 # Implementation checkpoint — automated validation
 
+## Linux hosted closure and Android capture review — 2026-11-19
+
+Run `44581190296` at `48387b4` passed all six required Linux-native lanes:
+AWG/WG namespace capture on Ubuntu 22.04/24.04 and both system-resolver
+split-DNS lanes. This validates the pipe-draining harness correction in the
+previously failing workflows; their earlier failed evidence is retained.
+
+New Codex finding `4632863609` identified IPv6-OFF capture loss in Android
+destination include mode: split compilation removed the /1 capture routes.
+The builder now records the explicit full-family capture requirement and
+installs it after destination split compilation, stripping IPv6 exclusions
+while retaining IPv4 split policy. Protocol setup records the requirement
+before its no-split/disabled-split early returns. Missing preference/ON still
+uses the existing destination scopes. New JVM regressions cover IPv4-only
+include and IPv6 include/exclude policies under OFF.
+
+Local Gradle attempts hit the 4-GiB laboratory cgroup limit, including after
+reducing guest allocation to reserve build overhead; no local Kotlin PASS is
+claimed. Limits were not increased and no second VM ran. The emulator was
+OOM-terminated; its stale lock files were preserved under
+`.before-merge-prep-oom` before retry. Hosted Kotlin tests and actual Android
+packet acceptance remain required for this correction. No merge is authorized
+by this readiness checkpoint.
+
 ## Merge preparation: Linux helper shutdown — 2026-11-19
 
 Both Linux acceptance drivers waited for helper exit without draining its status

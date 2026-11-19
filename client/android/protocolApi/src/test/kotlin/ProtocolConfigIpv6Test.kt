@@ -70,4 +70,29 @@ class ProtocolConfigIpv6Test {
         for (address in listOf("2001:db8::1", "fd88::1", "64:ff9b::c000:201"))
             assertTrue(address, result.captures(address))
     }
+
+    @Test fun ipv6OffSurvivesIpv4OnlyIncludes() {
+        val result = config {
+            requireFullIpv6Capture()
+            addRoute(InetNetwork("::", 0))
+            includeAddress(InetNetwork("192.0.2.0", 24))
+        }
+        assertTrue(result.captures("192.0.2.1"))
+        assertFalse(result.captures("198.51.100.1"))
+        for (address in listOf("2001:db8::1", "fd88::1", "64:ff9b::c000:201"))
+            assertTrue(address, result.captures(address))
+    }
+
+    @Test fun ipv6OffOverridesIpv6ExclusionsAndSpecificIncludes() {
+        for (include in listOf(false, true)) {
+            val result = config {
+                requireFullIpv6Capture()
+                if (include) includeAddress(InetNetwork("fd99::", 16))
+                else excludeAddress(InetNetwork("fd99::", 16))
+                excludeRoute(InetNetwork("2001:db8::", 32))
+            }
+            for (address in listOf("2001:db8::1", "fd99::4", "fd88::1", "64:ff9b::c000:201"))
+                assertTrue(address, result.captures(address))
+        }
+    }
 }

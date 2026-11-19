@@ -101,6 +101,7 @@ abstract class Protocol {
     abstract fun reconnectVpn(vpnBuilder: Builder, protect: (Int) -> Boolean)
 
     protected fun ProtocolConfig.Builder.configSplitTunneling(config: JSONObject) {
+        if (!config.optBoolean("ipv6_enabled", true)) requireFullIpv6Capture()
         if (!allowSplitTunneling) {
             Log.i(TAG, "Global address split tunneling is prohibited, " +
                 "only tunneling from the protocol config is used")
@@ -121,10 +122,6 @@ abstract class Protocol {
             val address = InetNetwork.parse(splitTunnelSites.getString(i))
             if (!config.optBoolean("ipv6_enabled", true) && address.address is Inet6Address) continue
             addressHandlerFunc(address)
-        }
-        if (!config.optBoolean("ipv6_enabled", true)) {
-            addRoute(InetNetwork("::", 1))
-            addRoute(InetNetwork("8000::", 1))
         }
     }
 
