@@ -96,9 +96,9 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         openVPNPacketFlowAdapter.setIPv6Blocked(blocked)
     }
 
-    override func setTunnelNetworkSettings(_ tunnelNetworkSettings: NEPacketTunnelNetworkSettings?,
-                                          completionHandler: ((Error?) -> Void)? = nil) {
-        if nativeWireguardBlocksIPv6, let settings = tunnelNetworkSettings {
+    override func setTunnelNetworkSettings(_ tunnelNetworkSettings: NETunnelNetworkSettings?,
+                                          completionHandler: (@Sendable (Error?) -> Void)? = nil) {
+        if nativeWireguardBlocksIPv6, let settings = tunnelNetworkSettings as? NEPacketTunnelNetworkSettings {
             // The backend has no IPv6 AllowedIPs. Keep capture anyway, also on
             // adapter path updates; otherwise traffic escapes over the underlay.
             WGConfig.retainBlockedIPv6Capture(in: settings)

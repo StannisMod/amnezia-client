@@ -2,6 +2,15 @@
 
 ## Codex review follow-up — 2026-11-19
 
+Run `44525956279` at `9cbc7f0` passed every required lane except the iOS app/
+extension compilation. The SDK diagnostic identifies an incorrect override
+parameter type in the new native capture guard: the superclass accepts
+`NETunnelNetworkSettings?`, not `NEPacketTunnelNetworkSettings?`, with a
+Sendable completion handler. The override now matches that signature and
+conditionally casts packet settings before applying capture; nil/base settings
+are forwarded unchanged. A new hosted build must validate the correction.
+The previous Intel TCP timing failure did not recur; its cause remains unclosed.
+
 The four findings against `057b7a5` were confirmed by inspecting their real
 call paths. Android DNS overrides now precede installation of the global AAAA
 NODATA rule, retaining FakeIP priority; the complete Go engine suite passed
