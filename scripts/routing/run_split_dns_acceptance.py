@@ -19,6 +19,7 @@ import sys
 import threading
 import time
 import urllib.request
+from helper_process import stop_helper
 
 
 def run(*args, **kwargs):
@@ -175,10 +176,7 @@ def main():
     def stop():
         nonlocal child
         if child is not None:
-            if child.poll() is None:
-                child.stdin.write("stop\n")
-                child.stdin.flush()
-            assert child.wait(timeout=15) == 0
+            stop_helper(child)
             child = None
 
     def connect(name, marker, address=None):

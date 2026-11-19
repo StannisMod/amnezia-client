@@ -1,5 +1,29 @@
 # Implementation checkpoint — automated validation
 
+## Merge preparation: Linux helper shutdown — 2026-11-19
+
+Both Linux acceptance drivers waited for helper exit without draining its status
+pipe. The helper emits periodic status on the same select-loop thread that
+consumes `stop`; a full stdout pipe can therefore prevent it from reading stop.
+The drivers now use `communicate` to deliver stop/EOF and drain output together.
+The original 15-second bound, zero-exit assertion, and distinction between
+graceful stop and command-pipe-loss abort remain unchanged. No production
+networking or acceptance assertion was relaxed.
+
+Five real-process/pipe tests passed in the single constrained API29 laboratory
+container (2 CPUs, 4 GiB total memory including emulator overhead, swap disabled).
+The negative control fills a 4-KiB pipe: the old wait times out, then draining
+allows the exact same process to finish. Tests also check graceful stop, EOF,
+nonzero exit rejection and timeout rejection. This reproduces a harness failure
+mechanism; the complete hosted Linux lanes must still establish whether it
+accounts for their previously retained failures.
+
+Android run `44543994486` at `cf7cf31` passed 5/6 lanes. The remaining AWG/API29
+failure is work-profile package-reinstall recovery; the personal-profile case
+passed. Its new network-event snapshot shows VPN networks 104 -> 105 while
+Wi-Fi underlay 100 stays unchanged. TCP refusal/DNS timeout and
+`generation-unavailable` remain observations, not a proven root cause.
+
 Main run `44534261050` at `489318b` has now completed: iOS compilation, Linux,
 Windows, Android build/core lanes and Intel Mac checks passed. The only
 non-success test jobs were ARM Mac core and TCP recovery (`135596073712`,

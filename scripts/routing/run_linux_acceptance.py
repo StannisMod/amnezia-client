@@ -18,6 +18,7 @@ import sys
 import tempfile
 import threading
 import time
+from helper_process import stop_helper
 
 
 def run(*args, **kwargs):
@@ -166,9 +167,7 @@ def main():
     def stop():
         nonlocal child
         if child is not None:
-            if child.poll() is None:
-                child.stdin.write("stop\n"); child.stdin.flush()
-            assert child.wait(timeout=15) == 0
+            stop_helper(child)
             child = None
     try:
         ip("addr", "add", observer + "/32", "dev", "lo")
@@ -332,7 +331,7 @@ def main():
                 stop(); start(bool(cycle & 1))
                 application({"names": [["vpn.test", "VPN", 1]]})
             # Unexpected service command-pipe loss is not an explicit stop.
-            child.stdin.close(); assert child.wait(timeout=15) == 0; child = None
+            stop_helper(child, graceful=False); child = None
             application({"blocked": ["10.0.2.2"]})
             run("ip", "netns", "exec", ns, helper, "--cache-dir", directory, "--recover")
             start()
