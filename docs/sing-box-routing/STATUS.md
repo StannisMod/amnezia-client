@@ -1,5 +1,28 @@
 # Implementation checkpoint — automated validation
 
+## IPsec registry pin repair — 2026-11-19
+
+Run `44501519812` at `cfc66f0` preserved the missing reason: all standard
+container preflight fields matched, but Docker failed at `FROM` because OCI
+index `21f2a1b28dbbe69c4331571941df548eee2f4e1cba16af8b161248d66db8d490`
+is no longer registry-resolvable (`manifest unknown`). No cutover occurred.
+The same digest failure was independently reproduced with registry access.
+
+The replacement is OCI index
+`78ea73fb726bc97ccb8c592df88030fe44cb962bdd8cb6cd4da53630bc199374`.
+Registry bytes, child manifests and configurations were hash-verified for
+amd64, arm64 and arm/v7. All three advertise revision `5ff51748` and Libreswan
+5.4.2. The genuine upstream commit is
+`5ff51748cd5889072fd0ee5da55262d779441de5`; its Dockerfile declares the same
+version. The amd64 image was pulled by digest and executed without network,
+capabilities or a writable rootfs: `ipsec --version` returned `Libreswan 5.4.2`.
+ARM execution is not claimed. No mutable-tag fallback or TLS bypass was added.
+Hosted update/rollback and unchanged-client packet verification remain pending.
+As with any third-party pin, continued registry retention is externally owned.
+Android artifacts now also retain the selected network callbacks via a final
+logcat snapshot, avoiding loss when initial `adb root` restarts adbd. This is
+additional evidence collection for the unclosed API29 TXT failure, not a DNS fix.
+
 ## Hosted follow-up at `cd99b32` — 2026-11-19
 
 Android run `44491504894` passed both complete API35 lanes, both API28 lanes

@@ -659,6 +659,10 @@ def main():
             "rules": ("shell", "ip", "rule"),
             "connectivity": ("shell", "dumpsys", "connectivity"),
             "service-errors": ("logcat", "-d", "-s", "AndroidRuntime:E", "AmneziaVpnService:E", "AmneziaRoutingHost:W", "Go:E", "libc:F"),
+            # Snapshot after adb root/setup, not a stream that adbd restart can
+            # silently terminate before the application's network callbacks.
+            "network-events": ("logcat", "-d", "-t", "4000", "-v", "threadtime", "-s",
+                               "NetworkState:V", "Wireguard:I", "ConnectivityService:D", "Vpn:D"),
         }.items():
             try:
                 (work / (label + ".log")).write_text(adb(*command))

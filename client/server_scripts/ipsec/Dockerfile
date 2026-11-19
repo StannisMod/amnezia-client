@@ -1,6 +1,6 @@
-# OCI multi-platform index, upstream revision f48cd8db, Libreswan 5.4.1.
+# OCI multi-platform index, upstream revision 5ff51748, Libreswan 5.4.2.
 # Keep a registry-resolvable manifest/index digest, not a local Docker image ID.
-FROM hwdsl2/ipsec-vpn-server@sha256:21f2a1b28dbbe69c4331571941df548eee2f4e1cba16af8b161248d66db8d490
+FROM hwdsl2/ipsec-vpn-server@sha256:78ea73fb726bc97ccb8c592df88030fe44cb962bdd8cb6cd4da53630bc199374
 
 RUN apk add --no-cache dumb-init && mkdir -p /opt/amnezia \
     && printf '#!/bin/sh\nexec tail -f /dev/null\n' > /opt/amnezia/start.sh \
