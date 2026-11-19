@@ -79,6 +79,46 @@ func TestAndroidApplicationOverridePreservesBlocks(t *testing.T) {
 	}
 }
 
+func TestAndroidApplicationDNSKeepsFakeIPBeforeOverrideWithIPv6Disabled(t *testing.T) {
+	for _, uids := range [][]uint32{nil, {10282}} {
+		for _, enabled := range []bool{false, true} {
+			c := RoutingConfig{
+				Rules:    rules.Config{Version: 2, Default: rules.VPN},
+				Resolver: netip.MustParseAddrPort("10.77.0.2:53"), ResolverAction: rules.VPN,
+				IPv6Enabled: &enabled, AndroidApplications: &AndroidApplications{SiteRulesUIDs: uids},
+			}
+			raw, err := c.compile(map[string]any{"type": "direct", "tag": "vpn"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var result struct {
+				DNS struct {
+					Rules []struct {
+						Action    string   `json:"action"`
+						Server    string   `json:"server"`
+						QueryType []string `json:"query_type"`
+					} `json:"rules"`
+				} `json:"dns"`
+			}
+			if err := json.Unmarshal(raw, &result); err != nil {
+				t.Fatal(err)
+			}
+			offset := 0
+			if !enabled {
+				first := result.DNS.Rules[0]
+				if first.Action != "predefined" || len(first.QueryType) != 1 || first.QueryType[0] != "AAAA" {
+					t.Fatal("IPv6 OFF no longer rejects AAAA before resolver selection")
+				}
+				offset = 1
+			}
+			if result.DNS.Rules[offset].Server != "fake" ||
+				result.DNS.Rules[offset+1].Server != "upstream" {
+				t.Fatalf("IPv6=%v UIDs=%v: application override bypassed FakeIP: %+v", enabled, uids, result.DNS.Rules)
+			}
+		}
+	}
+}
+
 func TestAndroidApplicationDNSRejectsUnsafeResolver(t *testing.T) {
 	apps := &AndroidApplications{SiteRulesUIDs: []uint32{10282}}
 	settings := func() map[string]any { return map[string]any{"rules": []any{map[string]any{"server": "fake"}}} }

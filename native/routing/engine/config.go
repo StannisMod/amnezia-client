@@ -154,15 +154,17 @@ func (c RoutingConfig) compile(vpn map[string]any) ([]byte, error) {
 		// sing-box dialers. Our outbounds use DNSRouter.Lookup without pinning.
 		delete(route, "default_domain_resolver")
 	}
+	// Install application overrides while FakeIP is still the first rule.
+	// The IPv6 rejection is prepended afterwards and must precede both.
+	if err := c.AndroidApplications.applyDNS(config["dns"].(map[string]any), c.DNS, c.ResolverAction); err != nil {
+		return nil, err
+	}
 	if c.IPv6Enabled != nil && !*c.IPv6Enabled {
 		dns := config["dns"].(map[string]any)
 		dns["strategy"] = "ipv4_only"
 		dns["rules"] = append([]any{map[string]any{
 			"query_type": []string{"AAAA"}, "action": "predefined", "rcode": "NOERROR",
 		}}, dns["rules"].([]any)...)
-	}
-	if err := c.AndroidApplications.applyDNS(config["dns"].(map[string]any), c.DNS, c.ResolverAction); err != nil {
-		return nil, err
 	}
 	if liveApps {
 		for i := range liveOffsets {
