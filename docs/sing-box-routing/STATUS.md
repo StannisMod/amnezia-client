@@ -1,5 +1,15 @@
 # Implementation checkpoint — automated validation
 
+Main run `44534261050` at `489318b` has now completed: iOS compilation, Linux,
+Windows, Android build/core lanes and Intel Mac checks passed. The only
+non-success test jobs were ARM Mac core and TCP recovery (`135596073712`,
+`135596073944`): both had empty runner names and no steps. GitHub annotations
+explicitly report “The job was not acquired by Runner of type hosted even after
+multiple attempts” and macOS arm64 capacity constraints. This establishes an
+infrastructure cancellation, not a successful ARM check or a product failure.
+The final build gate correctly remained red. Android and Linux-native failures
+in the separate workflows below remain unresolved.
+
 ## Hosted failures at `489318b` — 2026-11-19
 
 Android run `44534249506` failed three lanes; logs and all six artifact bundles
