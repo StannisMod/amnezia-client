@@ -126,6 +126,7 @@ void XrayProtocol::stop()
         auto deleteTun = iface->deleteTun(tunName);
         if (!deleteTun.waitForFinished() || !deleteTun.returnValue())
             qWarning() << "Failed to delete tun";
+        m_tunPrepared = false;
 
         auto xrayStop = iface->xrayStopOwned(m_xrayToken);
         if (!xrayStop.waitForFinished() || !xrayStop.returnValue())
@@ -162,6 +163,25 @@ ErrorCode XrayProtocol::startTun2Socks()
     if (!m_tun2socksProcess->waitForSource()) {
         return ErrorCode::AmneziaServiceConnectionFailed;
     }
+
+#ifdef Q_OS_LINUX
+    // tun2socks opens the device before emitting STACK readiness. Establish
+    // service ownership first; createTun must never adopt an arbitrary tun2.
+    if (!m_tunPrepared) {
+        const auto result = IpcClient::withInterface(
+                [this](QSharedPointer<IpcInterfaceReplica> iface) -> ErrorCode {
+                    auto created = iface->createTun(tunName, amnezia::protocols::xray::defaultLocalAddr);
+                    if (!created.waitForFinished() || !created.returnValue()) {
+                        auto cleanup = iface->deleteTun(tunName);
+                        cleanup.waitForFinished();
+                        return ErrorCode::InternalError;
+                    }
+                    m_tunPrepared = true;
+                    return ErrorCode::NoError;
+                }, []() { return ErrorCode::AmneziaServiceConnectionFailed; });
+        if (result != ErrorCode::NoError) return result;
+    }
+#endif
 
     const QString proxyUrl = QString("socks5://%1:%2@127.0.0.1:%3").arg(m_socksUser, m_socksPassword, QString::number(m_socksPort));
 
@@ -246,11 +266,15 @@ ErrorCode XrayProtocol::setupRouting()
 #ifdef Q_OS_WIN
                 const int inetAdapterIndex = NetworkUtilities::AdapterIndexTo(QHostAddress(m_remoteAddress));
 #endif
+#ifdef Q_OS_LINUX
+                if (!m_tunPrepared) return ErrorCode::InternalError;
+#else
                 auto createTun = iface->createTun(tunName, amnezia::protocols::xray::defaultLocalAddr);
                 if (!createTun.waitForFinished() || !createTun.returnValue()) {
                     qCritical() << "Failed to assign IP address for TUN";
                     return ErrorCode::InternalError;
                 }
+#endif
 
                 auto updateResolvers = iface->updateResolvers(tunName, m_dnsServers);
                 if (!updateResolvers.waitForFinished() || !updateResolvers.returnValue()) {
