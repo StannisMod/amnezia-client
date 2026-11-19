@@ -1,5 +1,26 @@
 # Implementation checkpoint — automated validation
 
+## Hosted failures at `489318b` — 2026-11-19
+
+Android run `44534249506` failed three lanes; logs and all six artifact bundles
+are retained separately from successful evidence. WG/API35 timed out receiving
+VPN UDP during session 94 of cyclic acceptance. WG/API29 reached the personal
+application TCP probe but got ECONNREFUSED; its snapshot also reports two DNS
+failures with last classification `generation-unavailable`, not an established
+cause for the TCP refusal. AWG/API28 passed its ordinary compatibility test,
+then timed out uninstalling the instrumentation APK before OpenVPN testing.
+No OpenVPN packet failure is established by that setup timeout.
+
+The network-events snapshot added earlier was omitted from the main acceptance
+artifact allowlist (the other subdirectories upload all logs). The allowlist
+now includes that exact non-fixture log. This repairs evidence retention only;
+none of these acceptance failures is claimed fixed or retried unchanged.
+The separate Linux native run `44534261084` also failed: inspected namespace
+and AWG system-resolver jobs timed out waiting for child shutdown; a WG
+system-resolver job failed uploading artifacts. Other failed namespace lanes
+still need individual inspection. Main app/iOS compilation was still running
+at this checkpoint. Subsequent local tests must use one 2-CPU/4-GiB VM.
+
 ## Codex review follow-up — 2026-11-19
 
 Run `44525956279` at `9cbc7f0` passed every required lane except the iOS app/

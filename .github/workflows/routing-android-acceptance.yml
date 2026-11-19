@@ -288,6 +288,7 @@ jobs:
             ${{ runner.temp }}/android-acceptance/rules.log
             ${{ runner.temp }}/android-acceptance/connectivity.log
             ${{ runner.temp }}/android-acceptance/service-errors.log
+            ${{ runner.temp }}/android-acceptance/network-events.log
             ${{ runner.temp }}/android-acceptance/failure-*.log
             ${{ runner.temp }}/android-work-profile-acceptance/android-acceptance.json
             ${{ runner.temp }}/android-work-profile-acceptance/*.log
