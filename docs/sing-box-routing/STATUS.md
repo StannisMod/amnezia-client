@@ -1,5 +1,26 @@
 # Implementation checkpoint — automated validation
 
+## Hosted follow-up at `cd99b32` — 2026-11-19
+
+Android run `44491504894` passed both complete API35 lanes, both API28 lanes
+and AWG/API29. The strengthened OpenVPN scope regression passed in hosted CI.
+The remaining WireGuard/API29 failure is the initial personal-profile TXT
+request (`uid=10148`), before managed-profile acceptance begins. Preserved
+diagnostics include `generation-unavailable`; the precise triggering event is
+not proven. The unchanged, hash-verified hosted `cd99b32` APK subsequently passed
+both personal and managed profiles locally, including a cold-start experiment.
+No DNS behavioral correction or final Android green-gate claim is made.
+
+Main run `44491513666` completed its Mac ARM/Intel, Windows, iOS and Android
+lanes successfully. Linux stopped at the production SSH IPsec test: the forced
+post-cutover failure expected `rolled_back`, but received an earlier `rejected`.
+The updater redirects its reason to a transaction log that was lost when the
+owned nested daemon was removed. The lab now emits bounded, credential-redacted
+transaction output and a non-secret preflight snapshot on an unexpected result,
+before preserving the original assertion. Two diagnostic-safety tests pass.
+This is diagnostic preservation, not an IPsec fix; the original failure remains FAIL.
+PR remains draft; source/package reconciliation still depends on the final gates.
+
 ## OpenVPN final-route publication — 2026-11-19
 
 In the single owned API28 VM (laboratory total limited to four CPUs and 8 GiB,

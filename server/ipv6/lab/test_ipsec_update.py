@@ -12,6 +12,61 @@ import uuid
 from test_ipsec_restart import run
 
 
+def public_rejection_snapshot(container, base_image):
+    """Never publish container environment, credentials, mounts or NSS state."""
+    host = container['HostConfig']
+    fields = ('NetworkMode', 'Privileged', 'PidMode', 'SecurityOpt', 'PidsLimit',
+              'Memory', 'MemorySwap', 'NanoCpus', 'CpuQuota', 'CpuPeriod',
+              'CpuShares', 'BlkioWeight', 'ReadonlyRootfs', 'PublishAllPorts')
+    custom = ('Dns', 'DnsOptions', 'DnsSearch', 'ExtraHosts', 'CapAdd', 'CapDrop',
+              'Devices', 'DeviceRequests', 'Binds', 'Tmpfs', 'Sysctls')
+    entrypoint = container['Config'].get('Entrypoint')
+    return {
+        'host': {key: host.get(key) for key in fields},
+        'nondefault_host_fields': [key for key in custom if host.get(key) not in (None, [], {})],
+        'mount_count': len(container.get('Mounts', [])),
+        'entrypoint_kind': ('legacy-inert' if entrypoint == ['dumb-init', 'tail', '-f', '/dev/null']
+                            else 'managed' if entrypoint == ['dumb-init', '/opt/amnezia/start.sh']
+                            else 'nonstandard'),
+        'standard_user': container['Config'].get('User') in (None, '', 'root', '0'),
+        'environment_matches_image': container['Config'].get('Env') == base_image['Config'].get('Env'),
+        'port_binding_count': len(host.get('PortBindings') or {}),
+        'ipsec_port_layout': {
+            str(port): [
+                {'host_ip_kind': {'': 'unspecified', '0.0.0.0': 'wildcard-v4', '::': 'wildcard-v6'}
+                 .get(binding.get('HostIp', ''), 'nonstandard'),
+                 'host_port_matches': binding.get('HostPort') == str(port)}
+                for binding in (host.get('PortBindings') or {}).get(str(port) + '/udp', [])
+            ] for port in (500, 4500)
+        },
+    }
+
+
+def public_update_log(text):
+    # Redact before truncation so a clipped PEM cannot expose its body.
+    text = re.sub(r'-----BEGIN [^\n]*PRIVATE KEY-----.*?-----END [^\n]*PRIVATE KEY-----',
+                  '[PRIVATE KEY REDACTED]', text, flags=re.DOTALL)
+    text = re.sub(r'''(?im)^.*(?:private[_-]?key|preshared[_-]?key|\bPSK\b|VPN_IPSEC_PSK|VPN_PASSWORD|password["']?\s*[=:]).*$''',
+                  '[CREDENTIAL LINE REDACTED]', text)
+    return text[-32768:]
+
+
+def report_unexpected_update(stage, container):
+    """Print only owned-lab diagnostics before the outer runner is deleted."""
+    try:
+        inspected = json.loads(run('docker', 'inspect', container))[0]
+        base = json.loads(run('docker', 'image', 'inspect', inspected['Image']))[0]
+        print('IPSEC_UPDATE_PREFLIGHT ' + json.dumps(public_rejection_snapshot(inspected, base)), flush=True)
+    except Exception as error:
+        print('IPSEC_UPDATE_PREFLIGHT unavailable: ' + type(error).__name__, flush=True)
+    work = Path('/var/lib/amnezia/updates') / ('amnezia-ipsec-' + stage.name.removeprefix('amnezia-update-'))
+    try:
+        print('IPSEC_UPDATE_LOG_BEGIN\n' + public_update_log((work / 'update.log').read_text(errors='replace')) +
+              '\nIPSEC_UPDATE_LOG_END', flush=True)
+    except OSError as error:
+        print('IPSEC_UPDATE_LOG unavailable: ' + type(error).__name__, flush=True)
+
+
 def prepare_peer(container, base_image):
     """Independent client and echo origin, entirely inside the private daemon."""
     gateway = json.loads(run('docker', 'network', 'inspect', 'bridge'))[0]['IPAM']['Config'][0]['Gateway']
@@ -185,6 +240,8 @@ def main():
     failed = subprocess.run(['sh', str(source / 'update_ipsec.sh'), 'ipsec', str(failed_stage)],
                             text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=300)
     print(failed.stdout, flush=True)
+    if failed.returncode == 0 or 'amnezia_update=rolled_back' not in failed.stdout:
+        report_unexpected_update(failed_stage, container)
     assert failed.returncode != 0 and 'amnezia_update=rolled_back' in failed.stdout
     assert run('docker', 'inspect', '-f', '{{.Id}}', 'amnezia-ipsec') == container
     assert run('docker', 'inspect', '-f', '{{.State.Running}}', container) == 'true'

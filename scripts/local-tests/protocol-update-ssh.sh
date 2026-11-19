@@ -2,6 +2,7 @@
 set -euo pipefail
 repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 binary=${1:?Usage: protocol-update-ssh.sh /absolute/path/to/test_server_edit}
+python3 "$repo/server/ipv6/lab/test_ipsec_update_diagnostics.py"
 qt_root=${AMNEZIA_PROTOCOL_UPDATE_QT_ROOT:-/opt/Qt/6.10.1/gcc_64}
 image=${AMNEZIA_PROTOCOL_UPDATE_IMAGE:-amnezia-protocol-update-qt:local}
 mounts=(--mount "type=bind,source=$repo,target=/src,readonly")
