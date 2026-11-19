@@ -466,6 +466,20 @@ public final class RoutingInstrumentation extends Instrumentation {
         if (!(expected.equals("BLOCKED") ? answer==null : expected.equals(answer))) {
             progress("OPENVPN_UNEXPECTED_SOCKET "+address+" local="+local+" actual="+answer+" state="+state);
             progress("RESOURCE_CHECKPOINT failure_socket");
+            // Observe convergence without repairing routing or changing the
+            // original verdict. The failing socket remains open in the caller.
+            // A later successful policy lookup cannot turn its leak into PASS.
+            for (int attempt=1; attempt<=3; attempt++) {
+                SystemClock.sleep(1000);
+                try (Socket fresh = new Socket()) {
+                    fresh.setSoTimeout(1000);
+                    fresh.connect(new InetSocketAddress(address,21944),1000);
+                    String observed=new BufferedReader(new InputStreamReader(fresh.getInputStream(),StandardCharsets.US_ASCII)).readLine();
+                    progress("OPENVPN_SETTLED_LOOKUP attempt="+attempt+" address="+address+" local="+fresh.getLocalAddress()+" actual="+observed);
+                } catch (java.io.IOException error) {
+                    progress("OPENVPN_SETTLED_LOOKUP attempt="+attempt+" address="+address+" error="+error.getClass().getSimpleName());
+                }
+            }
             // Optional causal experiment driven only by the root-owned emulator
             // monitor after a failed packet. Never turns the original failure
             // into a pass and never changes routes from the application.
@@ -539,6 +553,8 @@ public final class RoutingInstrumentation extends Instrumentation {
     private void openVpnIpv6() throws Exception {
         JSONArray cases = fixture.getJSONArray("openvpn_cases");
         JSONArray targets = fixture.getJSONArray("ipv6_test_destinations");
+        int tcpProbes = fixture.optInt("origin_tcp_probes",1);
+        require(tcpProbes>=1 && tcpProbes<=16,"invalid OpenVPN TCP probe count");
         for (int index = 0; index < cases.length(); index++) {
             JSONObject test = cases.getJSONObject(index), config = test.getJSONObject("config");
             for (int target=0; target<targets.length(); target++) {
@@ -569,12 +585,14 @@ public final class RoutingInstrumentation extends Instrumentation {
                 JSONObject expected=test.getJSONObject("expected");
                 openVpnLoopbackIpv6();
                 for (int target=0; target<targets.length(); target++) for (boolean udp : new boolean[]{false,true}) {
-                    String address=targets.getString(target);
-                    String answer=null;Exception failure=null;
-                    String want=expected.getString(address);
-                    try { answer=openVpnOrigin(address,udp,want); } catch (java.io.IOException error) { failure=error; }
-                    if (want.equals("BLOCKED")) require(failure!=null || answer==null,"selected IPv6 escaped blocking: "+address+" "+answer);
-                    else require(failure==null && want.equals(answer),"IPv6 scope mismatch: "+address+" udp="+udp+" expected="+want+" actual="+answer+" error="+failure);
+                    for (int probe=0; probe<(udp?1:tcpProbes); probe++) {
+                        String address=targets.getString(target);
+                        String answer=null;Exception failure=null;
+                        String want=expected.getString(address);
+                        try { answer=openVpnOrigin(address,udp,want); } catch (java.io.IOException error) { failure=error; }
+                        if (want.equals("BLOCKED")) require(failure!=null || answer==null,"selected IPv6 escaped blocking: "+address+" "+answer);
+                        else require(failure==null && want.equals(answer),"IPv6 scope mismatch: "+address+" udp="+udp+" expected="+want+" actual="+answer+" error="+failure);
+                    }
                 }
                 require(state==CONNECTED && java.util.Objects.equals(network,openVpnNetwork(manager)),"IPv6 check replaced the VPN network");
                 for (Socket socket : new Socket[]{first,second}) {

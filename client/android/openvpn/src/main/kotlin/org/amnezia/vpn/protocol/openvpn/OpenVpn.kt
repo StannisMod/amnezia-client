@@ -20,6 +20,9 @@ import org.json.JSONObject
 open class OpenVpn : Protocol() {
 
     private var openVpnClient: OpenVpnClient? = null
+    private val publicationLock = Any()
+    private var publicationStopped = true
+    private var publication: OpenVpnPublication? = null
     private lateinit var scope: CoroutineScope
 
     override val statistics: Statistics
@@ -46,6 +49,7 @@ open class OpenVpn : Protocol() {
     }
 
     override suspend fun startVpn(config: JSONObject, vpnBuilder: Builder, protect: (Int) -> Boolean) {
+        synchronized(publicationLock) { publicationStopped = false }
         val configBuilder = OpenVpnConfig.Builder()
 
         openVpnClient = OpenVpnClient(
@@ -89,6 +93,10 @@ open class OpenVpn : Protocol() {
     }
 
     override fun stopVpn() {
+        synchronized(publicationLock) {
+            publicationStopped = true
+            publication?.cancel()
+        }
         openVpnClient?.stop()
         openVpnClient = null
     }
@@ -112,11 +120,24 @@ open class OpenVpn : Protocol() {
         val openVpnConfig = configBuilder.build()
         buildVpnInterface(openVpnConfig, vpnBuilder)
 
-        vpnBuilder.establish().use { tunFd ->
-            if (tunFd == null) {
-                throw VpnStartException("Create VPN interface: permission not granted or revoked")
+        OpenVpnPublication(context.getSystemService(android.net.ConnectivityManager::class.java)).use { publication ->
+            synchronized(publicationLock) {
+                if (publicationStopped) throw VpnStartException("OpenVPN capture publication cancelled")
+                this.publication = publication
             }
-            return@use tunFd.detachFd()
+            try {
+                vpnBuilder.establish().use { tunFd ->
+                    if (tunFd == null) {
+                        throw VpnStartException("Create VPN interface: permission not granted or revoked")
+                    }
+                    publication.await(tunFd, openVpnConfig)
+                    tunFd.detachFd()
+                }
+            } finally {
+                synchronized(publicationLock) {
+                    if (this.publication === publication) this.publication = null
+                }
+            }
         }
     }
 }

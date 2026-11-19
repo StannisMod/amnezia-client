@@ -33,7 +33,13 @@ if [[ "$transport" == awg && "$api" != 28 ]]; then
     rm -f "$RUNNER_TEMP/xray-fixture.pid"
 fi
 if [[ "$transport" == awg && ( "$api" == 35 || "$api" == 28 ) ]]; then
+    scope_cycles=1
+    tcp_probes=1
+    # Exercise warmed native routing across repeated policy transitions on
+    # Android 9, where a single cold sequence missed an IPv6 bypass.
+    if [[ "$api" == 28 ]]; then scope_cycles=4; tcp_probes=8; fi
     sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT env "PATH=$PATH" "ANDROID_HOME=$ANDROID_HOME" \
         "ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT:-$ANDROID_HOME}" python3 scripts/routing/run_android_openvpn_acceptance.py \
-        --apk "$FEATURE_APK" --work "$RUNNER_TEMP/android-openvpn-ipv6" --apk-source-sha "$source_sha"
+        --apk "$FEATURE_APK" --work "$RUNNER_TEMP/android-openvpn-ipv6" --apk-source-sha "$source_sha" \
+        --scope-cycles "$scope_cycles" --tcp-probes "$tcp_probes"
 fi

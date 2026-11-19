@@ -11,7 +11,8 @@ TCP and UDP on the application's IPv6 loopback (`::1`) must also remain local;
 capturing the IPv6 default must not redirect local listeners into the tunnel.
 
 It does not test DNS, MTU recovery, physical devices or other VPN protocols.
-The API28 regression exposed a stale IPv6 kernel route cache after scope changes.
+The API28 regression was initially attributed to stale IPv6 route-cache state
+after scope changes; the follow-up below identifies a publication race instead.
 The compiler now retains `::/0` when there is no IPv6 exception, instead of
 artificially subdividing the default and subtracting kernel-owned loopback.
 The ordinary x86_64 APK from `9a64032` passed all seven cases on API28 and API35,
@@ -22,7 +23,35 @@ passed before this fixture was strengthened; no extra cases were added.
 Root cache flushing is a separate causal experiment, never part of a passing
 regression or a production fix. An API35 pass alone does not close this gate.
 
-The failing destination and case can vary with the preceding cache state; the
+The follow-up API28 reproduction on 2026-11-19 includes the ordinary AWG
+compatibility prelude and four complete OpenVPN scope cycles. The unchanged
+hosted APK leaked `fd99::5` through NATIVE in the fourth exclusion case.
+A capture-source prototype supplied `100::2/128` from RFC 6666's discard-only
+prefix when OpenVPN had no negotiated IPv6 address. It passed the repeated
+IPv4-only cases, but later leaked `fd99::5` in a dual-stack case with a real
+negotiated IPv6 address. It is **not** an accepted fix and was removed from
+production source; the prototype, source patch and failure evidence are kept.
+
+Packet metadata then confirmed a native-path TCP connection followed, without
+any route changes, by VPN-path connections one second later. Android 9's
+`ConnectivityService.handleUpdateLinkProperties()` stores the new properties
+before calling `updateLinkProperties()`/`updateRoutes()`; the corresponding
+`CALLBACK_IP_CHANGED` follows the netd route updates. Polling the getter, or
+checking only the first IPv4 route, therefore does not establish IPv6 readiness.
+Primary source: [Android 9 ConnectivityService](https://android.googlesource.com/platform/frameworks/base/+/android-9.0.0_r61/services/core/java/com/android/server/ConnectivityService.java).
+
+The production correction registers a VPN callback before establishing the
+final TUN, identifies that TUN from its own descriptor's `fdinfo`, and waits for
+its complete address/route publication before returning the descriptor to
+OpenVPN. An old agent with a reused interface name and an intermediate TUN
+cannot satisfy the gate. Timeout/loss fails startup; disconnect cancels the
+wait. No synthetic address, fixed sleep, route mutation, socket rebinding or
+policy expansion is used. The final local prototype passed eight complete
+scope cycles in each server mode, eight TCP probes per destination and UDP:
+32 IPv4-only plus 24 dual-stack cases, 2016 IPv6 assertions. Hosted verification
+of a source-coherent production APK remains required.
+
+The failing destination and case can vary with the preceding scope and timing; the
 observed bypass is not limited to the exclusion case or IPv4-only servers.
 Local experiments with an intermediate full-IPv6 TUN, a new NetworkAgent, and
 waiting for its LinkProperties callback still reproduced the bypass. One
@@ -57,6 +86,13 @@ Pass `--apk-source-sha` only when the APK's actual source commit is known.
 Unknown Git metadata remains unknown; APK, policy and harness file hashes are
 recorded. `--case full|include|exclude` runs a focused diagnosis and reports
 `PASS_FOCUSED`, rather than claiming the complete suite passed.
+`--scope-cycles 4` repeats all applicable cases in each live server fixture;
+the default remains one cycle. CI uses four cycles on API28 to retain the
+warmed-routing regression rather than treating a cold single-cycle pass as
+proof that the bypass is gone.
+`--tcp-probes 8` checks eight independent TCP sockets per destination and case.
+Every probe is asserted; the first mismatch still fails, rather than being
+retried into a pass. CI combines this with four API28 scope cycles.
 
 The driver accepts only an emulator (`ro.kernel.qemu=1`), reinstalls a disposable
 re-signed copy plus its separate instrumentation APK, and verifies all native

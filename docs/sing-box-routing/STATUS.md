@@ -1,6 +1,49 @@
 # Implementation checkpoint — automated validation
 
+## OpenVPN final-route publication — 2026-11-19
+
+In the single owned API28 VM (laboratory total limited to four CPUs and 8 GiB,
+no swap), the unchanged hosted APK from merge source
+`6dc7c3479fc02aac89ef360ecbfcab47eff797e0` reproduced the IPv6 scope failure
+after the AWG compatibility prelude and repeated OpenVPN scope transitions.
+The original socket used NATIVE; three fresh diagnostic connections one second
+apart then used VPN without changing routes. Bounded header-only metadata
+confirmed the initial native loopback path and later `tun-ovpn3test` ingress.
+The original assertion remained FAIL.
+
+Android 9 primary source confirms that the LinkProperties getter can expose
+the new snapshot before netd finishes installing routes, while the callback
+follows route installation. The correction waits for publication of the final
+TUN's complete addresses/routes before returning its descriptor to OpenVPN.
+It rejects stale-agent/intermediate-interface observations, closes the TUN on
+failure and supports disconnect cancellation. It does not bind test sockets,
+flush caches, add synthetic addresses or alter IPv6 scope/server capability.
+
+The final local JVM-dex prototype passed the AWG prelude plus all 32 IPv4-only
+and 24 dual-stack cases: eight scope cycles, eight independent TCP probes per
+destination, UDP, loopback and both original IPv4 streams (2016 IPv6 assertions).
+Six publication-state and five protocol-policy JVM tests passed. All non-dex
+payload bytes were verified identical to the hosted APK. This is explicitly a
+local prototype, not a production package from a pure source commit. Hosted
+source-coherent APK acceptance is still required.
+
+A rejected capture-source prototype passed its IPv4-only cases but failed a
+later dual-stack case. Its patch/artifact/failure evidence remains preserved;
+none of its synthetic-address code is retained in production.
+
 ## Retained Android socket attribution — 2026-11-18
+
+Follow-up run `44350559015` at `a2f4a62` passed both complete API35
+lanes (including retained TCP), both API29 lanes and WireGuard/API28.
+AWG/API28's shared-core compatibility step also completed, but its subsequent
+OpenVPN IPv4-only `stale-full` case failed: `fd99::4` returned `NATIVE`.
+The live snapshot contains a `tun0` unreachable IPv6 default and UID 10088
+capture rule, yet the offending TCP socket used native source `fec0::…`
+and mark `0x40065`. This reopens the scope-change/cache failure described in
+`scripts/routing/android-openvpn/README.md`; the previous passing runs do not
+establish its elimination. No cache flush, forced VPN binding of native-scope
+probes, blind rerun or acceptance relaxation is an approved fix. Final Android
+acceptance and PR readiness remain blocked.
 
 Run `44346633233` at `9b97207` passed five of six lanes. AWG/API35
 failed during retained warmup with session 107 still alive, no capture refresh

@@ -26,10 +26,14 @@ def main():
     parser.add_argument('--policies', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--ipv6', action='store_true')
+    parser.add_argument('--scope-cycles', type=int, default=1)
+    parser.add_argument('--tcp-probes', type=int, default=1)
     parser.add_argument('--client-platform', choices=('android','windows'), default='android')
     parser.add_argument('--persistent-ipv6', action='store_true', help='retain IPv6 echo sockets for the Windows old-TCP acceptance')
     parser.add_argument('--case', choices=('full','include','exclude','stale-full','api-full','legacy-full','legacy-include','legacy-exclude','legacy-export','legacy-api'), help='focused local diagnosis; default runs all applicable cases')
     args = parser.parse_args()
+    assert 1 <= args.scope_cycles <= 8, 'scope cycles must be between 1 and 8'
+    assert 1 <= args.tcp_probes <= 16, 'TCP probes must be between 1 and 16'
     mode = os.environ.get('AMNEZIA_ANDROID_OPENVPN_FIXTURE')
     assert mode in ('owned-container', 'github-hosted')
     if mode == 'owned-container': assert Path('/.dockerenv').exists()
@@ -45,6 +49,37 @@ def main():
     assert not args.output.exists(), 'refusing to overwrite another fixture'
     policies = json.loads(args.policies.read_text())
     stop = threading.Event()
+    packet_socket = None
+    packet_worker = None
+    packet_trace = []
+    if os.environ.get('AMNEZIA_IPV6_PACKET_METADATA') == '1':
+        # Owned fixture namespace only. Keep header metadata, never payloads;
+        # source addresses alone do not establish the incoming interface.
+        packet_socket = socket.socket(socket.AF_PACKET, socket.SOCK_DGRAM, socket.htons(0x86dd))
+        packet_socket.settimeout(.5)
+        def trace_ipv6_origins():
+            while not stop.is_set():
+                try:
+                    header, link = packet_socket.recvfrom(64)
+                except socket.timeout:
+                    continue
+                except OSError:
+                    break
+                if len(header) < 60 or header[0] >> 4 != 6 or header[6] != 6:
+                    continue
+                source_port = int.from_bytes(header[40:42], 'big')
+                target_port = int.from_bytes(header[42:44], 'big')
+                if 21944 not in (source_port, target_port):
+                    continue
+                packet_trace.append({
+                    'at_ns': time.time_ns(), 'interface': link[0], 'packet_type': link[2],
+                    'source': socket.inet_ntop(socket.AF_INET6, header[8:24]),
+                    'destination': socket.inet_ntop(socket.AF_INET6, header[24:40]),
+                    'source_port': source_port, 'target_port': target_port, 'tcp_flags': header[53],
+                })
+                del packet_trace[:-256]
+        packet_worker = threading.Thread(target=trace_ipv6_origins, daemon=True)
+        packet_worker.start()
     for sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(sig, lambda *_: stop.set())
     addresses, listeners = [], []
@@ -164,7 +199,7 @@ verb 3
             if args.client_platform == 'windows':
                 modes = ([('full',0),('include',1),('exclude',2),('api-full',0)] if args.ipv6 else
                          [('legacy-full',0),('legacy-include',1),('legacy-exclude',2),('legacy-export',0),('legacy-api',0),('stale-full',0)])
-            for mode, split in modes:
+            for mode, split in modes * args.scope_cycles:
                 if args.case and args.case!=mode: continue
                 policy_key = ('full' if mode=='stale-full' else mode) if args.client_platform == 'windows' else ('full' if mode=='stale-full' else mode if args.ipv6 else 'legacy-'+mode)
                 content=policies[policy_key]
@@ -182,7 +217,7 @@ verb 3
                           for address in targets}
                 cases.append({'name':mode,'config':config,'expected':expected})
             assert cases, 'selected case is not applicable to this server'
-            fixture={'protocol':'openvpn','openvpn_config_data':{'port':21943},'server_ipv6':args.ipv6,'openvpn_cases':cases,'ipv6_test_destinations':targets}
+            fixture={'protocol':'openvpn','openvpn_config_data':{'port':21943},'server_ipv6':args.ipv6,'openvpn_cases':cases,'ipv6_test_destinations':targets,'origin_tcp_probes':args.tcp_probes}
             args.output.parent.mkdir(parents=True,exist_ok=True)
             with tempfile.NamedTemporaryFile(mode='w',dir=args.output.parent,delete=False) as out:
                 staged=Path(out.name)
@@ -195,6 +230,10 @@ verb 3
                 assert server.poll() is None, (root/'server.log').read_text()
         finally:
             stop.set()
+            if packet_socket is not None:
+                packet_socket.close()
+                packet_worker.join(timeout=1)
+                print('ORIGIN_PACKET_METADATA '+json.dumps(packet_trace), flush=True)
             args.output.unlink(missing_ok=True)
             if origin_server is not None:
                 origin_server.shutdown();origin_server.server_close()

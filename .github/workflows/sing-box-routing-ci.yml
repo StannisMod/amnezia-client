@@ -531,7 +531,7 @@ jobs:
           candidates = sorted(p for p in Path('deploy/build/client').rglob('gradlew') if (p.parent / 'utils').is_dir())
           assert candidates, 'Generated Android Gradle project missing'
           wrapper = candidates[0].resolve()
-          subprocess.run([str(wrapper), ':utils:testDebugUnitTest', ':protocolApi:testDebugUnitTest', '--no-daemon'], cwd=wrapper.parent, check=True, timeout=300)
+          subprocess.run([str(wrapper), ':utils:testDebugUnitTest', ':protocolApi:testDebugUnitTest', ':openvpn:testDebugUnitTest', '--no-daemon'], cwd=wrapper.parent, check=True, timeout=300)
           PYCODE
       - name: Inspect native JNI in the actual APK
         id: payload
@@ -556,6 +556,8 @@ jobs:
             deploy/routing-native/
             android-routing-payloads.json
             deploy/build/client/**/utils/build/test-results/**/*.xml
+            deploy/build/client/**/protocolApi/build/test-results/**/*.xml
+            deploy/build/client/**/openvpn/build/test-results/**/*.xml
 
   client-ios:
     needs: cancel-superseded
