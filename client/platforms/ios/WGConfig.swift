@@ -1,6 +1,31 @@
 import Foundation
+#if canImport(NetworkExtension)
+import NetworkExtension
+#endif
 
 struct WGConfig: Decodable {
+  var nativeIPv6Blocked: Bool { routingConfig == nil && ipv6Enabled == false }
+
+  func permitsNativePeerRange(_ range: String) -> Bool {
+    !nativeIPv6Blocked || !range.contains(":")
+  }
+
+#if canImport(NetworkExtension)
+  static func retainBlockedIPv6Capture(in settings: NEPacketTunnelNetworkSettings) {
+    let original = settings.ipv6Settings
+    let ipv6: NEIPv6Settings
+    if let original, !original.addresses.isEmpty {
+      ipv6 = original
+    } else {
+      ipv6 = NEIPv6Settings(addresses: ["fdfe:dcba:9876::1"], networkPrefixLengths: [128])
+      ipv6.excludedRoutes = original?.excludedRoutes
+    }
+    ipv6.includedRoutes = [NEIPv6Route.default()]
+    // Site exclusions were removed from peers before generating settings.
+    // Only the adapter's resolved transport endpoint exclusions remain.
+    settings.ipv6Settings = ipv6
+  }
+#endif
   let initPacketMagicHeader, responsePacketMagicHeader: String?
   let underloadPacketMagicHeader, transportPacketMagicHeader: String?
   let junkPacketCount, junkPacketMinSize, junkPacketMaxSize: String?

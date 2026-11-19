@@ -16,6 +16,7 @@ extension PacketTunnelProvider {
 
         do {
             let wgConfig = try JSONDecoder().decode(WGConfig.self, from: wgConfigData)
+            nativeWireguardBlocksIPv6 = wgConfig.nativeIPv6Blocked
             if wgConfig.routingConfig != nil {
                 let routed = RoutingPacketTunnel(provider: self, underlyingInterface: { [weak self] in
                     guard let self, self.activeIfaceIdx > 0 else { return nil }
@@ -61,6 +62,17 @@ extension PacketTunnelProvider {
                         }
 
                         tunnelConfiguration.peers[index].excludeIPs = excludeIPs
+                    }
+                }
+            }
+
+            if nativeWireguardBlocksIPv6 {
+                for index in tunnelConfiguration.peers.indices {
+                    tunnelConfiguration.peers[index].allowedIPs.removeAll {
+                        !wgConfig.permitsNativePeerRange($0.stringRepresentation)
+                    }
+                    tunnelConfiguration.peers[index].excludeIPs.removeAll {
+                        !wgConfig.permitsNativePeerRange($0.stringRepresentation)
                     }
                 }
             }

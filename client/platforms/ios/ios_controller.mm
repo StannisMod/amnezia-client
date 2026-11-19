@@ -605,11 +605,11 @@ bool IosController::setupWireGuard()
 
     insertNonEmptyAwgParams(wgConfig, config);
 
+    wgConfig.insert("ipv6Enabled", m_rawConfig.value("ipv6_enabled").toBool(true));
     if (m_rawConfig.contains("sing_box_routing")) {
         wgConfig.insert("routingTransport", "wireguard");
         wgConfig.insert("routingConfig", QString::fromUtf8(QJsonDocument(m_rawConfig.value("sing_box_routing").toObject()).toJson(QJsonDocument::Compact)));
         wgConfig.insert("routingDNSPath", m_rawConfig.value("sing_box_dns_path"));
-        wgConfig.insert("ipv6Enabled", m_rawConfig.value("ipv6_enabled").toBool(true));
         if (m_rawConfig.contains("sing_box_dns"))
             wgConfig.insert("routingDNSConfig", QString::fromUtf8(QJsonDocument(m_rawConfig.value("sing_box_dns").toObject()).toJson(QJsonDocument::Compact)));
     }
@@ -705,11 +705,11 @@ bool IosController::setupAwg()
 
     insertNonEmptyAwgParams(wgConfig, config);
 
+    wgConfig.insert("ipv6Enabled", m_rawConfig.value("ipv6_enabled").toBool(true));
     if (m_rawConfig.contains("sing_box_routing")) {
         wgConfig.insert("routingTransport", "awg");
         wgConfig.insert("routingConfig", QString::fromUtf8(QJsonDocument(m_rawConfig.value("sing_box_routing").toObject()).toJson(QJsonDocument::Compact)));
         wgConfig.insert("routingDNSPath", m_rawConfig.value("sing_box_dns_path"));
-        wgConfig.insert("ipv6Enabled", m_rawConfig.value("ipv6_enabled").toBool(true));
         if (m_rawConfig.contains("sing_box_dns"))
             wgConfig.insert("routingDNSConfig", QString::fromUtf8(QJsonDocument(m_rawConfig.value("sing_box_dns").toObject()).toJson(QJsonDocument::Compact)));
     }

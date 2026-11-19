@@ -70,6 +70,9 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
     var openVpnRemoteAddress: String?
     var openVpnRedirectGatewayDef1 = false
     var openVpnBlocksIPv6 = false
+    // Only the legacy WireGuardAdapter uses this guard. Shared routing owns
+    // its own capture and DNS policy.
+    var nativeWireguardBlocksIPv6 = false
     var openVpnStopping = true
     var openVpnLocalAddress: String?
     var openVpnLocalMask: String?
@@ -91,6 +94,16 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
 
     func setOpenVPNIPv6Blocked(_ blocked: Bool) {
         openVPNPacketFlowAdapter.setIPv6Blocked(blocked)
+    }
+
+    override func setTunnelNetworkSettings(_ tunnelNetworkSettings: NEPacketTunnelNetworkSettings?,
+                                          completionHandler: ((Error?) -> Void)? = nil) {
+        if nativeWireguardBlocksIPv6, let settings = tunnelNetworkSettings {
+            // The backend has no IPv6 AllowedIPs. Keep capture anyway, also on
+            // adapter path updates; otherwise traffic escapes over the underlay.
+            WGConfig.retainBlockedIPv6Capture(in: settings)
+        }
+        super.setTunnelNetworkSettings(tunnelNetworkSettings, completionHandler: completionHandler)
     }
 
     override init() {
@@ -229,6 +242,7 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
 
     override func startTunnel(options: [String : NSObject]? = nil,
                               completionHandler: @escaping ((any Error)?) -> Void) {
+        nativeWireguardBlocksIPv6 = false
         let activationAttemptId = options?[Constants.kActivationAttemptId] as? String
         let errorNotifier = ErrorNotifier(activationAttemptId: activationAttemptId)
 

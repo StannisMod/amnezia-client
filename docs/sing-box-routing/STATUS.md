@@ -1,5 +1,35 @@
 # Implementation checkpoint — automated validation
 
+## Codex review follow-up — 2026-11-19
+
+The four findings against `057b7a5` were confirmed by inspecting their real
+call paths. Android DNS overrides now precede installation of the global AAAA
+NODATA rule, retaining FakeIP priority; the complete Go engine suite passed
+locally with `with_gvisor`. Linux Xray establishes service TUN ownership before
+launching tun2socks, rather than adopting an existing interface after STACK
+readiness. Apple OpenVPN receives the explicit preference and retains full
+IPv6 capture without site/provider exclusions when blocking; the transport
+endpoint remains exempt.
+
+Native Apple WG/AWG now receives the preference outside the shared-routing
+conditional. Explicit OFF removes IPv6 AllowedIPs and site exclusions from
+the backend configuration, while every adapter network-settings publication
+retains full IPv6 capture (including legacy profiles without an IPv6 address).
+The sanitized configuration is also the saved endpoint-recovery configuration.
+Missing preference still defaults ON; shared routing retains its existing policy.
+New Swift tests cover policy/default selection, backend prefix filtering,
+full capture, endpoint preservation, repeated settings and IPv4 preservation.
+These Swift/Apple SDK tests and the real Linux Xray path still need hosted
+verification; no local Mac runtime or physical iOS acceptance is claimed.
+Native WG does not use the shared DNS interceptor: its AAAA NODATA behavior is
+not established by the peer/capture fix and remains a separate acceptance gap.
+
+Run `44510562002` completed with Linux (including production IPsec update),
+Windows, iOS and Apple TCP recovery passing. Its remaining failure is Intel
+`TestMaturePathMTUAndTCPRecoveryWorkersRetainTCP`; the failed log is retained,
+and its cause is not yet established. Android run `44510551649` passed all
+six lanes; this alone does not close the earlier intermittent API29 TXT failure.
+
 ## IPsec registry pin repair — 2026-11-19
 
 Run `44501519812` at `cfc66f0` preserved the missing reason: all standard
