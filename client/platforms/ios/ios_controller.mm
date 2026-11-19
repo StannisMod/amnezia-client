@@ -526,6 +526,7 @@ bool IosController::setupOpenVPN()
 
     QJsonObject openVPNConfig {};
     openVPNConfig.insert(configKey::config, ovpnConfig);
+    openVPNConfig.insert("ipv6Enabled", m_rawConfig.value("ipv6_enabled").toBool(true));
 
     if (ovpn.contains(configKey::mtu)) {
         openVPNConfig.insert(configKey::mtu, ovpn[configKey::mtu]);

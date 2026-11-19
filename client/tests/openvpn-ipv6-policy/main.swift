@@ -10,6 +10,15 @@ let v6 = [OpenVPNRoute(address: "2001:db8::", prefixLength: 32),
           OpenVPNRoute(address: "fd99::", prefixLength: 16),
           OpenVPNRoute(address: "64:ff9b::", prefixLength: 96)]
 let full = OpenVPNIPv6Policy.make(splitType: 0, routes: [], dnsServers: [])!
+for splitType in 0...2 {
+    let blocked = OpenVPNIPv6Policy.make(splitType: splitType,
+        routes: [OpenVPNRoute(address: "192.0.2.0", prefixLength: 24),
+                 OpenVPNRoute(address: "2001:db8::", prefixLength: 32)],
+        dnsServers: [], blockIPv6: true)!
+    require(blocked.included == [OpenVPNRoute(address: "::", prefixLength: 0)],
+            "IPv6 OFF must capture all IPv6 in every split mode")
+    require(blocked.excluded.isEmpty, "IPv6 OFF must not restore site exclusions")
+}
 require(full.included == defaults && full.excluded.isEmpty, "Full capture includes GUA, ULA and NAT64")
 let include4 = OpenVPNIPv6Policy.make(splitType: 1, routes: [v4], dnsServers: [])!
 require(include4.included.isEmpty && include4.excluded.isEmpty, "IPv4-only inclusion leaves IPv6 direct")
@@ -68,6 +77,16 @@ settings.ipv6Settings = NEIPv6Settings(addresses: ["fd42::2"], networkPrefixLeng
 let providerException = NEIPv6Route(destinationAddress: "2001:db8:beef::", networkPrefixLength: 48)
 OpenVPNNetworkSettings.apply(full, remoteIPv6: nil, providerExcluded: [providerException], to: settings)
 require(settings.ipv6Settings?.excludedRoutes?.first === providerException, "Explicit provider exceptions are preserved")
+for splitType in 0...2 {
+    let blocked = OpenVPNIPv6Policy.make(splitType: splitType, routes: [v4], dnsServers: [], blockIPv6: true)!
+    OpenVPNNetworkSettings.apply(blocked, remoteIPv6: "2001:db8::1",
+                                providerExcluded: [providerException], to: settings, blockIPv6: true)
+    require(settings.ipv6Settings?.includedRoutes?.first?.destinationNetworkPrefixLength.intValue == 0,
+            "IPv6 OFF captures the entire family")
+    require(settings.ipv6Settings?.excludedRoutes?.count == 1 &&
+            settings.ipv6Settings?.excludedRoutes?.first?.destinationAddress == "2001:db8::1",
+            "IPv6 OFF preserves only the transport endpoint exception")
+}
 OpenVPNNetworkSettings.apply(include6, remoteIPv6: nil, providerExcluded: [], to: settings)
 require(settings.ipv6Settings?.addresses == ["fd42::2"], "Authenticated server address is preserved")
 require(settings.ipv6Settings?.includedRoutes?.count == 3, "Actual NE settings receive every selected IPv6 range")

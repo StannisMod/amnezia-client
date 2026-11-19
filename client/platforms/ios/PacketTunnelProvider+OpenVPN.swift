@@ -7,6 +7,7 @@ struct OpenVPNConfig: Decodable {
     let config: String
     let splitTunnelType: Int
     let splitTunnelSites: [String]
+    let ipv6Enabled: Bool?
 }
 
 extension PacketTunnelProvider {
@@ -35,7 +36,7 @@ extension PacketTunnelProvider {
             openVpnDnsServers = Self.extractDnsServers(from: openVPNConfig.config)
             openVpnRemoteAddress = Self.extractRemoteHost(from: openVPNConfig.config)
             openVpnRedirectGatewayDef1 = Self.hasRedirectGatewayDef1(in: openVPNConfig.config)
-            openVpnBlocksIPv6 = OpenVPNIPv6Policy.blocksIPv6(in: openVPNConfig.config)
+            openVpnBlocksIPv6 = openVPNConfig.ipv6Enabled == false || OpenVPNIPv6Policy.blocksIPv6(in: openVPNConfig.config)
             if let openVpnRemoteAddress {
                 ovpnLog(.info, title: "Remote", message: "host=\(openVpnRemoteAddress)")
             }
@@ -582,7 +583,8 @@ extension PacketTunnelProvider: OpenVPNAdapterDelegate {
             }
         }
         guard let ipv6Policy = OpenVPNIPv6Policy.make(splitType: splitType, routes: splitRoutes,
-                                                     dnsServers: effectiveSettings.dnsSettings?.servers ?? openVpnDnsServers) else {
+                                                     dnsServers: effectiveSettings.dnsSettings?.servers ?? openVpnDnsServers,
+                                                     blockIPv6: openVpnBlocksIPv6) else {
             completionHandler(NSError(domain: "Invalid split tunnel policy", code: 1))
             return
         }
@@ -594,7 +596,7 @@ extension PacketTunnelProvider: OpenVPNAdapterDelegate {
         }
         OpenVPNNetworkSettings.apply(ipv6Policy, remoteIPv6: remoteIPv6,
                                      providerExcluded: effectiveSettings.ipv6Settings?.excludedRoutes ?? [],
-                                     to: effectiveSettings)
+                                      to: effectiveSettings, blockIPv6: openVpnBlocksIPv6)
         ovpnLog(.info, title: "IPv6Capture", message: "included=\(ipv6Policy.included.count) excluded=\(effectiveSettings.ipv6Settings?.excludedRoutes?.count ?? 0) addresses=\(effectiveSettings.ipv6Settings?.addresses ?? [])")
 
         lastOpenVPNSettings = effectiveSettings

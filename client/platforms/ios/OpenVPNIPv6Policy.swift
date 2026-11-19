@@ -13,14 +13,14 @@ struct OpenVPNRoute: Equatable {
 #if canImport(NetworkExtension)
 enum OpenVPNNetworkSettings {
     static func apply(_ policy: OpenVPNIPv6Policy, remoteIPv6: String?, providerExcluded: [NEIPv6Route],
-                      to settings: NEPacketTunnelNetworkSettings) {
+                      to settings: NEPacketTunnelNetworkSettings, blockIPv6: Bool = false) {
         guard !policy.included.isEmpty else { settings.ipv6Settings = nil; return }
         let ipv6 = settings.ipv6Settings
             ?? NEIPv6Settings(addresses: [OpenVPNIPv6Policy.captureAddress], networkPrefixLengths: [128])
         ipv6.includedRoutes = policy.included.map {
             NEIPv6Route(destinationAddress: $0.address, networkPrefixLength: NSNumber(value: $0.prefixLength))
         }
-        var excluded = providerExcluded
+        var excluded = blockIPv6 ? [] : providerExcluded
         func exclude(_ subnet: OpenVPNRoute) {
             if !excluded.contains(where: { $0.destinationAddress == subnet.address &&
                 $0.destinationNetworkPrefixLength.intValue == subnet.prefixLength }) {
@@ -75,10 +75,14 @@ struct OpenVPNIPv6Policy {
         return false
     }
 
-    static func make(splitType: Int, routes: [OpenVPNRoute], dnsServers: [String]) -> OpenVPNIPv6Policy? {
+    static func make(splitType: Int, routes: [OpenVPNRoute], dnsServers: [String],
+                     blockIPv6: Bool = false) -> OpenVPNIPv6Policy? {
         guard (0...2).contains(splitType), routes.allSatisfy({
             (0...($0.isIPv6 ? 128 : 32)).contains($0.prefixLength)
         }) else { return nil }
+        if blockIPv6 {
+            return OpenVPNIPv6Policy(included: [OpenVPNRoute(address: "::", prefixLength: 0)], excluded: [])
+        }
         let ipv6 = routes.filter(\.isIPv6)
         var included = splitType == 1 ? ipv6 : [OpenVPNRoute(address: "::", prefixLength: 0)]
         if splitType == 1 {
