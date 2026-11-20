@@ -13,6 +13,20 @@
 #endif
 typedef int32_t (*AmneziaPacketWriter)(void *, const uint8_t *, int32_t);
 typedef void (*AmneziaHostRelease)(void *);
+// Native DNS callbacks are asynchronous: dispatch/cancel/failure must return
+// promptly, copy borrowed buffers, and never call Stop inline. All callbacks
+// finish before the consumed retained host is released.
+typedef int32_t (*AmneziaDNSDispatch)(void *, int64_t, uint64_t, int32_t, const uint8_t *, int32_t, int32_t);
+typedef void (*AmneziaDNSCancel)(void *, int64_t, uint64_t);
+typedef void (*AmneziaDNSFailure)(void *, int64_t);
+int64_t AmneziaNativeDNSStart(char *, void *, AmneziaPacketWriter, AmneziaDNSDispatch, AmneziaDNSCancel, AmneziaDNSFailure, AmneziaHostRelease);
+void AmneziaNativeDNSStop(int64_t);
+// Feed: 1 consumed DNS, 0 native passthrough, -1 invalid/failed endpoint.
+int32_t AmneziaNativeDNSFeed(int64_t, uint8_t *, int32_t);
+int32_t AmneziaNativeDNSComplete(int64_t, uint64_t, uint8_t *, int32_t);
+static inline int32_t amnezia_dns_dispatch(AmneziaDNSDispatch fn, void *host, int64_t handle, uint64_t id, int32_t network, const uint8_t *data, int32_t size, int32_t timeout) { return fn(host,handle,id,network,data,size,timeout); }
+static inline void amnezia_dns_cancel(AmneziaDNSCancel fn, void *host, int64_t handle, uint64_t id) { fn(host,handle,id); }
+static inline void amnezia_dns_failure(AmneziaDNSFailure fn, void *host, int64_t handle) { fn(host,handle); }
 // Start consumes the retained host even when it fails. Only packet buffers are
 // borrowed; both sides copy before returning. No config/error text is logged.
 int64_t AmneziaRoutingStart(char *, int32_t, void *, AmneziaPacketWriter, AmneziaHostRelease);
@@ -59,6 +73,9 @@ static inline int amnezia_bind_dns_interface(int fd,const char *name) {
     if(getsockname(fd,(struct sockaddr *)&local,&length)!=0)return -1;
     if(local.ss_family==AF_INET)return setsockopt(fd,IPPROTO_IP,IP_BOUND_IF,&index,sizeof(index));
     if(local.ss_family==AF_INET6)return setsockopt(fd,IPPROTO_IPV6,IPV6_BOUND_IF,&index,sizeof(index));
+#else
+    (void)fd;
+    (void)name;
 #endif
     return -1;
 }

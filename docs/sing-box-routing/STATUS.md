@@ -1,5 +1,40 @@
 # Implementation checkpoint — automated validation
 
+## Universal AAAA NODATA requirement — 2026-11-20
+
+The user explicitly chose AAAA NODATA for **every backend** when IPv6 is OFF;
+native Apple DNS omission is not an accepted limitation. This newly confirmed
+criterion blocks merge despite the fully green `8679f05` baseline. The design
+and remaining integration work are in `IPV6-OFF-DNS.md`.
+
+The first shared primitive is implemented in `native/routing/dnsguard`.
+In-memory packet tests cover UDP/TCP over IPv4/IPv6, local AAAA NODATA without
+upstream traffic, scoped A forwarding with transport preservation, failure
+without fallback, cancellation and teardown. The native TUN wrapper preserves
+non-DNS bytes/headroom and keeps managed AAAA packets out of the original
+backend. Ten race-instrumented repetitions passed in one offline 2-CPU/4-GiB
+build container with swap disabled. It is **not connected to a shipping native
+backend yet**, so universal support and merge readiness are not claimed.
+
+The asynchronous native-exchange bridge and Apple C exports now have ownership
+and cancellation coverage. A real C client passed NODATA/scoped forwarding,
+passthrough classification, exactly-once completion/release and late-reply
+rejection against an archive using the pinned Apple parent Go graph. Initial
+offline preparation found the Apple gVisor pin missing from one cache; it was
+reused from the existing integration cache without downloading anything.
+An unrelated non-Apple header unused-parameter warning was corrected without
+weakening `-Werror`. Dependency verification, ten Apple-parent race repetitions
+and the ordinary dnsguard/engine/mobile suites passed. The new CI checks use the
+actual unified Apple host library and archive symbols. SDK validation, Swift
+native-adapter wiring and the other native backends are still outstanding.
+
+No new artifact downloads were made. Existing arm64/x86_64 packages from
+`44702509917` (source `8679f05046c55561b76aad7697059988193c3247`) passed local
+hash/size/ABI/payload/notice verification for eight APK entries. The report is
+explicitly partial; armv7/x86 and desktop/iOS artifacts were not locally
+re-audited after downloads were stopped. The all-green hosted source baseline
+is main `44702516775` and Android `44702509857`, not evidence for this new work.
+
 ## Atomic application-policy DNS replacement — 2026-11-20
 
 Android run `44698056095` at `697a9a8` failed WG/API29 package-reinstall recovery
