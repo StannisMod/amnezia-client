@@ -1,5 +1,16 @@
 # Implementation checkpoint — automated validation
 
+## Native DNS C-client portability follow-up — 2026-11-20
+
+Run `44726482222` at `b573b00` passed every executed lane except the iOS
+construction lane's new C-client compilation. The iPhoneOS unified archive,
+all new DNS symbols, Swift policy typechecks and the original host packet-flow
+ABI test passed before that failure. The C client's Linux-oriented
+`_POSIX_C_SOURCE` hid BSD typedefs used by Darwin `resolv.h`; it now requests
+the Darwin feature namespace on macOS, retaining the POSIX namespace on Linux.
+`-Wall -Wextra -Werror` and all test assertions remain unchanged.
+Hosted execution of the corrected native DNS C client is still required.
+
 ## Universal AAAA NODATA requirement — 2026-11-20
 
 The user explicitly chose AAAA NODATA for **every backend** when IPv6 is OFF;

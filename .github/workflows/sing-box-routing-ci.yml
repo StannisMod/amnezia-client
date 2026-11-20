@@ -602,7 +602,7 @@ jobs:
           "$RUNNER_TEMP/openvpn-ipv6-policy-tests" client/tests/data/openvpn-tun-builder-policies.json
           (cd "$module" && go build -mod=readonly -tags with_gvisor,amnezia_apple_bridge -buildmode=c-shared -o "$RUNNER_TEMP/routing-apple-host.dylib" .)
           python3 scripts/routing/check_packet_flow_abi.py "$RUNNER_TEMP/routing-apple-host.dylib"
-          cc -std=c11 -D_POSIX_C_SOURCE=200809L -Wall -Wextra -Werror -I "$module" \
+          cc -std=c11 -D_DARWIN_C_SOURCE -Wall -Wextra -Werror -I "$module" \
             native/routing/applebridge/tests/native_dns_client.c "$RUNNER_TEMP/routing-apple-host.dylib" \
             -lpthread -o "$RUNNER_TEMP/native-dns-client"
           DYLD_LIBRARY_PATH="$RUNNER_TEMP" "$RUNNER_TEMP/native-dns-client"

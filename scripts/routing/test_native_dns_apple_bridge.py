@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 
 
 def main():
@@ -29,7 +30,8 @@ def main():
     subprocess.run(["go", "build", "-mod=readonly", "-tags", "with_gvisor,amnezia_apple_bridge",
                     "-buildmode=c-archive", "-o", str(stage / "dnsbridge.a"), "."],
                    cwd=stage, env=env, check=True, timeout=300)
-    subprocess.run(["cc", "-std=c11", "-D_POSIX_C_SOURCE=200809L", "-Wall", "-Wextra", "-Werror",
+    feature_namespace = "-D_DARWIN_C_SOURCE" if sys.platform == "darwin" else "-D_POSIX_C_SOURCE=200809L"
+    subprocess.run(["cc", "-std=c11", feature_namespace, "-Wall", "-Wextra", "-Werror",
                     "-I", str(stage), str(bridge / "tests/native_dns_client.c"),
                     str(stage / "dnsbridge.a"), "-lpthread", "-ldl", "-lm", "-o", str(stage / "client")],
                    check=True, timeout=60)
