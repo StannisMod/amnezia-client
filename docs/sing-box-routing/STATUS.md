@@ -2,6 +2,20 @@
 
 ## Scoped native DNS transports — 2026-11-20
 
+At `2180e7f`, hosted iOS job `136366795882` passed the iPhoneOS
+typecheck, executable Swift/native host test, actual loopback UDP/TCP transport
+tests and full app/packet-tunnel builds. The first matrix attempt was not green:
+the two macOS ARM jobs never acquired runners (capacity annotations, no steps).
+Only failed/uncompleted jobs were resubmitted after inspecting those annotations;
+the second attempt remains pending. The job log is preserved locally as
+`ci-2180e7f-ios-fetch2.log`; an earlier log-fetch attempt failed at the blob
+endpoint and is not a product-test failure. No application packages were fetched.
+
+The transport fixture now also checks idempotent cancellation for both UDP and
+TCP after the server receives the query, spanning the retry and deadline windows
+and asserting no late callback or reopened connection. This additional test has
+not yet run with the Apple SDK.
+
 In `44744543451` at `49d1819`, the new iPhoneOS host typecheck, C client and
 executable Swift/native DNS lifecycle test passed. Full iOS app construction
 subsequently failed fetching OpenVPNAdapter: GitHub:443 was unreachable for
@@ -16,10 +30,11 @@ only for older OS versions. It does not select another resolver/interface on
 failure. Host dispatch now keeps an absolute monotonic deadline across its
 queue instead of restarting the timeout after queue delay.
 
-New hosted tests use a loopback-only ephemeral UDP/TCP fixture for first-packet
+The hosted tests use a loopback-only ephemeral UDP/TCP fixture for first-packet
 loss, same-socket retry, fragmented TCP framing, multiple candidate replies,
-timeouts and non-query non-retransmission. SDK and transport tests are pending;
-these factories still are not invoked by native connection settings/lifecycles.
+timeouts and non-query non-retransmission. The original SDK and transport tests
+passed at `2180e7f`; these factories still are not invoked by native connection
+settings/lifecycles.
 Original DNS-route mapping and IPv6 DNS control-plane handling must be completed
 before universal NODATA or merge readiness can be claimed.
 

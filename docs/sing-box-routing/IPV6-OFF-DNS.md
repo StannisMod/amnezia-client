@@ -49,14 +49,15 @@ IPv4 application routing, DNS scope, TLS validation, or ON behavior.
    dispatch, explicit per-request cancellation, early native failure rejection,
    spurious-response handling, safe asynchronous callback teardown and packet
    classification. iOS/macOS targets include it, with new SDK and executable
-   Swift/C-bridge tests in CI. This host layer still needs a concrete scoped
-   native transport and connection-lifecycle wiring; it is not enabled for users.
+   Swift/C-bridge tests in CI. This host layer still needs connection-lifecycle
+   wiring; it is not enabled for users.
    `NativeDNSResolver.swift` adds explicit tunnel, physical-interface and
    loopback scopes; numeric endpoints only; UDP retry on the same connection
    (maximum three, ordinary queries only); and TCP DNS framing. Modern Apple
    tunnel requests require the public virtual interface, with the public
    through-tunnel APIs on older supported OS versions. Missing scope fails
-   closed. SDK/loopback transport tests are pending. Protocol settings, original
+   closed. SDK/loopback transport tests and full iOS app/extension builds passed
+   in job `136366795882` at `2180e7f`. Protocol settings, original
    DNS-route-to-scope mapping and privileged DNS control traffic remain to wire.
 2. Integrate native Apple WG/AWG and OpenVPN without a second packetFlow reader
    or Go runtime, preserving transport socket ownership and native non-DNS I/O.

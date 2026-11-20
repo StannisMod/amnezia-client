@@ -82,6 +82,7 @@ final class Fixture {
             connection.receive(minimumIncompleteLength: size, maximumLength: size) { [weak self] data, _, _, error in
                 guard let self, error == nil, let data, data.count == size else { return }
                 self.state.update { $0.queries += 1 }
+                guard self.mode == .tcpCandidates else { return }
                 var reply = Data()
                 for wrong in [true, false] {
                     let answer = self.answer(data, wrong: wrong)
@@ -174,4 +175,20 @@ for ordinaryQuery in [false, true] {
             "UDP retry bound or non-query semantics changed")
 }
 
-print("PASS: native DNS loopback UDP retry, TCP framing/candidates, deadline and non-query policy")
+for transport in [NativeDNSTransport.udp, .tcp] {
+    let fixture = try Fixture(transport, mode: .dropAll)
+    defer { fixture.close() }
+    let callback = DispatchSemaphore(value: 0)
+    let operation = NativeDNSNetworkOperation(server: "127.0.0.1", interface: nil, port: fixture.port,
+        query: query, transport: transport, timeout: 1.5) { _ in callback.signal() }
+    fixture.state.wait { $0.queries == 1 }
+    operation.cancel()
+    operation.cancel()
+    // Span both the first retransmission and the original deadline. Neither
+    // may outlive cancellation or report a late failure to the stopped host.
+    require(callback.wait(timeout: .now() + 2) == .timedOut, "cancelled operation delivered a callback")
+    require(fixture.state.read { $0.connections == 1 && $0.queries == 1 },
+            "cancelled operation retried or reopened its resolver")
+}
+
+print("PASS: native DNS loopback UDP retry, TCP framing/candidates, deadline, cancellation and non-query policy")
