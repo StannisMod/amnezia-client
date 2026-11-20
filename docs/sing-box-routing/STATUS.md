@@ -1,5 +1,35 @@
 # Implementation checkpoint — automated validation
 
+## Atomic application-policy DNS replacement — 2026-11-20
+
+Android run `44698056095` at `697a9a8` failed WG/API29 package-reinstall recovery
+and an independent WG/API35 cyclic UDP probe; other lanes passed. The retained
+API29 snapshot distinguishes history from present state: `dns_available=true`,
+`dns_version=2`, three completed/failed queries with last class
+`generation-unavailable`. The bounded live log contains no recovery request
+or underlay change. Generation 1 is initial publication; the application-policy
+update reserves generation 2. This narrows the DNS failure to that update's
+freeze-before-build interval, not permanently suspended network recovery.
+It does not establish a cause for the separate API35 UDP timeout.
+
+`Runtime.UpdateAndroidApplications` now reserves a replacement generation
+without dropping the current DNS/policy. It builds the candidate and atomically
+publishes UID membership plus fresh DNS through the existing `replaceWith`.
+A failed build retains the old policy; a real network suspension increments
+the version, invalidates the candidate and remains fail-closed. Application
+updates cannot reopen already-suspended DNS. Network-DNS reload/suspension
+behavior is unchanged.
+
+The complete Go engine and mobile suites passed locally. Three deterministic
+boundary cases cover successful commit, candidate-build failure and real
+network suspension; the new test passed 20 repetitions. A separately retained
+red-control source copy restores the old freeze-before-build behavior and
+fails specifically at the existing-DNS preparation boundary. The fixed source
+and red copy were not conflated. These checks ran in one offline Linux build
+container capped at 2 CPUs / 4 GiB total with swap disabled; the Android
+emulator was stopped. Race checks and current-source hosted Android acceptance
+are still pending. No complete Android pass is claimed.
+
 ## Current hosted baseline and recovery evidence — 2026-11-20
 
 At `b56b53f`, main run `44583629056` passed the entire matrix, including both

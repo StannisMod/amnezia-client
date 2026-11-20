@@ -165,7 +165,10 @@ func (s *Runtime) UpdateAndroidApplications(compiled []byte) error {
 	if err != nil {
 		return err
 	}
-	version := s.dns.freeze()
+	version, err := s.dns.beginApplicationUpdate()
+	if err != nil {
+		return err
+	}
 	generation, err := s.dnsGeneration(compiled)
 	if err != nil {
 		return err

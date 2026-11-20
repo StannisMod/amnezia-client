@@ -179,6 +179,20 @@ func (p *networkDNSProxy) freeze() uint64 {
 	}
 	return version
 }
+
+// A UID-policy edit does not invalidate the underlay. Keep serving the old
+// policy until its replacement is ready, then publish membership and fresh DNS
+// together. A real network suspension still increments version and wins.
+func (p *networkDNSProxy) beginApplicationUpdate() (uint64, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.current == nil {
+		return 0, errNetworkDNSUnavailable
+	}
+	p.version++
+	return p.version, nil
+}
+
 func (p *networkDNSProxy) replace(g *dnsGeneration, version uint64) bool {
 	return p.replaceWith(g, version, nil)
 }
