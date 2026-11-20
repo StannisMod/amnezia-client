@@ -590,10 +590,11 @@ jobs:
           (cd "$module" && go test -mod=readonly -race -count=3 gvisor.dev/gvisor/pkg/tcpip/transport/tcp gvisor.dev/gvisor/pkg/tcpip/adapters/gonet)
           make -C "$module" ARCHS=arm64 PLATFORM_NAME=iphoneos
           nm -g "$module/out/libwg-go.a" > "$RUNNER_TEMP/routing-apple-symbols.txt"
-          for symbol in _AmneziaRoutingStart _AmneziaRoutingFeed _AmneziaRoutingStop _AmneziaRoutingStats _AmneziaRoutingBuildInfo _AmneziaNativeDNSStart _AmneziaNativeDNSFeed _AmneziaNativeDNSComplete _AmneziaNativeDNSStop _wgTurnOn; do
+          for symbol in _AmneziaRoutingStart _AmneziaRoutingFeed _AmneziaRoutingStop _AmneziaRoutingStats _AmneziaRoutingBuildInfo _AmneziaNativeDNSStart _AmneziaNativeDNSFeed _AmneziaNativeDNSComplete _AmneziaNativeDNSReject _AmneziaNativeDNSStop _wgTurnOn; do
             grep -E " T $symbol$" "$RUNNER_TEMP/routing-apple-symbols.txt"
           done
           xcrun --sdk iphoneos swiftc -typecheck -target arm64-apple-ios15.0 -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" -import-objc-header "$module/amnezia_routing.h" client/platforms/ios/WGConfig.swift client/platforms/ios/EndpointRefreshPolicy.swift client/platforms/ios/RoutingPacketTunnel.swift
+          xcrun --sdk iphoneos swiftc -typecheck -target arm64-apple-ios15.0 -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" -import-objc-header "$module/amnezia_routing.h" client/platforms/ios/NativeDNSGuard.swift
           xcrun --sdk iphoneos swiftc -typecheck -target arm64-apple-ios15.0 -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" client/platforms/ios/XrayConfig.swift
           swiftc client/platforms/ios/XrayConfig.swift client/tests/xray-network-settings/main.swift -o "$RUNNER_TEMP/xray-network-settings-tests"
           "$RUNNER_TEMP/xray-network-settings-tests"
@@ -606,6 +607,10 @@ jobs:
             native/routing/applebridge/tests/native_dns_client.c "$RUNNER_TEMP/routing-apple-host.dylib" \
             -lpthread -o "$RUNNER_TEMP/native-dns-client"
           DYLD_LIBRARY_PATH="$RUNNER_TEMP" "$RUNNER_TEMP/native-dns-client"
+          swiftc -swift-version 5 -warnings-as-errors -import-objc-header "$module/amnezia_routing.h" \
+            client/platforms/ios/NativeDNSGuard.swift client/tests/native-dns-host/main.swift \
+            -Xlinker "$RUNNER_TEMP/routing-apple-host.dylib" -o "$RUNNER_TEMP/native-dns-host-tests"
+          DYLD_LIBRARY_PATH="$RUNNER_TEMP" "$RUNNER_TEMP/native-dns-host-tests"
       - uses: actions/setup-python@v6
         with: {python-version: '3.14'}
       - uses: jurplel/install-qt-action@v4.3.1

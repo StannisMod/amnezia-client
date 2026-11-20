@@ -176,6 +176,15 @@ func AmneziaNativeDNSComplete(handle C.int64_t, token C.uint64_t, bytes *C.uint8
 	return 0
 }
 
+//export AmneziaNativeDNSReject
+func AmneziaNativeDNSReject(handle C.int64_t, token C.uint64_t) C.int32_t {
+	value, ok := appleNativeDNSHandles.Load(int64(handle))
+	if ok && value.(*appleNativeDNS).exchange.Reject(uint64(token)) {
+		return 1
+	}
+	return 0
+}
+
 //export AmneziaNativeDNSStop
 func AmneziaNativeDNSStop(handle C.int64_t) {
 	value, ok := appleNativeDNSHandles.LoadAndDelete(int64(handle))

@@ -1,5 +1,26 @@
 # Implementation checkpoint — automated validation
 
+## Swift native DNS host layer — 2026-11-20
+
+Run `44734415980` at `b0cbffc` passed the complete main matrix, including the
+Darwin native DNS C client. The next layer is `NativeDNSGuard.swift`: it owns
+the asynchronous host callback boundary, classifies packets without a second
+reader, preserves per-query UDP/TCP selection, rejects immediate scope failures,
+keeps spurious replies from terminating valid pending work, and cancels requests
+before native host release. iOS/macOS targets include the class but no native
+connection path instantiates it yet.
+
+The C API gains terminal request rejection so native errors become SERVFAIL
+without copying exception messages or waiting for a timeout. Go/C regressions
+and a new executable Swift/native-host lifecycle test cover that path. SDK and
+Swift runtime validation of this layer remain pending; concrete native DNS
+transports, settings publication and protocol lifecycle integration are still
+required. This is not universal-backend completion or a merge-readiness claim.
+The updated Go/race suite passed ten Apple-parent repetitions and the executable
+C client passed locally with rejection coverage. No packages were downloaded.
+The Apple Conan recipe now requires the exact new exported text symbols, so
+missing native-DNS ABI cannot be mistaken for a compatible archive.
+
 ## Native DNS C-client portability follow-up — 2026-11-20
 
 Run `44726482222` at `b573b00` passed every executed lane except the iOS

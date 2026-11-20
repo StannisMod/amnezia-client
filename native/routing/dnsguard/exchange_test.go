@@ -141,3 +141,30 @@ func TestNativeExchangeDoesNotExposeScopeErrorContentsOrFallback(t *testing.T) {
 		t.Fatal("native DNS error leaked data or retried a different scope")
 	}
 }
+
+func TestNativeExchangeRejectIsTerminalAndPrompt(t *testing.T) {
+	var bridge *NativeExchange
+	var err error
+	bridge, err = NewNativeExchange(func(request NativeRequest) error {
+		if !bridge.Reject(request.ID) || bridge.Reject(request.ID) {
+			t.Fatal("native failure was not exactly once")
+		}
+		reply := new(dns.Msg)
+		if reply.Unpack(request.Wire) != nil {
+			t.Fatal("invalid native dispatch")
+		}
+		wire, _ := new(dns.Msg).SetReply(reply).Pack()
+		if bridge.Complete(request.ID, wire) {
+			t.Fatal("reply reopened a failed native query")
+		}
+		return nil
+	}, func(uint64) { t.Error("terminal native failure was cancelled twice") })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bridge.Close()
+	if _, err := bridge.Exchange(context.Background(), "udp",
+		new(dns.Msg).SetQuestion("managed.example.", dns.TypeA)); err == nil {
+		t.Fatal("native failure became a successful response")
+	}
+}

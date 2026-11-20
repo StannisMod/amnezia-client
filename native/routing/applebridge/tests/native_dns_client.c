@@ -9,7 +9,7 @@ typedef struct {
     pthread_mutex_t lock;
     pthread_cond_t changed;
     unsigned writes, dispatches, cancels, releases, failures;
-    int delayed;
+    int delayed, reject;
     uint64_t token;
 } Host;
 
@@ -30,7 +30,8 @@ static int32_t writer(void *ctx, const uint8_t *packet, int32_t size) {
     assert(header >= 20 && size >= (int32_t)(header + 20));
     const uint8_t *dns = packet + header + 8;
     assert((dns[2] & 0x80) != 0);
-    assert((dns[3] & 15) == 0 && (dns[3] & 0x20) == 0);
+    unsigned id = (dns[0] << 8) | dns[1];
+    assert((dns[3] & 15) == (id == 0x1237 ? 2 : 0) && (dns[3] & 0x20) == 0);
     assert(dns[6] == 0 && dns[7] == 0); /* NODATA */
     pthread_mutex_lock(&h->lock);
     assert(h->releases == 0);
@@ -49,9 +50,13 @@ static int32_t dispatch(void *ctx, int64_t handle, uint64_t token, int32_t netwo
     h->dispatches++;
     h->token = token;
     int delayed = h->delayed;
+    int reject = h->reject;
     pthread_cond_broadcast(&h->changed);
     pthread_mutex_unlock(&h->lock);
-    if (!delayed) {
+    if (reject) {
+        assert(AmneziaNativeDNSReject(handle, token) == 1);
+        assert(AmneziaNativeDNSReject(handle, token) == 0);
+    } else if (!delayed) {
         uint8_t *answer = malloc((size_t)size);
         assert(answer != NULL);
         memcpy(answer, request, (size_t)size);
@@ -134,11 +139,18 @@ int main(void) {
     wire[16] = 198; wire[17] = 51; wire[18] = 100; wire[19] = 2;
     assert(AmneziaNativeDNSFeed(handle, wire, (int32_t)size) == 0);
     pthread_mutex_lock(&h.lock);
+    h.reject = 1;
+    pthread_mutex_unlock(&h.lock);
+    size = packet(wire, 0x1237, 1);
+    assert(AmneziaNativeDNSFeed(handle, wire, (int32_t)size) == 1);
+    wait_count(&h, &h.writes, 3);
+    pthread_mutex_lock(&h.lock);
+    h.reject = 0;
     h.delayed = 1;
     pthread_mutex_unlock(&h.lock);
     size = packet(wire, 0x1236, 1);
     assert(AmneziaNativeDNSFeed(handle, wire, (int32_t)size) == 1);
-    wait_count(&h, &h.dispatches, 2);
+    wait_count(&h, &h.dispatches, 3);
     AmneziaNativeDNSStop(handle);
     assert(h.cancels == 1 && h.releases == 1 && h.failures == 0);
     assert(AmneziaNativeDNSComplete(handle, h.token, wire + 28, (int32_t)size - 28) == 0);

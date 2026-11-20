@@ -24,6 +24,7 @@ void AmneziaNativeDNSStop(int64_t);
 // Feed: 1 consumed DNS, 0 native passthrough, -1 invalid/failed endpoint.
 int32_t AmneziaNativeDNSFeed(int64_t, uint8_t *, int32_t);
 int32_t AmneziaNativeDNSComplete(int64_t, uint64_t, uint8_t *, int32_t);
+int32_t AmneziaNativeDNSReject(int64_t, uint64_t);
 static inline int32_t amnezia_dns_dispatch(AmneziaDNSDispatch fn, void *host, int64_t handle, uint64_t id, int32_t network, const uint8_t *data, int32_t size, int32_t timeout) { return fn(host,handle,id,network,data,size,timeout); }
 static inline void amnezia_dns_cancel(AmneziaDNSCancel fn, void *host, int64_t handle, uint64_t id) { fn(host,handle,id); }
 static inline void amnezia_dns_failure(AmneziaDNSFailure fn, void *host, int64_t handle) { fn(host,handle); }

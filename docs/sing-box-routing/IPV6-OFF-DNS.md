@@ -41,6 +41,13 @@ IPv4 application routing, DNS scope, TLS validation, or ON behavior.
    existing caches. This is not Apple SDK/runtime acceptance. Hosted iOS CI now
    checks the exported symbols and runs the C client against its unified host
    library in addition to the existing packet-flow ABI test.
+   Baseline `b0cbffc` passed that hosted matrix, including the Darwin C client.
+   `NativeDNSGuard.swift` now provides the next host layer: typed UDP/TCP
+   dispatch, explicit per-request cancellation, early native failure rejection,
+   spurious-response handling, safe asynchronous callback teardown and packet
+   classification. iOS/macOS targets include it, with new SDK and executable
+   Swift/C-bridge tests in CI. This host layer still needs a concrete scoped
+   native transport and connection-lifecycle wiring; it is not enabled for users.
 2. Integrate native Apple WG/AWG and OpenVPN without a second packetFlow reader
    or Go runtime, preserving transport socket ownership and native non-DNS I/O.
 3. Audit Android/desktop native WG, OpenVPN, Xray and Windows IKEv2 paths against

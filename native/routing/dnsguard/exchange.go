@@ -103,6 +103,9 @@ func (b *NativeExchange) Exchange(parent context.Context, network string, reques
 			b.cancel(token)
 			return nil, err
 		}
+		if answer == nil {
+			return nil, errors.New("selected native DNS request failed")
+		}
 		return answer, nil
 	}
 }
@@ -142,6 +145,20 @@ func (b *NativeExchange) Complete(token uint64, wire []byte) bool {
 	default:
 		return false
 	}
+}
+
+// Reject ends a failed native request promptly without accepting arbitrary
+// native error strings or inventing a response on the foreign side.
+func (b *NativeExchange) Reject(token uint64) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	entry := b.pending[token]
+	if b.closed || entry == nil || entry.complete || entry.ctx.Err() != nil {
+		return false
+	}
+	entry.complete = true
+	entry.result <- nil
+	return true
 }
 
 func (b *NativeExchange) Close() error {
