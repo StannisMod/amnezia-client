@@ -16,6 +16,9 @@ IPv4 application routing, DNS scope, TLS validation, or ON behavior.
 - DNS forwarding must use the connection's selected DNS path. Missing or
   unavailable forwarding must fail closed, never fall back to public/underlay
   resolvers.
+- Native tunnel integration must retain its privileged DNS control path,
+  including IPv6-only DNS servers, without enabling general application IPv6.
+  The standalone resolver transport does not by itself create that exception.
 - Cover UDP and TCP DNS, A preservation, upstream failure and cancellation.
   A UDP-only interceptor is not sufficient.
 - This is plaintext DNS policy, not permission to decrypt DoH/DoT or bypass
@@ -48,6 +51,13 @@ IPv4 application routing, DNS scope, TLS validation, or ON behavior.
    classification. iOS/macOS targets include it, with new SDK and executable
    Swift/C-bridge tests in CI. This host layer still needs a concrete scoped
    native transport and connection-lifecycle wiring; it is not enabled for users.
+   `NativeDNSResolver.swift` adds explicit tunnel, physical-interface and
+   loopback scopes; numeric endpoints only; UDP retry on the same connection
+   (maximum three, ordinary queries only); and TCP DNS framing. Modern Apple
+   tunnel requests require the public virtual interface, with the public
+   through-tunnel APIs on older supported OS versions. Missing scope fails
+   closed. SDK/loopback transport tests are pending. Protocol settings, original
+   DNS-route-to-scope mapping and privileged DNS control traffic remain to wire.
 2. Integrate native Apple WG/AWG and OpenVPN without a second packetFlow reader
    or Go runtime, preserving transport socket ownership and native non-DNS I/O.
 3. Audit Android/desktop native WG, OpenVPN, Xray and Windows IKEv2 paths against

@@ -1,5 +1,28 @@
 # Implementation checkpoint — automated validation
 
+## Scoped native DNS transports — 2026-11-20
+
+In `44744543451` at `49d1819`, the new iPhoneOS host typecheck, C client and
+executable Swift/native DNS lifecycle test passed. Full iOS app construction
+subsequently failed fetching OpenVPNAdapter: GitHub:443 was unreachable for
+75 seconds. Windows build job `136317552765` lost runner/server communication
+while its build step was in progress; no failed product assertion was reported.
+Those failures are retained, not converted into complete package passes.
+
+`NativeDNSResolver.swift` now supplies explicit tunnel/interface/loopback
+transport scopes, numeric server validation, same-connection bounded UDP
+retries and TCP framing/candidate replies. Legacy through-tunnel APIs remain
+only for older OS versions. It does not select another resolver/interface on
+failure. Host dispatch now keeps an absolute monotonic deadline across its
+queue instead of restarting the timeout after queue delay.
+
+New hosted tests use a loopback-only ephemeral UDP/TCP fixture for first-packet
+loss, same-socket retry, fragmented TCP framing, multiple candidate replies,
+timeouts and non-query non-retransmission. SDK and transport tests are pending;
+these factories still are not invoked by native connection settings/lifecycles.
+Original DNS-route mapping and IPv6 DNS control-plane handling must be completed
+before universal NODATA or merge readiness can be claimed.
+
 ## Swift native DNS host layer — 2026-11-20
 
 Run `44734415980` at `b0cbffc` passed the complete main matrix, including the

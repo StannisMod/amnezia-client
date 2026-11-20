@@ -70,13 +70,14 @@ final class NativeDNSGuard {
     }
 
     private static let dispatch: AmneziaDNSDispatch = { context, handle, token, network, bytes, size, timeout in
-        guard let context, let bytes, size >= 12, size <= 65535, timeout > 0,
+        guard let context, let bytes, size >= 12, size <= 65535, timeout > 0, timeout <= 5000,
               let transport = NativeDNSTransport(rawValue: network) else { return 0 }
         let owner = Unmanaged<NativeDNSGuard>.fromOpaque(context).takeUnretainedValue()
+        let deadline = DispatchTime.now() + .milliseconds(Int(timeout))
         let query = Data(bytes: bytes, count: Int(size))
         owner.queue.async {
             owner.begin(handle: handle, token: token, query: query, transport: transport,
-                        timeout: TimeInterval(timeout) / 1000)
+                        deadline: deadline)
         }
         return 1
     }
@@ -135,8 +136,14 @@ final class NativeDNSGuard {
     }
 
     private func begin(handle: Int64, token: UInt64, query: Data,
-                       transport: NativeDNSTransport, timeout: TimeInterval) {
+                       transport: NativeDNSTransport, deadline: DispatchTime) {
         guard !stopped, currentHandle == handle else { return }
+        let now = DispatchTime.now().uptimeNanoseconds
+        guard deadline.uptimeNanoseconds > now else {
+            _ = AmneziaNativeDNSReject(handle, token)
+            return
+        }
+        let timeout = TimeInterval(deadline.uptimeNanoseconds - now) / 1_000_000_000
         guard requests[token] == nil else {
             requests.removeValue(forKey: token)?.cancel()
             _ = AmneziaNativeDNSReject(handle, token)

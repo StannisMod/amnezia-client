@@ -594,7 +594,7 @@ jobs:
             grep -E " T $symbol$" "$RUNNER_TEMP/routing-apple-symbols.txt"
           done
           xcrun --sdk iphoneos swiftc -typecheck -target arm64-apple-ios15.0 -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" -import-objc-header "$module/amnezia_routing.h" client/platforms/ios/WGConfig.swift client/platforms/ios/EndpointRefreshPolicy.swift client/platforms/ios/RoutingPacketTunnel.swift
-          xcrun --sdk iphoneos swiftc -typecheck -target arm64-apple-ios15.0 -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" -import-objc-header "$module/amnezia_routing.h" client/platforms/ios/NativeDNSGuard.swift
+          xcrun --sdk iphoneos swiftc -typecheck -target arm64-apple-ios15.0 -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" -import-objc-header "$module/amnezia_routing.h" client/platforms/ios/NativeDNSGuard.swift client/platforms/ios/NativeDNSResolver.swift
           xcrun --sdk iphoneos swiftc -typecheck -target arm64-apple-ios15.0 -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" client/platforms/ios/XrayConfig.swift
           swiftc client/platforms/ios/XrayConfig.swift client/tests/xray-network-settings/main.swift -o "$RUNNER_TEMP/xray-network-settings-tests"
           "$RUNNER_TEMP/xray-network-settings-tests"
@@ -611,6 +611,11 @@ jobs:
             client/platforms/ios/NativeDNSGuard.swift client/tests/native-dns-host/main.swift \
             -Xlinker "$RUNNER_TEMP/routing-apple-host.dylib" -o "$RUNNER_TEMP/native-dns-host-tests"
           DYLD_LIBRARY_PATH="$RUNNER_TEMP" "$RUNNER_TEMP/native-dns-host-tests"
+          swiftc -swift-version 5 -warnings-as-errors -import-objc-header "$module/amnezia_routing.h" \
+            client/platforms/ios/NativeDNSGuard.swift client/platforms/ios/NativeDNSResolver.swift \
+            client/tests/native-dns-resolver/main.swift -Xlinker "$RUNNER_TEMP/routing-apple-host.dylib" \
+            -o "$RUNNER_TEMP/native-dns-resolver-tests"
+          DYLD_LIBRARY_PATH="$RUNNER_TEMP" "$RUNNER_TEMP/native-dns-resolver-tests"
       - uses: actions/setup-python@v6
         with: {python-version: '3.14'}
       - uses: jurplel/install-qt-action@v4.3.1
