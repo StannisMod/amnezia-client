@@ -6,8 +6,11 @@ At `2180e7f`, hosted iOS job `136366795882` passed the iPhoneOS
 typecheck, executable Swift/native host test, actual loopback UDP/TCP transport
 tests and full app/packet-tunnel builds. The first matrix attempt was not green:
 the two macOS ARM jobs never acquired runners (capacity annotations, no steps).
-Only failed/uncompleted jobs were resubmitted after inspecting those annotations;
-the second attempt remains pending. The job log is preserved locally as
+Only failed/uncompleted jobs were resubmitted after inspecting those annotations.
+The second attempt also failed to acquire both ARM runners: jobs `136411407621`
+and `136411408425` were cancelled without steps, with the same capacity
+annotations. The build gate correctly failed; no third rerun of the same code
+was requested. The successful iOS job log is preserved locally as
 `ci-2180e7f-ios-fetch2.log`; an earlier log-fetch attempt failed at the blob
 endpoint and is not a product-test failure. No application packages were fetched.
 
