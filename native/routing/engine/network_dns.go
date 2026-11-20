@@ -287,6 +287,7 @@ func (p *networkDNSProxy) diagnostics(result *DiagnosticSnapshot) {
 	result.DNSCompleted, result.DNSFailed = p.completed, p.failed
 	result.DNSDeadline, result.DNSLastMS = p.deadline, p.lastMS
 	result.DNSLastFailure = p.lastFailure
+	result.DNSAvailable, result.DNSVersion = p.current != nil, p.version
 	for _, started := range p.pending {
 		if age := time.Since(started).Milliseconds(); age > result.DNSOldestMS {
 			result.DNSOldestMS = age

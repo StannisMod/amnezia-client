@@ -285,8 +285,17 @@ def main():
                         "-m", "comment", "--comment", "amnezia-private-dns-acceptance",
                         "-j", "DNAT", "--to-destination", "10.0.2.2:8853"]
     private_dns_redirected = False
+    network_log, network_process = None, None
     admin = "org.amnezia.routingtest/.RoutingPolicyReceiver"
     try:
+        # Start after adb root (which restarts adbd). Snapshot -t counts can
+        # discard our earlier events when unrelated package-manager logs flood
+        # the device buffer, even though the final filter selects only our tags.
+        network_log = (work / "network-events-live.log").open("w")
+        network_process = subprocess.Popen(
+            ["adb", "logcat", "-v", "threadtime", "-T", "1", "-m", "10000",
+             "-s", "NetworkState:V", "Wireguard:I"],
+            stdout=network_log, stderr=subprocess.STDOUT)
         # Only the emulator was accepted above. Remove stale test-only device
         # ownership/signatures from an interrupted prior disposable run.
         subprocess.run(['adb', 'shell', 'dpm', 'remove-active-admin', *user_arguments, admin], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
@@ -618,6 +627,17 @@ def main():
         report['ordinary_app_only_preserving_recovery'] = 'PASS'
         if not args.primary_only: report['all_vpn_lockdown'] = 'PASS'
     finally:
+        if network_process is not None:
+            report["network_events_live_early_exit"] = network_process.poll()
+            if network_process.poll() is None:
+                network_process.terminate()
+                try:
+                    network_process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    network_process.kill()
+                    network_process.wait(timeout=5)
+        if network_log is not None:
+            network_log.close()
         if timer is not None: timer.cancel()
         for watch in control_timers.values(): watch.cancel()
         for watch in control_timers.values():

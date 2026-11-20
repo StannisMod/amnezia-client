@@ -1,5 +1,31 @@
 # Implementation checkpoint — automated validation
 
+## Current hosted baseline and recovery evidence — 2026-11-20
+
+At `b56b53f`, main run `44583629056` passed the entire matrix, including both
+ARM Mac jobs. Linux-native run `44583629145`, current Android packages and all
+other listed supporting workflows passed. Android acceptance `44583612049`
+passed 5/6 lanes; AWG/API29 failed after application reinstall and capture
+restart in the personal profile. Earlier work-profile failure is retained.
+This establishes a repeated restart scenario, not its underlying cause.
+
+The retained diagnostic `dns_last_failure=generation-unavailable` is historical
+and does not establish current availability. The snapshot now includes current
+generation availability/version, with tests covering both suspended DNS and
+republished DNS retaining the historical failure label. Recovery logs retain
+only handle/ticket counters, stage and exception class, never profile values,
+endpoint names/addresses, credentials or exception messages.
+
+The final logcat snapshot in the latest failure retained only teardown events:
+its count limit can lose early selected events amid unrelated system logging.
+A targeted live log now starts after adb root, with a 10,000-matching-record
+bound, records premature exit, and is terminated/reaped in finally. The file
+is explicitly included in the primary artifact allowlist. The existing final
+snapshot remains. These are evidence changes only, not a claimed DNS fix.
+Hosted validation of the new diagnostics remains pending; no local Go/Kotlin
+PASS is claimed. Merge readiness is still blocked by Android recovery, native
+Apple AAAA NODATA acceptance and current-source final artifact reconciliation.
+
 ## Linux hosted closure and Android capture review — 2026-11-19
 
 Run `44581190296` at `48387b4` passed all six required Linux-native lanes:

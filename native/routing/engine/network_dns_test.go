@@ -41,6 +41,9 @@ func TestNetworkDNSDiagnosticsTrackPendingAndCompletedWithoutQueryIdentity(t *te
 	<-router.started
 	var pending DiagnosticSnapshot
 	p.diagnostics(&pending)
+	if !pending.DNSAvailable || pending.DNSVersion != 0 {
+		t.Fatalf("published generation not visible: %+v", pending)
+	}
 	if pending.DNSPending != 1 || pending.DNSCompleted != 0 {
 		t.Fatalf("pending lookup not visible: %+v", pending)
 	}
@@ -59,11 +62,26 @@ func TestNetworkDNSDiagnosticsTrackPendingAndCompletedWithoutQueryIdentity(t *te
 	}
 	var failed DiagnosticSnapshot
 	p.diagnostics(&failed)
+	if failed.DNSAvailable || failed.DNSVersion != 1 {
+		t.Fatalf("suspended generation not visible: %+v", failed)
+	}
 	if failed.DNSPending != 0 || failed.DNSCompleted != 2 || failed.DNSFailed != 1 {
 		t.Fatalf("lookup failure not visible: %+v", failed)
 	}
 	if failed.DNSLastFailure != "generation-unavailable" {
 		t.Fatalf("suspension was misclassified: %s", failed.DNSLastFailure)
+	}
+	nextCtx, nextCancel := context.WithCancel(context.Background())
+	defer nextCancel()
+	next := &dnsGeneration{box: &dnsTestLifetime{}, ctx: nextCtx, cancel: nextCancel, stopParent: func() bool { return true }}
+	defer next.close()
+	if !p.replace(next, 1) {
+		t.Fatal("replacement generation rejected")
+	}
+	var recovered DiagnosticSnapshot
+	p.diagnostics(&recovered)
+	if !recovered.DNSAvailable || recovered.DNSVersion != 1 || recovered.DNSLastFailure != "generation-unavailable" {
+		t.Fatalf("current availability cannot be distinguished from historical failure: %+v", recovered)
 	}
 }
 

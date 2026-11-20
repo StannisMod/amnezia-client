@@ -652,11 +652,13 @@ open class Wireguard : Protocol() {
         val ticket = recoveryState.request(force) ?: return@synchronized
         routedRecoveryJob?.cancel()
         val refreshDns = !AwgCorePolicy.retainsVpnDns(profile)
+        Log.i(TAG, "Recovery requested: handle=$handle generation=${ticket.generation} force=$force refreshDns=$refreshDns")
         if (refreshDns) RoutingBackend.suspendNetworkDns(handle)
         routedRecoveryJob = routedScope.launch {
             var attempt = 0
             while (true) {
                 currentCoroutineContext().ensureActive()
+                var stage = "underlay"
                 try {
                     val identity = underlayIdentity?.invoke()
                         ?: throw VpnException("Underlying network is unavailable")
@@ -664,6 +666,7 @@ open class Wireguard : Protocol() {
                     val reopen = decision.reopen
                     var endpoint = decision.endpoint
                     val before = RoutingBackend.stats(handle)
+                    stage = "transport"
                     synchronized(endpointLock) {
                         if (!recoveryState.current(ticket) || handle != routedHandle) return@launch
                         if (!RoutingBackend.refresh(handle, endpoint, reopen)) {
@@ -675,6 +678,7 @@ open class Wireguard : Protocol() {
                         recoveryState.commitTransport(ticket, identity, endpoint)
                     }
                     if (refreshDns) {
+                        stage = "dns-snapshot"
                         val dns = profile.optJSONObject("sing_box_dns")
                         val needsNetwork = dns?.let { options ->
                             options.optBoolean("preserve_network_domains") ||
@@ -689,9 +693,11 @@ open class Wireguard : Protocol() {
                         if (underlayIdentity?.invoke() != identity) continue
                         synchronized(endpointLock) {
                             if (!recoveryState.current(ticket) || handle != routedHandle) return@launch
+                            stage = "dns-reload"
                             if (!RoutingBackend.reloadNetworkDns(handle, inventory.toString().toByteArray(Charsets.UTF_8)))
                                 throw VpnException("Network DNS refresh failed")
                         }
+                        Log.i(TAG, "Recovery DNS published: handle=$handle generation=${ticket.generation}")
                     }
                     synchronized(endpointLock) {
                         if (!recoveryState.current(ticket) || handle != routedHandle) return@launch
@@ -739,11 +745,11 @@ open class Wireguard : Protocol() {
                     Log.i(TAG, "AWG network refreshed; TUN and TCP owner retained")
                     return@launch
                 } catch (cancelled: CancellationException) { throw cancelled }
-                catch (_: Exception) {
+                catch (error: Exception) {
                     // Network absence is not a stop request. Keep the capture,
                     // flow stack and original TCP streams until explicit stop.
                     if (synchronized(endpointLock) { !recoveryState.current(ticket) || handle != routedHandle }) return@launch
-                    if (attempt == 0) Log.i(TAG, "AWG waiting for network; existing TCP owner retained")
+                    Log.i(TAG, "Recovery waiting: handle=$handle generation=${ticket.generation} attempt=$attempt stage=$stage error=${error.javaClass.simpleName}")
                     delay(minOf(30000L, 1000L shl minOf(attempt++, 5)))
                 }
             }
