@@ -114,6 +114,24 @@ final class Fixture {
 let query = Data([0x12,0x34,0x01,0x00,0x00,0x01,0,0,0,0,0,0,7] +
     Array("managed".utf8) + [7] + Array("example".utf8) + [0,0,1,0,1])
 
+for server in ["2001:db8::53", "fe80::53%en0", "::1", "::ffff:192.0.2.53"] {
+    do {
+        _ = try NativeDNSResolver.validateIPv4Server(server)
+        fatalError("IPv6-OFF DNS admitted IPv6 upstream \(server)")
+    } catch NativeDNSResolverError.scopeUnavailable {
+        // Reject before constructing a socket; there is no resolver fallback.
+    }
+}
+for server in ["", "dns.example", "0.0.0.0", "224.0.0.53", "255.255.255.255", "192.0.2.53\u{0}.invalid"] {
+    do {
+        _ = try NativeDNSResolver.validateIPv4Server(server)
+        fatalError("invalid DNS upstream accepted \(server)")
+    } catch NativeDNSResolverError.invalidServer {}
+}
+for server in ["192.0.2.53", "10.0.0.53", "127.0.0.1"] {
+    _ = try NativeDNSResolver.validateIPv4Server(server)
+}
+
 do {
     let fixture = try Fixture(.udp, mode: .dropFirst)
     defer { fixture.close() }

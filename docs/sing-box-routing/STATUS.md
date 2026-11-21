@@ -1,5 +1,23 @@
 # Implementation checkpoint — automated validation
 
+## Strict IPv6 OFF clarification — 2026-11-21
+
+The user clarified that OFF means all IPv6 traffic, including DNS upstream
+transport. The proposed privileged IPv6 native DNS control path was abandoned;
+its uncommitted Go prototype and source-binding change were removed. Its local
+test logs are historical prototype evidence, not shipping-code acceptance.
+No such exception was committed or enabled.
+
+Native DNS integration must use an IPv4 managed endpoint for local AAAA NODATA.
+An original IPv6-only upstream is unavailable with OFF; other queries must fail
+closed without silently substituting a resolver or underlay path. An existing
+multiple-server policy may retain its original explicit selection semantics.
+The earlier control-plane preservation requirement below is superseded.
+The OFF-only Swift resolver now rejects IPv6 literals (including scoped and
+IPv4-mapped forms) before creating an operation, and also rejects hostnames,
+unspecified/multicast/reserved IPv4 destinations and NUL-truncated input. New
+resolver validation tests are pending Apple SDK execution. ON is unchanged.
+
 ## Scoped native DNS transports — 2026-11-20
 
 At `2180e7f`, hosted iOS job `136366795882` passed the iPhoneOS

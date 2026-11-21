@@ -20,32 +20,30 @@ final class NativeDNSResolver {
     private let server: String
     private let scope: Scope
 
-    init(provider: NEPacketTunnelProvider, server: String, scope: Scope) throws {
-        let parts = server.split(separator: "%", omittingEmptySubsequences: false)
-        guard !server.utf8.contains(0), !parts.isEmpty, parts.count <= 2, !parts[0].isEmpty else {
+    // This resolver belongs to the IPv6-OFF DNS frontend, not the ON path.
+    // DNS transport gets no IPv6 exception, even for a tunnel-scoped server.
+    static func validateIPv4Server(_ server: String) throws -> in_addr {
+        guard !server.isEmpty, !server.utf8.contains(0) else {
             throw NativeDNSResolverError.invalidServer
         }
-        var v4 = in_addr(), v6 = in6_addr()
-        let numeric = String(parts[0])
-        let is4 = numeric.withCString { inet_pton(AF_INET, $0, &v4) } == 1
-        let is6 = numeric.withCString { inet_pton(AF_INET6, $0, &v6) } == 1
-        guard is4 || is6 else { throw NativeDNSResolverError.invalidServer }
-        if parts.count == 2 {
-            guard is6, !parts[1].isEmpty,
-                  parts[1].utf8.allSatisfy({ (48...57).contains($0) || (65...90).contains($0) ||
-                      (97...122).contains($0) || $0 == 45 || $0 == 46 || $0 == 95 }) else {
+        if server.contains(":") { throw NativeDNSResolverError.scopeUnavailable }
+        var address = in_addr()
+        guard server.withCString({ inet_pton(AF_INET, $0, &address) }) == 1 else {
+            throw NativeDNSResolverError.invalidServer
+        }
+        let unicast = withUnsafeBytes(of: address.s_addr) { bytes in
+            bytes[0] != 0 && bytes[0] < 224
+        }
+        guard unicast else { throw NativeDNSResolverError.invalidServer }
+        return address
+    }
+
+    init(provider: NEPacketTunnelProvider, server: String, scope: Scope) throws {
+        let address = try Self.validateIPv4Server(server)
+        if case .loopback = scope {
+            guard withUnsafeBytes(of: address.s_addr, { $0[0] == 127 }) else {
                 throw NativeDNSResolverError.invalidServer
             }
-            if case .interface(let interface) = scope {
-                guard parts[1] == Substring(interface.name) || parts[1] == Substring(String(interface.index)) else {
-                    throw NativeDNSResolverError.scopeUnavailable
-                }
-            }
-        }
-        if case .loopback = scope {
-            let local4 = is4 && withUnsafeBytes(of: v4.s_addr) { $0[0] == 127 }
-            let local6 = is6 && withUnsafeBytes(of: v6) { $0.dropLast().allSatisfy { $0 == 0 } && $0.last == 1 }
-            guard local4 || local6 else { throw NativeDNSResolverError.invalidServer }
         }
         self.provider = provider
         self.server = server

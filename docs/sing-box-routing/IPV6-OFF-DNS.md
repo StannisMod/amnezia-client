@@ -16,9 +16,11 @@ IPv4 application routing, DNS scope, TLS validation, or ON behavior.
 - DNS forwarding must use the connection's selected DNS path. Missing or
   unavailable forwarding must fail closed, never fall back to public/underlay
   resolvers.
-- Native tunnel integration must retain its privileged DNS control path,
-  including IPv6-only DNS servers, without enabling general application IPv6.
-  The standalone resolver transport does not by itself create that exception.
+- User clarification, 2026-11-21: OFF blocks IPv6 transport including DNS
+  control traffic; there is no privileged IPv6 DNS exception. Local AAAA NODATA
+  uses an IPv4 managed endpoint. An IPv6-only selected upstream is unavailable
+  under OFF; other queries fail closed rather than silently changing resolver
+  or scope. Existing explicit multiple-resolver selection remains authoritative.
 - Cover UDP and TCP DNS, A preservation, upstream failure and cancellation.
   A UDP-only interceptor is not sufficient.
 - This is plaintext DNS policy, not permission to decrypt DoH/DoT or bypass
@@ -58,7 +60,8 @@ IPv4 application routing, DNS scope, TLS validation, or ON behavior.
    through-tunnel APIs on older supported OS versions. Missing scope fails
    closed. SDK/loopback transport tests and full iOS app/extension builds passed
    in job `136366795882` at `2180e7f`. Protocol settings, original
-   DNS-route-to-scope mapping and privileged DNS control traffic remain to wire.
+   DNS-route-to-scope mapping and strict OFF enforcement for resolver transport
+   remain to wire. No IPv6 DNS control-plane exception is authorized.
 2. Integrate native Apple WG/AWG and OpenVPN without a second packetFlow reader
    or Go runtime, preserving transport socket ownership and native non-DNS I/O.
 3. Audit Android/desktop native WG, OpenVPN, Xray and Windows IKEv2 paths against
