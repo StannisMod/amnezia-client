@@ -1,5 +1,20 @@
 # Implementation checkpoint — automated validation
 
+## Hosted validation unavailable — 2026-11-21
+
+Source `f234c59` adds the per-resolver settings planner and hosted regression
+steps; `b7d0517` adds strict IPv4-only OFF upstream validation. Neither revision
+has a hosted validation result. A manual dispatch of `sing-box-routing-ci.yml`
+was rejected by GitHub with HTTP 422:
+`Actions has been disabled for this repository.`
+The repository Actions permissions endpoint simultaneously returned
+`{"allowed_actions":"all","enabled":true}`; the workflow itself was `active`.
+The reason for this external discrepancy is unknown. No Actions policy, account
+setting or billing setting was changed. Earlier `11949e6`/`2180e7f` results do
+not validate these newer revisions. Apple SDK/runtime checks remain blocked
+until hosted Actions execution is restored. Universal native DNS integration
+and merge readiness are still incomplete.
+
 ## Per-resolver native DNS settings — 2026-11-21
 
 `NativeDNSSettings.swift` prepares a connection-local copy with one IPv4 DNS
