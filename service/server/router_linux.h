@@ -7,6 +7,7 @@
 #include <QHash>
 #include <QDebug>
 #include <QObject>
+#include "../../client/platforms/linux/daemon/linuxproxyipv6.h"
 
 #include "../client/platforms/linux/daemon/dnsutilslinux.h"
 
@@ -33,6 +34,7 @@ public:
     bool flushDns();
     bool createTun(const QString &dev, const QString &subnet);
     bool deleteTun(const QString &dev);
+    bool configureProxyIpv6(const QStringList &included, const QStringList &excluded);
     bool StartRoutingIpv6();
     bool StopRoutingIpv6();
     bool updateResolvers(const QString& ifname, const QList<QHostAddress>& resolvers);
@@ -46,6 +48,8 @@ private:
 
     QList<Route> m_addedRoutes;
     DnsUtilsLinux *m_dnsUtil;
+    std::unique_ptr<LinuxProxyIpv6> m_proxyIpv6;
+    bool m_proxyTunCreated = false;
 };
 
 #endif // ROUTERLINUX_H

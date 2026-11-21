@@ -101,7 +101,11 @@ target_sources(${CLIENT_MACOS_NE_TARGET_NAME} PRIVATE
     ${CLIENT_ROOT_DIR}/platforms/ios/PacketTunnelProvider.swift
     ${CLIENT_ROOT_DIR}/platforms/ios/PacketTunnelProvider+WireGuard.swift
     ${CLIENT_ROOT_DIR}/platforms/ios/RoutingPacketTunnel.swift
+    ${CLIENT_ROOT_DIR}/platforms/ios/NativeDNSGuard.swift
+    ${CLIENT_ROOT_DIR}/platforms/ios/NativeDNSResolver.swift
+    ${CLIENT_ROOT_DIR}/platforms/ios/NativeDNSSettings.swift
     ${CLIENT_ROOT_DIR}/platforms/ios/PacketTunnelProvider+OpenVPN.swift
+    ${CLIENT_ROOT_DIR}/platforms/ios/OpenVPNIPv6Policy.swift
     ${CLIENT_ROOT_DIR}/platforms/ios/PacketTunnelProvider+Xray.swift
     ${CLIENT_ROOT_DIR}/platforms/ios/WGConfig.swift
     ${CLIENT_ROOT_DIR}/platforms/ios/EndpointRefreshPolicy.swift

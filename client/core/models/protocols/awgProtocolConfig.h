@@ -23,6 +23,7 @@ struct AwgServerConfig {
     QString protocolVersion;
     QString subnetAddress;
     QString subnetCidr;
+    QString ipv6Address;
     QString junkPacketCount;
     QString junkPacketMinSize;
     QString junkPacketMaxSize;
@@ -62,6 +63,8 @@ struct AwgClientConfig {
     QString hostName;
     int port;
     QString clientIp;
+    QString pathMtuProbe;
+    QStringList pathMtuProbes;
     QString clientPrivateKey;
     QString clientPublicKey;
     QString serverPublicKey;

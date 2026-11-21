@@ -10,6 +10,9 @@ sudo docker run -d \
 --name $CONTAINER_NAME $CONTAINER_NAME
 
 sudo docker network connect amnezia-dns-net $CONTAINER_NAME
+if [ -n "${AMNEZIA_IPV6_NETWORK:-}" ]; then
+    amnezia_attach_ipv6_network "$CONTAINER_NAME" || exit 1
+fi
 
 # Create tun device if not exist
 sudo docker exec -i $CONTAINER_NAME bash -c 'mkdir -p /dev/net; if [ ! -c /dev/net/tun ]; then mknod /dev/net/tun c 10 200; fi'

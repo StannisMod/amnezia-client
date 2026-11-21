@@ -9,6 +9,8 @@ on:
       - native/routing/**
       - scripts/routing/run_linux_acceptance.py
       - scripts/routing/run_split_dns_acceptance.py
+      - scripts/routing/helper_process.py
+      - scripts/routing/test_helper_process.py
       - scripts/routing/split-dns-ci/**
   pull_request:
     branches: [dev]
@@ -19,6 +21,8 @@ on:
       - native/routing/**
       - scripts/routing/run_linux_acceptance.py
       - scripts/routing/run_split_dns_acceptance.py
+      - scripts/routing/helper_process.py
+      - scripts/routing/test_helper_process.py
       - scripts/routing/split-dns-ci/**
   workflow_dispatch:
 permissions:
@@ -33,6 +37,8 @@ jobs:
         transport: [awg, wireguard]
     steps:
       - uses: actions/checkout@v4
+      - name: Helper shutdown pipe-backpressure regressions
+        run: python3 scripts/routing/test_helper_process.py
       - uses: actions/setup-go@v5
         with:
           go-version-file: native/routing/go.mod

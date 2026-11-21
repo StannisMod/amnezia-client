@@ -9,6 +9,8 @@
 #include <QObject>
 
 #include "../client/platforms/macos/daemon/dnsutilsmacos.h"
+#include "../client/platforms/macos/daemon/macproxyipv6.h"
+#include <memory>
 
 /**
  * @brief The Router class - General class for handling ip routing
@@ -31,6 +33,7 @@ public:
     bool routeDeleteList(const QString &gw, const QStringList &ips);
     bool flushDns();
     bool createTun(const QString &dev, const QString &subnet);
+    bool configureProxyIpv6(const QStringList &included, const QStringList &excluded);
     bool deleteTun(const QString &dev);
     bool updateResolvers(const QString& ifname, const QList<QHostAddress>& resolvers);
     bool restoreResolvers();
@@ -46,6 +49,8 @@ private:
 
     QList<Route> m_addedRoutes;
     DnsUtilsMacos *m_dnsUtil;    
+    bool m_proxyTunConfigured = false;
+    std::unique_ptr<MacProxyIpv6> m_proxyIpv6;
 };
 
 #endif // ROUTERMAC_H

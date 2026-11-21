@@ -11,7 +11,8 @@ def prepare_module(core, destination):
     shutil.copytree(core, local, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
     bridge = core / "applebridge"
     for source, target in (("module.mod", "go.mod"), ("module.sum", "go.sum"),
-                           ("routing_apple.go", "routing_apple.go"),
+                            ("routing_apple.go", "routing_apple.go"),
+                            ("native_dns_apple.go", "native_dns_apple.go"),
                            ("amnezia_routing.h", "amnezia_routing.h")):
         shutil.copy2(bridge / source, destination / target)
     makefile = destination / "Makefile"

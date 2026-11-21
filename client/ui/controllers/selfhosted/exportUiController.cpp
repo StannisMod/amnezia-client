@@ -30,6 +30,8 @@ void ExportUiController::generateConnectionConfig(const QString &serverId, int c
     clearPreviousConfig();
     auto result = m_exportController->generateConnectionConfig(serverId, containerIndex, clientName, updatable);
     applyExportResult(result);
+    if (result.errorCode==ErrorCode::NoError && !result.config.isEmpty() && m_config==result.config)
+        m_exportController->acknowledgeConnectionExport(serverId,containerIndex,result.config);
 }
 
 bool ExportUiController::generateConnectionUpdates(const QString &serverId, int containerIndex, const QString &clientPublicKey)

@@ -20,6 +20,7 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <QFileInfo>
+#include <QNetworkInterface>
 
 #include <core/utils/networkUtilities.h>
 
@@ -158,8 +159,18 @@ bool RouterLinux::flushDns()
     return LinuxDnsCache::flush();
 }
 
+bool RouterLinux::configureProxyIpv6(const QStringList &included, const QStringList &excluded)
+{
+    if (!m_proxyTunCreated || m_proxyIpv6) return false;
+    auto policy = std::make_unique<LinuxProxyIpv6>();
+    if (!policy->configure(included, excluded)) return false;
+    m_proxyIpv6 = std::move(policy);
+    return true;
+}
+
 bool RouterLinux::createTun(const QString &dev, const QString &subnet) {
     qDebug().noquote() << "createTun start";
+    if (dev == "tun2" && QNetworkInterface::interfaceFromName("tun2").isValid()) return false;
 
     QProcess process;
     QStringList commands;
@@ -171,13 +182,14 @@ bool RouterLinux::createTun(const QString &dev, const QString &subnet) {
         qDebug().noquote() << "Could not start adding tun device!\n";
         return false;
     }
-    else if (!process.waitForFinished(2000))
+    else if (!process.waitForFinished(2000) || process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0)
     {
         qDebug().noquote() << "Could not add tun device!\n";
         return false;
     }
     commands.clear();
 
+    if (dev == "tun2") m_proxyTunCreated = true;
     commands << "ip" << "addr" << "add" << QString("%1/24").arg(subnet) << "dev" << dev;
     process.start("sudo", commands);
     if (!process.waitForStarted(1000))
@@ -185,7 +197,7 @@ bool RouterLinux::createTun(const QString &dev, const QString &subnet) {
         qDebug().noquote() << "Could not start adding a subnet for tun device!\n";
         return false;
     }
-    else if (!process.waitForFinished(2000))
+    else if (!process.waitForFinished(2000) || process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0)
     {
         qDebug().noquote() << "Could not add a subnet for tun device!\n";
         return false;
@@ -199,7 +211,7 @@ bool RouterLinux::createTun(const QString &dev, const QString &subnet) {
         qDebug().noquote() << "Could not start link set for tun device!\n";
         return false;
     }
-    else if (!process.waitForFinished(2000))
+    else if (!process.waitForFinished(2000) || process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0)
     {
         qDebug().noquote() << "Could not link set for tun device!\n";
         return false;
@@ -210,6 +222,18 @@ bool RouterLinux::createTun(const QString &dev, const QString &subnet) {
 
 bool RouterLinux::deleteTun(const QString &dev)
 {
+    if (dev == "tun2") {
+        m_proxyIpv6.reset();
+        if (!m_proxyTunCreated) return true;
+        QProcess process;
+        process.start("ip", {"link", "delete", "dev", "tun2"});
+        if (!process.waitForFinished(5000)) {
+            process.kill(); process.waitForFinished(1000);
+        }
+        const bool removed = !QNetworkInterface::interfaceFromName("tun2").isValid();
+        m_proxyTunCreated = !removed;
+        return removed;
+    }
     struct {
         struct nlmsghdr  nh;
         struct ifinfomsg ifm;

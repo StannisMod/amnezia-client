@@ -12,6 +12,9 @@ android {
 }
 
 dependencies {
+    testImplementation("junit:junit:4.13.2")
+    testImplementation(project(":utils"))
+    testImplementation(project(":protocolApi"))
     compileOnly(project(":utils"))
     compileOnly(project(":protocolApi"))
     implementation(libs.kotlinx.coroutines)

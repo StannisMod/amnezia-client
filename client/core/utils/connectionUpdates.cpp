@@ -2,8 +2,10 @@
 
 #include <QCryptographicHash>
 #include <QJsonArray>
+#include <QHostAddress>
 #include <QJsonDocument>
 #include <QRegularExpression>
+#include <QSet>
 #include <QSslCertificate>
 #include <QUrl>
 #include <openssl/evp.h>
@@ -46,6 +48,32 @@ bool validSettings(const QJsonObject &s, bool awg)
         && s.value("port").isDouble() && s.value("port").toInt() >= 1 && s.value("port").toInt() <= 65535
         && s.value("port").toDouble() == s.value("port").toInt() && !decode(s.value("server_pub_key"), 32).isEmpty();
 }
+bool validPathProbe(const QJsonValue &value)
+{
+    if (!value.isString() || value.toString().isEmpty() || value.toString().size() > 64) return false;
+    const auto text = value.toString(); const QHostAddress address(text);
+    bool mapped = false; address.toIPv4Address(&mapped);
+    if (address.isNull() || address == QHostAddress::AnyIPv4 || address == QHostAddress::AnyIPv6
+        || address == QHostAddress::Broadcast || address.isLoopback() || address.isMulticast()
+        || address.isLinkLocal() || !address.scopeId().isEmpty() || address.toString() != text
+        || (address.protocol() == QAbstractSocket::IPv6Protocol && mapped)) return false;
+    return true;
+}
+// This signed extension is an individual address, never a route or hostname.
+bool validClientIPv6(const QJsonValue &value)
+{
+    if (!value.isString()) return false;
+    const auto text = value.toString();
+    if (text.isEmpty()) return true; // Explicit withdrawal; omission is different.
+    if (!validPathProbe(value)) return false;
+    const QHostAddress address(text);
+    if (address.protocol() != QAbstractSocket::IPv6Protocol) return false;
+    // QHostAddress accepts obsolete IPv4-compatible addresses; the publisher does not.
+    const auto bytes = address.toIPv6Address();
+    bool compatible = true;
+    for (int i = 0; i < 12; ++i) compatible = compatible && bytes[i] == 0;
+    return !compatible;
+}
 bool identityMatches(const QJsonObject &client)
 {
     const auto priv = decode(client.value(configKey::clientPrivKey), 32);
@@ -58,6 +86,65 @@ bool identityMatches(const QJsonObject &client)
         && pub == QByteArray(reinterpret_cast<char *>(derived), 32);
 }
 }
+bool usablePathProbe(const QJsonValue &value, const QJsonObject &client)
+{
+    if (!validPathProbe(value)) return false;
+    const QHostAddress address(value.toString());
+    bool family = false, allowed = false;
+    for (const auto &entry : client.value(configKey::clientIp).toString().split(',')) {
+        const QHostAddress local(entry.trimmed().section('/', 0, 0));
+        if (local == address) return false;
+        if (!local.isNull() && local.protocol() == address.protocol()) family = true;
+    }
+    for (const auto &entry : client.value(configKey::allowedIps).toArray()) {
+        const auto subnet = QHostAddress::parseSubnet(entry.toString());
+        if (subnet.second >= 0 && subnet.first.protocol() == address.protocol() && address.isInSubnet(subnet)) allowed = true;
+    }
+    return family && allowed;
+}
+bool parsePathProbes(const QJsonValue &value, QStringList &targets)
+{
+    if(!value.isArray() || value.toArray().size()>2) return false;
+    QStringList parsed;QSet<QAbstractSocket::NetworkLayerProtocol> families;
+    for(const auto &entry:value.toArray()) {
+        if(!validPathProbe(entry)) return false;
+        const auto family=QHostAddress(entry.toString()).protocol();
+        if(families.contains(family)) return false;
+        families.insert(family);parsed.append(entry.toString());
+    }
+    targets=parsed;return true;
+}
+bool parsePathProbeAddresses(const QString &output, const QString &interfaceName, QStringList &addresses)
+{
+    const QString marker = "\namnezia_interface_addresses=ok\n";
+    if ((interfaceName != "wg0" && interfaceName != "awg0") || output.size() > 65536 || !output.endsWith(marker)) return false;
+    const QRegularExpression linePattern(QStringLiteral("^\\d+:\\s+(\\S+)\\s+(inet6?)\\s+(\\S+)(?:\\s|$)"));
+    QString ipv4, ipv6;
+    for (const auto &line : output.left(output.size() - marker.size()).split('\n', Qt::SkipEmptyParts)) {
+        const auto match = linePattern.match(line.trimmed());
+        if (!match.hasMatch() || match.captured(1) != interfaceName) return false;
+        const auto cidr = match.captured(3); const auto subnet = QHostAddress::parseSubnet(cidr);
+        if (!cidr.contains('/') || subnet.second < 0) return false;
+        const QHostAddress candidate(cidr.section('/', 0, 0));
+        const bool v4 = match.captured(2) == "inet";
+        if (candidate.protocol() != (v4 ? QAbstractSocket::IPv4Protocol : QAbstractSocket::IPv6Protocol)
+            || !validPathProbe(candidate.toString())) return false;
+        auto &target = v4 ? ipv4 : ipv6;
+        if (target.isEmpty()) target = candidate.toString();
+    }
+    QStringList targets;
+    if (!ipv4.isEmpty()) targets.append(ipv4);
+    if (!ipv6.isEmpty()) targets.append(ipv6);
+    if (targets.isEmpty()) return false;
+    addresses = targets; return true;
+}
+bool parsePathProbeAddress(const QString &output, const QString &interfaceName, QString &address)
+{
+    QStringList addresses;
+    if (!parsePathProbeAddresses(output, interfaceName, addresses)) return false;
+    address = addresses.first(); return true;
+}
+
 bool parsePeerList(const QString &output, QStringList &peers)
 {
     const QString marker = "\namnezia_peers=ok\n";
@@ -65,6 +152,84 @@ bool parsePeerList(const QString &output, QStringList &peers)
     const auto values = output.left(output.size() - marker.size()).split(QRegularExpression("\\s+"), Qt::SkipEmptyParts);
     for (const auto &key : values) if (decode(key, 32).isEmpty()) return false;
     peers = values; return true;
+}
+bool parsePeerIPv6Assignments(const QString &output, QJsonObject &assignments)
+{
+    const QString marker = "\namnezia_peer_addresses=ok\n";
+    if (output.size() > 1024 * 1024 || !output.endsWith(marker)) return false;
+    const auto body = output.left(output.size() - marker.size());
+    const auto lines = body.split('\n', Qt::SkipEmptyParts);
+    if (lines.size() > 4096) return false;
+    QJsonObject result; QStringList used;
+    for (const auto &line : lines) {
+        const auto fields = line.split('\t');
+        if (fields.size() != 2 || decode(fields[0], 32).isEmpty() || result.contains(fields[0])) return false;
+        QString address;
+        if (fields[1] != "(none)") {
+            const auto routes = fields[1].split(QRegularExpression("[,\\s]+"), Qt::SkipEmptyParts);
+            if (routes.isEmpty()) return false;
+            for (const auto &route : routes) {
+                const auto subnet = QHostAddress::parseSubnet(route);
+                const auto text = route.section('/', 0, 0); const QHostAddress ip(text);
+                if (!route.contains('/') || subnet.second < 0 || ip.isNull() || ip.toString() != text) return false;
+                if (ip.protocol() == QAbstractSocket::IPv6Protocol) {
+                    // A routed subnet does not identify the client's source address.
+                    if (subnet.second != 128 || !validClientIPv6(text) || !address.isEmpty() || used.contains(text)) return false;
+                    address = text;
+                }
+            }
+        }
+        if (!address.isEmpty()) used << address;
+        result[fields[0]] = address; // Explicit withdrawal for a live IPv4-only peer.
+    }
+    assignments = result; return true;
+}
+bool removePeerFromServerConfig(const QString &configuration, const QString &clientPublicKey, QString &updated)
+{
+    if (configuration.size() > 4 * 1024 * 1024 || decode(clientPublicKey, 32).isEmpty()) return false;
+    const auto lines = configuration.split('\n');
+    int interfaces = 0, start = -1, removeStart = -1, removeEnd = -1;
+    QString section, peerKey; QSet<QString> seen;
+    auto finish = [&](int end) {
+        if (section != "Peer") return true;
+        if (peerKey.isEmpty() || seen.contains(peerKey)) return false;
+        seen.insert(peerKey);
+        if (peerKey == clientPublicKey) { removeStart = start; removeEnd = end; }
+        return true;
+    };
+    for (int i = 0; i < lines.size(); ++i) {
+        const auto line = lines[i].section('#', 0, 0).trimmed();
+        if (line.isEmpty()) continue;
+        if (line.startsWith('[')) {
+            if (!line.endsWith(']') || !finish(i)) return false;
+            section = line.mid(1, line.size() - 2); start = i; peerKey.clear();
+            if (section == "Interface") {
+                if (++interfaces != 1 || !seen.isEmpty()) return false;
+            } else if (section != "Peer" || interfaces != 1) return false;
+            continue;
+        }
+        if (section.isEmpty() || !line.contains('=')) return false;
+        if (section == "Peer" && line.section('=', 0, 0).trimmed() == "PublicKey") {
+            const auto key = line.section('=', 1).trimmed();
+            if (!peerKey.isEmpty() || decode(key, 32).isEmpty()) return false;
+            peerKey = key;
+        }
+    }
+    if (!finish(lines.size()) || interfaces != 1 || removeStart < 0) return false;
+    qsizetype from = 0, to = 0;
+    for (int i = 0; i < removeEnd; ++i) {
+        if (i < removeStart) from += lines[i].size() + 1;
+        to += lines[i].size() + 1;
+    }
+    to = qMin(to, configuration.size());
+    updated = configuration.left(from) + configuration.mid(to); return true;
+}
+bool individualIPv6Assignment(const QJsonObject &assignments, const QString &clientPublicKey, QJsonObject &assignment)
+{
+    if (decode(clientPublicKey, 32).isEmpty() || !assignments.contains(clientPublicKey)
+        || !validClientIPv6(assignments.value(clientPublicKey))) return false;
+    assignment = QJsonObject { { clientPublicKey, assignments.value(clientPublicKey) } };
+    return true;
 }
 QJsonObject invitationMetadata(const QJsonObject &administratorMetadata)
 {
@@ -218,6 +383,185 @@ bool mergeServerSettings(const QJsonObject &profile, const QString &name, const 
     if (!preserveManagementHost) result[configKey::hostName] = settings.value("hostName");
     updated = result; return true;
 }
+bool mergePathProbe(const QJsonObject &profile, const QString &name, const QJsonValue &target, QJsonObject &updated)
+{
+    if (!supported(name) || !target.isString() || (!target.toString().isEmpty() && !validPathProbe(target))) return false;
+    auto containers = profile.value(configKey::containers).toArray(); int found = -1;
+    for (int i = 0; i < containers.size(); ++i) {
+        if (containers[i].toObject().value(configKey::container).toString() == name) {
+            if (found >= 0) return false;
+            found = i;
+        }
+    }
+    if (found < 0) return false;
+    auto container = containers[found].toObject(); const auto protoName = protocol(name);
+    auto proto = container.value(protoName).toObject();
+    auto client = QJsonDocument::fromJson(proto.value(configKey::lastConfig).toString().toUtf8()).object();
+    if (!identityMatches(client)) return false;
+    // Optional control metadata never widens application routes.
+    if (usablePathProbe(target, client)) client["path_mtu_probe"] = target;
+    else client.remove("path_mtu_probe");
+    if (client.contains("path_mtu_probes")) {
+        QJsonArray targets;
+        if (!target.toString().isEmpty()) {
+            const QHostAddress selected(target.toString());
+            if (usablePathProbe(target, client)) targets.append(target);
+            for (const auto &cached : client.value("path_mtu_probes").toArray()) {
+                const QHostAddress address(cached.toString());
+                if (address.protocol() != selected.protocol() && usablePathProbe(cached, client)
+                    && targets.size() < 2) targets.append(cached);
+            }
+        }
+        if (targets.isEmpty()) client.remove("path_mtu_probes");
+        else client["path_mtu_probes"] = targets;
+    }
+    proto[configKey::lastConfig] = QString::fromUtf8(QJsonDocument(client).toJson(QJsonDocument::Compact));
+    container[protoName] = proto; containers[found] = container;
+    auto result = profile; result[configKey::containers] = containers; updated = result; return true;
+}
+bool mergePathProbes(const QJsonObject &profile, const QString &name, const QStringList &targets, QJsonObject &updated, bool requireUsable)
+{
+    if ((requireUsable && targets.isEmpty()) || targets.size() > 2) return false;
+    QSet<QAbstractSocket::NetworkLayerProtocol> families;
+    for (const auto &target : targets) {
+        const QHostAddress address(target);
+        if (target.isEmpty() || !validPathProbe(target) || families.contains(address.protocol())) return false;
+        families.insert(address.protocol());
+    }
+    QJsonObject result;
+    if (!mergePathProbe(profile, name, targets.isEmpty() ? QString() : targets.first(), result)) return false;
+    auto containers = result.value(configKey::containers).toArray();
+    for (int i = 0; i < containers.size(); ++i) {
+        auto container = containers[i].toObject();
+        if (container.value(configKey::container) != name) continue;
+        const auto protoName = protocol(name);
+        auto proto = container.value(protoName).toObject();
+        auto client = QJsonDocument::fromJson(proto.value(configKey::lastConfig).toString().toUtf8()).object();
+        QJsonArray usable;
+        for (const auto &target : targets) if (usablePathProbe(target, client)) usable.append(target);
+        if (usable.isEmpty()) {
+            if (requireUsable) return false;
+            client.remove("path_mtu_probe"); client.remove("path_mtu_probes");
+        } else {
+            client["path_mtu_probe"] = usable.first();
+            client["path_mtu_probes"] = usable;
+        }
+        proto[configKey::lastConfig] = QString::fromUtf8(QJsonDocument(client).toJson(QJsonDocument::Compact));
+        container[protoName] = proto; containers[i] = container;
+    }
+    result[configKey::containers] = containers;
+    updated = result; return true;
+}
+
+namespace {
+bool mergeClientIPv6(QJsonObject &profile, QJsonObject &metadata, const QJsonValue &value)
+{
+    auto containers = profile.value(configKey::containers).toArray();
+    if (containers.size() != 1) return false;
+    auto container = containers[0].toObject();
+    const auto protoName = protocol(metadata.value("container").toString());
+    auto proto = container.value(protoName).toObject();
+    auto client = QJsonDocument::fromJson(proto.value(configKey::lastConfig).toString().toUtf8()).object();
+    const auto target = value.toString();
+    const auto previous = metadata.value("managedClientIpv6").toString();
+    if (!previous.isEmpty() && (!validClientIPv6(previous) || previous != metadata.value("clientIpv6").toString())) return false;
+    QStringList addresses, canonical, nativeAddresses;
+    auto parseAddresses = [](const QString &text, QStringList &entries, QStringList &normalized) {
+        for (const auto &part : text.split(',')) {
+            const auto entry = part.trimmed();
+            const auto ip = QHostAddress(entry.section('/', 0, 0));
+            const auto cidr = entry.contains('/') ? entry : entry + (ip.protocol() == QAbstractSocket::IPv6Protocol ? "/128" : "/32");
+            const auto subnet = QHostAddress::parseSubnet(cidr);
+            if (ip.isNull() || subnet.second < 0 || normalized.contains(ip.toString() + "/" + QString::number(subnet.second))) return false;
+            entries << entry;
+            normalized << ip.toString() + "/" + QString::number(subnet.second);
+        }
+        return !entries.isEmpty();
+    };
+    if (!parseAddresses(client.value(configKey::clientIp).toString(), addresses, canonical)) return false;
+    auto lines = client.value(configKey::config).toString().split('\n');
+    QString section; int addressLine = -1, interfaces = 0;
+    for (int i = 0; i < lines.size(); ++i) {
+        const auto line = lines[i].trimmed();
+        if (line.startsWith('[') && line.endsWith(']')) {
+            section = line.mid(1, line.size() - 2);
+            if (section == "Interface") ++interfaces;
+        } else if (section == "Interface" && line.section('=', 0, 0).trimmed() == "Address") {
+            if (addressLine >= 0 || !line.contains('=')) return false;
+            addressLine = i;
+            QStringList nativeEntries, nativeCanonical;
+            if (!parseAddresses(line.section('=', 1), nativeEntries, nativeCanonical) || nativeCanonical != canonical) return false;
+            nativeAddresses = nativeEntries;
+        }
+    }
+    if (interfaces != 1 || addressLine < 0) return false;
+    if (!previous.isEmpty()) {
+        const auto index = canonical.indexOf(previous + "/128");
+        if (index < 0) return false; // Local edits must not be overwritten implicitly.
+        addresses.removeAt(index); canonical.removeAt(index); nativeAddresses.removeAt(index);
+    }
+    QString managed;
+    bool alreadyPresent = false;
+    for (const auto &entry : canonical) alreadyPresent = alreadyPresent || entry.section('/', 0, 0) == target;
+    if (!target.isEmpty() && !alreadyPresent) {
+        bool ok = false; const auto mtu = client.value(configKey::mtu).toString().toInt(&ok);
+        if (ok && mtu < 1280) return false;
+        addresses << target + "/128"; nativeAddresses << target + "/128";
+        managed = target;
+    }
+    if (addresses.isEmpty()) return false;
+    // Existing local addresses are never claimed: withdrawal removes only our addition.
+    lines[addressLine] = "Address = " + nativeAddresses.join(", ");
+    client[configKey::clientIp] = addresses.join(", ");
+    client[configKey::config] = lines.join('\n');
+    // A signed IPv6 withdrawal also withdraws optional probes that no longer
+    // have a captured source family. Keep unrelated locally valid targets.
+    if (client.contains("path_mtu_probes")) {
+        QJsonArray targets;
+        for (const auto &target : client.value("path_mtu_probes").toArray()) {
+            if (usablePathProbe(target, client)) targets.append(target);
+        }
+        if (targets.isEmpty()) client.remove("path_mtu_probes");
+        else client["path_mtu_probes"] = targets;
+    }
+    proto[configKey::lastConfig] = QString::fromUtf8(QJsonDocument(client).toJson(QJsonDocument::Compact));
+    container[protoName] = proto; containers[0] = container; profile[configKey::containers] = containers;
+    metadata["clientIpv6"] = value;
+    if (managed.isEmpty()) metadata.remove("managedClientIpv6");
+    else metadata["managedClientIpv6"] = managed;
+    return true;
+}
+}
+bool mergeAdministratorIPv6(const QJsonObject &profile, const QString &name, const QJsonObject &assignments,
+                            const QStringList &probes, QJsonObject &updated)
+{
+    if (!supported(name)) return false;
+    auto containers=profile.value(configKey::containers).toArray();int found=-1;
+    for(int i=0;i<containers.size();++i) if(containers[i].toObject().value(configKey::container)==name) {
+        if(found>=0) return false;found=i;
+    }
+    if(found<0) return false;
+    const auto container=containers[found].toObject();const auto protoName=protocol(name);
+    const auto client=QJsonDocument::fromJson(container.value(protoName).toObject().value(configKey::lastConfig).toString().toUtf8()).object();
+    if(!identityMatches(client)) return false;
+    QJsonObject individual;
+    if(!individualIPv6Assignment(assignments,client.value(configKey::clientPubKey).toString(),individual)) return false;
+    const auto target=individual.value(client.value(configKey::clientPubKey).toString()).toString();
+    if(target.isEmpty() || !validClientIPv6(target)) return false;
+    // Preserve custom IPv6 addresses rather than selecting an unverified source
+    // or accumulating a second server-managed address on every migration.
+    for(const auto &entry:client.value(configKey::clientIp).toString().split(',')) {
+        const QHostAddress address(entry.trimmed().section('/',0,0));
+        if(address.protocol()==QAbstractSocket::IPv6Protocol && address!=QHostAddress(target)) return false;
+    }
+    auto selected=profile;selected[configKey::containers]=QJsonArray{container};
+    QJsonObject metadata{{"container",name}};
+    if(!mergeClientIPv6(selected,metadata,target)) return false;
+    QJsonObject withProbes;
+    if(!mergePathProbes(selected,name,probes,withProbes)) return false;
+    containers[found]=withProbes.value(configKey::containers).toArray().first();
+    auto result=profile;result[configKey::containers]=containers;updated=result;return true;
+}
 bool apply(const QJsonObject &profile, const QByteArray &envelope, qint64 now, QJsonObject &updated)
 {
     if (envelope.size() > 65536 || !validateProfile(profile)) return false;
@@ -240,6 +584,12 @@ bool apply(const QJsonObject &profile, const QByteArray &envelope, qint64 now, Q
         || issued < m.value("issuedAt").toInteger(0)) return false;
     bool ok; const auto revisionText = p.value("revision").toString(); const auto revision = revisionText.toULongLong(&ok);
     if (!ok || revision == 0 || QString::number(revision) != revisionText || revision < m.value("revision").toString().toULongLong()) return false;
+    if (p.contains("clientIpv6")) {
+        const auto address = p.value("clientIpv6");
+        if (!validClientIPv6(address)) return false;
+        if (revisionText == m.value("revision").toString() && m.contains("clientIpv6")
+            && address != m.value("clientIpv6")) return false;
+    }
     const auto settings = p.value("settings").toObject(); const bool awg = m.value("container") != "amnezia-wireguard";
     if (!validSettings(settings, awg)) return false;
     const auto hash = QString::fromLatin1(QCryptographicHash::hash(QJsonDocument(settings).toJson(QJsonDocument::Compact), QCryptographicHash::Sha256).toHex());
@@ -247,6 +597,31 @@ bool apply(const QJsonObject &profile, const QByteArray &envelope, qint64 now, Q
     QJsonObject result;
     if (!mergeServerSettings(profile, m.value("container").toString(), settings, false, result)) return false;
     auto metadata = m;
+    if (p.contains("clientIpv6") && !mergeClientIPv6(result, metadata, p.value("clientIpv6"))) return false;
+    if (p.contains("pathMtuProbe")) {
+        const auto target = p.value("pathMtuProbe");
+        if (revisionText == m.value("revision").toString() && m.contains("pathMtuProbe") && target != m.value("pathMtuProbe")) return false;
+        QJsonObject withProbe;
+        if (!mergePathProbe(result, m.value("container").toString(), target, withProbe)) return false;
+        result = withProbe;
+        metadata["pathMtuProbe"] = target;
+    }
+    if (p.contains("pathMtuProbes")) {
+        const auto value=p.value("pathMtuProbes");
+        QStringList targets;
+        if(!parsePathProbes(value,targets)) return false;
+        if (p.contains("pathMtuProbe") && p.value("pathMtuProbe").toString() != (targets.isEmpty()?QString():targets.first())) return false;
+        if (revisionText==m.value("revision").toString() && m.contains("pathMtuProbes") && value!=m.value("pathMtuProbes")) return false;
+        QJsonObject withProbes;
+        if (!mergePathProbes(result,m.value("container").toString(),targets,withProbes,false)) return false;
+        result=withProbes; metadata["pathMtuProbes"]=value;
+        metadata["pathMtuProbe"]=targets.isEmpty()?QString():targets.first();
+    }
+    if (p.contains("clientIpv6") && !p.contains("pathMtuProbe") && !p.contains("pathMtuProbes") && metadata.contains("pathMtuProbe")) {
+        QJsonObject withProbe;
+        if (!mergePathProbe(result, m.value("container").toString(), metadata.value("pathMtuProbe"), withProbe)) return false;
+        result = withProbe;
+    }
     metadata["revision"] = revisionText; metadata["issuedAt"] = issued; metadata["settingsHash"] = hash;
     result[metadataKey] = metadata;
     updated = result; return true;

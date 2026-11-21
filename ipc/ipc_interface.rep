@@ -24,9 +24,11 @@ class IpcInterface
 
     SLOT( bool createTun(const QString &dev, const QString &subnet) );
     SLOT( bool deleteTun(const QString &dev) );
+    SLOT( bool configureProxyIpv6(const QStringList &included, const QStringList &excluded) );
 
     SLOT( bool StartRoutingIpv6() );
     SLOT( bool StopRoutingIpv6() );
+    SLOT( bool setNativeIpv6Blocked(bool blocked, QStringList endpoints) );
 
     SLOT( bool disableKillSwitch() );
     SLOT( bool disableAllTraffic() );

@@ -78,6 +78,7 @@ func TestBindKeepsControlPlaneTargetAndReceiveFilter(t *testing.T) {
 // socket. A second relay lets the test move the endpoint/family too, while
 // retaining the very same remote device and TCP stack.
 type recoveryRelay struct {
+	drop   atomic.Bool
 	front  net.PacketConn
 	mu     sync.Mutex
 	back   net.PacketConn
@@ -108,7 +109,9 @@ func newRecoveryRelay(t *testing.T, network, address string, peer net.Addr) *rec
 			r.client = from
 			back := r.back
 			r.mu.Unlock()
-			back.WriteTo(buf[:n], r.peer)
+			if !r.drop.Load() {
+				back.WriteTo(buf[:n], r.peer)
+			}
 		}
 	}()
 	return r
@@ -142,7 +145,7 @@ func (r *recoveryRelay) rotateNAT(t *testing.T) {
 			r.mu.Lock()
 			current, client := r.back == back, r.client
 			r.mu.Unlock()
-			if current && client != nil {
+			if current && client != nil && !r.drop.Load() {
 				r.front.WriteTo(buf[:n], client)
 			}
 		}
@@ -180,6 +183,21 @@ func recoveryIdentity(t *testing.T, c *Transport) [32]byte {
 }
 
 func TestRefreshUnderlayPreservesTCPThroughNATAndEndpointMove(t *testing.T) {
+	testEncryptedTCPRecovery(t, false, false, false)
+}
+func TestAutomaticTCPRecoveryThroughEncryptedPath(t *testing.T) {
+	testEncryptedTCPRecovery(t, true, false, false)
+}
+func TestTCPWorkerStopsDuringEncryptedBlackhole(t *testing.T) {
+	testEncryptedTCPRecovery(t, true, true, false)
+}
+func TestEncryptedTCPRecoveryAggregateBudget(t *testing.T) {
+	testEncryptedTCPRecovery(t, true, false, true)
+}
+func TestEncryptedTCPRecoveryAggregateBudgetWithUnevenRTO(t *testing.T) {
+	testEncryptedTCPRecovery(t, true, false, true, true)
+}
+func testEncryptedTCPRecovery(t *testing.T, automatic, stopDuringLoss, aggregate bool, unevenRTO ...bool) {
 	for _, standard := range []bool{false, true} {
 		for _, innerV6 := range []bool{false, true} {
 			t.Run(fmt.Sprintf("standard=%t/innerIPv6=%t", standard, innerV6), func(t *testing.T) {
@@ -228,7 +246,11 @@ func TestRefreshUnderlayPreservesTCPThroughNATAndEndpointMove(t *testing.T) {
 				var lc net.ListenConfig
 				var failNext atomic.Bool
 				var opens atomic.Int32
-				client, err := New(ctx, Config{Address: []netip.Addr{netip.MustParseAddr(clientIP)}, PrivateKey: aPriv, PublicKey: bPub, Endpoint: first.endpoint(), AllowedIPs: []netip.Prefix{netip.MustParsePrefix(serverIP + mask)}, Parameters: params}, func(c context.Context, n, a string) (net.PacketConn, error) {
+				probeTarget := netip.Addr{}
+				if automatic {
+					probeTarget = netip.MustParseAddr(serverIP)
+				}
+				client, err := New(ctx, Config{PathMTUProbe: probeTarget, MTU: 1280, Address: []netip.Addr{netip.MustParseAddr(clientIP)}, PrivateKey: aPriv, PublicKey: bPub, Endpoint: first.endpoint(), AllowedIPs: []netip.Prefix{netip.MustParsePrefix(serverIP + mask)}, Parameters: params}, func(c context.Context, n, a string) (net.PacketConn, error) {
 					opens.Add(1)
 					if failNext.Swap(false) {
 						return nil, errors.New("injected socket failure")
@@ -277,12 +299,134 @@ func TestRefreshUnderlayPreservesTCPThroughNATAndEndpointMove(t *testing.T) {
 					}
 				}
 				exchange("initial")
+				if aggregate {
+					testEncryptedAggregateRecovery(t, ctx, client, first, stream, serverIP, &accepts, unevenRTO...)
+					return
+				}
+				// This challenge traverses both real devices and the UDP relay,
+				// rather than connecting the two inner stacks directly.
+				verifyPath := func() tcpPathProof {
+					t.Helper()
+					probeCtx, stop := context.WithTimeout(ctx, time.Second)
+					defer stop()
+					proof, e := client.Net.verifyTCPPath(probeCtx, netip.MustParseAddr(serverIP))
+					if e != nil {
+						t.Fatal("encrypted path challenge", e)
+					}
+					if !client.Net.validTCPPathProof(proof, time.Now()) {
+						t.Fatal("fresh encrypted proof rejected")
+					}
+					if n := client.Net.dispatchTCPPathProof(proof); n != 0 {
+						t.Fatal("healthy encrypted TCP was probed", n)
+					}
+					return proof
+				}
+				proof := verifyPath()
+				// Lose actual encrypted packets until TCP has backed off. A
+				// verified return must recover the same socket before its
+				// next ordinary retransmission, without resetting that timer.
+				first.drop.Store(true)
+				timeouts := client.Net.stack.Stats().TCP.Timeouts.Value()
+				payload := "retained TCP after encrypted blackhole"
+				if _, e := io.WriteString(stream, payload); e != nil {
+					t.Fatal(e)
+				}
+				until := time.Now().Add(8 * time.Second)
+				for client.Net.stack.Stats().TCP.Timeouts.Value() < timeouts+3 {
+					if time.Now().After(until) {
+						t.Fatal("encrypted loss did not reach TCP backoff")
+					}
+					time.Sleep(5 * time.Millisecond)
+				}
+				time.Sleep(150 * time.Millisecond)
+				if stopDuringLoss {
+					closed := make(chan error, 1)
+					go func() { closed <- client.Close() }()
+					select {
+					case e := <-closed:
+						if e != nil {
+							t.Fatal(e)
+						}
+					case <-time.After(time.Second):
+						t.Fatal("close blocked during encrypted loss")
+					}
+					select {
+					case <-client.tcpWorker.done:
+					default:
+						t.Fatal("TCP worker outlived transport")
+					}
+					return
+				}
+				backedOff := client.Net.stack.Stats().TCP.Timeouts.Value()
+				transmissions := client.Net.stack.Stats().TCP.Retransmits.Value()
+				first.drop.Store(false)
+				returnedAt := time.Now()
+				if !automatic {
+					probeCtx, stopProbe := context.WithTimeout(ctx, time.Second)
+					returnedProof, e := client.Net.verifyTCPPath(probeCtx, netip.MustParseAddr(serverIP))
+					stopProbe()
+					if e != nil {
+						t.Fatal("returned encrypted path", e)
+					}
+					if n := client.Net.dispatchTCPPathProof(returnedProof); n != 1 {
+						t.Fatal("eligible backed-off stream not probed", n)
+					}
+					if delta := client.Net.stack.Stats().TCP.Retransmits.Value() - transmissions; delta != 1 {
+						t.Fatal("unexpected extra retransmission count", delta)
+					}
+					if n := client.Net.dispatchTCPPathProof(returnedProof); n != 0 {
+						t.Fatal("proof replay retransmitted again", n)
+					}
+					if delta := client.Net.stack.Stats().TCP.Retransmits.Value() - transmissions; delta != 1 {
+						t.Fatal("proof replay changed wire counter", delta)
+					}
+				}
+				recoveryLimit := 700 * time.Millisecond
+				if automatic {
+					recoveryLimit = 1100 * time.Millisecond
+				}
+				stream.SetReadDeadline(time.Now().Add(recoveryLimit))
+				reply := make([]byte, len(payload))
+				if _, e := io.ReadFull(stream, reply); e != nil || string(reply) != payload {
+					t.Fatal("early encrypted recovery failed", e)
+				}
+				stream.SetDeadline(time.Now().Add(15 * time.Second))
+				if delta := client.Net.stack.Stats().TCP.Retransmits.Value() - transmissions; delta != 1 {
+					t.Fatal("recovery sent unexpected number of extra packets", delta)
+				}
+				if automatic && client.tcpWorker == nil {
+					t.Fatal("production recovery worker absent")
+				}
+				if client.Net.stack.Stats().TCP.Timeouts.Value() != backedOff {
+					t.Fatal("ordinary timeout concealed probe recovery")
+				}
+				if accepts.Load() != 1 || client.Net != originalStack {
+					t.Fatal("early recovery replaced TCP")
+				}
+				t.Logf("encrypted early TCP recovery=%s without additional timeout", time.Since(returnedAt))
+				if automatic {
+					client.Net.state.Lock()
+					serial := client.Net.tcpProofSerial
+					client.Net.state.Unlock()
+					time.Sleep(750 * time.Millisecond)
+					client.Net.state.Lock()
+					idleSerial := client.Net.tcpProofSerial
+					client.Net.state.Unlock()
+					if idleSerial != serial {
+						t.Fatal("path challenges continued after TCP recovered")
+					}
+				}
+				proof = verifyPath()
 				before, _ := client.Stats()
 				first.rotateNAT(t)
 				if err = client.RefreshUnderlay(netip.AddrPort{}); err != nil {
 					t.Fatal(err)
 				}
+				if client.Net.validTCPPathProof(proof, time.Now()) {
+					t.Fatal("NAT refresh retained old proof")
+				}
 				exchange("new NAT source")
+				proof = verifyPath()
 				failNext.Store(true)
 				if err = client.RefreshUnderlay(netip.AddrPort{}); err == nil {
 					t.Fatal("missing injected failure")
@@ -295,7 +439,11 @@ func TestRefreshUnderlayPreservesTCPThroughNATAndEndpointMove(t *testing.T) {
 					t.Fatal(err)
 				}
 				first.front.Close() // The retired endpoint is no longer reachable.
+				if client.Net.validTCPPathProof(proof, time.Now()) {
+					t.Fatal("endpoint move retained old proof")
+				}
 				exchange("outer IPv6 endpoint")
+				verifyPath()
 				after, _ := client.Stats()
 				if after.TXBytes < before.TXBytes || after.RXBytes < before.RXBytes {
 					t.Fatal("recovery reset counters")

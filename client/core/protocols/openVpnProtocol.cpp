@@ -26,6 +26,29 @@ OpenVpnProtocol::~OpenVpnProtocol()
     QThread::msleep(200);
 }
 
+void OpenVpnProtocol::addResolvedIpv6Hosts(const QStringList &hosts, bool throughVpn, std::function<void(bool)> done)
+{
+    if (!supportsIpv6HostUpdates() || !isConnected() || !m_openVpnProcess) { done(false); return; }
+    const auto reply = m_openVpnProcess->addOpenVpnIpv6Hosts(vpnLocalAddress(), hosts, throughVpn);
+    auto *watcher = new QRemoteObjectPendingCallWatcher(reply, this);
+    connect(watcher, &QRemoteObjectPendingCallWatcher::finished, this,
+        [done = std::move(done)](QRemoteObjectPendingCallWatcher *call) {
+            const bool success = call->error() == QRemoteObjectPendingCall::NoError && call->returnValue().toBool();
+            call->deleteLater();
+            done(success);
+        });
+}
+
+bool OpenVpnProtocol::supportsIpv6HostUpdates() const
+{
+#if (defined(Q_OS_LINUX) && !defined(Q_OS_ANDROID)) || defined(Q_OS_WIN) || (defined(Q_OS_MACOS) && !defined(MACOS_NE))
+    return m_configData.value("ipv6_enabled").toBool(true)
+        && m_configData.value(ProtocolUtils::key_proto_config_data(Proto::OpenVpn)).toObject().value("ipv6Tunnel").toBool();
+#else
+    return false;
+#endif
+}
+
 QString OpenVpnProtocol::defaultConfigFileName()
 {
     return defaultConfigPath() + QString("/%1.ovpn").arg(APPLICATION_NAME);
@@ -184,6 +207,7 @@ void OpenVpnProtocol::updateRouteGateway(QString line)
 ErrorCode OpenVpnProtocol::start()
 {
     resetStopGuard();
+    m_serverAssignedIpv6 = false;
 
     cleanupResources();
 
@@ -321,6 +345,7 @@ void OpenVpnProtocol::onReadyReadDataFromManagementServer()
                 setConnectionState(Vpn::ConnectionState::Disconnecting);
                 continue;
             } else if (line.contains("RECONNECTING")) {
+                m_serverAssignedIpv6 = false;
                 setConnectionState(Vpn::ConnectionState::Reconnecting);
                 continue;
             }
@@ -364,12 +389,26 @@ void OpenVpnProtocol::updateVpnGateway(const QString &line)
     // line looks like
     // PUSH: Received control message: 'PUSH_REPLY,route 10.8.0.1,topology net30,ping 10,ping-restart
     // 120,ifconfig 10.8.0.6 10.8.0.5,peer-id 0,cipher AES-256-GCM'
-    QStringList params = line.split(",");
+    const auto payload = line.endsWith('\'') ? line.chopped(1) : line;
+    const QStringList params = payload.split(",");
     for (const QString &l : params) {
-        if (l.contains("ifconfig")) {
-            if (l.split(" ").size() == 3) {
-                m_vpnLocalAddress = l.split(" ").at(1);
-                m_vpnGateway = l.split(" ").at(2);
+        const auto fields = l.simplified().split(' ');
+        if (fields.value(0) == QLatin1String("ifconfig-ipv6") && fields.size() == 3) {
+            const auto subnet = QHostAddress::parseSubnet(fields[1]);
+            const QHostAddress peer(fields[2]);
+            m_serverAssignedIpv6 = subnet.first.protocol() == QAbstractSocket::IPv6Protocol
+                && subnet.second > 0 && !subnet.first.isNull() && !subnet.first.isMulticast()
+                && !subnet.first.isLoopback() && !subnet.first.isLinkLocal()
+                && peer.protocol() == QAbstractSocket::IPv6Protocol && !peer.isNull()
+                && !peer.isMulticast() && !peer.isLoopback() && !peer.isLinkLocal();
+        }
+        // ifconfig-ipv6 is a separate directive, never an IPv4 gateway update.
+        if (fields.value(0) == QLatin1String("ifconfig")) {
+            if (fields.size() == 3
+                && QHostAddress(fields[1]).protocol() == QAbstractSocket::IPv4Protocol
+                && QHostAddress(fields[2]).protocol() == QAbstractSocket::IPv4Protocol) {
+                m_vpnLocalAddress = fields[1];
+                m_vpnGateway = fields[2];
 #ifdef Q_OS_WIN
                 QThread::msleep(300);
                 IpcClient::withInterface([&](QSharedPointer<IpcInterfaceReplica> iface) {

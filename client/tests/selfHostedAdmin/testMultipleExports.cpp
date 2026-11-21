@@ -211,6 +211,7 @@ private slots:
                  QString("\n%1: Export should succeed").arg(containerName).toUtf8().constData());
         QVERIFY2(!exportResult.config.isEmpty(),
                  QString("%1: Exported config should not be empty").arg(containerName).toUtf8().constData());
+        QVERIFY(m_coreController->m_exportController->acknowledgeConnectionExport(m_serverId,containerIndex,exportResult.config));
     }
 
     void testMultipleExportsNative_data()

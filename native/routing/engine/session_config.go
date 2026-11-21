@@ -61,6 +61,7 @@ func (c TransportConfig) outbound() (map[string]any, error) {
 // SessionConfig keeps legacy AWG JSON readable. Platform hosts own capture,
 // socket protection and OS restoration; new hosts supply an explicit transport.
 type SessionConfig struct {
+	IPv6Enabled           *bool                      `json:"ipv6_enabled,omitempty"`
 	EndpointHost          string                     `json:"endpoint_host,omitempty"`
 	NetworkDNS            *dnspolicy.NetworkSnapshot `json:"network_dns,omitempty"`
 	DNSNetworkFingerprint string                     `json:"dns_network_fingerprint,omitempty"`
@@ -70,6 +71,7 @@ type SessionConfig struct {
 	Resolver              netip.AddrPort             `json:"resolver"`
 	ResolverAction        rules.Action               `json:"resolver_action"`
 	Applications          *ApplicationScope          `json:"applications,omitempty"`
+	AndroidApplications   *AndroidApplications       `json:"android_applications,omitempty"`
 	DNS                   *dnspolicy.Config          `json:"dns,omitempty"`
 }
 
@@ -118,5 +120,5 @@ func (c SessionConfig) Compile() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return (RoutingConfig{Rules: c.Rules, Resolver: c.Resolver, ResolverAction: c.ResolverAction, Applications: c.Applications, DNS: c.DNS}).compile(vpn)
+	return (RoutingConfig{IPv6Enabled: c.IPv6Enabled, Rules: c.Rules, Resolver: c.Resolver, ResolverAction: c.ResolverAction, Applications: c.Applications, AndroidApplications: c.AndroidApplications, DNS: c.DNS}).compile(vpn)
 }

@@ -52,8 +52,12 @@ def exercise(build):
             time.sleep(0.1)
     assert payload["revision"] == "1"
     settings["hostName"] = "vpn2.example.test"
-    command("publish", {"container": request["container"], "settings": settings})
-    assert fetch()["revision"] == "2"
+    command("publish", {"container": request["container"], "settings": settings, "pathMtuProbe": "10.77.0.9"})
+    migrated = fetch()
+    assert migrated["revision"] == "2"
+    assert migrated["pathMtuProbe"] == "10.77.0.9"
+    assert migrated["clientPublicKey"] == request["clientPublicKey"]
+    assert migrated["settings"] == settings
     old_id = run("docker", "inspect", "-f", "{{.Id}}", "amnezia-connection-updates").strip()
     dockerfile = build / "Dockerfile"
     dockerfile.write_text(dockerfile.read_text() + "\nLABEL amnezia.fixture.upgrade=1\n")
@@ -62,7 +66,9 @@ def exercise(build):
     assert upgraded["certificate"] == initial["certificate"]
     current_id = run("docker", "inspect", "-f", "{{.Id}}", "amnezia-connection-updates").strip()
     assert current_id != old_id, "software update did not replace the service"
-    assert fetch()["revision"] == "2", "software update lost tokens or counters"
+    after_upgrade = fetch()
+    assert after_upgrade["revision"] == "2", "software update lost tokens or counters"
+    assert after_upgrade["pathMtuProbe"] == "10.77.0.9", "software update lost authenticated probe"
     # A candidate that cannot serve must restore the previous immutable container.
     dockerfile.write_text(dockerfile.read_text() + '\nCMD ["unknown-command"]\n')
     try:
@@ -89,6 +95,7 @@ def exercise(build):
             if attempt == 49: raise
             time.sleep(0.1)
     assert payload["revision"] == "2", "lost publication on restart"
+    assert payload["pathMtuProbe"] == "10.77.0.9", "lost authenticated probe on restart"
     command("revoke", request)
     try:
         fetch()

@@ -2,6 +2,7 @@
 #include "core/utils/selfhosted/connectionUpdatesCommand.h"
 
 #include <QDateTime>
+#include <QCryptographicHash>
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFutureWatcher>
@@ -12,13 +13,18 @@
 #include <QSslConfiguration>
 #include <QTimer>
 #include <QRegularExpression>
+#include <QScopeGuard>
 #include <QUuid>
 #include <QtConcurrent>
+#include <memory>
+#include <utility>
 
 #include "core/controllers/connectionController.h"
 #include "core/utils/connectionUpdates.h"
 #include "core/utils/selfhosted/sshSession.h"
 #include "core/utils/vpnEndpoint.h"
+#include "core/utils/selfhosted/proxyIpv6Upgrade.h"
+#include "core/models/protocols/xrayProtocolConfig.h"
 #include "core/utils/constants/configKeys.h"
 #include "core/utils/constants/protocolConstants.h"
 
@@ -27,6 +33,16 @@ namespace {
 constexpr auto labelCheck = "test \"$(sudo docker inspect -f '{{index .Config.Labels \"org.amnezia.connection-updates\"}}' amnezia-connection-updates)\" = 1";
 QByteArray resource(const QString &name) { QFile f(":/server_scripts/connection_updates/" + name); if (!f.open(QIODevice::ReadOnly)) return {}; return f.readAll().replace("\r\n", "\n"); }
 struct AdminResult { ErrorCode error = ErrorCode::InternalError; QJsonObject metadata; QString outcome; QString reason; };
+bool needsClientIPv6(const QJsonObject &client)
+{
+    for(const auto &entry:client.value(configKey::clientIp).toString().split(','))
+        if(QHostAddress(entry.trimmed().section('/',0,0)).protocol()==QAbstractSocket::IPv6Protocol) return false;
+    for(const auto &route:client.value(configKey::allowedIps).toArray()) {
+        const auto subnet=QHostAddress::parseSubnet(route.toString());
+        if(subnet.second>=0 && subnet.first.protocol()==QAbstractSocket::IPv6Protocol) return true;
+    }
+    return false;
+}
 ErrorCode flushPendingRevocations(const ServerCredentials &credentials, const QJsonObject &metadata)
 {
     for (const auto &entry : metadata.value("pendingRevocations").toArray()) {
@@ -38,8 +54,11 @@ ErrorCode flushPendingRevocations(const ServerCredentials &credentials, const QJ
 }
 
 }
-ConnectionUpdatesController::ConnectionUpdatesController(SecureServersRepository *servers, ConnectionController *connection, QObject *parent)
-    : QObject(parent), m_servers(servers), m_connection(connection)
+ConnectionUpdatesController::ConnectionUpdatesController(SecureServersRepository *servers, ConnectionController *connection, QObject *parent, ProbeAddressReader probeAddressReader, PeerIPv6Reader peerIPv6Reader, ProxyIPv6Preparer proxyIPv6Preparer)
+    : QObject(parent), m_servers(servers), m_connection(connection),
+      m_probeAddressReader(probeAddressReader ? std::move(probeAddressReader) : ProbeAddressReader(&ConnectionUpdatesController::fetchPathMtuProbeAddresses)),
+      m_peerIPv6Reader(peerIPv6Reader ? std::move(peerIPv6Reader) : PeerIPv6Reader(&ConnectionUpdatesController::fetchPeerIPv6Assignments)),
+      m_proxyIPv6Preparer(proxyIPv6Preparer ? std::move(proxyIPv6Preparer) : ProxyIPv6Preparer(&proxyIpv6Upgrade::prepare))
 {
     m_adminPool.setMaxThreadCount(1);
     connect(servers, &SecureServersRepository::serverAdded, this, &ConnectionUpdatesController::configurationChanged);
@@ -76,8 +95,160 @@ bool ConnectionUpdatesController::canEnableHeaderProtection(const QString &id, i
     return awg && awg->serverConfig.headerProtectionKey.isEmpty();
 }
 void ConnectionUpdatesController::enableHeaderProtection(const QString &id, int container) { administer(id, "activate-awg3", container); }
+ErrorCode ConnectionUpdatesController::fetchPathMtuProbeAddresses(const ServerCredentials &credentials, DockerContainer container, QStringList &addresses)
+{
+    if (container != DockerContainer::WireGuard && container != DockerContainer::Awg2) return ErrorCode::InternalError;
+    const auto name = ContainerUtils::containerToString(container);
+    const QString iface = container == DockerContainer::Awg2 ? "awg0" : "wg0";
+    SshSession ssh; QString output;
+    const auto error = ssh.runScript(credentials, QString("sudo docker exec %1 ip -o addr show dev %2 scope global && printf '\\namnezia_interface_addresses=ok\\n'").arg(name, iface),
+        [&](const QString &data, libssh::Client &) { if (output.size() + data.size() > 65536) return ErrorCode::InternalError; output += data; return ErrorCode::NoError; });
+    if (error != ErrorCode::NoError) return error;
+    return connectionUpdates::parsePathProbeAddresses(output, iface, addresses) ? ErrorCode::NoError : ErrorCode::InternalError;
+}
+ErrorCode ConnectionUpdatesController::fetchPathMtuProbeAddress(const ServerCredentials &credentials, DockerContainer container, QString &address)
+{
+    QStringList addresses;
+    const auto error = fetchPathMtuProbeAddresses(credentials, container, addresses);
+    if (error == ErrorCode::NoError) address = addresses.first();
+    return error;
+}
+ErrorCode ConnectionUpdatesController::fetchPeerIPv6Assignments(const ServerCredentials &credentials, DockerContainer container, QJsonObject &assignments)
+{
+    if (container != DockerContainer::WireGuard && container != DockerContainer::Awg2) return ErrorCode::InternalError;
+    const bool awg = container == DockerContainer::Awg2;
+    SshSession ssh; QString output;
+    const auto error = ssh.runScript(credentials,
+        QString("sudo docker exec %1 %2 show %3 allowed-ips && printf '\\namnezia_peer_addresses=ok\\n'")
+            .arg(ContainerUtils::containerToString(container), awg ? "awg" : "wg", awg ? "awg0" : "wg0"),
+        [&](const QString &data, libssh::Client &) {
+            if (output.size() + data.size() > 1024 * 1024) return ErrorCode::InternalError;
+            output += data; return ErrorCode::NoError;
+        });
+    if (error != ErrorCode::NoError) return error;
+    return connectionUpdates::parsePeerIPv6Assignments(output, assignments) ? ErrorCode::NoError : ErrorCode::InternalError;
+}
+
+ErrorCode ConnectionUpdatesController::prepareServerIPv6(const ServerCredentials &credentials, DockerContainer container,
+                                                         QJsonObject &outcome, const QJsonObject &deliveryMetadata)
+{
+    outcome = {};
+    if (!credentials.isValid() || (container != DockerContainer::WireGuard && container != DockerContainer::Awg2)) return ErrorCode::InternalError;
+    const auto name = ContainerUtils::containerToString(container);
+    QFile networkResource(":/server_scripts/prepare_ipv6_network.sh");
+    QFile forwardingResource(":/server_scripts/enable_ipv6_forwarding.sh");
+    if (!networkResource.open(QIODevice::ReadOnly) || !forwardingResource.open(QIODevice::ReadOnly)) return ErrorCode::InternalError;
+    const auto forwarding = QByteArray("#!/bin/bash\n") + forwardingResource.readAll().replace("\r", "") + "\n";
+    QJsonObject request { {"container", name}, {"forwardingPrefix", QString::fromUtf8(forwarding)} };
+    bool upgradeDelivery = false;
+    QString deliveryHost;
+    if (!deliveryMetadata.isEmpty()) {
+        if (QByteArray::fromBase64(deliveryMetadata.value("publicKey").toString().toLatin1()).size() != 32
+            || QSslCertificate(QByteArray::fromBase64(deliveryMetadata.value("certificate").toString().toLatin1()), QSsl::Der).isNull()) return ErrorCode::InternalError;
+        request["expectedPublicKey"] = deliveryMetadata.value("publicKey");
+        request["expectedCertificate"] = deliveryMetadata.value("certificate");
+        QJsonObject info;
+        const auto infoError = command(credentials, "info", {}, info);
+        if (infoError != ErrorCode::NoError) return infoError;
+        if (info.value("publicKey") != deliveryMetadata.value("publicKey") || info.value("certificate") != deliveryMetadata.value("certificate")) return ErrorCode::InternalError;
+        upgradeDelivery = !info.value("features").toArray().contains("conditional-client-ipv6-v1")
+            || !info.value("features").toArray().contains("dual-path-mtu-probes-v1");
+        if (upgradeDelivery) {
+            deliveryHost = vpnEndpoint::normalizeHost(info.value("host").toString());
+            if (deliveryHost.isEmpty()) return ErrorCode::InternalError;
+        }
+    }
+    SshSession ssh;
+    const auto stage = "/tmp/amnezia-ipv6-" + QUuid::createUuid().toString(QUuid::Id128);
+    auto error = ssh.runScript(credentials, "umask 077 && mkdir '" + stage + "'");
+    if (error != ErrorCode::NoError) return error;
+    const auto cleanup = qScopeGuard([&] { ssh.runScript(credentials, "sudo rm -rf -- '" + stage + "'"); });
+    const auto networkScript = networkResource.readAll().replace("\r", "")
+        + QString("\nif [ -n \"$AMNEZIA_IPV6_NETWORK\" ]; then\n"
+                  "amnezia_attach_ipv6_network '%1' || exit 1\n"
+                  "printf '\\namnezia_ipv6_network=ready\\n'\n"
+                  "else printf '\\namnezia_ipv6_network=unavailable\\n'; fi\n").arg(name).toUtf8();
+    error = ssh.uploadFileToHost(credentials, networkScript, stage + "/prepare-network.sh");
+    if (error != ErrorCode::NoError) return error;
+    QString networkOutput;
+    error = ssh.runScript(credentials, "sh '" + stage + "/prepare-network.sh'",
+        [&](const QString &data, libssh::Client &) { if (networkOutput.size() + data.size() > 65536) return ErrorCode::InternalError; networkOutput += data; return ErrorCode::NoError; });
+    if (error != ErrorCode::NoError) {
+        outcome = {{"version", 1}, {"result", "rejected"}, {"reason", "ipv6_network_preparation_failed"}};
+        return error;
+    }
+    const auto markers = networkOutput.split('\n').filter(QRegularExpression("^amnezia_ipv6_network=(ready|unavailable)$"));
+    if (markers.size() != 1) return ErrorCode::InternalError;
+    if (markers.first() == "amnezia_ipv6_network=unavailable") {
+        outcome = {{"version", 1}, {"result", "unavailable"}, {"reason", "ipv6_network_unavailable"}};
+        return ErrorCode::NoError;
+    }
+
+    const auto iface = container == DockerContainer::Awg2 ? QStringLiteral("awg0") : QStringLiteral("wg0");
+    error = ssh.runScript(credentials, QString(
+        "container_id=$(sudo docker inspect -f '{{.Id}}' '%1') && "
+        "sudo docker exec \"$container_id\" sh -c 'for attempt in 1 2 3 4 5 6 7 8 9 10; do "
+        "flags=$(cat /sys/class/net/%2/flags 2>/dev/null) && [ $((flags & 1)) -eq 1 ] && exit 0; "
+        "sleep 1; done; exit 1'").arg(name, iface));
+    if (error != ErrorCode::NoError) return error;
+
+    // The native helper is also deployed without enabling the optional HTTP
+    // delivery service. Build inputs are the same packaged, pinned sources.
+    QByteArray sources;
+    for (const auto &file : {"Dockerfile", "service.go", "rollout.go", "readiness.go", "ipv6_migration.go", "config_transaction.go", "config_runtime.go", "config_ipv6_runtime.go", "ipv6_publication.go", "ipv6_upgrade.go", "config_forwarding.go", "go.mod", "install.sh"}) {
+        const auto bytes = resource(file);
+        if (bytes.isEmpty()) { error = ErrorCode::InternalError; break; }
+        sources += QByteArray(file) + '\0' + bytes + '\0';
+        error = ssh.uploadFileToHost(credentials, bytes, stage + '/' + file);
+        if (error != ErrorCode::NoError) break;
+    }
+    if (error == ErrorCode::NoError) error = ssh.uploadFileToHost(credentials, QJsonDocument(request).toJson(QJsonDocument::Compact), stage + "/request.json");
+    QString output;
+    if (error == ErrorCode::NoError) {
+        const auto tag = "amnezia-ipv6-helper:" + QString::fromLatin1(QCryptographicHash::hash(sources, QCryptographicHash::Sha256).toHex());
+        const auto install = upgradeDelivery
+            ? QString("sudo sh '%1/install.sh' '%1' '%2' '%3' > '%1/helper-install.log' 2>&1\n").arg(stage, deliveryHost, name)
+            : QString("sudo sh '%1/install.sh' --install-protocol-helper \"$image\" '%1' '%2' > '%1/helper-install.log' 2>&1\n").arg(stage, name);
+        const auto script = QString(R"AMNEZIA(
+set -e
+source_id=''
+phase='helper_build_failed'
+cleanup() {
+    status=$?
+    if [ "$status" -ne 0 ]; then
+        printf '{"version":1,"result":"rejected","reason":"%s"}\n' "$phase"
+    fi
+    if [ -n "$source_id" ]; then sudo docker rm "$source_id" >/dev/null 2>&1 || true; fi
+}
+trap cleanup EXIT
+sudo docker build --network host -t '%1' '%2' > '%2/build.log' 2>&1
+image=$(sudo docker image inspect -f '{{.Id}}' '%1')
+phase='helper_install_failed'
+%3
+source_id=$(sudo docker create --network none --entrypoint /updates "$image")
+sudo docker cp "$source_id:/updates" '%2/updates' >/dev/null
+sudo chmod 700 '%2/updates'
+phase='ipv6_activation_unconfirmed'
+sudo '%2/updates' upgrade-ipv6 < '%2/request.json'
+)AMNEZIA").arg(tag, stage, install);
+        error = ssh.uploadFileToHost(credentials, script.toUtf8(), stage + "/deploy.sh");
+        if (error == ErrorCode::NoError) error = ssh.runScript(credentials, "sh '" + stage + "/deploy.sh'", [&](const QString &data, libssh::Client &) {
+            if (output.size() + data.size() > 65536) return ErrorCode::InternalError;
+            output += data; return ErrorCode::NoError;
+        });
+    }
+    outcome = QJsonDocument::fromJson(output.toUtf8()).object();
+    if (error != ErrorCode::NoError) return error;
+    if (outcome.value("version").toInt() != 1) return ErrorCode::InternalError;
+    if (outcome.value("result") == "applied") return ErrorCode::NoError;
+    if (outcome.value("result") == "rolled_back" && outcome.value("reason") == "ipv6_egress_unverified") {
+        outcome["result"] = "unavailable";
+        return ErrorCode::NoError;
+    }
+    return ErrorCode::InternalError;
+}
 ErrorCode ConnectionUpdatesController::fetchPublicSettings(const ServerCredentials &credentials, DockerContainer container,
-                                                           const QString &host, QJsonObject &settings, QStringList *peers)
+                                                           const QString &host, QJsonObject &settings, QStringList *peers, QString *pathMtuProbe, QStringList *pathMtuProbes)
 {
     if (container != DockerContainer::WireGuard && container != DockerContainer::Awg2) return ErrorCode::InternalError;
     SshSession ssh;
@@ -111,7 +282,15 @@ ErrorCode ConnectionUpdatesController::fetchPublicSettings(const ServerCredentia
         if (error != ErrorCode::NoError) return error;
         if (!connectionUpdates::parsePeerList(output, *peers)) return ErrorCode::InternalError;
     }
-    settings = candidate; return ErrorCode::NoError;
+    QStringList probes;
+    if (pathMtuProbe || pathMtuProbes) {
+        error = fetchPathMtuProbeAddresses(credentials, container, probes);
+        if (error != ErrorCode::NoError) return error;
+    }
+    settings = candidate;
+    if (pathMtuProbe) *pathMtuProbe = probes.first();
+    if (pathMtuProbes) *pathMtuProbes = probes;
+    return ErrorCode::NoError;
 }
 bool ConnectionUpdatesController::available(const QString &id) const
 {
@@ -203,6 +382,10 @@ void ConnectionUpdatesController::administer(const QString &id, const QString &a
             profile[connectionUpdates::metadataKey] = metadata;
             m_servers->editServer(id, profile, serverConfigUtils::SelfHostedAdmin);
         }
+        if (action == "install" && result.reason == "ipv6_incomplete") {
+            emit finished(true, tr("Connection updates enabled on TCP port 8443. Allow this port in your VPS firewall. IPv6 setup did not finish; run setup again to resume it."));
+            return;
+        }
         emit finished(true, action == "install" ? tr("Connection updates enabled on TCP port 8443. Allow this port in your VPS firewall.")
                                                : action == "publish" ? tr("Connection settings published.") : tr("Update token revoked. Use Revoke access to also disable the VPN peer."));
     });
@@ -212,7 +395,7 @@ void ConnectionUpdatesController::administer(const QString &id, const QString &a
             const auto dir = "/tmp/amnezia-connection-updates-" + QUuid::createUuid().toString(QUuid::Id128);
             auto error = ssh.runScript(credentials, "umask 077 && mkdir '" + dir + "'");
             if (error != ErrorCode::NoError) { result.error = error; return result; }
-            for (const auto &name : { "Dockerfile", "service.go", "rollout.go", "readiness.go", "go.mod", "install.sh" }) {
+            for (const auto &name : { "Dockerfile", "service.go", "rollout.go", "readiness.go", "ipv6_migration.go", "config_transaction.go", "config_runtime.go", "config_ipv6_runtime.go", "ipv6_publication.go", "ipv6_upgrade.go", "config_forwarding.go", "go.mod", "install.sh" }) {
                 const auto data = resource(name);
                 if (data.isEmpty()) { error = ErrorCode::InternalError; break; }
                 error = ssh.uploadFileToHost(credentials, data, dir + "/" + name);
@@ -229,19 +412,42 @@ void ConnectionUpdatesController::administer(const QString &id, const QString &a
             QUrl url; url.setScheme("https"); url.setHost(updateHost); url.setPort(8443);
             result.metadata["url"] = url.toString();
             result.error = flushPendingRevocations(credentials, admin->connectionUpdates);
+            if (result.error != ErrorCode::NoError) return result;
+            for (const auto protocol : {DockerContainer::WireGuard, DockerContainer::Awg2}) {
+                if (!admin->containers.contains(protocol)) continue;
+                QJsonObject ipv6;
+                if (prepareServerIPv6(credentials, protocol, ipv6, result.metadata) != ErrorCode::NoError) {
+                    result.reason = "ipv6_incomplete";
+                    break;
+                }
+            }
             return result;
         }
         result.error = flushPendingRevocations(credentials, admin->connectionUpdates);
         if (result.error != ErrorCode::NoError) return result;
+        bool individualIPv6Supported = false;
+        bool dualProbeSupported = false;
         if (action == "publish") {
             QJsonObject info; result.error = command(credentials, "info", {}, info);
             if (result.error != ErrorCode::NoError) return result;
             if (info.value("publicKey") != admin->connectionUpdates.value("publicKey") || info.value("certificate") != admin->connectionUpdates.value("certificate")) {
                 result.error = ErrorCode::InternalError; return result;
             }
+            individualIPv6Supported = info.value("features").toArray().contains("client-ipv6-v1");
             if (!info.value("features").toArray().contains("live-publication-v1")) {
                 result.outcome = "upgrade_required"; return result;
             }
+            QJsonObject ipv6;
+            result.error = prepareServerIPv6(credentials, container, ipv6, admin->connectionUpdates);
+            if (result.error != ErrorCode::NoError) return result;
+            QJsonObject refreshed;
+            result.error = command(credentials, "info", {}, refreshed);
+            if (result.error != ErrorCode::NoError) return result;
+            if (refreshed.value("publicKey") != admin->connectionUpdates.value("publicKey") || refreshed.value("certificate") != admin->connectionUpdates.value("certificate")) {
+                result.error = ErrorCode::InternalError; return result;
+            }
+            individualIPv6Supported = refreshed.value("features").toArray().contains("client-ipv6-v1");
+            dualProbeSupported = refreshed.value("features").toArray().contains("dual-path-mtu-probes-v1");
         }
         if (action == "activate-awg3") {
             result.error = ErrorCode::NoError; result.outcome = "rejected";
@@ -282,21 +488,135 @@ void ConnectionUpdatesController::administer(const QString &id, const QString &a
         QJsonObject request { { "container", ContainerUtils::containerToString(container) } };
         if (action == "revoke") request["clientPublicKey"] = clientKey;
         else {
-            QJsonObject settings; QStringList peers;
-            result.error = fetchPublicSettings(credentials, container, host, settings, &peers);
+            QJsonObject settings; QStringList peers, probes; QString probe;
+            result.error = fetchPublicSettings(credentials, container, host, settings, &peers, &probe, &probes);
             if (result.error != ErrorCode::NoError) return result;
+            if (individualIPv6Supported) {
+                QJsonObject assignments;
+                result.error = fetchPeerIPv6Assignments(credentials, container, assignments);
+                if (result.error != ErrorCode::NoError) return result;
+                auto assignmentPeers = assignments.keys(); auto expectedPeers = peers;
+                assignmentPeers.sort(); expectedPeers.sort();
+                // Do not publish a mixed snapshot if peers changed between SSH reads.
+                if (assignmentPeers != expectedPeers) { result.error = ErrorCode::InternalError; return result; }
+                request["clientIpv6"] = assignments;
+            }
             request["settings"] = settings;
+            request["pathMtuProbe"] = probe;
+            if (dualProbeSupported) request["pathMtuProbes"] = QJsonArray::fromStringList(probes);
             request["clientPublicKeys"] = QJsonArray::fromStringList(peers);
         }
         const auto remoteAction = action == "publish" ? QString("publish-live") : action;
         result.error = command(credentials, remoteAction, request, result.metadata); return result;
     }));
 }
+ErrorCode ConnectionUpdatesController::issue(const ServerCredentials &credentials, const QJsonObject &request, QJsonObject &response)
+{
+    if(request.contains("pathMtuProbes")) {
+        QStringList probes;
+        if(!connectionUpdates::parsePathProbes(request.value("pathMtuProbes"),probes)
+            || !request.value("pathMtuProbe").isString()
+            || request.value("pathMtuProbe").toString()!=(probes.isEmpty()?QString():probes.first())) return ErrorCode::InternalError;
+    }
+    auto error=command(credentials,"issue",request,response);
+    if(error==ErrorCode::NoError || request.value("operation").toString().isEmpty()) return error;
+    error=command(credentials,"issue",request,response);
+    if(error!=ErrorCode::NoError && request.contains("pathMtuProbes")) {
+        // An older app may have issued this SAME operation before the service
+        // advertised plural probes. Replay its original request shape; retain
+        // every identity/settings field and the operation-bound credentials.
+        auto legacy=request;legacy.remove("pathMtuProbes");
+        error=command(credentials,"issue",legacy,response);
+    }
+    return error;
+}
 void ConnectionUpdatesController::refresh(const QString &id) { fetch(id, true); }
+bool ConnectionUpdatesController::needsRefreshBeforeConnect(const QString &id) const
+{
+    const auto proxy = m_servers->selfHostedAdminConfig(id);
+    if (proxy && proxyIpv6Upgrade::supported(proxy->defaultContainer)) {
+        const auto containerConfig = proxy->containerConfig(proxy->defaultContainer);
+        const auto *config = containerConfig.protocolConfig.as<XrayProtocolConfig>();
+        const auto original = m_servers->serverJsonById(id);
+        return proxy->credentials().isValid() && config && config->hasClientConfig() && !config->serverConfig.isThirdPartyConfig
+            && original && m_proxyIPv6Verified.value(id) != QCryptographicHash::hash(QJsonDocument(*original).toJson(QJsonDocument::Compact), QCryptographicHash::Sha256);
+    }
+    if (available(id)) return true;
+    const auto admin = m_servers->selfHostedAdminConfig(id);
+    if (!admin || !admin->credentials().isValid()
+        || (admin->defaultContainer != DockerContainer::WireGuard && admin->defaultContainer != DockerContainer::Awg2)) return false;
+    const auto cached = admin->containerConfig(admin->defaultContainer).protocolConfig.getClientConfigJson();
+    return !cached.isEmpty() && (cached.value("path_mtu_probes").toArray().isEmpty() || needsClientIPv6(cached));
+}
 void ConnectionUpdatesController::refreshBeforeConnect(const QString &id, const std::function<void()> &done)
 {
-    if (!available(id)) { done(); return; }
-    fetch(id, false, done);
+    const auto proxy = m_servers->selfHostedAdminConfig(id);
+    if (proxy && proxyIpv6Upgrade::supported(proxy->defaultContainer)) {
+        const auto original = m_servers->serverJsonById(id);
+        if (m_busy || !m_connection->isDisconnected() || !original || !needsRefreshBeforeConnect(id)) { done(); return; }
+        const auto container = proxy->defaultContainer;
+        const auto tag = QCryptographicHash::hash(QJsonDocument(*original).toJson(QJsonDocument::Compact), QCryptographicHash::Sha256);
+        setBusy(true);
+        auto *watcher = new QFutureWatcher<AdminResult>(this);
+        const auto completed = std::make_shared<bool>(false);
+        const auto continueOnce = [completed, done] { if (!*completed) { *completed = true; done(); } };
+        // This only adds server networking. A slow/absent IPv6 path must not
+        // prevent an otherwise usable IPv4 connection or replace its session.
+        QTimer::singleShot(1500, watcher, continueOnce);
+        connect(watcher, &QFutureWatcher<AdminResult>::finished, this, [this, watcher, id, original, tag, continueOnce] {
+            const auto result = watcher->result(); watcher->deleteLater();
+            if (result.error == ErrorCode::NoError && result.metadata.value("result") == "verified" && m_servers->serverJsonById(id) == original)
+                m_proxyIPv6Verified[id] = tag;
+            setBusy(false);
+            continueOnce();
+        });
+        watcher->setFuture(QtConcurrent::run(&m_adminPool, [credentials = proxy->credentials(), container, prepare = m_proxyIPv6Preparer] {
+            AdminResult result;
+            result.error = prepare(credentials, container, result.metadata);
+            return result;
+        }));
+        return;
+    }
+    if (available(id)) { fetch(id, false, done); return; }
+    const auto admin = m_servers->selfHostedAdminConfig(id); const auto original = m_servers->serverJsonById(id);
+    if (m_busy || !m_connection->isDisconnected() || !admin || !original || !admin->credentials().isValid()
+        || (admin->defaultContainer != DockerContainer::WireGuard && admin->defaultContainer != DockerContainer::Awg2)) { done(); return; }
+    const auto container = admin->defaultContainer;
+    const auto cached = admin->containerConfig(container).protocolConfig.getClientConfigJson();
+    const bool needsIPv6=needsClientIPv6(cached);
+    if (cached.isEmpty() || (!cached.value("path_mtu_probes").toArray().isEmpty() && !needsIPv6)) { done(); return; }
+    setBusy(true); auto *watcher = new QFutureWatcher<AdminResult>(this);
+    const auto completed = std::make_shared<bool>(false);
+    const auto continueOnce = [completed, done] { if (!*completed) { *completed = true; done(); } };
+    // Optional metadata discovery must not hold up a usable VPN connection.
+    // The SSH operation may finish later, but its stale result cannot commit.
+    QTimer::singleShot(1500, watcher, continueOnce);
+    connect(watcher, &QFutureWatcher<AdminResult>::finished, this, [this, watcher, id, original, container, completed, continueOnce] {
+        const auto result = watcher->result(); watcher->deleteLater();
+        if (!*completed && result.error == ErrorCode::NoError && m_connection->isDisconnected() && m_servers->serverJsonById(id) == original) {
+            const auto probes=result.metadata.value("pathMtuProbes").toVariant().toStringList();
+            const auto name=ContainerUtils::containerToString(container);
+            QJsonObject updated;
+            const bool migrated=result.metadata.contains("clientIpv6Assignments")
+                && connectionUpdates::mergeAdministratorIPv6(*original,name,result.metadata.value("clientIpv6Assignments").toObject(),probes,updated);
+            if ((migrated || connectionUpdates::mergePathProbes(*original,name,probes,updated)) && updated!=*original)
+                m_servers->editServer(id, updated, serverConfigUtils::SelfHostedAdmin);
+        }
+        setBusy(false);
+        continueOnce();
+    });
+    watcher->setFuture(QtConcurrent::run(&m_adminPool, [credentials = admin->credentials(), container, needsIPv6, reader = m_probeAddressReader, peerReader = m_peerIPv6Reader] {
+        AdminResult result; QStringList targets;
+        result.error = reader(credentials, container, targets);
+        if (result.error == ErrorCode::NoError) {
+            result.metadata["pathMtuProbes"] = QJsonArray::fromStringList(targets);
+            if(needsIPv6) {
+                QJsonObject assignments;
+                if(peerReader(credentials,container,assignments)==ErrorCode::NoError) result.metadata["clientIpv6Assignments"]=assignments;
+            }
+        }
+        return result;
+    }));
 }
 void ConnectionUpdatesController::fetch(const QString &id, bool report, std::function<void()> done)
 {

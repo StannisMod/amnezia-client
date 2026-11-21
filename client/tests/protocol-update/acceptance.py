@@ -13,6 +13,10 @@ import subprocess
 import tempfile
 import time
 import uuid
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from server_fixture import startup_assets
 
 
 def run(*args, input=None):
@@ -101,7 +105,14 @@ def main(kind, legacy_profile="basic"):
         (folder / "wireguard_server_public_key.key").write_text(server_public)
         (folder / "wireguard_psk.key").write_text(psk)
         (folder / "clientsTable").write_text('[{"name":"Existing client","clientId":"retained"}]')
-        startup = (source / kind / "start.sh").read_text()
+        assets, release = startup_assets(kind)
+        for relative, data in assets.items():
+            target = state / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(data)
+        if release:
+            (state / "mtu/current").symlink_to(release)
+        startup = assets["start.sh"]
         for var in ("AWG_SUBNET_IP", "WIREGUARD_SUBNET_IP"):
             startup = startup.replace("$" + var, "10.87.0.1")
         startup = startup.replace("$WIREGUARD_SUBNET_CIDR", "24")

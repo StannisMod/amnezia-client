@@ -1,5 +1,582 @@
 # Implementation checkpoint — automated validation
 
+## Hosted validation unavailable — 2026-11-21
+
+Source `f234c59` adds the per-resolver settings planner and hosted regression
+steps; `b7d0517` adds strict IPv4-only OFF upstream validation. Neither revision
+has a hosted validation result. A manual dispatch of `sing-box-routing-ci.yml`
+was rejected by GitHub with HTTP 422:
+`Actions has been disabled for this repository.`
+The repository Actions permissions endpoint simultaneously returned
+`{"allowed_actions":"all","enabled":true}`; the workflow itself was `active`.
+The reason for this external discrepancy is unknown. No Actions policy, account
+setting or billing setting was changed. Earlier `11949e6`/`2180e7f` results do
+not validate these newer revisions. Apple SDK/runtime checks remain blocked
+until hosted Actions execution is restored. Universal native DNS integration
+and merge readiness are still incomplete.
+
+## Per-resolver native DNS settings — 2026-11-21
+
+`NativeDNSSettings.swift` prepares a connection-local copy with one IPv4 DNS
+capture address per original resolver, preserving order, duplicates, domain
+scope and search metadata. Only individual capture /32 routes are added; native
+IPv4 routes/settings and the original settings object are not modified. Specific
+route/address collisions fail closed; encrypted DNS is not silently downgraded.
+IPv6 upstream bindings remain unavailable, while retaining a local endpoint for
+AAAA NODATA. iOS 26/macOS 26 resolver failover to the system is disabled.
+
+Resolver paths must be supplied explicitly by the native owner. Apple documents
+that system routes and interface scoping supersede included/excluded routes:
+https://developer.apple.com/documentation/networkextension/routing-your-vpn-network-traffic
+The planner therefore does not guess the DNS scope from a default route or move
+all split DNS through the tunnel. Establishing the original scope and publishing
+prepared guards transactionally with packet dispatch/teardown are still pending.
+The initial planner requires a native IPv4 interface; IPv6-only native interface
+capture setup remains to integrate. SDK/settings regression tests are pending.
+
+## Strict IPv6 OFF clarification — 2026-11-21
+
+The user clarified that OFF means all IPv6 traffic, including DNS upstream
+transport. The proposed privileged IPv6 native DNS control path was abandoned;
+its uncommitted Go prototype and source-binding change were removed. Its local
+test logs are historical prototype evidence, not shipping-code acceptance.
+No such exception was committed or enabled.
+
+Native DNS integration must use an IPv4 managed endpoint for local AAAA NODATA.
+An original IPv6-only upstream is unavailable with OFF; other queries must fail
+closed without silently substituting a resolver or underlay path. An existing
+multiple-server policy may retain its original explicit selection semantics.
+The earlier control-plane preservation requirement below is superseded.
+The OFF-only Swift resolver now rejects IPv6 literals (including scoped and
+IPv4-mapped forms) before creating an operation, and also rejects hostnames,
+unspecified/multicast/reserved IPv4 destinations and NUL-truncated input. New
+resolver validation tests are pending Apple SDK execution. ON is unchanged.
+
+## Scoped native DNS transports — 2026-11-20
+
+At `2180e7f`, hosted iOS job `136366795882` passed the iPhoneOS
+typecheck, executable Swift/native host test, actual loopback UDP/TCP transport
+tests and full app/packet-tunnel builds. The first matrix attempt was not green:
+the two macOS ARM jobs never acquired runners (capacity annotations, no steps).
+Only failed/uncompleted jobs were resubmitted after inspecting those annotations.
+The second attempt also failed to acquire both ARM runners: jobs `136411407621`
+and `136411408425` were cancelled without steps, with the same capacity
+annotations. The build gate correctly failed; no third rerun of the same code
+was requested. The successful iOS job log is preserved locally as
+`ci-2180e7f-ios-fetch2.log`; an earlier log-fetch attempt failed at the blob
+endpoint and is not a product-test failure. No application packages were fetched.
+
+The transport fixture now also checks idempotent cancellation for both UDP and
+TCP after the server receives the query, spanning the retry and deadline windows
+and asserting no late callback or reopened connection. This additional test has
+not yet run with the Apple SDK.
+
+In `44744543451` at `49d1819`, the new iPhoneOS host typecheck, C client and
+executable Swift/native DNS lifecycle test passed. Full iOS app construction
+subsequently failed fetching OpenVPNAdapter: GitHub:443 was unreachable for
+75 seconds. Windows build job `136317552765` lost runner/server communication
+while its build step was in progress; no failed product assertion was reported.
+Those failures are retained, not converted into complete package passes.
+
+`NativeDNSResolver.swift` now supplies explicit tunnel/interface/loopback
+transport scopes, numeric server validation, same-connection bounded UDP
+retries and TCP framing/candidate replies. Legacy through-tunnel APIs remain
+only for older OS versions. It does not select another resolver/interface on
+failure. Host dispatch now keeps an absolute monotonic deadline across its
+queue instead of restarting the timeout after queue delay.
+
+The hosted tests use a loopback-only ephemeral UDP/TCP fixture for first-packet
+loss, same-socket retry, fragmented TCP framing, multiple candidate replies,
+timeouts and non-query non-retransmission. The original SDK and transport tests
+passed at `2180e7f`; these factories still are not invoked by native connection
+settings/lifecycles.
+Original DNS-route mapping and IPv6 DNS control-plane handling must be completed
+before universal NODATA or merge readiness can be claimed.
+
+## Swift native DNS host layer — 2026-11-20
+
+Run `44734415980` at `b0cbffc` passed the complete main matrix, including the
+Darwin native DNS C client. The next layer is `NativeDNSGuard.swift`: it owns
+the asynchronous host callback boundary, classifies packets without a second
+reader, preserves per-query UDP/TCP selection, rejects immediate scope failures,
+keeps spurious replies from terminating valid pending work, and cancels requests
+before native host release. iOS/macOS targets include the class but no native
+connection path instantiates it yet.
+
+The C API gains terminal request rejection so native errors become SERVFAIL
+without copying exception messages or waiting for a timeout. Go/C regressions
+and a new executable Swift/native-host lifecycle test cover that path. SDK and
+Swift runtime validation of this layer remain pending; concrete native DNS
+transports, settings publication and protocol lifecycle integration are still
+required. This is not universal-backend completion or a merge-readiness claim.
+The updated Go/race suite passed ten Apple-parent repetitions and the executable
+C client passed locally with rejection coverage. No packages were downloaded.
+The Apple Conan recipe now requires the exact new exported text symbols, so
+missing native-DNS ABI cannot be mistaken for a compatible archive.
+
+## Native DNS C-client portability follow-up — 2026-11-20
+
+Run `44726482222` at `b573b00` passed every executed lane except the iOS
+construction lane's new C-client compilation. The iPhoneOS unified archive,
+all new DNS symbols, Swift policy typechecks and the original host packet-flow
+ABI test passed before that failure. The C client's Linux-oriented
+`_POSIX_C_SOURCE` hid BSD typedefs used by Darwin `resolv.h`; it now requests
+the Darwin feature namespace on macOS, retaining the POSIX namespace on Linux.
+`-Wall -Wextra -Werror` and all test assertions remain unchanged.
+Hosted execution of the corrected native DNS C client is still required.
+
+## Universal AAAA NODATA requirement — 2026-11-20
+
+The user explicitly chose AAAA NODATA for **every backend** when IPv6 is OFF;
+native Apple DNS omission is not an accepted limitation. This newly confirmed
+criterion blocks merge despite the fully green `8679f05` baseline. The design
+and remaining integration work are in `IPV6-OFF-DNS.md`.
+
+The first shared primitive is implemented in `native/routing/dnsguard`.
+In-memory packet tests cover UDP/TCP over IPv4/IPv6, local AAAA NODATA without
+upstream traffic, scoped A forwarding with transport preservation, failure
+without fallback, cancellation and teardown. The native TUN wrapper preserves
+non-DNS bytes/headroom and keeps managed AAAA packets out of the original
+backend. Ten race-instrumented repetitions passed in one offline 2-CPU/4-GiB
+build container with swap disabled. It is **not connected to a shipping native
+backend yet**, so universal support and merge readiness are not claimed.
+
+The asynchronous native-exchange bridge and Apple C exports now have ownership
+and cancellation coverage. A real C client passed NODATA/scoped forwarding,
+passthrough classification, exactly-once completion/release and late-reply
+rejection against an archive using the pinned Apple parent Go graph. Initial
+offline preparation found the Apple gVisor pin missing from one cache; it was
+reused from the existing integration cache without downloading anything.
+An unrelated non-Apple header unused-parameter warning was corrected without
+weakening `-Werror`. Dependency verification, ten Apple-parent race repetitions
+and the ordinary dnsguard/engine/mobile suites passed. The new CI checks use the
+actual unified Apple host library and archive symbols. SDK validation, Swift
+native-adapter wiring and the other native backends are still outstanding.
+
+No new artifact downloads were made. Existing arm64/x86_64 packages from
+`44702509917` (source `8679f05046c55561b76aad7697059988193c3247`) passed local
+hash/size/ABI/payload/notice verification for eight APK entries. The report is
+explicitly partial; armv7/x86 and desktop/iOS artifacts were not locally
+re-audited after downloads were stopped. The all-green hosted source baseline
+is main `44702516775` and Android `44702509857`, not evidence for this new work.
+
+## Atomic application-policy DNS replacement — 2026-11-20
+
+Android run `44698056095` at `697a9a8` failed WG/API29 package-reinstall recovery
+and an independent WG/API35 cyclic UDP probe; other lanes passed. The retained
+API29 snapshot distinguishes history from present state: `dns_available=true`,
+`dns_version=2`, three completed/failed queries with last class
+`generation-unavailable`. The bounded live log contains no recovery request
+or underlay change. Generation 1 is initial publication; the application-policy
+update reserves generation 2. This narrows the DNS failure to that update's
+freeze-before-build interval, not permanently suspended network recovery.
+It does not establish a cause for the separate API35 UDP timeout.
+
+`Runtime.UpdateAndroidApplications` now reserves a replacement generation
+without dropping the current DNS/policy. It builds the candidate and atomically
+publishes UID membership plus fresh DNS through the existing `replaceWith`.
+A failed build retains the old policy; a real network suspension increments
+the version, invalidates the candidate and remains fail-closed. Application
+updates cannot reopen already-suspended DNS. Network-DNS reload/suspension
+behavior is unchanged.
+
+The complete Go engine and mobile suites passed locally. Three deterministic
+boundary cases cover successful commit, candidate-build failure and real
+network suspension; the new test passed 20 repetitions. A separately retained
+red-control source copy restores the old freeze-before-build behavior and
+fails specifically at the existing-DNS preparation boundary. The fixed source
+and red copy were not conflated. These checks ran in one offline Linux build
+container capped at 2 CPUs / 4 GiB total with swap disabled; the Android
+emulator was stopped. Race checks and current-source hosted Android acceptance
+are still pending. No complete Android pass is claimed.
+
+## Current hosted baseline and recovery evidence — 2026-11-20
+
+At `b56b53f`, main run `44583629056` passed the entire matrix, including both
+ARM Mac jobs. Linux-native run `44583629145`, current Android packages and all
+other listed supporting workflows passed. Android acceptance `44583612049`
+passed 5/6 lanes; AWG/API29 failed after application reinstall and capture
+restart in the personal profile. Earlier work-profile failure is retained.
+This establishes a repeated restart scenario, not its underlying cause.
+
+The retained diagnostic `dns_last_failure=generation-unavailable` is historical
+and does not establish current availability. The snapshot now includes current
+generation availability/version, with tests covering both suspended DNS and
+republished DNS retaining the historical failure label. Recovery logs retain
+only handle/ticket counters, stage and exception class, never profile values,
+endpoint names/addresses, credentials or exception messages.
+
+The final logcat snapshot in the latest failure retained only teardown events:
+its count limit can lose early selected events amid unrelated system logging.
+A targeted live log now starts after adb root, with a 10,000-matching-record
+bound, records premature exit, and is terminated/reaped in finally. The file
+is explicitly included in the primary artifact allowlist. The existing final
+snapshot remains. These are evidence changes only, not a claimed DNS fix.
+Hosted validation of the new diagnostics remains pending; no local Go/Kotlin
+PASS is claimed. Merge readiness is still blocked by Android recovery, native
+Apple AAAA NODATA acceptance and current-source final artifact reconciliation.
+
+## Linux hosted closure and Android capture review — 2026-11-19
+
+Run `44581190296` at `48387b4` passed all six required Linux-native lanes:
+AWG/WG namespace capture on Ubuntu 22.04/24.04 and both system-resolver
+split-DNS lanes. This validates the pipe-draining harness correction in the
+previously failing workflows; their earlier failed evidence is retained.
+
+New Codex finding `4632863609` identified IPv6-OFF capture loss in Android
+destination include mode: split compilation removed the /1 capture routes.
+The builder now records the explicit full-family capture requirement and
+installs it after destination split compilation, stripping IPv6 exclusions
+while retaining IPv4 split policy. Protocol setup records the requirement
+before its no-split/disabled-split early returns. Missing preference/ON still
+uses the existing destination scopes. New JVM regressions cover IPv4-only
+include and IPv6 include/exclude policies under OFF.
+
+Local Gradle attempts hit the 4-GiB laboratory cgroup limit, including after
+reducing guest allocation to reserve build overhead; no local Kotlin PASS is
+claimed. Limits were not increased and no second VM ran. The emulator was
+OOM-terminated; its stale lock files were preserved under
+`.before-merge-prep-oom` before retry. Hosted Kotlin tests and actual Android
+packet acceptance remain required for this correction. No merge is authorized
+by this readiness checkpoint.
+
+## Merge preparation: Linux helper shutdown — 2026-11-19
+
+Both Linux acceptance drivers waited for helper exit without draining its status
+pipe. The helper emits periodic status on the same select-loop thread that
+consumes `stop`; a full stdout pipe can therefore prevent it from reading stop.
+The drivers now use `communicate` to deliver stop/EOF and drain output together.
+The original 15-second bound, zero-exit assertion, and distinction between
+graceful stop and command-pipe-loss abort remain unchanged. No production
+networking or acceptance assertion was relaxed.
+
+Five real-process/pipe tests passed in the single constrained API29 laboratory
+container (2 CPUs, 4 GiB total memory including emulator overhead, swap disabled).
+The negative control fills a 4-KiB pipe: the old wait times out, then draining
+allows the exact same process to finish. Tests also check graceful stop, EOF,
+nonzero exit rejection and timeout rejection. This reproduces a harness failure
+mechanism; the complete hosted Linux lanes must still establish whether it
+accounts for their previously retained failures.
+
+Android run `44543994486` at `cf7cf31` passed 5/6 lanes. The remaining AWG/API29
+failure is work-profile package-reinstall recovery; the personal-profile case
+passed. Its new network-event snapshot shows VPN networks 104 -> 105 while
+Wi-Fi underlay 100 stays unchanged. TCP refusal/DNS timeout and
+`generation-unavailable` remain observations, not a proven root cause.
+
+Main run `44534261050` at `489318b` has now completed: iOS compilation, Linux,
+Windows, Android build/core lanes and Intel Mac checks passed. The only
+non-success test jobs were ARM Mac core and TCP recovery (`135596073712`,
+`135596073944`): both had empty runner names and no steps. GitHub annotations
+explicitly report “The job was not acquired by Runner of type hosted even after
+multiple attempts” and macOS arm64 capacity constraints. This establishes an
+infrastructure cancellation, not a successful ARM check or a product failure.
+The final build gate correctly remained red. Android and Linux-native failures
+in the separate workflows below remain unresolved.
+
+## Hosted failures at `489318b` — 2026-11-19
+
+Android run `44534249506` failed three lanes; logs and all six artifact bundles
+are retained separately from successful evidence. WG/API35 timed out receiving
+VPN UDP during session 94 of cyclic acceptance. WG/API29 reached the personal
+application TCP probe but got ECONNREFUSED; its snapshot also reports two DNS
+failures with last classification `generation-unavailable`, not an established
+cause for the TCP refusal. AWG/API28 passed its ordinary compatibility test,
+then timed out uninstalling the instrumentation APK before OpenVPN testing.
+No OpenVPN packet failure is established by that setup timeout.
+
+The network-events snapshot added earlier was omitted from the main acceptance
+artifact allowlist (the other subdirectories upload all logs). The allowlist
+now includes that exact non-fixture log. This repairs evidence retention only;
+none of these acceptance failures is claimed fixed or retried unchanged.
+The separate Linux native run `44534261084` also failed: inspected namespace
+and AWG system-resolver jobs timed out waiting for child shutdown; a WG
+system-resolver job failed uploading artifacts. Other failed namespace lanes
+still need individual inspection. Main app/iOS compilation was still running
+at this checkpoint. Subsequent local tests must use one 2-CPU/4-GiB VM.
+
+## Codex review follow-up — 2026-11-19
+
+Run `44525956279` at `9cbc7f0` passed every required lane except the iOS app/
+extension compilation. The SDK diagnostic identifies an incorrect override
+parameter type in the new native capture guard: the superclass accepts
+`NETunnelNetworkSettings?`, not `NEPacketTunnelNetworkSettings?`, with a
+Sendable completion handler. The override now matches that signature and
+conditionally casts packet settings before applying capture; nil/base settings
+are forwarded unchanged. A new hosted build must validate the correction.
+The previous Intel TCP timing failure did not recur; its cause remains unclosed.
+
+The four findings against `057b7a5` were confirmed by inspecting their real
+call paths. Android DNS overrides now precede installation of the global AAAA
+NODATA rule, retaining FakeIP priority; the complete Go engine suite passed
+locally with `with_gvisor`. Linux Xray establishes service TUN ownership before
+launching tun2socks, rather than adopting an existing interface after STACK
+readiness. Apple OpenVPN receives the explicit preference and retains full
+IPv6 capture without site/provider exclusions when blocking; the transport
+endpoint remains exempt.
+
+Native Apple WG/AWG now receives the preference outside the shared-routing
+conditional. Explicit OFF removes IPv6 AllowedIPs and site exclusions from
+the backend configuration, while every adapter network-settings publication
+retains full IPv6 capture (including legacy profiles without an IPv6 address).
+The sanitized configuration is also the saved endpoint-recovery configuration.
+Missing preference still defaults ON; shared routing retains its existing policy.
+New Swift tests cover policy/default selection, backend prefix filtering,
+full capture, endpoint preservation, repeated settings and IPv4 preservation.
+These Swift/Apple SDK tests and the real Linux Xray path still need hosted
+verification; no local Mac runtime or physical iOS acceptance is claimed.
+Native WG does not use the shared DNS interceptor: its AAAA NODATA behavior is
+not established by the peer/capture fix and remains a separate acceptance gap.
+
+Run `44510562002` completed with Linux (including production IPsec update),
+Windows, iOS and Apple TCP recovery passing. Its remaining failure is Intel
+`TestMaturePathMTUAndTCPRecoveryWorkersRetainTCP`; the failed log is retained,
+and its cause is not yet established. Android run `44510551649` passed all
+six lanes; this alone does not close the earlier intermittent API29 TXT failure.
+
+## IPsec registry pin repair — 2026-11-19
+
+Run `44501519812` at `cfc66f0` preserved the missing reason: all standard
+container preflight fields matched, but Docker failed at `FROM` because OCI
+index `21f2a1b28dbbe69c4331571941df548eee2f4e1cba16af8b161248d66db8d490`
+is no longer registry-resolvable (`manifest unknown`). No cutover occurred.
+The same digest failure was independently reproduced with registry access.
+
+The replacement is OCI index
+`78ea73fb726bc97ccb8c592df88030fe44cb962bdd8cb6cd4da53630bc199374`.
+Registry bytes, child manifests and configurations were hash-verified for
+amd64, arm64 and arm/v7. All three advertise revision `5ff51748` and Libreswan
+5.4.2. The genuine upstream commit is
+`5ff51748cd5889072fd0ee5da55262d779441de5`; its Dockerfile declares the same
+version. The amd64 image was pulled by digest and executed without network,
+capabilities or a writable rootfs: `ipsec --version` returned `Libreswan 5.4.2`.
+ARM execution is not claimed. No mutable-tag fallback or TLS bypass was added.
+Hosted update/rollback and unchanged-client packet verification remain pending.
+As with any third-party pin, continued registry retention is externally owned.
+Android artifacts now also retain the selected network callbacks via a final
+logcat snapshot, avoiding loss when initial `adb root` restarts adbd. This is
+additional evidence collection for the unclosed API29 TXT failure, not a DNS fix.
+
+## Hosted follow-up at `cd99b32` — 2026-11-19
+
+Android run `44491504894` passed both complete API35 lanes, both API28 lanes
+and AWG/API29. The strengthened OpenVPN scope regression passed in hosted CI.
+The remaining WireGuard/API29 failure is the initial personal-profile TXT
+request (`uid=10148`), before managed-profile acceptance begins. Preserved
+diagnostics include `generation-unavailable`; the precise triggering event is
+not proven. The unchanged, hash-verified hosted `cd99b32` APK subsequently passed
+both personal and managed profiles locally, including a cold-start experiment.
+No DNS behavioral correction or final Android green-gate claim is made.
+
+Main run `44491513666` completed its Mac ARM/Intel, Windows, iOS and Android
+lanes successfully. Linux stopped at the production SSH IPsec test: the forced
+post-cutover failure expected `rolled_back`, but received an earlier `rejected`.
+The updater redirects its reason to a transaction log that was lost when the
+owned nested daemon was removed. The lab now emits bounded, credential-redacted
+transaction output and a non-secret preflight snapshot on an unexpected result,
+before preserving the original assertion. Two diagnostic-safety tests pass.
+This is diagnostic preservation, not an IPsec fix; the original failure remains FAIL.
+PR remains draft; source/package reconciliation still depends on the final gates.
+
+## OpenVPN final-route publication — 2026-11-19
+
+In the single owned API28 VM (laboratory total limited to four CPUs and 8 GiB,
+no swap), the unchanged hosted APK from merge source
+`6dc7c3479fc02aac89ef360ecbfcab47eff797e0` reproduced the IPv6 scope failure
+after the AWG compatibility prelude and repeated OpenVPN scope transitions.
+The original socket used NATIVE; three fresh diagnostic connections one second
+apart then used VPN without changing routes. Bounded header-only metadata
+confirmed the initial native loopback path and later `tun-ovpn3test` ingress.
+The original assertion remained FAIL.
+
+Android 9 primary source confirms that the LinkProperties getter can expose
+the new snapshot before netd finishes installing routes, while the callback
+follows route installation. The correction waits for publication of the final
+TUN's complete addresses/routes before returning its descriptor to OpenVPN.
+It rejects stale-agent/intermediate-interface observations, closes the TUN on
+failure and supports disconnect cancellation. It does not bind test sockets,
+flush caches, add synthetic addresses or alter IPv6 scope/server capability.
+
+The final local JVM-dex prototype passed the AWG prelude plus all 32 IPv4-only
+and 24 dual-stack cases: eight scope cycles, eight independent TCP probes per
+destination, UDP, loopback and both original IPv4 streams (2016 IPv6 assertions).
+Six publication-state and five protocol-policy JVM tests passed. All non-dex
+payload bytes were verified identical to the hosted APK. This is explicitly a
+local prototype, not a production package from a pure source commit. Hosted
+source-coherent APK acceptance is still required.
+
+A rejected capture-source prototype passed its IPv4-only cases but failed a
+later dual-stack case. Its patch/artifact/failure evidence remains preserved;
+none of its synthetic-address code is retained in production.
+
+## Retained Android socket attribution — 2026-11-18
+
+Follow-up run `44350559015` at `a2f4a62` passed both complete API35
+lanes (including retained TCP), both API29 lanes and WireGuard/API28.
+AWG/API28's shared-core compatibility step also completed, but its subsequent
+OpenVPN IPv4-only `stale-full` case failed: `fd99::4` returned `NATIVE`.
+The live snapshot contains a `tun0` unreachable IPv6 default and UID 10088
+capture rule, yet the offending TCP socket used native source `fec0::…`
+and mark `0x40065`. This reopens the scope-change/cache failure described in
+`scripts/routing/android-openvpn/README.md`; the previous passing runs do not
+establish its elimination. No cache flush, forced VPN binding of native-scope
+probes, blind rerun or acceptance relaxation is an approved fix. Final Android
+acceptance and PR readiness remain blocked.
+
+Run `44346633233` at `9b97207` passed five of six lanes. AWG/API35
+failed during retained warmup with session 107 still alive, no capture refresh
+and no pending/failed DNS. Preserved pre-cleanup Android events show cellular
+network 209 becoming inactive at 16:31:30.915, then Netd destroying one socket
+for that netId at 16:32:00.914; the Java abort followed at 16:32:01.990.
+The surviving media socket carried Wi-Fi netId 100. This implicates test-owned
+sockets inheriting different underlay netIds under the VPN-owner UID.
+
+The retained shared-core probes now explicitly bind each original socket to
+the VPN Network identified by its capture address before connecting. There is
+no reconnect, process-wide binding, timeout increase or observer relaxation.
+OpenVPN split-scope probes remain implicitly routed. Hosted verification is
+still required; this is not a final acceptance or PR-readiness claim.
+
+## Android DNS stall investigation — 2026-11-18
+
+Run `44326437543` at branch source `9ace22a` passed five Android lanes.
+AWG/API35 failed with two real-DNS requests still pending for 4001 ms before
+the application TCP connect timed out; the peer did not receive its TCP SYN.
+This establishes a pre-connect DNS stall, not a slow Android owner lookup.
+The exact location of the original lost/stalled DNS reply is not yet proven.
+
+A deterministic real-UDP-socket regression drops the first DNS datagram:
+the pinned UDP transport does not retransmit and reaches the caller deadline.
+The shared-core UDP decorator recovers by issuing at most three copies over
+the same transport, one second apart. The original attempt remains valid;
+first DNS reply wins, including NXDOMAIN/NODATA. Caller cancellation/deadline,
+resolver selection and path are preserved; non-query operations are not retried.
+The full local Go engine suite and focused real-socket/retry regressions passed
+without QEMU or Android emulators. Hosted APK acceptance of this correction
+is pending; no final green-gate or PR-readiness claim is made.
+
+## Hosted continuation — 2026-11-17, final gate still open
+
+The user subsequently authorized push, PR updates and hosted Mac checks.
+Local Mac execution remains excluded. PR #18 remains draft; no merge is
+authorized. The dated local checkpoint below is historical, not current CI status.
+
+- Native Darwin production Qt route adapter: run `44073792451`, source
+  `941715d011fd52e52ec7c7915d3b7263d964a545`, PASS on macOS 26 and macOS 15 Intel.
+  Original TCP survives A→B→A; new TCP/UDP use the selected paths; exact TCP
+  accept counts are A=2/B=1 and owned TUN cleanup passes. This is not full
+  production OpenVPN integration or physical network handover acceptance.
+- Main run `44142519288`, source
+  `ca9fb945aa3ae4f6c4209b0aff71efa4a1f43353`: Linux client lane PASS, including
+  production SSH IPsec update/rollback with unchanged independent strongSwan
+  client traffic and subsequent Linux acceptance. Production IPsec now pins
+  upstream OCI index `21f2a1b28dbbe69c4331571941df548eee2f4e1cba16af8b161248d66db8d490`
+  (revision `f48cd8db`, checked amd64 Libreswan 5.4.1).
+  Overall first attempt FAIL: Intel Apple TCP recovery took 439 ms against
+  the unchanged 250 ms bound; ARM jobs were cancelled. Failed evidence is retained.
+- Android run `44153915121`, source
+  `8d232fc`: both API28 lanes and AWG API29 PASS after correcting shell scope.
+  WG API29 app-policy and both API35 full lanes FAIL. API35 fails during
+  reconnect cycles with missing TCP/UDP responses; these are unresolved failures,
+  not successful retries or physical-device results.
+
+Hosted artifacts and later source fixes do not relabel the local `93aef02`
+packages below. Final full-gate success and artifact reconciliation are pending.
+
+## Default-on IPv6 preference — local acceptance, 2026-11-16
+
+The user removed historical OpenCode/Telegram incident attribution from the
+completion requirements and requested a default-on IPv6 switch on every
+platform. This is new product work, not covered by the earlier checkpoint.
+
+The preference is stored separately from server capabilities, included in
+backups, defaults to ON for old installations/backups, and applies on the next
+connection. OFF must retain capture and reject IPv6 rather than create a native
+bypass. The shared AWG/WG compiler rejects captured IPv6 before app/destination
+rules and returns AAAA NODATA while retaining IPv4 DNS. Android and Apple NE
+session builders pass the preference even when split DNS is configured.
+OpenVPN, Xray and native desktop WG paths have corresponding connection-local
+policy changes. Native Windows IKEv2 uses an independent dynamic WFP policy
+when OFF; its IPv6 RAS default-gateway option is enabled when ON.
+
+macOS OpenVPN dynamic-host capability is now source-enabled as requested, with
+the existing Darwin adapter. No Apple SDK/native execution is claimed.
+macOS tests remain excluded by the user's explicit decision.
+
+Production package source is `93aef020f0ae6ff610d98a9cd5ecd50ddd2eb52d`;
+Android acceptance harness is `66993d8e15660e47de74fd6b4a9172f888b4f859`
+(test-only addition, not a package rebuild).
+
+Locally executed checks:
+- Four ordinary Android debug ABI packages: signatures, 16-KiB alignment,
+  native pins/notices and Qt payload binding PASS.
+- Actual x86_64 APK on API35, AWG and WireGuard: default/explicit IPv6 ON,
+  OFF AAAA NODATA, cached FakeIP/ULA/NAT64 TCP+UDP rejection, IPv4 VPN/DIRECT
+  preserved and independent observer counters unchanged.
+- Full Android AWG and WG acceptance PASS, each including 100 connection cycles,
+  old interactive/media TCP recovery, aged upload MTU, live per-app DNS/routing,
+  IPv6 scope and always-on/lockdown. These are emulator, not physical-device or
+  battery results.
+- Linux ordinary IFW installer, 32 Qt targets, and installed-service acceptance
+  on Ubuntu 22.04/24.04 PASS. Each installed run includes 100 resolver cycles,
+  endpoint migration, AWG/WG preserving recovery with strict policy on/off,
+  helper crash recovery and OS-state restoration.
+- Installed Linux OpenVPN matrix PASS: full/include/exclude, legacy/API and
+  stale-capability cases with original IPv4 TCP retained.
+- Windows ordinary MSI/EXE builds, 31 Qt targets, actual installed-service
+  acceptance and uninstall PASS for both installer formats.
+- Windows installed OpenVPN full/include/exclude, API, legacy and stale-capability
+  canonical gates PASS. Include route-preservation and the independent native
+  IPv6 preference gate PASS: OFF survives KillSwitch disable, IPv4 remains
+  usable, IPv6 is restored after policy removal.
+
+Earlier failed attempts are retained separately, not overwritten: a WG fixture
+without native DNS 1053, Linux export-mode/probe packaging omissions, and Windows
+fixture IPv6/guest-clock setup failures. TLS validation was not weakened.
+The original WG run changed CPU limits mid-run and is not performance-parity
+evidence. Final AWG/WG retries used the stable reduced resource budget.
+
+Apple SDK/native execution remains NOT RUN; no claim of native macOS/iOS
+acceptance or a newly built Apple package is made. End-to-end IKEv2 negotiation
+and physical-device handover are not established by the independent WFP gate.
+No push, hosted CI, PR-ready transition or merge was performed.
+Earlier artifact/checkpoint sections below are historical and retain their
+original source attribution. Final artifact reconciliation is tracked separately;
+local green results do not authorize publication or removal of PR draft.
+
+## Historical pre-preference continuation — 2026-11-16
+
+The current task excludes testing on macOS by explicit user decision. Missing
+macOS execution is therefore not a blocker for this task, but remains **NOT RUN**,
+not a successful native check. At the checkpoint below, desktop OpenVPN dynamic
+IPv6 updates on macOS were disabled; the Darwin adapter had not been compiled with the Apple SDK
+or validated against the kernel. Portable policy tests on Linux do not establish
+either result. Apple and physical-device results below are historical and must
+not be applied to the current source.
+
+Current source checkpoint: `2f6f36d791b1eec1bc9cc374ef3df197f87f7d44`.
+The Linux Go suite with `with_gvisor`, the full race suite using the existing
+race-only dependency preparation, and `go vet` passed using Go 1.27.1.
+The current Linux Qt routing build and its two CTest targets passed, as did the
+three Python regressions for Android host compatibility and evidence validation.
+These are source regressions, not newly built application packages.
+
+Available ordinary artifacts retain their original provenance:
+
+- Android: all four ABI APKs at `7795b41`; complete AWG/WG 100-cycle acceptance
+  remains attributed to `9a64032`, with backend byte-equality and focused later
+  APK acceptance recorded separately.
+- Linux: installer at `7795b41`; installed-service acceptance on Ubuntu 22.04
+  and 24.04 includes 100 resolver cycles and 12 OpenVPN cases on each.
+- Windows: MSI/EXE at `4bcde28`; both installed-service checks and uninstallation
+  passed. Native OpenVPN acceptance covers ten profile cases, 80 TCP/UDP probes,
+  six retained TCP connections and foreign-route ownership. The independent
+  100-cycle helper run belongs to earlier `dbff27f`, not these installers.
+
+Historical OpenCode/Telegram failures are not causally resolved by synthetic
+fault tests. No release, push, PR-ready transition or merge is established by
+this checkpoint. The full-plan audit is still in progress.
+
 ## Continuation — 2026-10-27
 
 Production source `d64d8af796602ace13cc971df9c19b05615fd2da` fixes the review's

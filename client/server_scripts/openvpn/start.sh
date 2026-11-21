@@ -25,6 +25,10 @@ iptables -t nat -A POSTROUTING -s $OPENVPN_SUBNET_IP/$OPENVPN_SUBNET_CIDR -o eth
 killall -KILL openvpn
 
 # start daemons if configured
-if [ -f /opt/amnezia/openvpn/ca.crt ]; then (openvpn --config /opt/amnezia/openvpn/server.conf --daemon); fi
+if [ -f /opt/amnezia/openvpn/ca.crt ]; then
+    amnezia_prepare_openvpn_ipv6 /opt/amnezia/openvpn/server.conf || echo 'AMNEZIA_OPENVPN_IPV6_MIGRATION=not-prepared' >&2
+    (openvpn --config /opt/amnezia/openvpn/server.conf --daemon)
+fi
+amnezia_enable_ipv6 tun0 || echo 'AMNEZIA_IPV6_FORWARDING_STATUS=boot-preparation-failed' >&2
 
 tail -f /dev/null

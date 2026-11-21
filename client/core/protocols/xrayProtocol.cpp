@@ -13,6 +13,7 @@
 #include <QJsonDocument>
 #include <QTimer>
 #include <QJsonObject>
+#include <QJsonArray>
 #include <QNetworkInterface>
 #include <QtCore/qlogging.h>
 #include <QtCore/qobjectdefs.h>
@@ -118,10 +119,6 @@ void XrayProtocol::stop()
         if (!disableKillSwitch.waitForFinished() || !disableKillSwitch.returnValue())
             qWarning() << "Failed to disable killswitch";
 
-        auto StartRoutingIpv6 = iface->StartRoutingIpv6();
-        if (!StartRoutingIpv6.waitForFinished() || !StartRoutingIpv6.returnValue())
-            qWarning() << "Failed to start routing ipv6";
-
         auto restoreResolvers = iface->restoreResolvers();
         if (!restoreResolvers.waitForFinished() || !restoreResolvers.returnValue())
             qWarning() << "Failed to restore resolvers";
@@ -129,6 +126,7 @@ void XrayProtocol::stop()
         auto deleteTun = iface->deleteTun(tunName);
         if (!deleteTun.waitForFinished() || !deleteTun.returnValue())
             qWarning() << "Failed to delete tun";
+        m_tunPrepared = false;
 
         auto xrayStop = iface->xrayStopOwned(m_xrayToken);
         if (!xrayStop.waitForFinished() || !xrayStop.returnValue())
@@ -165,6 +163,25 @@ ErrorCode XrayProtocol::startTun2Socks()
     if (!m_tun2socksProcess->waitForSource()) {
         return ErrorCode::AmneziaServiceConnectionFailed;
     }
+
+#ifdef Q_OS_LINUX
+    // tun2socks opens the device before emitting STACK readiness. Establish
+    // service ownership first; createTun must never adopt an arbitrary tun2.
+    if (!m_tunPrepared) {
+        const auto result = IpcClient::withInterface(
+                [this](QSharedPointer<IpcInterfaceReplica> iface) -> ErrorCode {
+                    auto created = iface->createTun(tunName, amnezia::protocols::xray::defaultLocalAddr);
+                    if (!created.waitForFinished() || !created.returnValue()) {
+                        auto cleanup = iface->deleteTun(tunName);
+                        cleanup.waitForFinished();
+                        return ErrorCode::InternalError;
+                    }
+                    m_tunPrepared = true;
+                    return ErrorCode::NoError;
+                }, []() { return ErrorCode::AmneziaServiceConnectionFailed; });
+        if (result != ErrorCode::NoError) return result;
+    }
+#endif
 
     const QString proxyUrl = QString("socks5://%1:%2@127.0.0.1:%3").arg(m_socksUser, m_socksPassword, QString::number(m_socksPort));
 
@@ -249,11 +266,15 @@ ErrorCode XrayProtocol::setupRouting()
 #ifdef Q_OS_WIN
                 const int inetAdapterIndex = NetworkUtilities::AdapterIndexTo(QHostAddress(m_remoteAddress));
 #endif
+#ifdef Q_OS_LINUX
+                if (!m_tunPrepared) return ErrorCode::InternalError;
+#else
                 auto createTun = iface->createTun(tunName, amnezia::protocols::xray::defaultLocalAddr);
                 if (!createTun.waitForFinished() || !createTun.returnValue()) {
                     qCritical() << "Failed to assign IP address for TUN";
                     return ErrorCode::InternalError;
                 }
+#endif
 
                 auto updateResolvers = iface->updateResolvers(tunName, m_dnsServers);
                 if (!updateResolvers.waitForFinished() || !updateResolvers.returnValue()) {
@@ -278,6 +299,9 @@ ErrorCode XrayProtocol::setupRouting()
                     if (vpnAdapterIndex != -1) {
                         QJsonObject config = m_rawConfig;
                         config.insert("vpnServer", m_remoteAddress);
+#if (defined(Q_OS_LINUX) || defined(Q_OS_MACOS) || defined(Q_OS_WIN)) && !defined(Q_OS_ANDROID)
+                        config.insert("proxyIpv6", true);
+#endif
 
                         auto enableKillSwitch = IpcClient::Interface()->enableKillSwitch(config, vpnAdapterIndex);
                         if (!enableKillSwitch.waitForFinished() || !enableKillSwitch.returnValue()) {
@@ -299,11 +323,29 @@ ErrorCode XrayProtocol::setupRouting()
                     }
                 }
 
+#if (defined(Q_OS_LINUX) || defined(Q_OS_MACOS) || defined(Q_OS_WIN)) && !defined(Q_OS_ANDROID)
+                QStringList includedIpv6, excludedIpv6;
+                const bool ipv6Enabled = m_rawConfig.value("ipv6_enabled").toBool(true);
+                if (!ipv6Enabled || m_routeMode != amnezia::RouteMode::VpnOnlyForwardSites) includedIpv6 << "::/0";
+                const auto sites = m_rawConfig.value(configKey::splitTunnelSites).toArray();
+                for (const auto &site : sites) {
+                    const auto subnet = QHostAddress::parseSubnet(site.toString());
+                    if (subnet.first.protocol() != QAbstractSocket::IPv6Protocol) continue;
+                    if (!ipv6Enabled) continue; // OFF must not create native IPv6 exclusions.
+                    if (m_routeMode == amnezia::RouteMode::VpnOnlyForwardSites) includedIpv6 << site.toString();
+                    else if (m_routeMode == amnezia::RouteMode::VpnAllExceptSites) excludedIpv6 << site.toString();
+                }
+                const QHostAddress endpoint(m_remoteAddress);
+                if (endpoint.protocol() == QAbstractSocket::IPv6Protocol) excludedIpv6 << endpoint.toString() + "/128";
+                auto ipv6 = iface->configureProxyIpv6(includedIpv6, excludedIpv6);
+                if (!ipv6.waitForFinished() || !ipv6.returnValue()) return ErrorCode::InternalError;
+#else
                 auto StopRoutingIpv6 = iface->StopRoutingIpv6();
                 if (!StopRoutingIpv6.waitForFinished() || !StopRoutingIpv6.returnValue()) {
                     qCritical() << "Failed to disable IPv6 routing";
                     return ErrorCode::InternalError;
                 }
+#endif
 
 #ifdef Q_OS_WIN
                 if (inetAdapterIndex != -1 && vpnAdapterIndex != -1) {

@@ -47,6 +47,7 @@ public:
     int getNavigationBarHeight();
     void startQrReaderActivity();
     void setSaveLogs(bool enabled);
+    void updateApplicationPolicy(qint64 requestId, const QString &policy);
     void setScreenshotsEnabled(bool enabled);
     void setNavigationBarColor(unsigned int color);
     void minimizeApp();
@@ -75,6 +76,7 @@ signals:
     void status(ConnectionState state);
     void serviceDisconnected();
     void serviceError();
+    void applicationPolicyResult(qint64 requestId, bool success, QString reason);
     void vpnPermissionRejected();
     void notificationStateChanged();
     void vpnStateChanged(ConnectionState state);
@@ -111,6 +113,7 @@ private:
     static void onStatus(JNIEnv *env, jobject thiz, jint stateCode);
     static void onServiceDisconnected(JNIEnv *env, jobject thiz);
     static void onServiceError(JNIEnv *env, jobject thiz);
+    static void onApplicationPolicyResult(JNIEnv *env, jobject thiz, jlong requestId, jboolean success, jstring reason);
     static void onVpnPermissionRejected(JNIEnv *env, jobject thiz);
     static void onNotificationStateChanged(JNIEnv *env, jobject thiz);
     static void onVpnStateChanged(JNIEnv *env, jobject thiz, jint stateCode);

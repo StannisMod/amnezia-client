@@ -41,6 +41,8 @@ public:
     // Updates client-local settings only: rewrites the stored container config for any self-hosted/native server. No SSH.
     ErrorCode updateClientConfig(const QString &serverId, DockerContainer container, ContainerConfig &newConfig);
 
+    bool applyPreparedAdministratorIPv6(const QString &serverId, DockerContainer container, const QJsonObject &expected, const QJsonObject &assignments, const QStringList &probes);
+
     ErrorCode rebootServer(const QString &serverId);
     // Replaces only the server binary/image; never edits or revokes profiles.
     static ErrorCode updateProtocolSoftware(const ServerCredentials &credentials, DockerContainer container);
@@ -123,7 +125,7 @@ private:
 
     ErrorCode processContainerForAdmin(DockerContainer container, ContainerConfig &containerConfig,
                                        const ServerCredentials &credentials, SshSession &sshSession,
-                                       const QString &serverId, const QString &clientName);
+                                       const QString &serverId, const QString &clientName, const QJsonObject &deliveryMetadata = {});
 
     void adminAppendRequested(const QString &serverId, DockerContainer container,
                               const ContainerConfig &containerConfig, const QString &clientName);

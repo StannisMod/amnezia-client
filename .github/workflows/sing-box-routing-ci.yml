@@ -101,11 +101,26 @@ jobs:
           fi
           race_mod=$(python prepare_race.py --output "$RUNNER_TEMP")
           go test -mod=readonly -modfile="$race_mod" -tags with_gvisor,amnezia_race_dependency -race -count=3 "${package_args[@]}" -json ./... | tee test-results.jsonl
+          go test -mod=readonly -modfile="$race_mod" -tags with_gvisor,amnezia_race_dependency -race -count=3 "${package_args[@]}" -json gvisor.dev/gvisor/pkg/tcpip/transport/tcp gvisor.dev/gvisor/pkg/tcpip/adapters/gonet | tee dependency-test-results.jsonl
+      - name: Verify native IPv6 source-scoped routing on macOS
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -o pipefail
+          go build -mod=readonly -tags with_gvisor -o "$RUNNER_TEMP/native-ipv6-peer" ./cmd/native-ipv6-peer
+          sudo env AMNEZIA_NATIVE_IPV6_LAB=owned-runner GITHUB_ACTIONS="$GITHUB_ACTIONS" \
+            "$(command -v python3)" "$GITHUB_WORKSPACE/scripts/routing/run_native_ipv6_scope.py" \
+            --peer "$RUNNER_TEMP/native-ipv6-peer" \
+            --report "$GITHUB_WORKSPACE/native-ipv6-scope.json" | tee native-ipv6-scope.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: routing-tests-${{ matrix.os }}
-          path: native/routing/test-results.jsonl
+          path: |
+            native/routing/test-results.jsonl
+            native/routing/dependency-test-results.jsonl
+            native/routing/native-ipv6-scope.log
+            native-ipv6-scope.json
           if-no-files-found: error
 
   core-cross-compile:
@@ -184,7 +199,7 @@ jobs:
           dir: ${{ runner.temp }}
       - run: |
           sudo apt-get update
-          sudo apt-get install -y libxkbcommon-x11-0 libsecret-1-dev
+          sudo apt-get install -y libxkbcommon-x11-0 libsecret-1-dev patchelf
           pip install conan==2.28.0
           conan profile detect --force
       - name: Qt-to-core rule migration contract
@@ -210,11 +225,32 @@ jobs:
         if: success()
         env:
           QT_QPA_PLATFORM: offscreen
+          AMNEZIA_OPENVPN_POLICY_FIXTURE: ${{ runner.temp }}/openvpn-qt-policies.json
+          AMNEZIA_OPENVPN_TUN_BUILDER_FIXTURE: ${{ runner.temp }}/openvpn-tun-builder-policies.json
         run: ctest --test-dir deploy/build/client/tests -V --timeout 120 --output-junit qt-regression.xml
+      - name: Production SSH IPsec update and unchanged-client regression
+        shell: bash
+        env:
+          AMNEZIA_PROTOCOL_UPDATE_QT_ROOT: ${{ runner.temp }}/Qt/6.10.1/gcc_64
+        run: |
+          set -o pipefail
+          bash scripts/local-tests/protocol-update-ssh.sh deploy/build/client/tests/test_server_edit 2>&1 | tee ipsec-update-ssh.log
+      - name: Real SSH probe-address migration regression
+        shell: bash
+        run: |
+          set -o pipefail
+          bash scripts/local-tests/path-probe-ssh.sh deploy/build/client/tests/test_connection_updates_controller 2>&1 | tee path-probe-ssh.log
+      - name: Real application IPv6 activation with retained TCP
+        shell: bash
+        run: |
+          set -o pipefail
+          bash scripts/local-tests/ipv6-activation.sh deploy/build/client/tests/test_connection_updates_controller 2>&1 | tee ipv6-activation.log
       - name: Build installed-service IPC probe and disposable peer
         run: |
           cmake -S scripts/routing/service-probe -B routing-service-probe-build -DCMAKE_PREFIX_PATH="${{ runner.temp }}/Qt/6.10.1/gcc_64"
           cmake --build routing-service-probe-build
+          export AMNEZIA_PROXY_QT_ROOT="${{ runner.temp }}/Qt/6.10.1/gcc_64"
+          bash scripts/local-tests/proxy-ipv6-activation.sh deploy/build/client/tests/test_connection_updates_controller 2>&1 | tee proxy-ipv6-activation.log
           cd native/routing
           go build -mod=readonly -tags with_gvisor -o "$RUNNER_TEMP/installed-routing-peer" ./cmd/android-fixture
       - name: Install RUN package and verify actual Qt service and system resolver
@@ -225,7 +261,7 @@ jobs:
           packages=(deploy/build/AmneziaVPN_*_linux_x64.run)
           chmod +x "${packages[0]}"
           sudo modprobe tun
-          python3 -u scripts/routing/run_linux_service_container.py --package "${packages[0]}" --peer "$RUNNER_TEMP/installed-routing-peer" --qt-probe "$GITHUB_WORKSPACE/routing-service-probe-build/routing-service-probe" --report "$GITHUB_WORKSPACE/linux-installed-service.json"
+          python3 -u scripts/routing/run_linux_service_container.py --package "${packages[0]}" --peer "$RUNNER_TEMP/installed-routing-peer" --qt-probe "$GITHUB_WORKSPACE/routing-service-probe-build/routing-service-probe" --openvpn-policies "$RUNNER_TEMP/openvpn-qt-policies.json" --openvpn-route-fixture "$GITHUB_WORKSPACE/deploy/build/client/tests/routing/openvpn_ipv6_route_fixture" --report "$GITHUB_WORKSPACE/linux-installed-service.json"
       - name: Preserve real WSS/TCP sockets through isolated underlay outages
         id: tcp-stability
         shell: bash
@@ -246,7 +282,14 @@ jobs:
           name: routing-client-linux-baseline
           path: |
             client-build.log
+            ipsec-update-ssh.log
+            path-probe-ssh.log
+            ipv6-activation.log
+            ipv6-activation.json
+            proxy-ipv6-activation.log
+            proxy-ipv6-activation.json
             routing-build-manifest.json
+            ${{ runner.temp }}/openvpn-tun-builder-policies.json
             deploy/build/client/tests/qt-regression.xml
             deploy/build/client/tests/Testing/Temporary/LastTest.log
             deploy/build/AmneziaVPN_*_linux_x64.run
@@ -322,6 +365,8 @@ jobs:
           $testResult = $LASTEXITCODE
           $report = 'deploy/build/client/tests/server-edit-test.txt'
           if (Test-Path $report) { Get-Content $report }
+          $updatesReport = 'deploy/build/client/tests/connection-updates/connection-updates-test.txt'
+          if (Test-Path $updatesReport) { Get-Content $updatesReport }
           exit $testResult
       - name: Record baseline result
         if: always()
@@ -383,6 +428,7 @@ jobs:
             client-build.log
             routing-build-manifest.json
             deploy/build/client/tests/server-edit-test.txt
+            deploy/build/client/tests/connection-updates/connection-updates-test.txt
             deploy/build/client/tests/qt-regression.xml
             deploy/build/client/tests/Testing/Temporary/LastTest.log
             deploy/build/AmneziaVPN_*_windows_x64.exe
@@ -485,7 +531,7 @@ jobs:
           candidates = sorted(p for p in Path('deploy/build/client').rglob('gradlew') if (p.parent / 'utils').is_dir())
           assert candidates, 'Generated Android Gradle project missing'
           wrapper = candidates[0].resolve()
-          subprocess.run([str(wrapper), ':utils:testDebugUnitTest', '--no-daemon'], cwd=wrapper.parent, check=True, timeout=300)
+          subprocess.run([str(wrapper), ':utils:testDebugUnitTest', ':protocolApi:testDebugUnitTest', ':openvpn:testDebugUnitTest', '--no-daemon'], cwd=wrapper.parent, check=True, timeout=300)
           PYCODE
       - name: Inspect native JNI in the actual APK
         id: payload
@@ -510,6 +556,8 @@ jobs:
             deploy/routing-native/
             android-routing-payloads.json
             deploy/build/client/**/utils/build/test-results/**/*.xml
+            deploy/build/client/**/protocolApi/build/test-results/**/*.xml
+            deploy/build/client/**/openvpn/build/test-results/**/*.xml
 
   client-ios:
     needs: cancel-superseded
@@ -537,15 +585,42 @@ jobs:
           test "$(git -C "$RUNNER_TEMP/routing-apple" rev-parse HEAD)" = 811f5c8213e6b257e9520fff713ec4d22086e9ac
           module="$RUNNER_TEMP/routing-apple/Sources/WireGuardKitGo"
           python3 native/routing/prepare_apple.py --module "$module"
-          (cd "$module" && go test -mod=readonly -tags with_gvisor,amnezia_gvisor_2026 -race -count=3 -run '^TestTCPTimeoutRecoveryDrainsThroughACKs$' github.com/StannisMod/amnezia-client/native/routing/awg)
+          (cd "$module" && go test -mod=readonly -tags with_gvisor,amnezia_gvisor_2026,amnezia_apple_bridge -race -count=3 -run '^TestTCPTimeoutRecoveryDrainsThroughACKs$' github.com/StannisMod/amnezia-client/native/routing/awg)
+          (cd "$module" && go test -mod=readonly -tags with_gvisor,amnezia_apple_bridge -race -count=3 github.com/StannisMod/amnezia-client/native/routing/dnsguard)
+          (cd "$module" && go test -mod=readonly -race -count=3 gvisor.dev/gvisor/pkg/tcpip/transport/tcp gvisor.dev/gvisor/pkg/tcpip/adapters/gonet)
           make -C "$module" ARCHS=arm64 PLATFORM_NAME=iphoneos
           nm -g "$module/out/libwg-go.a" > "$RUNNER_TEMP/routing-apple-symbols.txt"
-          for symbol in _AmneziaRoutingStart _AmneziaRoutingFeed _AmneziaRoutingStop _AmneziaRoutingStats _AmneziaRoutingBuildInfo _wgTurnOn; do
+          for symbol in _AmneziaRoutingStart _AmneziaRoutingFeed _AmneziaRoutingStop _AmneziaRoutingStats _AmneziaRoutingBuildInfo _AmneziaNativeDNSStart _AmneziaNativeDNSFeed _AmneziaNativeDNSComplete _AmneziaNativeDNSReject _AmneziaNativeDNSStop _wgTurnOn; do
             grep -E " T $symbol$" "$RUNNER_TEMP/routing-apple-symbols.txt"
           done
           xcrun --sdk iphoneos swiftc -typecheck -target arm64-apple-ios15.0 -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" -import-objc-header "$module/amnezia_routing.h" client/platforms/ios/WGConfig.swift client/platforms/ios/EndpointRefreshPolicy.swift client/platforms/ios/RoutingPacketTunnel.swift
+          xcrun --sdk iphoneos swiftc -typecheck -target arm64-apple-ios15.0 -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" -import-objc-header "$module/amnezia_routing.h" client/platforms/ios/NativeDNSGuard.swift client/platforms/ios/NativeDNSResolver.swift client/platforms/ios/NativeDNSSettings.swift
+          xcrun --sdk iphoneos swiftc -typecheck -target arm64-apple-ios15.0 -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" client/platforms/ios/XrayConfig.swift
+          swiftc client/platforms/ios/XrayConfig.swift client/tests/xray-network-settings/main.swift -o "$RUNNER_TEMP/xray-network-settings-tests"
+          "$RUNNER_TEMP/xray-network-settings-tests"
+          xcrun --sdk iphoneos swiftc -typecheck -target arm64-apple-ios15.0 -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" client/platforms/ios/OpenVPNIPv6Policy.swift
+          swiftc -swift-version 5 -warnings-as-errors client/platforms/ios/OpenVPNIPv6Policy.swift client/tests/openvpn-ipv6-policy/main.swift -o "$RUNNER_TEMP/openvpn-ipv6-policy-tests"
+          "$RUNNER_TEMP/openvpn-ipv6-policy-tests" client/tests/data/openvpn-tun-builder-policies.json
           (cd "$module" && go build -mod=readonly -tags with_gvisor,amnezia_apple_bridge -buildmode=c-shared -o "$RUNNER_TEMP/routing-apple-host.dylib" .)
           python3 scripts/routing/check_packet_flow_abi.py "$RUNNER_TEMP/routing-apple-host.dylib"
+          cc -std=c11 -D_DARWIN_C_SOURCE -Wall -Wextra -Werror -I "$module" \
+            native/routing/applebridge/tests/native_dns_client.c "$RUNNER_TEMP/routing-apple-host.dylib" \
+            -lpthread -o "$RUNNER_TEMP/native-dns-client"
+          DYLD_LIBRARY_PATH="$RUNNER_TEMP" "$RUNNER_TEMP/native-dns-client"
+          swiftc -swift-version 5 -warnings-as-errors -import-objc-header "$module/amnezia_routing.h" \
+            client/platforms/ios/NativeDNSGuard.swift client/tests/native-dns-host/main.swift \
+            -Xlinker "$RUNNER_TEMP/routing-apple-host.dylib" -o "$RUNNER_TEMP/native-dns-host-tests"
+          DYLD_LIBRARY_PATH="$RUNNER_TEMP" "$RUNNER_TEMP/native-dns-host-tests"
+          swiftc -swift-version 5 -warnings-as-errors -import-objc-header "$module/amnezia_routing.h" \
+            client/platforms/ios/NativeDNSGuard.swift client/platforms/ios/NativeDNSResolver.swift \
+            client/tests/native-dns-resolver/main.swift -Xlinker "$RUNNER_TEMP/routing-apple-host.dylib" \
+            -o "$RUNNER_TEMP/native-dns-resolver-tests"
+          DYLD_LIBRARY_PATH="$RUNNER_TEMP" "$RUNNER_TEMP/native-dns-resolver-tests"
+          swiftc -swift-version 5 -warnings-as-errors -import-objc-header "$module/amnezia_routing.h" \
+            client/platforms/ios/NativeDNSGuard.swift client/platforms/ios/NativeDNSResolver.swift \
+            client/platforms/ios/NativeDNSSettings.swift client/tests/native-dns-settings/main.swift \
+            -Xlinker "$RUNNER_TEMP/routing-apple-host.dylib" -o "$RUNNER_TEMP/native-dns-settings-tests"
+          DYLD_LIBRARY_PATH="$RUNNER_TEMP" "$RUNNER_TEMP/native-dns-settings-tests"
       - uses: actions/setup-python@v6
         with: {python-version: '3.14'}
       - uses: jurplel/install-qt-action@v4.3.1
@@ -595,6 +670,46 @@ jobs:
             deploy/build/client/tests/Testing/Temporary/LastTest.log
             deploy/build/client/Release-iphoneos/*.app
 
+  apple-tcp-recovery:
+    needs: cancel-superseded
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-26, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with: {submodules: recursive}
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: native/routing/go.mod
+          cache-dependency-path: native/routing/applebridge/module.sum
+      - name: Verify Apple dependency and TCP recovery on the native host
+        shell: bash
+        env:
+          GOTOOLCHAIN: local
+          GOTELEMETRY: 'off'
+        run: |
+          set -euo pipefail
+          module="$RUNNER_TEMP/apple-tcp-module"
+          mkdir -p "$module"
+          cp native/routing/applebridge/module.mod "$module/go.mod"
+          cp native/routing/applebridge/module.sum "$module/go.sum"
+          (cd "$module" && go mod edit "-replace=github.com/StannisMod/amnezia-client/native/routing=$GITHUB_WORKSPACE/native/routing")
+          python3 native/routing/internal/builddeps/verify.py --module "$module" --scope apple --output apple-tcp-dependency.json
+          race_mod=$(python3 native/routing/prepare_race.py --module "$module" --output "$RUNNER_TEMP")
+          (cd "$module" && go test -mod=readonly -modfile="$race_mod" -race -count=3 -json gvisor.dev/gvisor/pkg/tcpip/transport/tcp gvisor.dev/gvisor/pkg/tcpip/adapters/gonet) | tee apple-dependency-tests.jsonl
+          (cd "$module" && go test -mod=readonly -modfile="$race_mod" -tags with_gvisor,amnezia_gvisor_2026,amnezia_apple_bridge,amnezia_race_dependency -race -count=1 -json github.com/StannisMod/amnezia-client/native/routing/awg github.com/StannisMod/amnezia-client/native/routing/wireguard github.com/StannisMod/amnezia-client/native/routing/engine github.com/StannisMod/amnezia-client/native/routing/mobile) | tee apple-routing-tests.jsonl
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: apple-tcp-recovery-${{ matrix.os }}
+          path: |
+            apple-tcp-dependency.json
+            apple-dependency-tests.jsonl
+            apple-routing-tests.jsonl
+
   linux-dns-regression:
     needs: cancel-superseded
     runs-on: ubuntu-24.04
@@ -602,7 +717,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install DNS and native routing test dependencies
-        run: sudo apt-get update && sudo apt-get install -y qt6-base-dev ninja-build
+        run: sudo apt-get update && sudo apt-get install -y qt6-base-dev ninja-build iproute2
       - name: Test cache commands and production exclusion routes
         run: |
           cmake -S tests/linux-dns-cache -B build-dns-tests -G Ninja
@@ -611,7 +726,7 @@ jobs:
 
   build-gate:
     if: always()
-    needs: [cancel-superseded, core-tests, core-cross-compile, client-linux, client-windows, client-android, client-ios, linux-dns-regression]
+    needs: [cancel-superseded, core-tests, core-cross-compile, client-linux, client-windows, client-android, client-ios, apple-tcp-recovery, linux-dns-regression]
     runs-on: ubuntu-22.04
     steps:
       - name: Fail for any failed, cancelled or skipped required lane

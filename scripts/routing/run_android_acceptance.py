@@ -14,6 +14,8 @@ import shutil
 import subprocess
 import time
 import zipfile
+import urllib.request
+import threading
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -38,8 +40,8 @@ def check_ipc_contract():
     """Fail instead of silently using wrong ordinal messages after refactors."""
     source = (ROOT / "client/android/src/org/amnezia/vpn/IpcMessage.kt").read_text()
     for name, entries in {
-        "Action": ["REGISTER_CLIENT", "UNREGISTER_CLIENT", "CONNECT", "DISCONNECT", "REQUEST_STATUS", "NOTIFICATION_PERMISSION_GRANTED", "SET_SAVE_LOGS"],
-        "ServiceEvent": ["STATUS_CHANGED", "STATUS", "STATISTICS_UPDATE", "ERROR"],
+        "Action": ["REGISTER_CLIENT", "UNREGISTER_CLIENT", "CONNECT", "DISCONNECT", "REQUEST_STATUS", "NOTIFICATION_PERMISSION_GRANTED", "SET_SAVE_LOGS", "UPDATE_APPLICATION_POLICY"],
+        "ServiceEvent": ["STATUS_CHANGED", "STATUS", "STATISTICS_UPDATE", "ERROR", "APPLICATION_POLICY_RESULT"],
     }.items():
         match = re.search(r"enum class " + name + r"\s*:\s*IpcMessage\s*\{([^}]+)\}", source)
         assert match and re.findall(r"\b[A-Z_]+\b", match[1]) == entries, name + " IPC contract changed"
@@ -48,29 +50,175 @@ def check_ipc_contract():
         "DISCONNECTED", "CONNECTED", "CONNECTING", "DISCONNECTING", "RECONNECTING", "UNKNOWN"]
 
 
-def snapshot():
-    pid = adb("shell", "pidof", "org.amnezia.vpn:amneziaAwgService").split()
-    assert len(pid) == 1 and pid[0].isdigit(), "real service process is missing or duplicated"
-    status = adb("shell", "cat", f"/proc/{pid[0]}/status")
-    descriptors = adb("shell", "ls", f"/proc/{pid[0]}/fd").split()
+def snapshot(android_user=0, service_name="amneziaAwgService"):
+    candidates = adb("shell", "pidof", "org.amnezia.vpn:"+service_name).split()
+    matches = []
+    for candidate in candidates:
+        assert candidate.isdigit(), "invalid service PID"
+        details = adb("shell", "cat", f"/proc/{candidate}/status")
+        if int(re.search(r"^Uid:\s+(\d+)", details, re.M)[1]) // 100000 == android_user:
+            matches.append((candidate, details))
+    assert len(matches) == 1, "real service process for the selected user is missing or duplicated"
+    process_id, status = matches[0]
+    pid = [process_id]
+    # Enumerate names without stat-ing each descriptor. DNS workers may close
+    # individual entries during enumeration; the process itself must stay alive.
+    descriptors = adb("shell", f'test -d /proc/{pid[0]}/fd && printf "%s\\n" /proc/{pid[0]}/fd/*').split()
+    assert descriptors and all(Path(fd).name.isdigit() for fd in descriptors), "service FD directory disappeared"
     targets = adb("shell", f'for fd in /proc/{pid[0]}/fd/*; do readlink "$fd" || true; done').splitlines()
-    return {"pid": int(pid[0]), "fd_count": len(descriptors),
+    link_text = adb("shell", "ip", "link", "show")
+    capture_links = {name: int(index) for index, name in re.findall(r"(?m)^([0-9]+): ([^: ]+):", link_text) if name.startswith("tun")}
+    fields = adb('shell','cat',f'/proc/{pid[0]}/stat').split(')',1)[1].split()
+    return {"cpu_ticks":int(fields[11])+int(fields[12]),"captured_at":time.monotonic(),"capture_links": capture_links, "pid": int(pid[0]), "fd_count": len(descriptors),
             "eventfds": targets.count("anon_inode:[eventfd]"),
             "capture_fds": sum(target in ("/dev/tun", "/dev/net/tun", "anon_inode:[tun]") for target in targets),
+            "uid": int(re.search(r"^Uid:\s+(\d+)", status, re.M)[1]),
             "threads": int(re.search(r"^Threads:\s+(\d+)", status, re.M)[1]),
             "rss_kib": int(re.search(r"^VmRSS:\s+(\d+)", status, re.M)[1])}
+
+
+
+def fault_host_guard(extra_interfaces=()):
+    if Path('/.dockerenv').exists():
+        links = json.loads(subprocess.check_output(['ip', '-j', 'link', 'show'], text=True))
+        assert {row['ifname'] for row in links} <= {'lo', 'stability6', *extra_interfaces}, 'fault tests require Docker --network none'
+    else:
+        assert os.environ.get('GITHUB_ACTIONS') == 'true' and os.environ.get('RUNNER_ENVIRONMENT') == 'github-hosted', 'fault tests require an isolated Docker or disposable GitHub-hosted runner'
+
+
+def nft_command(*args, text=None, check=True):
+    prefix = [] if os.geteuid() == 0 else ['sudo', '-n']
+    return subprocess.run(prefix + ['nft', *args], input=text, text=True, capture_output=True, check=check, timeout=10)
+
+
+def performance_metrics(output, report):
+    measurements=[json.loads(row) for row in re.findall(r'PERFORMANCE (\{[^\n]*\})',output)]
+    assert {r['backend'] for r in measurements}=={'legacy','shared'}, 'performance comparison missing'
+    for row in measurements:
+        before=report['retained_resources']['perf_'+row['backend']+'_before']
+        after=report['retained_resources']['perf_'+row['backend']+'_after']
+        assert before['pid']==after['pid'], 'performance process replaced'
+        row.update(cpu_ticks=after['cpu_ticks']-before['cpu_ticks'],rss_before_kib=before['rss_kib'],rss_after_kib=after['rss_kib'])
+    report['performance_emulator']=measurements
+
+
+def upload_mtu_metrics(output, report):
+    upload = re.search(r'MTU_UPLOAD_RESULT (\{[^\n]*\})', output)
+    assert upload, 'automatic upload MTU result missing'
+    metrics = report['automatic_upload_mtu'] = json.loads(upload[1])
+    assert metrics['same_session'] and metrics['filter_still_active']
+    assert metrics['original_tcp_accepts'] == 2
+    assert metrics['age_before_fault_ms'] >= 65000, 'MTU fault must affect established sockets after normal probe periods'
+    # Controlled local fixture: allow scheduling/observer overhead, but reject
+    # the old ~51s RTO pause even when it eventually preserves the TCP stream.
+    # This is a regression ceiling, not an Internet delivery-time guarantee.
+    assert type(metrics.get('elapsed_ms')) is int and 0 < metrics['elapsed_ms'] <= 15000, 'MTU recovery exceeded the local regression latency budget'
+    assert report['dropped_outer_packets']['restore_upload_mtu'] > 0
+    a, b = (report['retained_resources'][key] for key in ('upload_mtu_before', 'upload_mtu_after'))
+    assert a['pid'] == b['pid'] and a['capture_links'] and a['capture_links'] == b['capture_links']
+    assert a['capture_fds'] == b['capture_fds'] == 1
+
+
+def app_policy_metrics(output, report):
+    match = re.search(r'APP_POLICY_RESULT (\{[^\n]*\})', output)
+    assert match, 'two-application policy result missing'
+    metrics = report['per_application_policy'] = json.loads(match[1])
+    assert len(metrics['uids']) == 2 and len(set(metrics['uids'])) == 2 and min(metrics['uids']) > 0
+    assert metrics['same_session'] and metrics['same_old_ports'] and metrics['dns_contexts_switched']
+    isolated=metrics['isolated_process']
+    assert isolated['parent_uid']==metrics['uids'][0]
+    result=isolated['result']
+    assert result['uid']>0 and result['uid']!=isolated['parent_uid'], 'probe did not run under an isolated UID'
+    assert isolated['parent_old_ports_preserved']
+    assert result['tcp'] in ('ANDROID_PERMISSION_DENIED','VPN')
+    assert result['udp'] in ('ANDROID_PERMISSION_DENIED','VPN:app-policy-proof')
+    a,b = (report['retained_resources'][key] for key in ('app_policy_before','app_policy_after'))
+    assert a['pid'] == b['pid'] and a['capture_links'] and a['capture_links'] == b['capture_links']
+    assert a['capture_fds'] == b['capture_fds'] == 1
+
+
+def build_application_probes(tools, android_jar, work, sign):
+    probe_apks = []
+    probe_source = ROOT / 'scripts/routing/android-app-probe'
+    probe_classes, probe_dex = work/'app-probe-classes', work/'app-probe-dex'
+    probe_classes.mkdir(); probe_dex.mkdir()
+    run('javac','-source','8','-target','8','-classpath',android_jar,'-d',probe_classes,probe_source/'Probe.java')
+    run(tools/'d8','--min-api','28','--lib',android_jar,'--output',probe_dex,*sorted(probe_classes.rglob('*.class')))
+    for suffix in ('a','b'):
+        package = 'org.amnezia.routingprobe.'+suffix
+        manifest = work/('probe-'+suffix+'-manifest.xml')
+        manifest.write_text((probe_source/'AndroidManifest.xml.in').read_text().replace('@PACKAGE@',package))
+        unsigned_probe = work/('probe-'+suffix+'-unsigned.apk')
+        run(tools/'aapt2','link','-I',android_jar,'--manifest',manifest,'-o',unsigned_probe)
+        with zipfile.ZipFile(unsigned_probe,'a') as archive: archive.write(probe_dex/'classes.dex','classes.dex')
+        signed_probe = work/('probe-'+suffix+'.apk')
+        sign(unsigned_probe,signed_probe); probe_apks.append(signed_probe)
+    return probe_apks
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--apk", type=Path, required=True)
+    parser.add_argument("--observer-ip",default="10.0.2.2",help="real IP shared by the controlled DIRECT/VPN observers")
     parser.add_argument("--fixture", type=Path, required=True, help="private JSON generated by the running host peer")
-    parser.add_argument("--quic-probe", type=Path, required=True)
-    parser.add_argument("--quic-ca", type=Path, required=True)
+    parser.add_argument("--quic-probe", type=Path)
+    parser.add_argument("--quic-ca", type=Path)
     parser.add_argument("--work", type=Path, required=True)
+    parser.add_argument("--android-user",type=int,default=0,help="existing AmneziaRoutingTest managed-profile ID; requires --app-policy-only")
     parser.add_argument("--cycles", type=int, default=100)
+    parser.add_argument("--source-sha", help="test-harness commit when a read-only worktree has no mounted Git metadata")
+    parser.add_argument("--apk-source-sha", help="record the actual packaged client source independently of the harness")
+    parser.add_argument("--diagnose-control", action="store_true", help="capture slow control-path stacks before timeout; diagnostic result only")
+    parser.add_argument("--xray-ipv6-only", action="store_true", help="real Xray VLESS/TLS IPv4 and IPv6 capture/egress fixture; focused acceptance")
+    parser.add_argument("--openvpn-ipv6-only", action="store_true", help="real OpenVpnService IPv6 scope and retained IPv4 TCP; owned local TLS fixture")
+    parser.add_argument("--ipv6-preference-only", action="store_true", help="default/explicit ON and fail-closed OFF on the actual AWG/WG VpnService")
+    parser.add_argument("--private-dns-policy-only", action="store_true", help="strict DNS startup/live policy refusal and retained-TCP pause/resume on a disposable emulator")
+    parser.add_argument("--private-dns-strict", action="store_true", help="with --app-policy-only, require strict Private DNS; disposable fixture CA must be installed in the emulator")
+    parser.add_argument("--private-dns-opportunistic", action="store_true", help="with --app-policy-only, require active Android Private DNS and use network DoT for DIRECT DNS")
+    parser.add_argument("--package-lifecycle", action="store_true", help="with --app-policy-only, reinstall a captured app and require fresh-UID VPN capture")
+    parser.add_argument("--api28-compat-only",action="store_true",help="Android 9 ordinary core and unsupported mixed-policy rejection; not full acceptance")
+    parser.add_argument("--app-policy-only", action="store_true", help="focused two-app live policy regression; not full acceptance")
+    parser.add_argument("--upload-mtu-only", action="store_true", help="focused aged-TCP MTU regression; not full acceptance")
+    parser.add_argument("--primary-only", action="store_true", help="focused retained-TCP debug run; not full acceptance")
+    parser.add_argument("--performance-only",action="store_true",help="benchmark only; does not run full acceptance")
+    parser.add_argument("--performance-order",choices=("legacy-first","shared-first"),default="legacy-first")
     args = parser.parse_args()
+    if not args.openvpn_ipv6_only and (args.quic_probe is None or args.quic_ca is None):
+        parser.error('--quic-probe and --quic-ca are required outside OpenVPN-only acceptance')
+    assert not args.package_lifecycle or args.app_policy_only, '--package-lifecycle requires --app-policy-only'
+    if sum((args.app_policy_only, args.upload_mtu_only, args.primary_only, args.performance_only, args.api28_compat_only, args.private_dns_policy_only, args.xray_ipv6_only, args.openvpn_ipv6_only, args.ipv6_preference_only)) > 1:
+        parser.error("focused acceptance modes are mutually exclusive")
+    assert not (args.private_dns_opportunistic and args.private_dns_strict), "Private DNS modes are mutually exclusive"
+    assert not args.private_dns_policy_only or (args.android_user == 0 and not args.private_dns_strict and not args.private_dns_opportunistic), "policy transition mode needs user 0 and initially disabled Private DNS"
+    private_dns_mode = "strict" if args.private_dns_strict else "opportunistic" if args.private_dns_opportunistic else "off"
+    assert private_dns_mode == "off" or args.app_policy_only, "Private DNS acceptance requires --app-policy-only"
+    assert 0 <= args.android_user <= 21474 and (args.android_user == 0 or args.app_policy_only), "managed-profile mode requires --app-policy-only"
+    user_arguments = ["--user", str(args.android_user)]
     check_ipc_contract()
+    for value in (args.source_sha, args.apk_source_sha):
+        assert value is None or re.fullmatch(r'[0-9a-f]{40}', value), 'invalid source revision'
+    source_sha = args.source_sha
+    if source_sha is None:
+        if args.openvpn_ipv6_only:
+            try:
+                revision=subprocess.run(['git','-c','safe.directory='+str(ROOT),'rev-parse','HEAD'],cwd=ROOT,
+                                        stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True,timeout=10)
+                candidate=revision.stdout.strip()
+                source_sha=candidate if revision.returncode==0 and re.fullmatch(r'[0-9a-f]{40}',candidate) else None
+            except FileNotFoundError:
+                source_sha=None # A source archive is usable; never invent its Git revision.
+        else:
+            source_sha=run('git', 'rev-parse', 'HEAD', cwd=ROOT, capture_output=True, text=True).stdout.strip()
+    fault_host_guard(('tun-ovpn3test',) if args.openvpn_ipv6_only else ())
+    fixture = json.loads(args.fixture.read_text())
+    service_name = "amneziaOpenVpnService" if args.openvpn_ipv6_only else "amneziaXrayService" if args.xray_ipv6_only else "amneziaAwgService"
+    protocol = fixture['protocol']
+    peer_port = int(fixture[protocol + '_config_data']['port'])
+    assert 1 <= peer_port <= 65535
+    fault_table = 'aap_' + str(os.getpid())
+    timer = None
+    control_timers = {}
+    diagnostic_taken = threading.Event()
     work = args.work.resolve(); work.mkdir(parents=True, exist_ok=True)
     sdk = Path(os.environ["ANDROID_HOME"])
     tools = sdk / "build-tools/36.0.0"
@@ -105,80 +253,424 @@ def main():
     with zipfile.ZipFile(unsigned, "a") as apk:
         apk.write(dex / "classes.dex", "classes.dex")
         apk.write(args.fixture, "assets/fixture.json")
-        apk.write(args.quic_ca, "assets/quic-ca.der")
-        apk.write(args.quic_probe, "lib/x86_64/libtrafficprobe.so")
+        if not args.openvpn_ipv6_only:
+            apk.write(args.quic_ca, "assets/quic-ca.der")
+            apk.write(args.quic_probe, "lib/x86_64/libtrafficprobe.so")
     aligned = work / "instrumentation-aligned.apk"
     run(tools / "zipalign", "-f", "4", unsigned, aligned)
     instrument = work / "instrumentation.apk"
     sign(aligned, instrument)
 
+    probe_apks, probe_processes, probe_logs = [], [], []
+    if not (args.upload_mtu_only or args.primary_only or args.performance_only or args.api28_compat_only or args.private_dns_policy_only or args.xray_ipv6_only or args.openvpn_ipv6_only or args.ipv6_preference_only):
+        probe_apks = build_application_probes(tools, android_jar, work, sign)
+
     assert adb("shell", "getprop", "ro.kernel.qemu") == "1", "only disposable Android emulators are supported"
     adb("root"); adb("wait-for-device")
     assert adb("shell", "id", "-u") == "0", "rooted emulator is needed to measure the actual service process"
-    report = {"schema_version": 1, "source_sha": run("git", "rev-parse", "HEAD", capture_output=True, text=True).stdout.strip(),
+    if args.android_user:
+        users = adb("shell", "pm", "list", "users")
+        profile = re.search(r"UserInfo\{"+str(args.android_user)+r":(AmneziaRoutingTest[^:]*):([0-9a-fA-F]+)\}", users)
+        assert profile and int(profile[2],16)&0x20, "selected user is not our disposable managed profile"
+        assert int(adb("shell", "getprop", "ro.build.version.sdk")) >= 29, "work-profile routing acceptance requires API29+"
+    report = {"schema_version": 1, "source_sha": source_sha, "apk_source_sha": args.apk_source_sha,
               "apk_sha256": hashlib.sha256(args.apk.read_bytes()).hexdigest(), "native_payloads": payload_hashes(args.apk),
               "environment": "disposable Android emulator; independent host and AWG-netstack observers",
-              "cycles_requested": args.cycles, "native_vpn_acceptance": "FAIL", "resources": {},
+              "protocol": protocol, "android_user":args.android_user, "cycles_requested": args.cycles,
+              "retained_resources": {}, "native_vpn_acceptance": "FAIL", "resources": {},
               "not_run": ["physical device", "Wi-Fi/cellular handover", "Android 9 lockdown query restriction", "physical-device policy behavior", "performance parity"]}
+    # QEMU exposes its DNS proxy at 10.0.2.3, but does not forward TCP/853.
+    # Redirect only the disposable guest's DoT to the unprivileged local fixture.
+    private_dns_rule = ["OUTPUT", "!", "-o", "tun+", "-d", "10.0.2.2" if args.private_dns_strict else "10.0.2.3", "-p", "tcp", "--dport", "853",
+                        "-m", "comment", "--comment", "amnezia-private-dns-acceptance",
+                        "-j", "DNAT", "--to-destination", "10.0.2.2:8853"]
+    private_dns_redirected = False
+    network_log, network_process = None, None
     admin = "org.amnezia.routingtest/.RoutingPolicyReceiver"
     try:
-        adb("install", "-r", "-t", str(target))
-        adb("install", "-r", "-t", str(instrument))
-        assert "Success" in adb("shell", "dpm", "set-device-owner", admin), "AVD device owner setup failed"
-        adb("shell", "appops", "set", PACKAGE, "ACTIVATE_VPN", "allow")
+        # Start after adb root (which restarts adbd). Snapshot -t counts can
+        # discard our earlier events when unrelated package-manager logs flood
+        # the device buffer, even though the final filter selects only our tags.
+        network_log = (work / "network-events-live.log").open("w")
+        network_process = subprocess.Popen(
+            ["adb", "logcat", "-v", "threadtime", "-T", "1", "-m", "10000",
+             "-s", "NetworkState:V", "Wireguard:I"],
+            stdout=network_log, stderr=subprocess.STDOUT)
+        # Only the emulator was accepted above. Remove stale test-only device
+        # ownership/signatures from an interrupted prior disposable run.
+        subprocess.run(['adb', 'shell', 'dpm', 'remove-active-admin', *user_arguments, admin], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+        for package in ('org.amnezia.routingtest', PACKAGE, 'org.amnezia.routingprobe.a', 'org.amnezia.routingprobe.b'):
+            subprocess.run(['adb', 'uninstall', package], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
+        if private_dns_mode != "off":
+            adb("shell", "iptables", "-t", "nat", "-A", *private_dns_rule)
+            private_dns_redirected = True
+        if args.private_dns_strict:
+            adb("shell", "settings", "put", "global", "private_dns_specifier", "routing-fixture.invalid")
+        adb("shell", "settings", "put", "global", "private_dns_mode", "hostname" if args.private_dns_strict else private_dns_mode)
+        adb("install", *user_arguments, "-r", "-t", str(target))
+        adb("install", *user_arguments, "-r", "-t", str(instrument))
+        for index,probe_apk in enumerate(probe_apks):
+            adb('install',*user_arguments,'-r','-t',str(probe_apk))
+            if args.android_user and index == 0:
+                personal_package = 'org.amnezia.routingprobe.a'
+                adb('shell','cmd','package','install-existing','--user','0',personal_package)
+                personal_log = (work/'personal-profile-probe.log').open('w');probe_logs.append(personal_log)
+                probe_processes.append(subprocess.Popen(['adb','shell','am','instrument','--user','0','-w','-r','-e','port','19093',personal_package+'/org.amnezia.appprobe.Probe'],stdout=personal_log,stderr=subprocess.STDOUT))
+            suffix = ('a','b')[index]
+            log = (work/('app-probe-'+suffix+'.log')).open('w'); probe_logs.append(log)
+            probe_processes.append(subprocess.Popen(['adb','shell','am','instrument',*user_arguments,'-w','-r','-e','port',str(19091+index),
+                'org.amnezia.routingprobe.'+suffix+'/org.amnezia.appprobe.Probe'],stdout=log,stderr=subprocess.STDOUT))
+        owner_mode = "set-profile-owner" if args.android_user else "set-device-owner"
+        assert "Success" in adb("shell", "dpm", owner_mode, *user_arguments, admin), "AVD test owner setup failed"
+        adb("shell", "appops", "set", *user_arguments, PACKAGE, "ACTIVATE_VPN", "allow")
         # am instrument does not set a useful shell exit code on test failure.
         # Require the explicit PASS result and successful resource assertions.
-        command = ["adb", "shell", "am", "instrument", "-w", "-r", "-e", "cycles", str(args.cycles),
+        command = ["adb", "shell", "am", "instrument", *user_arguments, "-w", "-r", "-e", "cycles", str(args.cycles),
+                   "-e", "observer_ip", args.observer_ip,
+                   "-e", "android_user", str(args.android_user),
+                   "-e", "private_dns_opportunistic", str(args.private_dns_opportunistic).lower(),
+                   "-e", "xray_ipv6_only", str(args.xray_ipv6_only).lower(),
+                   "-e", "openvpn_ipv6_only", str(args.openvpn_ipv6_only).lower(),
+                   "-e", "ipv6_preference_only", str(args.ipv6_preference_only).lower(),
+                   "-e", "private_dns_policy_only", str(args.private_dns_policy_only).lower(),
+                   "-e", "private_dns_strict", str(args.private_dns_strict).lower(),
+                   "-e", "primary_only", str(args.primary_only).lower(),
+                   "-e", "upload_mtu_only", str(args.upload_mtu_only).lower(),
+                   "-e", "app_policy_only", str(args.app_policy_only).lower(),
+                   "-e", "package_lifecycle", str(args.package_lifecycle).lower(),
+                   "-e", "api28_compat_only", str(args.api28_compat_only).lower(),
+                   "-e", "diagnose_control", str(args.diagnose_control).lower(),
+                   "-e", "performance_only", str(args.performance_only).lower(),
+                   "-e", "performance_order", args.performance_order,
                    "org.amnezia.routingtest/org.amnezia.routingtest.RoutingInstrumentation"]
         with (work / "instrumentation.log").open("w") as log:
             process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+            timer = threading.Timer(2400, process.kill); timer.daemon = True; timer.start()
             started = time.monotonic(); output = []
             for line in process.stdout:
                 print(line, end="", flush=True); log.write(line); log.flush(); output.append(line)
+                if 'WORK_PROFILE_RESULT ' in line:
+                    report['work_profile']=json.loads(line.strip().split('WORK_PROFILE_RESULT ',1)[1])
+                if 'API28_COMPAT_RESULT ' in line:
+                    report['api28_compatibility']=json.loads(line.strip().split('API28_COMPAT_RESULT ',1)[1])
+                if 'PACKAGE_LIFECYCLE_UPDATE_B ' in line:
+                    assert args.package_lifecycle and args.app_policy_only, 'unexpected package update request'
+                    operation=line.strip().split('PACKAGE_LIFECYCLE_UPDATE_B ',1)[1]
+                    assert operation in ('same-uid','disconnected')
+                    package='org.amnezia.routingprobe.b'
+                    assert 'Success' in adb('install',*user_arguments,'-r','-t',str(probe_apks[1]))
+                    probe_processes[-1].wait(timeout=15)
+                    lifecycle_log=(work/('app-probe-b-'+operation+'.log')).open('w');probe_logs.append(lifecycle_log)
+                    probe_processes.append(subprocess.Popen(['adb','shell','am','instrument',*user_arguments,'-w','-r','-e','port','19092',package+'/org.amnezia.appprobe.Probe'],stdout=lifecycle_log,stderr=subprocess.STDOUT))
+                    adb('shell','touch',f'/data/user/{args.android_user}/{PACKAGE}/files/routing-package-{operation}.ready')
+                if 'PACKAGE_LIFECYCLE_SAME_UID ' in line:
+                    report['package_update_same_uid']=json.loads(line.strip().split('PACKAGE_LIFECYCLE_SAME_UID ',1)[1])
+                if 'PACKAGE_LIFECYCLE_DISCONNECTED ' in line:
+                    report['package_update_disconnected']=json.loads(line.strip().split('PACKAGE_LIFECYCLE_DISCONNECTED ',1)[1])
+                if 'PACKAGE_LIFECYCLE_REINSTALL_B' in line:
+                    assert args.package_lifecycle and args.app_policy_only, 'unexpected package mutation request'
+                    (work/'package-before-connectivity.log').write_text(adb('shell','dumpsys','connectivity'))
+                    package='org.amnezia.routingprobe.b'
+                    assert 'Success' in adb('uninstall',package)
+                    probe_processes[-1].wait(timeout=15)
+                    assert 'Success' in adb('install',*user_arguments,'-t',str(probe_apks[1]))
+                    lifecycle_log=(work/'app-probe-b-reinstalled.log').open('w');probe_logs.append(lifecycle_log)
+                    probe_processes.append(subprocess.Popen(['adb','shell','am','instrument',*user_arguments,'-w','-r','-e','port','19092',package+'/org.amnezia.appprobe.Probe'],stdout=lifecycle_log,stderr=subprocess.STDOUT))
+                    (work/'package-after-connectivity.log').write_text(adb('shell','dumpsys','connectivity'))
+                    adb('shell','touch',f'/data/user/{args.android_user}/{PACKAGE}/files/routing-package-reinstalled.ready')
+                if 'PACKAGE_LIFECYCLE_UIDS ' in line:
+                    report['package_lifecycle_uids']=json.loads(line.strip().split('PACKAGE_LIFECYCLE_UIDS ',1)[1])
+                if 'PACKAGE_LIFECYCLE_RESULT ' in line:
+                    report['package_lifecycle']=json.loads(line.strip().split('PACKAGE_LIFECYCLE_RESULT ',1)[1])
+                if 'PACKAGE_LIFECYCLE_OBSERVATIONS ' in line:
+                    report['package_lifecycle_observations']=json.loads(line.strip().split('PACKAGE_LIFECYCLE_OBSERVATIONS ',1)[1])
+                if args.diagnose_control and 'CONTROL_PENDING ' in line:
+                    request_id = int(line.strip().split('CONTROL_PENDING ',1)[1])
+                    def capture_slow_control(request_id=request_id):
+                        if diagnostic_taken.is_set(): return
+                        diagnostic_taken.set()
+                        try:
+                            pid = snapshot(args.android_user, service_name)['pid']
+                            trace = subprocess.run(['adb','shell','debuggerd','-b',str(pid)],capture_output=True,text=True,timeout=6)
+                            (work/f'slow-control-{request_id}.log').write_text(trace.stdout+trace.stderr)
+                            sockets = subprocess.run(['adb','shell','ss','-nto'],capture_output=True,text=True,timeout=3)
+                            (work/f'slow-control-{request_id}-sockets.log').write_text(sockets.stdout+sockets.stderr)
+                        except (AssertionError,subprocess.SubprocessError) as error:
+                            (work/f'slow-control-{request_id}.log').write_text(type(error).__name__)
+                    watch = threading.Timer(2, capture_slow_control);watch.daemon=True
+                    control_timers[request_id]=watch;watch.start()
+                if args.diagnose_control and 'CONTROL_FINISHED ' in line:
+                    request_id = int(line.strip().split('CONTROL_FINISHED ',1)[1])
+                    if request_id in control_timers: control_timers[request_id].cancel()
+                if "RETAIN_CHECKPOINT " in line:
+                    name = line.strip().split("RETAIN_CHECKPOINT ", 1)[1]
+                    assert name in ('before', 'after', 'failure', 'restore_mtu', 'drop_mtu', 'drop_before_media', 'restore_before_media', 'drop_with_media', 'restore_with_media', 'wifi_off', 'wifi_on', 'safe_policy_before', 'safe_policy_after', 'perf_legacy_before', 'perf_legacy_after', 'perf_shared_before', 'perf_shared_after', 'upload_mtu_before', 'drop_upload_mtu', 'upload_mtu_after', 'restore_upload_mtu', 'app_policy_before', 'app_policy_after', 'package_refreshed', 'strict_dns_on', 'strict_dns_off')
+                    if name == 'failure':
+                        # The instrumentation waits at this barrier before
+                        # disconnecting; do not diagnose a torn-down VPN.
+                        for label, command in {
+                            'connectivity': ('shell', 'dumpsys', 'connectivity'),
+                            'tcp-sockets': ('shell', 'ss', '-tnpe'),
+                            'network-events': ('shell', 'logcat', '-d', '-t', '2000', '-v', 'threadtime', '-s', 'ConnectivityService:D', 'Vpn:D', 'Netd:D', 'netd:D'),
+                        }.items():
+                            (work / ('failure-active-' + label + '.log')).write_text(adb(*command))
+                    if name in ('strict_dns_on', 'strict_dns_off'):
+                        assert args.private_dns_policy_only, 'unexpected strict DNS policy checkpoint'
+                        if name == 'strict_dns_on':
+                            adb('shell','settings','put','global','private_dns_specifier','routing-fixture.invalid')
+                        adb('shell','settings','put','global','private_dns_mode','hostname' if name == 'strict_dns_on' else 'off')
+                    if name == 'package_refreshed':
+                        assert args.package_lifecycle, 'unexpected package refresh checkpoint'
+                        (work/'package-refreshed-connectivity.log').write_text(adb('shell','dumpsys','connectivity'))
+                        (work/'package-refreshed-rules.log').write_text(adb('shell','ip','rule','show'))
+                        (work/'package-refreshed-routes.log').write_text(adb('shell','ip','route','show','table','all'))
+                        (work/'package-refreshed-vpn.log').write_text(adb('shell','dumpsys','vpn_management'))
+                        (work/'package-refreshed-system.log').write_text(adb('shell','logcat','-d','-t','500','-v','threadtime','-s','Vpn:D','ConnectivityService:D','Netd:D','netd:D'))
+                    if name == 'before' and os.environ.get('AWG_ECHO_LAB') == '1':
+                        observations=[]
+                        for size in (128,576,1104,1280):
+                            with urllib.request.urlopen('http://127.0.0.1:18080/lab-echo?size='+str(size),timeout=3) as response:
+                                observations.append(json.load(response))
+                        report['android_echo_lab']=observations
+                        print('ANDROID_ECHO_LAB '+json.dumps(observations),flush=True)
+                    if name.startswith('drop_'):
+                        nft_command('delete', 'table', 'inet', fault_table, check=False)
+                        rules = (f'add table inet {fault_table}\n'
+                                 f'add chain inet {fault_table} output {{ type filter hook output priority -10; policy accept; }}\n'
+                                 f'add chain inet {fault_table} input {{ type filter hook input priority -10; policy accept; }}\n'
+                                 f'add rule inet {fault_table} output ip daddr 127.0.0.1 udp dport {peer_port} counter drop\n'
+                                 f'add rule inet {fault_table} input ip saddr 127.0.0.1 udp sport {peer_port} counter drop\n')
+                        if name == 'drop_mtu':
+                            rules = (f'add table inet {fault_table}\n'
+                                     f'add chain inet {fault_table} output {{ type filter hook output priority -10; policy accept; }}\n'
+                                     f'add rule inet {fault_table} output ip saddr 127.0.0.1 udp sport {peer_port} ip length > 1200 counter drop\n')
+                        if name == 'drop_upload_mtu':
+                            rules = (f'add table inet {fault_table}\n'
+                                     f'add chain inet {fault_table} input {{ type filter hook input priority -10; policy accept; }}\n'
+                                     f'add rule inet {fault_table} input ip saddr 127.0.0.1 udp dport {peer_port} ip length > 1200 counter drop\n')
+                        nft_command('-f', '-', text=rules)
+                    elif name.startswith('restore_'):
+                        witness = json.loads(nft_command('-j', 'list', 'table', 'inet', fault_table).stdout)
+                        dropped = sum(expr['counter']['packets'] for entry in witness['nftables'] if 'rule' in entry
+                                      for expr in entry['rule']['expr'] if 'counter' in expr)
+                        assert dropped > 0, 'outer blackhole affected no encrypted packets'
+                        report.setdefault('dropped_outer_packets', {})[name] = dropped
+                        nft_command('delete', 'table', 'inet', fault_table)
+                        if name == 'restore_mtu':
+                            report['mtu_restored_wall_ns'] = time.time_ns()
+                            print(f"RESTORED_NS={report['mtu_restored_wall_ns']}", flush=True)
+                    elif name == 'wifi_off': adb('shell', 'svc', 'wifi', 'disable')
+                    elif name == 'wifi_on': adb('shell', 'svc', 'wifi', 'enable')
+                    if name in ('before', 'after', 'safe_policy_before', 'safe_policy_after', 'perf_legacy_before', 'perf_legacy_after', 'perf_shared_before', 'perf_shared_after', 'upload_mtu_before', 'upload_mtu_after', 'app_policy_before', 'app_policy_after'):
+                        report['retained_resources'][name] = snapshot(args.android_user, service_name)
+                    with urllib.request.urlopen('http://127.0.0.1:18080/stats', timeout=5) as response:
+                        stats = json.load(response)
+                    local = work / ('stats-' + name + '.json');local.write_text(json.dumps(stats))
+                    remote = f'/data/user/{args.android_user}/{PACKAGE}/files/routing-stats-{name}.json'
+                    adb('push', str(local), remote)
+                    owner = adb('shell','stat','-c','%u',f'/data/user/{args.android_user}/{PACKAGE}')
+                    assert owner.isdigit() and int(owner)//100000==args.android_user, 'test data owner belongs to a different Android user'
+                    adb('shell','chown',owner+':'+owner,remote)
+                    adb('shell', 'restorecon', remote)
+                    # restorecon on older Android may retain user-0 MLS
+                    # categories even after chown. Use this app's real directory.
+                    context = adb('shell','ls','-Zd',f'/data/user/{args.android_user}/{PACKAGE}/files').split()[0]
+                    assert context.startswith('u:object_r:app_data_file:s0'), 'unexpected test app data context'
+                    adb('shell','chcon',context,remote)
+                    adb('shell', 'chmod', '644', remote)
+                    adb('shell', 'touch', f'/data/user/{args.android_user}/{PACKAGE}/files/routing-retain-{name}.ready')
                 if "POLICY_CHECKPOINT " in line:
                     mode = line.strip().split("POLICY_CHECKPOINT ", 1)[1]
                     assert mode in ("off", "alwayson", "lockdown")
-                    output_policy = adb("shell", "am", "broadcast", "-a", "org.amnezia.routingtest.POLICY", "-n", admin, "--es", "mode", mode)
+                    output_policy = adb("shell", "am", "broadcast", *user_arguments, "-a", "org.amnezia.routingtest.POLICY", "-n", admin, "--es", "mode", mode)
                     assert "result=-1" in output_policy, "AVD VPN policy was not applied: " + output_policy
                     if mode == "off":
                         # Removing an always-on package revokes its VPN grant.
                         # Emulate renewed user consent before the recovery test.
-                        adb("shell", "appops", "set", PACKAGE, "ACTIVATE_VPN", "allow")
-                    adb("shell", "touch", f"/data/user/0/{PACKAGE}/files/routing-policy-{mode}.ready")
+                        adb("shell", "appops", "set", *user_arguments, PACKAGE, "ACTIVATE_VPN", "allow")
+                    adb("shell", "touch", f"/data/user/{args.android_user}/{PACKAGE}/files/routing-policy-{mode}.ready")
                 if "RESOURCE_CHECKPOINT " in line:
                     label = line.strip().split("RESOURCE_CHECKPOINT ", 1)[1]
                     try:
-                        report["resources"][label] = snapshot()
+                        report["resources"][label] = snapshot(args.android_user, service_name)
                     except (AssertionError, subprocess.CalledProcessError) as error:
                         if label != "failure":
                             raise
                         # Preserve the instrumentation's original failure even
                         # when that failure terminated the service process.
                         report["resources"][label] = {"snapshot_error": type(error).__name__}
-                    if label == "failure":
+                    if label in ("failure", "failure_socket"):
+                        if args.private_dns_strict:
+                            # Capture before debuggerd and instrumentation cleanup.
+                            for name in ("connectivity", "dnsresolver"):
+                                (work / ("failure-active-" + name + ".log")).write_text(adb("shell", "dumpsys", name))
+                        failed = report['resources'].get('failure', {})
+                        if 'pid' in failed and not args.openvpn_ipv6_only:
+                            try:
+                                trace = subprocess.run(['adb','shell','debuggerd','-b',str(failed['pid'])],capture_output=True,text=True,timeout=8)
+                                (work/'failure-native-backtrace.log').write_text(trace.stdout+trace.stderr)
+                            except subprocess.TimeoutExpired:
+                                (work/'failure-native-backtrace.log').write_text('Native backtrace timed out\n')
                         for name, command in {
+                            "tcp-sockets": ("shell", "ss", "-tnpe"),
+                            "udp-sockets": ("shell", "ss", "-uanpe"),
                             "routes": ("shell", "ip", "route", "show", "table", "all"),
+                            "routes6": ("shell", "ip", "-6", "route", "show", "table", "all"),
                             "rules": ("shell", "ip", "rule"),
+                            "rules6": ("shell", "ip", "-6", "rule"),
                             "connectivity": ("shell", "dumpsys", "connectivity"),
                         }.items():
-                            (work / ("failure-" + name + ".log")).write_text(adb(*command))
+                            prefix = "failure-socket-" if label == "failure_socket" else "failure-"
+                            (work / (prefix + name + ".log")).write_text(adb(*command))
                 if time.monotonic() - started > 2400:
                     process.kill(); raise TimeoutError("Android acceptance exceeded 40 minutes")
             assert process.wait(timeout=15) == 0
+            timer.cancel()
         output = "".join(output)
-        assert "INSTRUMENTATION_RESULT: routing_result=PASS" in output, "Android service acceptance failed; see instrumentation.log"
-        before, after = (report["resources"][label] for label in ("baseline", "after_cycles"))
-        assert before["pid"] == after["pid"], "service process replacement hid resource cleanup"
-        assert after["fd_count"] <= before["fd_count"] + 8, "descriptor growth across reconnects"
-        assert after["threads"] <= before["threads"] + 24, "thread growth across reconnects"
-        report["resource_limits"] = {"fd_growth": 8, "thread_growth": 24, "rss": "measured only; Go heap retention varies"}
-        report["native_vpn_acceptance"] = "PASS"
-        report["android_os_always_on_lockdown"] = "PASS"
-        report["legacy_awg_transition"] = "PASS"
+        if args.ipv6_preference_only:
+            assert 'INSTRUMENTATION_RESULT: routing_result=PASS_IPV6_PREFERENCE_ONLY' in output
+            rows = [json.loads(line.split('IPV6_PREFERENCE_RESULT ', 1)[1]) for line in output.splitlines() if 'IPV6_PREFERENCE_RESULT ' in line]
+            assert len(rows) == 1 and rows[0] == {
+                "default_on": True, "explicit_on": True, "off_aaaa_nodata": True,
+                "off_cached_fakeip_and_literals_blocked": True, "blocked_tcp_udp_probes": 6,
+                "independent_observers_unchanged": True, "ipv4_vpn_and_direct_preserved": True,
+            }
+            report['ipv6_preference'] = rows[0]
+            report['native_vpn_acceptance'] = 'NOT_RUN_IPV6_PREFERENCE_ONLY'
+            return
+        if args.openvpn_ipv6_only:
+            assert 'INSTRUMENTATION_RESULT: routing_result=PASS_OPENVPN_IPV6_ONLY' in output
+            cases = [json.loads(line.split('OPENVPN_IPV6_CASE ', 1)[1]) for line in output.splitlines() if 'OPENVPN_IPV6_CASE ' in line]
+            assert len(cases) == len(fixture['openvpn_cases']) and all(row['old_ipv4_tcp_retained'] for row in cases)
+            assert all(row['loopback_ipv6_local'] for row in cases)
+            assert output.count('OPENVPN_LOOPBACK_IPV6 TCP_UDP_LOCAL') == len(cases)
+            report['openvpn_ipv6'] = {'server_ipv6': fixture['server_ipv6'], 'cases': cases}
+            report['native_vpn_acceptance'] = 'NOT_RUN_OPENVPN_IPV6_ONLY'
+            return
+        if args.xray_ipv6_only:
+            assert 'INSTRUMENTATION_RESULT: routing_result=PASS_XRAY_IPV6_ONLY' in output
+            assert 'XRAY_IPV6_RESULT ipv4_gua_ula_nat64_tcp_udp' in output
+            assert 'XRAY_SITE_SCOPE_RESULT include_ipv4_keeps_unselected_ipv6_direct' in output
+            report['xray_ipv6']={'ipv4':True,'ipv6_global':True,'ipv6_ula':True,'ipv6_nat64':True,'tcp':True,'udp':True,'vless_tls':True,'site_scope_preserved':True,'destinations':fixture['ipv6_test_destinations']}
+            report['native_vpn_acceptance']='NOT_RUN_XRAY_IPV6_ONLY'
+            return
+        if args.private_dns_policy_only:
+            assert 'INSTRUMENTATION_RESULT: routing_result=PASS_PRIVATE_DNS_POLICY_ONLY' in output
+            assert 'PRIVATE_DNS_POLICY_RESULT startup_rejected_live_enable_rejected_old_tcp_preserved_resumed' in output
+            report['private_dns_policy']={'startup_rejected':True,'live_enable_rejected':True,'old_tcp_preserved':True,'same_tun_session':True,'new_flows_resume':True}
+            report['native_vpn_acceptance']='NOT_RUN_PRIVATE_DNS_POLICY_ONLY'
+            return
+        if args.api28_compat_only:
+            assert 'INSTRUMENTATION_RESULT: routing_result=PASS_API28_COMPAT_ONLY' in output
+            assert report.get('api28_compatibility')=={'sdk':28,'ordinary_shared_ipv4_ipv6':True,'mixed_policy_rejected':True,'subsequent_connect':True}
+            report['native_vpn_acceptance']='NOT_RUN_API28_COMPAT_ONLY'
+            return
+        if args.app_policy_only:
+            assert 'INSTRUMENTATION_RESULT: routing_result=PASS_APP_POLICY_ONLY' in output
+            app_policy_metrics(output,report)
+            if private_dns_mode != "off":
+                assert f"PRIVATE_DNS_RESULT active_{private_dns_mode}_network_tls" in output
+                report["private_dns"] = {"mode":private_dns_mode, "android_active":True, "direct_network_tls_queries":True}
+            if args.package_lifecycle:
+                assert report.get('package_lifecycle') == {'uid_changed':True,'automatic_reconnect':True,'vpn_tcp_dns':True,'same_session':False}
+                assert report['package_update_same_uid']['same_session'] and report['package_update_same_uid']['other_tcp_preserved']
+                assert report['package_update_disconnected']=={'stayed_disconnected':True}
+            assert all(uid//100000==args.android_user for uid in report['per_application_policy']['uids']), "probe UID belongs to a different Android user"
+            if args.android_user:
+                profile=report.get('work_profile',{})
+                assert profile.get('user')==args.android_user and profile.get('personal_tcp_preserved') and profile.get('personal_new_tcp_direct')
+                assert profile['work_uid']-profile['personal_uid']==args.android_user*100000
+                report['native_vpn_acceptance']='NOT_RUN_WORK_PROFILE_ONLY'
+            else:
+                report['native_vpn_acceptance']='NOT_RUN_PACKAGE_LIFECYCLE_ONLY' if args.package_lifecycle else 'NOT_RUN_APP_POLICY_ONLY'
+            return
+        if args.upload_mtu_only:
+            assert 'INSTRUMENTATION_RESULT: routing_result=PASS_UPLOAD_MTU_ONLY' in output
+            upload_mtu_metrics(output, report)
+            report['native_vpn_acceptance'] = 'NOT_RUN_UPLOAD_MTU_ONLY'
+            return
+        if args.performance_only:
+            assert 'INSTRUMENTATION_RESULT: routing_result=PASS_PERFORMANCE_ONLY' in output
+            performance_metrics(output,report)
+            report['native_vpn_acceptance']='NOT_RUN_PERFORMANCE_ONLY'
+            return
+        if args.primary_only:
+            assert "INSTRUMENTATION_RESULT: routing_result=PASS_PRIMARY_ONLY" in output, 'focused TCP acceptance failed'
+            report['native_vpn_acceptance'] = 'PASS_PRIMARY_ONLY'
+        else:
+            assert "INSTRUMENTATION_RESULT: routing_result=PASS\n" in output, "Android service acceptance failed; see instrumentation.log"
+            before, after = (report["resources"][label] for label in ("baseline", "after_cycles"))
+            assert before["pid"] == after["pid"], "service process replacement hid resource cleanup"
+            assert after["fd_count"] <= before["fd_count"] + 8, "descriptor growth across reconnects"
+            assert after["threads"] <= before["threads"] + 24, "thread growth across reconnects"
+            report["resource_limits"] = {"fd_growth": 8, "thread_growth": 24, "rss": "measured only; Go heap retention varies"}
+            report["native_vpn_acceptance"] = "PASS_WITH_CONTROL_DIAGNOSTICS" if args.diagnose_control else "PASS"
+            report["android_os_always_on_lockdown"] = "PASS"
+            report["legacy_awg_transition"] = "PASS"
+        match = re.search(r'INSTRUMENTATION_RESULT: retained_result=(\{[^\n]*\})', output)
+        assert match, 'retained TCP result missing'
+        report['retained_tcp'] = json.loads(match[1])
+        metrics = {}
+        for record in re.findall(r'MTU_RESULT ([^\r\n]+)', output):
+            for field, value in re.findall(r'(\w+)=(\d+)', record):
+                metrics[field] = int(value)
+        assert metrics.keys() >= {'short_echoes', 'media_chunks', 'verified_large_downlink_ms', 'media_resumed_after_restore_ms'}, 'incomplete size-loss measurements'
+        report['size_loss_measurements'] = metrics
+        for first, last in ([('before', 'after')] if args.primary_only else [('before', 'after'), ('safe_policy_before', 'safe_policy_after')]):
+            a, b = report['retained_resources'][first], report['retained_resources'][last]
+            assert a['pid'] == b['pid'] and a['capture_links'] and a['capture_links'] == b['capture_links'], 'network/policy change recreated service or TUN'
+            assert a['capture_fds'] == 1 and b['capture_fds'] == 1, 'capture ownership changed'
+        if not args.primary_only:
+            upload_mtu_metrics(output, report)
+            app_policy_metrics(output, report)
+            performance_metrics(output,report)
+        report['ordinary_app_only_preserving_recovery'] = 'PASS'
+        if not args.primary_only: report['all_vpn_lockdown'] = 'PASS'
     finally:
+        if network_process is not None:
+            report["network_events_live_early_exit"] = network_process.poll()
+            if network_process.poll() is None:
+                network_process.terminate()
+                try:
+                    network_process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    network_process.kill()
+                    network_process.wait(timeout=5)
+        if network_log is not None:
+            network_log.close()
+        if timer is not None: timer.cancel()
+        for watch in control_timers.values(): watch.cancel()
+        for watch in control_timers.values():
+            if watch.is_alive(): watch.join(timeout=10)
+        report['control_diagnostics'] = {'enabled':args.diagnose_control,'captures':[p.name for p in work.glob('slow-control-*.log')]}
+        # Fault injection can abort before instrumentation switches the peer
+        # back on. Leave the persistent disposable fixture ready for a rerun.
+        if not args.openvpn_ipv6_only and not args.xray_ipv6_only:
+            try:
+                with urllib.request.urlopen('http://127.0.0.1:18080/acceptance-packets', timeout=5) as response:
+                    packets = json.load(response)
+                (work / 'failure-peer-packets.log').write_text(json.dumps(packets, indent=2) + '\n')
+            except (OSError, ValueError) as error:
+                report['peer_packet_diagnostics'] = type(error).__name__
         try:
-            adb("shell", "am", "broadcast", "-a", "org.amnezia.routingtest.POLICY", "-n", admin, "--es", "mode", "off")
-            adb("shell", "dpm", "remove-active-admin", admin)
+            request = urllib.request.Request('http://127.0.0.1:18080/peer?state=on', data=b'', method='POST')
+            if not args.openvpn_ipv6_only:
+                with urllib.request.urlopen(request, timeout=5) as response:
+                    assert response.status == 200
+        except (OSError, AssertionError) as error:
+            report['fixture_peer_cleanup'] = type(error).__name__
+        nft_command('delete', 'table', 'inet', fault_table, check=False)
+        if private_dns_mode != "off" or args.private_dns_policy_only:
+            adb("shell", "settings", "put", "global", "private_dns_mode", "off")
+        if args.private_dns_policy_only:
+            adb("shell", "settings", "delete", "global", "private_dns_specifier")
+        if private_dns_redirected:
+            adb("shell", "iptables", "-t", "nat", "-D", *private_dns_rule)
+        try: adb('shell', 'svc', 'wifi', 'enable')
+        except subprocess.CalledProcessError: pass
+        try:
+            adb("shell", "am", "broadcast", *user_arguments, "-a", "org.amnezia.routingtest.POLICY", "-n", admin, "--es", "mode", "off")
+            adb("shell", "dpm", "remove-active-admin", *user_arguments, admin)
         except subprocess.CalledProcessError:
             report["policy_cleanup"] = "FAIL"
         (work / "android-acceptance.json").write_text(json.dumps(report, indent=2) + "\n")
@@ -186,13 +678,27 @@ def main():
             "routes": ("shell", "ip", "route", "show", "table", "all"),
             "rules": ("shell", "ip", "rule"),
             "connectivity": ("shell", "dumpsys", "connectivity"),
-            "service-errors": ("logcat", "-d", "-s", "AndroidRuntime:E", "AmneziaVpnService:E", "Go:E", "libc:F"),
+            "service-errors": ("logcat", "-d", "-s", "AndroidRuntime:E", "AmneziaVpnService:E", "AmneziaRoutingHost:W", "Go:E", "libc:F"),
+            # Snapshot after adb root/setup, not a stream that adbd restart can
+            # silently terminate before the application's network callbacks.
+            "network-events": ("logcat", "-d", "-t", "4000", "-v", "threadtime", "-s",
+                               "NetworkState:V", "Wireguard:I", "ConnectivityService:D", "Vpn:D"),
         }.items():
             try:
                 (work / (label + ".log")).write_text(adb(*command))
             except subprocess.CalledProcessError:
                 pass
-        adb("shell", "am", "force-stop", PACKAGE)
+        adb("shell", "am", "force-stop", *user_arguments, PACKAGE)
+        for suffix in ('a','b'):
+            subprocess.run(['adb','shell','am','force-stop',*user_arguments,'org.amnezia.routingprobe.'+suffix],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=10)
+        if args.android_user:
+            subprocess.run(["adb","shell","am","force-stop","--user","0","org.amnezia.routingprobe.a"],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=10)
+        for process in probe_processes:
+            try: process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.terminate(); process.wait(timeout=5)
+        for log in probe_logs: log.close()
+        for probe_apk in probe_apks: probe_apk.unlink(missing_ok=True)
         # Always remove the throwaway keys and the fixture-bearing test APKs.
         for path in (key, target, instrument, aligned, unsigned):
             path.unlink(missing_ok=True)

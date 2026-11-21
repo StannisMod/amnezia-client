@@ -3,10 +3,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/elliptic"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -24,6 +26,7 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -45,6 +48,11 @@ var hostLabel = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 var awgKeys = strings.Fields("Jc Jmin Jmax S1 S2 S3 S4 H1 H2 H3 H4 I1 I2 I3 I4 I5 HeaderProtectionKey ContentPaddingAddition RekeyAfterTime RekeyTimeout RejectAfterTime KeepaliveTimeout MaxHandshakeAttempts RandomTrailers DisableCookies")
 
 type record struct {
+	PathMTUProbes   *[]string       `json:"pathMtuProbes,omitempty"`
+	IssueOperation  string          `json:"issueOperation,omitempty"`
+	IssueDigest     string          `json:"issueDigest,omitempty"`
+	ClientIPv6      *string         `json:"clientIpv6,omitempty"`
+	PathMTUProbe    string          `json:"pathMtuProbe,omitempty"`
 	ID              string          `json:"id"`
 	TokenHash       string          `json:"tokenHash"`
 	ClientPublicKey string          `json:"clientPublicKey"`
@@ -54,19 +62,24 @@ type record struct {
 	Settings        json.RawMessage `json:"settings"`
 }
 type state struct {
-	Host        string            `json:"host"`
-	SigningKey  []byte            `json:"signingKey"`
-	Certificate []byte            `json:"certificate"`
-	TLSKey      []byte            `json:"tlsKey"`
-	Records     map[string]record `json:"records"`
+	IPv6Publications map[string]ipv6PublicationReceipt `json:"ipv6Publications,omitempty"`
+	Host             string                            `json:"host"`
+	SigningKey       []byte                            `json:"signingKey"`
+	Certificate      []byte                            `json:"certificate"`
+	TLSKey           []byte                            `json:"tlsKey"`
+	Records          map[string]record                 `json:"records"`
 }
 type request struct {
-	ClientPublicKeys []string        `json:"clientPublicKeys"`
-	ExpectedState    string          `json:"expectedState"`
-	Host             string          `json:"host"`
-	ClientPublicKey  string          `json:"clientPublicKey"`
-	Container        string          `json:"container"`
-	Settings         json.RawMessage `json:"settings"`
+	PathMTUProbes    []string          `json:"pathMtuProbes,omitempty"`
+	Operation        string            `json:"operation,omitempty"`
+	ClientIPv6       map[string]string `json:"clientIpv6,omitempty"`
+	PathMTUProbe     string            `json:"pathMtuProbe,omitempty"`
+	ClientPublicKeys []string          `json:"clientPublicKeys"`
+	ExpectedState    string            `json:"expectedState"`
+	Host             string            `json:"host"`
+	ClientPublicKey  string            `json:"clientPublicKey"`
+	Container        string            `json:"container"`
+	Settings         json.RawMessage   `json:"settings"`
 }
 type payload struct {
 	Type            string          `json:"type"`
@@ -152,6 +165,111 @@ func settingsOK(raw json.RawMessage, container string) error {
 	}
 	return nil
 }
+func pathMTUProbeOK(value string) bool {
+	if value == "" {
+		return true
+	}
+	ip := net.ParseIP(value)
+	return len(value) <= 64 && ip != nil && ip.String() == value && ip.IsGlobalUnicast() && !ip.IsLoopback() && !ip.IsLinkLocalUnicast()
+}
+
+func probeList(value *[]string) []string {
+	if value == nil {
+		return nil
+	}
+	return *value
+}
+func probeListPointer(value []string) *[]string {
+	if value == nil {
+		return nil
+	}
+	copy := append([]string{}, value...)
+	return &copy
+}
+
+// Nil preserves legacy metadata; an explicit empty list withdraws all probes.
+func pathMTUProbesOK(primary string, values []string) bool {
+	if !pathMTUProbeOK(primary) || len(values) > 2 {
+		return false
+	}
+	seen := map[bool]bool{}
+	for _, value := range values {
+		if value == "" || !pathMTUProbeOK(value) {
+			return false
+		}
+		v4 := net.ParseIP(value).To4() != nil
+		if seen[v4] {
+			return false
+		}
+		seen[v4] = true
+	}
+	return values == nil || (len(values) == 0 && primary == "") || (len(values) > 0 && values[0] == primary)
+}
+func replacePathProbes(r *record, req request) {
+	if req.PathMTUProbes != nil {
+		r.PathMTUProbes = probeListPointer(req.PathMTUProbes)
+		r.PathMTUProbe = req.PathMTUProbe
+	} else if req.PathMTUProbe != "" {
+		if len(probeList(r.PathMTUProbes)) > 0 {
+			targets := []string{req.PathMTUProbe}
+			for _, target := range probeList(r.PathMTUProbes) {
+				if (net.ParseIP(target).To4() != nil) != (net.ParseIP(req.PathMTUProbe).To4() != nil) {
+					targets = append(targets, target)
+				}
+			}
+			r.PathMTUProbes = &targets
+		}
+		r.PathMTUProbe = req.PathMTUProbe
+	}
+}
+
+// This is per-device metadata, never a container-wide public setting. An
+// explicit empty value withdraws a managed address; omission preserves it.
+func clientIPv6OK(value string) bool {
+	if value == "" {
+		return true
+	}
+	ip, err := netip.ParseAddr(value)
+	return err == nil && ip.Is6() && !ip.Is4In6() && ip.Zone() == "" && ip.String() == value &&
+		ip.IsGlobalUnicast() && !ip.IsLinkLocalUnicast() && !netip.MustParsePrefix("::/96").Contains(ip)
+}
+func clientIPv6AssignmentsOK(assignments map[string]string) error {
+	seen := map[string]string{}
+	for key, address := range assignments {
+		if !keyOK(key) || !clientIPv6OK(address) {
+			return errors.New("invalid client IPv6 assignment")
+		}
+		if address == "" {
+			continue
+		}
+		if previous, exists := seen[address]; exists && previous != key {
+			return errors.New("duplicate client IPv6 assignment")
+		}
+		seen[address] = key
+	}
+	return nil
+}
+func clientIPv6StateOK(s *state) error {
+	seen := map[string]string{}
+	for _, rec := range s.Records {
+		if rec.ClientIPv6 == nil {
+			continue
+		}
+		if !clientIPv6OK(*rec.ClientIPv6) {
+			return errors.New("invalid saved client IPv6 assignment")
+		}
+		if rec.Revoked || *rec.ClientIPv6 == "" {
+			continue
+		}
+		address := rec.Container + "|" + *rec.ClientIPv6
+		if previous, exists := seen[address]; exists && previous != rec.ClientPublicKey {
+			return errors.New("duplicate saved client IPv6 assignment")
+		}
+		seen[address] = rec.ClientPublicKey
+	}
+	return nil
+}
+
 func readState(dir string) (*state, error) {
 	f, e := os.Open(filepath.Join(dir, "state.json"))
 	if e != nil {
@@ -166,9 +284,32 @@ func readState(dir string) (*state, error) {
 	if json.Unmarshal(b, &s) != nil || len(s.SigningKey) != ed25519.PrivateKeySize || s.Records == nil {
 		return nil, errors.New("invalid state")
 	}
+	for _, rec := range s.Records {
+		if !pathMTUProbesOK(rec.PathMTUProbe, probeList(rec.PathMTUProbes)) {
+			return nil, errors.New("invalid path probe address")
+		}
+	}
+	if err := validateIssueReceipts(&s); err != nil {
+		return nil, err
+	}
+	if err := clientIPv6StateOK(&s); err != nil {
+		return nil, err
+	}
+	if err := validateIPv6Publications(&s); err != nil {
+		return nil, err
+	}
 	return &s, nil
 }
 func writeState(dir string, s *state) error {
+	if err := validateIssueReceipts(s); err != nil {
+		return err
+	}
+	if err := validateIPv6Publications(s); err != nil {
+		return err
+	}
+	if err := clientIPv6StateOK(s); err != nil {
+		return err
+	}
 	b, e := json.Marshal(s)
 	if e != nil {
 		return e
@@ -244,7 +385,7 @@ func stateTag(s *state) string {
 	return hex.EncodeToString(digest[:])
 }
 func info(s *state) map[string]any {
-	return map[string]any{"version": 1, "stateTag": stateTag(s), "features": []string{"coverage-v1", "conditional-publication-v1", "awg3-header-protection-v1", "rollout-readiness-v1", "live-publication-v1"}, "host": s.Host, "publicKey": []byte(ed25519.PrivateKey(s.SigningKey).Public().(ed25519.PublicKey)), "certificate": s.Certificate}
+	return map[string]any{"version": 1, "stateTag": stateTag(s), "features": []string{"coverage-v1", "conditional-publication-v1", "awg3-header-protection-v1", "rollout-readiness-v1", "live-publication-v1", "path-mtu-probe-v1", "dual-path-mtu-probes-v1", "client-ipv6-v1", "conditional-client-ipv6-v1", "idempotent-issue-v1", "ipv6-upgrade-v1", "ipv6-boot-upgrade-v1"}, "host": s.Host, "publicKey": []byte(ed25519.PrivateKey(s.SigningKey).Public().(ed25519.PublicKey)), "certificate": s.Certificate}
 }
 func probe(s *state) error {
 	certificate, e := x509.ParseCertificate(s.Certificate)
@@ -311,11 +452,31 @@ func admin(dir, command string, req request) (map[string]any, error) {
 	case "init", "info":
 		return out, nil
 	case "issue":
+		if err := clientIPv6AssignmentsOK(req.ClientIPv6); err != nil {
+			return nil, err
+		}
+		if !pathMTUProbesOK(req.PathMTUProbe, req.PathMTUProbes) {
+			return nil, errors.New("invalid path probe address")
+		}
 		if !keyOK(req.ClientPublicKey) {
 			return nil, errors.New("invalid client key")
 		}
 		if e = settingsOK(req.Settings, req.Container); e != nil {
 			return nil, e
+		}
+		var operationID, operationToken, operationDigest string
+		if req.Operation != "" {
+			operationID, operationToken, operationDigest, e = issueIdentity(s, req)
+			if e != nil {
+				return nil, e
+			}
+			if previous, exists := s.Records[operationID]; exists {
+				if previous.IssueOperation != req.Operation || previous.IssueDigest != operationDigest || previous.Revoked || previous.Container != req.Container || previous.ClientPublicKey != req.ClientPublicKey {
+					return nil, errors.New("issue operation conflict")
+				}
+				out["id"], out["token"], out["ok"], out["replayed"] = operationID, operationToken, true, true
+				return out, nil // No state rewrite or revision increment on replay.
+			}
 		}
 		id, e := randomHex(16)
 		if e != nil {
@@ -326,10 +487,38 @@ func admin(dir, command string, req request) (map[string]any, error) {
 			return nil, e
 		}
 		token := base64.RawURLEncoding.EncodeToString(tokenBytes)
+		if req.Operation != "" {
+			id, token = operationID, operationToken
+		}
 		hash := sha256.Sum256([]byte(token))
-		s.Records[id] = record{ID: id, TokenHash: hex.EncodeToString(hash[:]), ClientPublicKey: req.ClientPublicKey, Container: req.Container, Revision: 1, Settings: req.Settings}
+		s.Records[id] = record{ID: id, TokenHash: hex.EncodeToString(hash[:]), ClientPublicKey: req.ClientPublicKey, Container: req.Container, Revision: 1, Settings: req.Settings, PathMTUProbe: req.PathMTUProbe, PathMTUProbes: probeListPointer(req.PathMTUProbes)}
+		if req.Operation != "" {
+			rec := s.Records[id]
+			rec.IssueOperation = req.Operation
+			rec.IssueDigest = operationDigest
+			s.Records[id] = rec
+		}
+
+		if address, exists := req.ClientIPv6[req.ClientPublicKey]; exists {
+			rec := s.Records[id]
+			rec.ClientIPv6 = &address
+			s.Records[id] = rec
+		}
 		out["id"] = id
 		out["token"] = token
+	case "ipv6-publication-status":
+		return ipv6PublicationStatus(s, req)
+	case "publish-ipv6-if":
+		replay, err := publishClientIPv6(s, req)
+		if err != nil {
+			return nil, err
+		}
+		out["operation"] = req.Operation
+		if replay {
+			out["ok"] = true
+			out["replayed"] = true
+			return out, nil
+		}
 	case "coverage":
 		if !containerOK(req.Container) {
 			return nil, errors.New("invalid container")
@@ -359,6 +548,12 @@ func admin(dir, command string, req request) (map[string]any, error) {
 		out["covered"] = len(seen) - missing
 		return out, nil
 	case "publish", "publish-if", "publish-live", "publish-if-live":
+		if err := clientIPv6AssignmentsOK(req.ClientIPv6); err != nil {
+			return nil, err
+		}
+		if !pathMTUProbesOK(req.PathMTUProbe, req.PathMTUProbes) {
+			return nil, errors.New("invalid path probe address")
+		}
 		if strings.HasPrefix(command, "publish-if") && (req.ExpectedState == "" || req.ExpectedState != stateTag(s)) {
 			return nil, errors.New("subscription state changed")
 		}
@@ -390,6 +585,10 @@ func admin(dir, command string, req request) (map[string]any, error) {
 				}
 				r.Revision++
 				r.Settings = req.Settings
+				replacePathProbes(&r, req)
+				if address, exists := req.ClientIPv6[r.ClientPublicKey]; exists {
+					r.ClientIPv6 = &address
+				}
 				s.Records[id] = r
 			}
 		}
@@ -498,11 +697,22 @@ func handler(dir string, books ...*readinessBook) http.Handler {
 		now := time.Now().Unix()
 		p := payload{payloadType, 1, rec.ID, rec.ClientPublicKey, rec.Container, strconv.FormatUint(rec.Revision, 10), now, now + 600, rec.Settings}
 		b, e := json.Marshal(p)
-		if e == nil && book.challenge != nil {
+		if e == nil && (book.challenge != nil || rec.PathMTUProbe != "" || rec.PathMTUProbes != nil || rec.ClientIPv6 != nil) {
 			var signed map[string]json.RawMessage
 			e = json.Unmarshal(b, &signed)
 			if e == nil {
-				signed["ackChallenge"], e = json.Marshal(book.publicChallenge())
+				if book.challenge != nil {
+					signed["ackChallenge"], e = json.Marshal(book.publicChallenge())
+				}
+				if e == nil && rec.PathMTUProbe != "" {
+					signed["pathMtuProbe"], e = json.Marshal(rec.PathMTUProbe)
+				}
+				if e == nil && rec.PathMTUProbes != nil {
+					signed["pathMtuProbes"], e = json.Marshal(rec.PathMTUProbes)
+				}
+				if e == nil && rec.ClientIPv6 != nil {
+					signed["clientIpv6"], e = json.Marshal(*rec.ClientIPv6)
+				}
 			}
 			if e == nil {
 				b, e = json.Marshal(signed)
@@ -524,6 +734,68 @@ func run() error {
 	command := "serve"
 	if len(os.Args) > 1 {
 		command = os.Args[1]
+	}
+	if command == "install-config-helper" {
+		raw, err := io.ReadAll(io.LimitReader(os.Stdin, 4097))
+		if err != nil || len(raw) > 4096 {
+			return errors.New("invalid helper request")
+		}
+		var request struct {
+			Container    string `json:"container"`
+			ExpectedHash string `json:"expectedHash"`
+		}
+		decoder := json.NewDecoder(strings.NewReader(string(raw)))
+		decoder.DisallowUnknownFields()
+		if decoder.Decode(&request) != nil || decoder.Decode(new(any)) != io.EOF {
+			return errors.New("invalid helper request")
+		}
+		paths := map[string]string{"amnezia-wireguard": "/opt/amnezia/wireguard/wg0.conf", "amnezia-awg2": "/opt/amnezia/awg/awg0.conf"}
+		path, ok := paths[request.Container]
+		if !ok {
+			return errors.New("unsupported helper container")
+		}
+		executable, err := os.Executable()
+		if err != nil {
+			return err
+		}
+		candidate, _, err := readConfigFile(executable, 64<<20)
+		if err != nil {
+			return err
+		}
+		if request.ExpectedHash != "" {
+			return errors.New("owned installer does not accept observed hashes")
+		}
+		if err := installOwnedConfigHelper(path, "/opt/amnezia/start.sh", "/opt/amnezia/config-helper", candidate); err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(map[string]any{"version": 1, "installedHash": configHash(candidate)})
+	}
+	if command == "startup-file-transaction" {
+		return startupTransactionCommand(os.Stdin, os.Stdout, map[string]string{
+			"amnezia-wireguard": "/opt/amnezia/start.sh",
+			"amnezia-awg2":      "/opt/amnezia/start.sh",
+		})
+	}
+	if command == "config-file-transaction" {
+		return configTransactionCommand(os.Stdin, os.Stdout, map[string]string{
+			"amnezia-wireguard": "/opt/amnezia/wireguard/wg0.conf",
+			"amnezia-awg2":      "/opt/amnezia/awg/awg0.conf",
+		})
+	}
+	if command == "upgrade-ipv6" {
+		raw, err := io.ReadAll(io.LimitReader(os.Stdin, 65537))
+		if err != nil || len(raw) > 65536 {
+			return errors.New("invalid IPv6 upgrade request")
+		}
+		var req ipv6UpgradeRequest
+		decoder := json.NewDecoder(bytes.NewReader(raw))
+		decoder.DisallowUnknownFields()
+		if decoder.Decode(&req) != nil || decoder.Decode(new(any)) != io.EOF {
+			return errors.New("invalid IPv6 upgrade request")
+		}
+		ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM)
+		defer cancel()
+		return json.NewEncoder(os.Stdout).Encode(runIPv6Upgrade(ctx, req))
 	}
 	if command == "activate-awg3" {
 		b, e := io.ReadAll(io.LimitReader(os.Stdin, maxAdminRequest+1))
@@ -583,4 +855,53 @@ func main() {
 		fmt.Fprintln(os.Stderr, "connection updates: operation failed:", e)
 		os.Exit(1)
 	}
+}
+
+// Recover the bearer token without persisting it in plaintext. Operations are
+// scoped to this service identity; distinct domains separate IDs and tokens.
+func issueCredentials(key []byte, operation string) (string, string) {
+	derive := func(domain string) []byte {
+		mac := hmac.New(sha256.New, key)
+		mac.Write([]byte(domain + "\x00" + operation))
+		return mac.Sum(nil)
+	}
+	return hex.EncodeToString(derive("amnezia-issue-id-v1")[:16]), base64.RawURLEncoding.EncodeToString(derive("amnezia-issue-token-v1"))
+}
+func issueIdentity(s *state, req request) (string, string, string, error) {
+	if !configOperationOK(req.Operation) || req.Host != "" || req.ExpectedState != "" || len(req.ClientPublicKeys) != 0 {
+		return "", "", "", errors.New("invalid issue operation")
+	}
+	var settings any
+	if json.Unmarshal(req.Settings, &settings) != nil {
+		return "", "", "", errors.New("invalid issue settings")
+	}
+	canonical, err := json.Marshal(struct {
+		Container       string
+		ClientPublicKey string
+		Settings        any
+		PathMTUProbe    string
+		ClientIPv6      map[string]string `json:",omitempty"`
+		PathMTUProbes   []string          `json:",omitempty"`
+	}{req.Container, req.ClientPublicKey, settings, req.PathMTUProbe, req.ClientIPv6, req.PathMTUProbes})
+	if err != nil {
+		return "", "", "", err
+	}
+	id, token := issueCredentials(s.SigningKey, req.Operation)
+	return id, token, configHash(canonical), nil
+}
+func validateIssueReceipts(s *state) error {
+	for id, rec := range s.Records {
+		if rec.IssueOperation == "" && rec.IssueDigest == "" {
+			continue
+		}
+		if !configOperationOK(rec.IssueOperation) || !configOperationOK(rec.IssueDigest) {
+			return errors.New("invalid issue receipt")
+		}
+		expected, token := issueCredentials(s.SigningKey, rec.IssueOperation)
+		hash := sha256.Sum256([]byte(token))
+		if id != expected || rec.ID != expected || rec.TokenHash != hex.EncodeToString(hash[:]) {
+			return errors.New("inconsistent issue receipt")
+		}
+	}
+	return nil
 }

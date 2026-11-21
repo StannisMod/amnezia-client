@@ -14,12 +14,14 @@
 #include "core/utils/protocolEnum.h"
 #include "core/utils/selfhosted/sshSession.h"
 #include "core/utils/selfhosted/scriptsRegistry.h"
+#include "core/utils/selfhosted/proxyIpv6Upgrade.h"
 #include "core/utils/protocolEnum.h"
 #include "core/protocols/protocolUtils.h"
 #include "core/utils/constants/configKeys.h"
 #include "core/utils/constants/protocolConstants.h"
 #include "core/models/containerConfig.h"
 #include "core/models/protocols/xrayProtocolConfig.h"
+#include "core/utils/ipv6Policy.h"
 
 namespace {
     Logger logger("XrayConfigurator");
@@ -80,6 +82,8 @@ amnezia::ProtocolConfig XrayConfigurator::processConfigWithLocalSettings(const a
 {
     applyDnsToNativeConfig(settings.dns, protocolConfig);
     sanitizeXrayNativeConfig(protocolConfig);
+    if (!settings.ipv6Enabled)
+        protocolConfig.setNativeConfig(amnezia::ipv6Policy::disableXray(protocolConfig.nativeConfig()));
     return protocolConfig;
 }
 
@@ -668,6 +672,13 @@ ProtocolConfig XrayConfigurator::createConfig(const ServerCredentials &credentia
     }
 
     const XrayServerConfig &srv = *serverConfig;
+
+    if (proxyIpv6Upgrade::supported(container)) {
+        QJsonObject ipv6;
+        const auto ipv6Error = proxyIpv6Upgrade::prepare(credentials, container, ipv6);
+        if (ipv6Error != ErrorCode::NoError || ipv6.value("result") != "verified")
+            qWarning() << "Proxy IPv6 egress not verified:" << ipv6.value("reason").toString();
+    }
 
     QString xrayClientId = prepareServerConfig(credentials, container, containerConfig, dnsSettings, errorCode);
     if (errorCode != ErrorCode::NoError || xrayClientId.isEmpty()) {

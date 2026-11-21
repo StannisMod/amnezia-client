@@ -160,8 +160,7 @@ void LocalSocketController::activate(const QJsonObject &rawConfig) {
   json.insert("type", "activate");
   //  json.insert("hopindex", QJsonValue((double)hop.m_hopindex));
   json.insert("privateKey", wgConfig.value(amnezia::configKey::clientPrivKey));
-  json.insert("deviceIpv4Address", wgConfig.value(amnezia::configKey::clientIp));
-  m_deviceIpv4 = wgConfig.value(amnezia::configKey::clientIp).toString();
+  json.insert("deviceIpv4Address", QString());
 
   // set up IPv6 unique-local-address, ULA, with "fd00::/8" prefix, not globally routable.
   // this will be default IPv6 gateway, OS recognizes that IPv6 link is local and switches to IPv4.
@@ -171,10 +170,29 @@ void LocalSocketController::activate(const QJsonObject &rawConfig) {
 
   // simply "dead::1" is globally-routable, don't use it
   json.insert("deviceIpv6Address", "fd58:baa6:dead::1");
+  // Use the actual authenticated client assignment, never a synthetic address
+  // as evidence that the server can route IPv6.
+  bool assignedIpv6 = false;
+  for (const auto &entry : wgConfig.value(amnezia::configKey::clientIp).toString().split(',')) {
+    const auto address = entry.trimmed();
+    const auto subnet = QHostAddress::parseSubnet(address);
+    if (subnet.first.protocol() == QAbstractSocket::IPv4Protocol)
+      json.insert("deviceIpv4Address", address);
+    else if (subnet.first.protocol() == QAbstractSocket::IPv6Protocol) {
+      json.insert("deviceIpv6Address", address);
+      assignedIpv6 = true;
+    }
+  }
+  json.insert("ipv6_enabled", rawConfig.value("ipv6_enabled").toBool(true) && assignedIpv6);
+  m_deviceIpv4 = json.value("deviceIpv4Address").toString().section('/', 0, 0);
 
   json.insert("serverPublicKey", wgConfig.value(amnezia::configKey::serverPubKey));
   json.insert("serverPskKey", wgConfig.value(amnezia::configKey::pskKey));
   json.insert("serverIpv4AddrIn", wgConfig.value(amnezia::configKey::hostName));
+  if (QHostAddress(wgConfig.value(amnezia::configKey::hostName).toString()).protocol() == QAbstractSocket::IPv6Protocol) {
+    json.remove("serverIpv4AddrIn");
+    json.insert("serverIpv6AddrIn", wgConfig.value(amnezia::configKey::hostName));
+  }
   //  json.insert("serverIpv6AddrIn", QJsonValue(hop.m_server.ipv6AddrIn()));
   json.insert("deviceMTU", wgConfig.value(amnezia::configKey::mtu));
 
@@ -208,13 +226,14 @@ void LocalSocketController::activate(const QJsonObject &rawConfig) {
           QJsonObject range;
           range.insert("address", ipRange.split('/')[0]);
           range.insert("range", atoi(ipRange.split('/')[1].toLocal8Bit()));
-          range.insert("isIpv6", false);
+          range.insert("isIpv6", QHostAddress(ipRange.section('/', 0, 0)).protocol() == QAbstractSocket::IPv6Protocol);
           jsAllowedIPAddesses.append(range);
       } else {
           QJsonObject range;
           range.insert("address",ipRange);
-          range.insert("range", 32);
-          range.insert("isIpv6", false);
+          const bool ipv6 = QHostAddress(ipRange).protocol() == QAbstractSocket::IPv6Protocol;
+          range.insert("range", ipv6 ? 128 : 32);
+          range.insert("isIpv6", ipv6);
           jsAllowedIPAddesses.append(range);
       }
     }
@@ -242,13 +261,14 @@ void LocalSocketController::activate(const QJsonObject &rawConfig) {
                   QJsonObject range;
                   range.insert("address", ipRange.split('/')[0]);
                   range.insert("range", atoi(ipRange.split('/')[1].toLocal8Bit()));
-                  range.insert("isIpv6", false);
+                  range.insert("isIpv6", QHostAddress(ipRange.section('/', 0, 0)).protocol() == QAbstractSocket::IPv6Protocol);
                   jsAllowedIPAddesses.append(range);
               } else {
                   QJsonObject range;
                   range.insert("address",ipRange);
-                  range.insert("range", 32);
-                  range.insert("isIpv6", false);
+                  const bool ipv6 = QHostAddress(ipRange).protocol() == QAbstractSocket::IPv6Protocol;
+                  range.insert("range", ipv6 ? 128 : 32);
+                  range.insert("isIpv6", ipv6);
                   jsAllowedIPAddesses.append(range);
               }
           }

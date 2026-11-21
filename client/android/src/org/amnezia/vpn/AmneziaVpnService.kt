@@ -1,5 +1,6 @@
 package org.amnezia.vpn
 
+import org.amnezia.vpn.util.net.ApplicationPackageRefreshQueue
 import android.annotation.SuppressLint
 import android.app.ActivityManager
 import android.app.ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND_SERVICE
@@ -7,6 +8,7 @@ import android.app.NotificationManager
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MANIFEST
 import android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_SYSTEM_EXEMPTED
 import android.net.VpnService
@@ -39,7 +41,11 @@ import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import org.amnezia.vpn.protocol.STRICT_PRIVATE_DNS_DOMAIN_RULES
 import org.amnezia.vpn.protocol.BadConfigException
 import org.amnezia.vpn.protocol.ProtocolState.CONNECTED
 import org.amnezia.vpn.protocol.ProtocolState.CONNECTING
@@ -64,7 +70,15 @@ const val ACTION_DISCONNECT = "org.amnezia.vpn.action.disconnect"
 const val ACTION_CONNECT = "org.amnezia.vpn.action.connect"
 
 const val MSG_VPN_CONFIG = "VPN_CONFIG"
+const val MSG_CONNECTION_DIAGNOSTICS = "CONNECTION_DIAGNOSTICS"
 const val MSG_ERROR = "ERROR"
+const val MSG_ERROR_KIND = "ERROR_KIND"
+const val MSG_POLICY_NOTICE = "POLICY_NOTICE"
+const val MSG_POLICY_PAUSED = "POLICY_PAUSED"
+const val MSG_APPLICATION_POLICY = "APPLICATION_POLICY"
+const val MSG_APPLICATION_POLICY_REQUEST_ID = "APPLICATION_POLICY_REQUEST_ID"
+const val MSG_APPLICATION_POLICY_SUCCESS = "APPLICATION_POLICY_SUCCESS"
+const val MSG_APPLICATION_POLICY_ERROR = "APPLICATION_POLICY_ERROR"
 const val MSG_SAVE_LOGS = "SAVE_LOGS"
 const val MSG_CLIENT_NAME = "CLIENT_NAME"
 
@@ -103,6 +117,9 @@ open class AmneziaVpnService : VpnService() {
     // private var statisticsSendingJob: Job? = null
     private lateinit var networkState: NetworkState
     private lateinit var trafficStats: TrafficStats
+    private var packageReceiver: BroadcastReceiver? = null
+    private var packageRefreshJob: Job? = null
+    private val pendingPackageRefresh = ApplicationPackageRefreshQueue()
     private var controlReceiver: BroadcastReceiver? = null
     private var notificationStateReceiver: BroadcastReceiver? = null
     private var screenOnReceiver: BroadcastReceiver? = null
@@ -134,6 +151,9 @@ open class AmneziaVpnService : VpnService() {
         }
     }
 
+    private var policyPauseNotice: String? = null
+    private val applicationPolicyMutex = Mutex()
+
     private val actionMessageHandler: Handler by lazy(NONE) {
         object : Handler(Looper.getMainLooper()) {
             override fun handleMessage(msg: Message) {
@@ -144,6 +164,7 @@ open class AmneziaVpnService : VpnService() {
                         val clientName = msg.data.getString(MSG_CLIENT_NAME)
                         val messenger = IpcMessenger(msg.replyTo, clientName)
                         clientMessengers[msg.replyTo] = messenger
+                        if (policyPauseNotice != null) messenger.send { policyNoticeMessage() }
                         Log.d(TAG, "Messenger client '$clientName' was registered")
                         // if (clientName == ACTIVITY_MESSENGER_NAME && isConnected) launchSendingStatistics()
                     }
@@ -168,6 +189,7 @@ open class AmneziaVpnService : VpnService() {
                             clientMessenger.send {
                                 ServiceEvent.STATUS.packToMessage {
                                     putStatus(this@AmneziaVpnService.protocolState.value)
+                                    vpnProto?.existingProtocol?.connectionDiagnostics()?.let { putString(MSG_CONNECTION_DIAGNOSTICS, it.toString()) }
                                 }
                             }
                         }
@@ -179,6 +201,39 @@ open class AmneziaVpnService : VpnService() {
 
                     Action.SET_SAVE_LOGS -> {
                         Log.saveLogs = msg.data.getBoolean(MSG_SAVE_LOGS)
+                    }
+                    Action.UPDATE_APPLICATION_POLICY -> {
+                        val target = clientMessengers[msg.replyTo]
+                        val requestId = msg.data.getLong(MSG_APPLICATION_POLICY_REQUEST_ID)
+                        val encoded = msg.data.getString(MSG_APPLICATION_POLICY)
+                        val active = vpnProto?.existingProtocol
+                        val session = active?.connectionDiagnostics()?.optLong("session_id", -1) ?: -1
+                        if (target != null) mainScope.launch {
+                            applicationPolicyMutex.withLock {
+                                var success = false
+                                var reason = "Application routing update failed"
+                                try {
+                                    require(isConnected && active != null && session > 0) { "No active compatible VPN session" }
+                                    require(encoded != null && encoded.length <= 65536) { "Invalid application routing policy" }
+                                    val policy = JSONObject(encoded)
+                                    val next = withContext(Dispatchers.IO) { active.updateApplicationPolicy(policy, session) }
+                                    require(isConnected && vpnProto?.existingProtocol === active && active.connectionDiagnostics()?.optLong("session_id", -1) == session) { "VPN session changed" }
+                                    Prefs.save(PREFS_CONFIG_KEY, next.toString())
+                                    success = true
+                                } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                                    throw cancelled
+                                } catch (error: Exception) {
+                                    reason = localizedVpnError(error.message ?: reason)
+                                }
+                                target.send {
+                                    ServiceEvent.APPLICATION_POLICY_RESULT.packToMessage {
+                                        putLong(MSG_APPLICATION_POLICY_REQUEST_ID, requestId)
+                                        putBoolean(MSG_APPLICATION_POLICY_SUCCESS, success)
+                                        if (!success) putString(MSG_APPLICATION_POLICY_ERROR, reason)
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -211,7 +266,7 @@ open class AmneziaVpnService : VpnService() {
         connectionScope = CoroutineScope(SupervisorJob() + Dispatchers.IO + connectionExceptionHandler)
         loadServerData()
         launchProtocolStateHandler()
-        networkState = NetworkState(this) { reconnect() }
+        networkState = NetworkState(this, { handleNetworkChange() }, { vpnProto?.existingProtocol?.preservesConnections == true })
         trafficStats = TrafficStats()
         registerBroadcastReceivers()
     }
@@ -306,8 +361,69 @@ open class AmneziaVpnService : VpnService() {
         stopSelf()
     }
 
+    private fun refreshApplicationPackage(packageName: String, refreshCapture: Boolean) {
+        val active=vpnProto?.existingProtocol ?: return
+        val session=active.connectionDiagnostics()?.optLong("session_id", -1) ?: return
+        if (!isConnected || session<=0) return
+        if (pendingPackageRefresh.offer(session, packageName, refreshCapture)) {
+            packageRefreshJob?.cancel()
+        }
+        if (packageRefreshJob?.isActive==true) return
+        val worker=pendingPackageRefresh.start(session)
+        packageRefreshJob=mainScope.launch {
+            var attempt=0
+            try {
+                while (isConnected && vpnProto?.existingProtocol===active && active.connectionDiagnostics()?.optLong("session_id", -1)==session) {
+                    val request=pendingPackageRefresh.take(worker) ?: break
+                    try {
+                        applicationPolicyMutex.withLock {
+                            if (!isConnected || vpnProto?.existingProtocol!==active || active.connectionDiagnostics()?.optLong("session_id", -1)!=session) return@launch
+                            val restart = withContext(Dispatchers.IO) {
+                                active.refreshApplicationPackages(request.packageName, request.refreshCapture, Builder(), session)
+                            }
+                            // Recheck on the main thread after resolving packages:
+                            // a manual disconnect or a different session wins.
+                            if (!isConnected || vpnProto?.existingProtocol !== active || active.connectionDiagnostics()?.optLong("session_id", -1) != session) return@launch
+                            if (restart) active.restartApplicationCapture(Builder(), ::protect, session)
+                        }
+                        attempt=0
+                    } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+                      catch (error: Exception) {
+                        if (!pendingPackageRefresh.retry(request)) return@launch
+                        Log.w(TAG, "Application package refresh deferred: ${error.message}")
+                        ++attempt
+                        delay((attempt.coerceAtMost(6)*5000).toLong())
+                    }
+                }
+            } finally {
+                if (pendingPackageRefresh.finish(worker)) packageRefreshJob=null
+            }
+        }
+    }
+
     private fun registerBroadcastReceivers() {
         Log.d(TAG, "Register broadcast receivers")
+        if (Build.VERSION.SDK_INT >= 29) {
+            packageReceiver=object:BroadcastReceiver() {
+                override fun onReceive(context: Context?, intent: Intent?) {
+                    val event=intent ?: return
+                    val name=event.data?.schemeSpecificPart ?: return
+                    // The temporary removal in an in-place APK update is not
+                    // a membership change. Resolve once the replacement exists.
+                    if (event.action == Intent.ACTION_PACKAGE_REMOVED && event.getBooleanExtra(Intent.EXTRA_REPLACING, false)) return
+                    val capture=event.action != Intent.ACTION_PACKAGE_REMOVED
+                    refreshApplicationPackage(name, capture)
+                }
+            }
+            ContextCompat.registerReceiver(this, packageReceiver, IntentFilter().apply {
+                addAction(Intent.ACTION_PACKAGE_ADDED)
+                addAction(Intent.ACTION_PACKAGE_REMOVED)
+                addAction(Intent.ACTION_PACKAGE_REPLACED)
+                addAction(Intent.ACTION_PACKAGE_CHANGED)
+                addDataScheme("package")
+            }, ContextCompat.RECEIVER_NOT_EXPORTED)
+        }
+
         controlReceiver = registerBroadcastReceiver(
             arrayOf(ACTION_CONNECT, ACTION_DISCONNECT), ContextCompat.RECEIVER_NOT_EXPORTED
         ) {
@@ -364,6 +480,9 @@ open class AmneziaVpnService : VpnService() {
 
     private fun unregisterBroadcastReceivers() {
         Log.d(TAG, "Unregister broadcast receivers")
+        packageRefreshJob?.cancel();packageRefreshJob=null
+        pendingPackageRefresh.clear()
+        unregisterBroadcastReceiver(packageReceiver);packageReceiver=null
         unregisterBroadcastReceiver(controlReceiver)
         unregisterBroadcastReceiver(notificationStateReceiver)
         unregisterScreenStateBroadcastReceivers()
@@ -380,6 +499,7 @@ open class AmneziaVpnService : VpnService() {
             protocolState.drop(1).collect { protocolState ->
                 Log.d(TAG, "Protocol state changed: $protocolState")
 
+                if (protocolState == DISCONNECTED) publishPolicyNotice(null)
                 serviceNotification.updateNotification(serverName, vpnProto?.label, protocolState)
 
                 clientMessengers.send {
@@ -391,6 +511,7 @@ open class AmneziaVpnService : VpnService() {
                 VpnStateStore.store { VpnState(protocolState, serverName, serverIndex, vpnProto) }
 
                 when (protocolState) {
+                    CONNECTING -> { networkState.bindNetworkListener() }
                     CONNECTED -> {
                         networkState.bindNetworkListener()
                         // if (isActivityConnected) launchSendingStatistics()
@@ -508,7 +629,12 @@ open class AmneziaVpnService : VpnService() {
 
         Log.d(TAG, "Start VPN connection")
 
-        val config = parseConfigToJson(vpnConfig)
+        val config = try {
+            parseConfigToJson(vpnConfig)?.let { org.amnezia.vpn.util.net.AwgCorePolicy.prepare(it) }
+        } catch (_: Exception) {
+            onError("Invalid AWG routing policy")
+            null
+        }
         saveServerData(config)
         if (config == null) {
             onError("Invalid VPN config")
@@ -524,14 +650,20 @@ open class AmneziaVpnService : VpnService() {
             return
         }
 
-        if (config.has("sing_box_routing") &&
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && isLockdownEnabled
-        ) {
+        val privateDnsConflict = networkState.hasStrictPrivateDns() && org.amnezia.vpn.util.net.AwgCorePolicy.requiresDomainVisibility(config)
+        val unsupportedApplicationPolicy = Build.VERSION.SDK_INT < Build.VERSION_CODES.Q && config.has("android_app_routing")
+        if (privateDnsConflict || unsupportedApplicationPolicy || (config.has("sing_box_routing") &&
+            !org.amnezia.vpn.util.net.AwgCorePolicy.platformSafe(Build.VERSION.SDK_INT,
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && isLockdownEnabled, config)
+        )) {
             // Policy rejection must precede prepare()/the permission activity.
             // Repeated rejected starts may already be DISCONNECTED, so notify
             // clients explicitly instead of relying on a StateFlow transition.
             protocolState.value = DISCONNECTED
-            onError("Experimental domain routing is unavailable while Android VPN lockdown is enabled")
+            onError(if (privateDnsConflict) STRICT_PRIVATE_DNS_DOMAIN_RULES
+                    else if (unsupportedApplicationPolicy) "Per-application site rules require Android 10 or newer"
+                    else if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) "DIRECT routing requires Android 10 or newer; use an all-VPN policy on Android 9"
+                    else "DIRECT routing or network DNS is unavailable while Android VPN lockdown is enabled")
             clientMessengers.send {
                 ServiceEvent.STATUS.packToMessage { putStatus(DISCONNECTED) }
             }
@@ -554,7 +686,17 @@ open class AmneziaVpnService : VpnService() {
                     Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && this@AmneziaVpnService.isLockdownEnabled
                 }
                 protocol.configureEndpointResolver(networkState::resolveEndpoint)
-                protocol.configureNetworkDns(networkState::dnsSnapshot, networkState::bindDnsSocket)
+                protocol.configureNetworkDns(networkState::dnsSnapshot, networkState::bindDnsSocket, networkState::dnsIdentity) { candidate ->
+                    if (networkState.hasStrictPrivateDns() && org.amnezia.vpn.util.net.AwgCorePolicy.requiresDomainVisibility(candidate))
+                        throw VpnException(STRICT_PRIVATE_DNS_DOMAIN_RULES)
+                }
+                protocol.configurePolicyNotice { session, code -> mainScope.launch {
+                    if (vpnProto?.existingProtocol === protocol && protocol.connectionDiagnostics()?.optLong("session_id", -1) == session)
+                        publishPolicyNotice(code)
+                } }
+                protocol.configureUnderlay(networkState::underlayIdentity) { fd ->
+                    protect(fd) && networkState.bindVpnSocket(fd)
+                }
                 protocol.configureEndpointRecovery { current -> mainScope.launch { if (current()) reconnect(true) } }
                 protocol.startVpn(config, Builder(), ::protect)
             }
@@ -588,11 +730,38 @@ open class AmneziaVpnService : VpnService() {
     }
 
     @MainThread
+    private fun handleNetworkChange() {
+        vpnProto?.existingProtocol?.takeIf { it.preservesConnections }?.recheckNetworkDnsPolicy()
+        reconnect()
+    }
+
+    private fun policyNoticeMessage(): Message = ServiceEvent.ERROR.packToMessage {
+        putBoolean(MSG_POLICY_NOTICE, true)
+        putBoolean(MSG_POLICY_PAUSED, policyPauseNotice != null)
+        putString(MSG_ERROR_KIND, STRICT_PRIVATE_DNS_DOMAIN_RULES)
+        putString(MSG_ERROR, policyPauseNotice.orEmpty())
+    }
+
+    @MainThread
+    private fun publishPolicyNotice(code: String?) {
+        val notice = code?.let { if (it == STRICT_PRIVATE_DNS_DOMAIN_RULES) getString(R.string.privateDnsPausedMessage) else localizedVpnError(it) }
+        if (policyPauseNotice == notice) return
+        policyPauseNotice = notice
+        serviceNotification.policyNotice = notice
+        serviceNotification.updateNotification(serverName, vpnProto?.label, protocolState.value)
+        clientMessengers.send { policyNoticeMessage() }
+    }
+
+    @MainThread
     private fun reconnect(endpointRecovery: Boolean = false) {
-        if (!isConnected && !(endpointRecovery && (protocolState.value == CONNECTING || protocolState.value == RECONNECTING))) return
+        if (!isConnected && !((endpointRecovery || vpnProto?.existingProtocol?.preservesConnections == true) && (protocolState.value == CONNECTING || protocolState.value == RECONNECTING))) return
 
         Log.d(TAG, "Reconnect VPN")
 
+        if (vpnProto?.existingProtocol?.preservesConnections == true) {
+            vpnProto?.protocol?.refreshVpn(Builder(), ::protect, endpointRecovery)
+            return
+        }
         protocolState.value = RECONNECTING
 
         connectionJob = connectionScope.launch {
@@ -603,12 +772,16 @@ open class AmneziaVpnService : VpnService() {
     /**
      * Utils methods
      */
+    private fun localizedVpnError(message: String): String =
+        if (message == STRICT_PRIVATE_DNS_DOMAIN_RULES) getString(R.string.privateDnsDomainRulesMessage) else message
+
     private fun onError(msg: String) {
         Log.e(TAG, msg)
         mainScope.launch {
             clientMessengers.send {
                 ServiceEvent.ERROR.packToMessage {
-                    putString(MSG_ERROR, msg)
+                    putString(MSG_ERROR, localizedVpnError(msg))
+                    if (msg == STRICT_PRIVATE_DNS_DOMAIN_RULES) putString(MSG_ERROR_KIND, msg)
                 }
             }
         }

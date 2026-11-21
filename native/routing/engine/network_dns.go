@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net"
 	"sync"
+	"time"
 
 	mDNS "github.com/miekg/dns"
 	"github.com/sagernet/sing-box/adapter"
@@ -17,6 +18,11 @@ import (
 )
 
 const borrowedDNSVPNType = "amnezia-dns-vpn"
+
+var (
+	errNetworkDNSUnavailable = errors.New("network DNS is waiting for a valid snapshot")
+	errNetworkDNSChanged     = errors.New("network DNS generation changed")
+)
 
 type runtimeHost struct{ underlay Underlay }
 type borrowedDNSVPNState struct{ outbound adapter.Outbound }
@@ -111,6 +117,7 @@ func newDNSGeneration(parent context.Context, compiled []byte, host Underlay, pl
 		}
 	}
 	options["outbounds"] = rows
+	delete(options, liveAndroidPolicyKey)
 	delete(options, "inbounds")
 	delete(options, "experimental")
 	options["route"] = map[string]any{"final": "vpn"}
@@ -142,9 +149,22 @@ func newDNSGeneration(parent context.Context, compiled []byte, host Underlay, pl
 }
 
 type networkDNSProxy struct {
-	mu      sync.RWMutex
-	current *dnsGeneration
-	version uint64
+	startup        chan struct{}
+	startupContext context.Context
+	mu             sync.RWMutex
+	current        *dnsGeneration
+	version        uint64
+	queryID        uint64
+	pending        map[uint64]time.Time
+	completed      uint64
+	failed         uint64
+	deadline       uint64
+	lastMS         int64
+	lastFailure    string
+}
+
+func newNetworkDNSProxy(ctx context.Context) *networkDNSProxy {
+	return &networkDNSProxy{startup: make(chan struct{}), startupContext: ctx}
 }
 
 func (p *networkDNSProxy) freeze() uint64 {
@@ -159,7 +179,24 @@ func (p *networkDNSProxy) freeze() uint64 {
 	}
 	return version
 }
+
+// A UID-policy edit does not invalidate the underlay. Keep serving the old
+// policy until its replacement is ready, then publish membership and fresh DNS
+// together. A real network suspension still increments version and wins.
+func (p *networkDNSProxy) beginApplicationUpdate() (uint64, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.current == nil {
+		return 0, errNetworkDNSUnavailable
+	}
+	p.version++
+	return p.version, nil
+}
+
 func (p *networkDNSProxy) replace(g *dnsGeneration, version uint64) bool {
+	return p.replaceWith(g, version, nil)
+}
+func (p *networkDNSProxy) replaceWith(g *dnsGeneration, version uint64, commit func()) bool {
 	p.mu.Lock()
 	if p.version != version {
 		p.mu.Unlock()
@@ -167,19 +204,67 @@ func (p *networkDNSProxy) replace(g *dnsGeneration, version uint64) bool {
 		return false
 	}
 	old := p.current
+	if commit != nil {
+		commit()
+	}
 	p.current = g
+	if p.startup != nil {
+		close(p.startup)
+		p.startup = nil
+		p.startupContext = nil
+	}
 	p.mu.Unlock()
 	if old != nil {
 		old.close()
 	}
 	return true
 }
-func (p *networkDNSProxy) exchange(caller context.Context, message *mDNS.Msg) (*mDNS.Msg, error) {
+func (p *networkDNSProxy) exchange(caller context.Context, message *mDNS.Msg) (answer *mDNS.Msg, exchangeErr error) {
+	start := time.Now()
+	p.mu.Lock()
+	p.queryID++
+	id := p.queryID
+	if p.pending == nil {
+		p.pending = make(map[uint64]time.Time)
+	}
+	p.pending[id] = start
+	p.mu.Unlock()
+	defer func() {
+		p.mu.Lock()
+		delete(p.pending, id)
+		p.completed++
+		p.lastMS = time.Since(start).Milliseconds()
+		if exchangeErr != nil {
+			p.failed++
+			p.lastFailure = networkDNSFailureClass(exchangeErr)
+			if errors.Is(exchangeErr, context.DeadlineExceeded) {
+				p.deadline++
+			}
+		}
+		p.mu.Unlock()
+	}()
 	p.mu.RLock()
 	g := p.current
+	startup := p.startup
+	startupContext := p.startupContext
 	p.mu.RUnlock()
+	// TUN publication can trigger Android's strict-DoT validation before the
+	// first DNS generation finishes starting. Wait only for that initial
+	// publication; later network suspensions must continue to fail closed.
+	if g == nil && startup != nil {
+		select {
+		case <-caller.Done():
+			return nil, caller.Err()
+		case <-startupContext.Done():
+			return nil, startupContext.Err()
+		case <-startup:
+		}
+		p.mu.RLock()
+		g = p.current
+		p.mu.RUnlock()
+	}
 	if g == nil {
-		return nil, errors.New("network DNS is waiting for a valid snapshot")
+		return nil, errNetworkDNSUnavailable
 	}
 	// Carry cancellation/deadline, not the caller's main-Box service registry.
 	ctx, cancel := context.WithCancel(g.ctx)
@@ -189,14 +274,59 @@ func (p *networkDNSProxy) exchange(caller context.Context, message *mDNS.Msg) (*
 	}
 	stop := context.AfterFunc(caller, cancel)
 	defer func() { stop(); cancel() }()
+	// The service registry belongs to the DNS generation, but application
+	// identity belongs to the original flow. Dropping it would make every
+	// per-app query look like an unknown owner (and select VPN DNS).
+	if metadata := adapter.ContextFrom(caller); metadata != nil {
+		copy := *metadata
+		copy.ResetRuleCache()
+		ctx = adapter.WithContext(ctx, &copy)
+	}
 	response, err := g.router.Exchange(ctx, message, adapter.DNSQueryOptions{})
 	p.mu.RLock()
 	valid := p.current == g
 	p.mu.RUnlock()
 	if !valid {
-		return nil, errors.New("network DNS generation changed")
+		return nil, errNetworkDNSChanged
 	}
 	return response, err
+}
+
+// Only timings/counters are retained; no query names, addresses, UIDs or DNS
+// message contents. This separates pre-route resolution stalls from egress loss.
+func (p *networkDNSProxy) diagnostics(result *DiagnosticSnapshot) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	result.DNSPending = uint64(len(p.pending))
+	result.DNSCompleted, result.DNSFailed = p.completed, p.failed
+	result.DNSDeadline, result.DNSLastMS = p.deadline, p.lastMS
+	result.DNSLastFailure = p.lastFailure
+	result.DNSAvailable, result.DNSVersion = p.current != nil, p.version
+	for _, started := range p.pending {
+		if age := time.Since(started).Milliseconds(); age > result.DNSOldestMS {
+			result.DNSOldestMS = age
+		}
+	}
+}
+
+func networkDNSFailureClass(err error) string {
+	switch {
+	case errors.Is(err, errNetworkDNSUnavailable):
+		return "generation-unavailable"
+	case errors.Is(err, errNetworkDNSChanged):
+		return "generation-changed"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "deadline"
+	case errors.Is(err, context.Canceled):
+		return "cancelled"
+	case errors.Is(err, net.ErrClosed):
+		return "socket-closed"
+	}
+	var operation *net.OpError
+	if errors.As(err, &operation) {
+		return "socket-error"
+	}
+	return "resolver-error"
 }
 
 type networkDNSRegistry struct{ adapter.DNSTransportRegistry }

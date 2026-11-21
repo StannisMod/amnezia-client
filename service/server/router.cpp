@@ -64,6 +64,21 @@ void Router::resetIpStack()
 #endif
 }
 
+bool Router::configureProxyIpv6(const QStringList &included, const QStringList &excluded)
+{
+#ifdef Q_OS_LINUX
+    return RouterLinux::Instance().configureProxyIpv6(included, excluded);
+#elif defined(Q_OS_MAC)
+    return RouterMac::Instance().configureProxyIpv6(included, excluded);
+#elif defined(Q_OS_WIN)
+    return RouterWin::Instance().configureProxyIpv6(included, excluded);
+#else
+    Q_UNUSED(included)
+    Q_UNUSED(excluded)
+    return false;
+#endif
+}
+
 bool Router::createTun(const QString &dev, const QString &subnet)
 {
 #ifdef Q_OS_WIN
@@ -80,6 +95,9 @@ bool Router::createTun(const QString &dev, const QString &subnet)
 
 bool Router::deleteTun(const QString &dev)
 {
+#ifdef Q_OS_WIN
+    return RouterWin::Instance().deleteTun(dev);
+#endif
 #ifdef Q_OS_LINUX
     return RouterLinux::Instance().deleteTun(dev);
 #endif

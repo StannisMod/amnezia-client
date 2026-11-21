@@ -26,10 +26,20 @@ public:
     ErrorCode uploadTextFileToContainer(DockerContainer container, const ServerCredentials &credentials, const QString &file,
                                         const QString &path,
                                         libssh::ScpOverwriteMode overwriteMode = libssh::ScpOverwriteMode::ScpOverwriteExisting);
+    ErrorCode protocolConfigTransaction(DockerContainer container, const ServerCredentials &credentials,
+                                        const QJsonObject &request, QJsonObject &response);
+    ErrorCode inspectProtocolHelper(DockerContainer container, const ServerCredentials &credentials,
+                                    bool &handled, QJsonObject &capabilities);
+    ErrorCode replaceLiveProtocolConfig(DockerContainer container, const ServerCredentials &credentials,
+                                       const QString &expected, const QString &candidate, bool &handled, bool reconcileCommitted = false, const QStringList &requiredFeatures = {});
+    ErrorCode replaceClientTable(DockerContainer container, const ServerCredentials &credentials,
+                                 const QByteArray &expected, const QByteArray &candidate, bool &handled, bool migration = false);
     QByteArray getTextFileFromContainer(DockerContainer container, const ServerCredentials &credentials, const QString &path,
                                         ErrorCode &errorCode);
 
     static QString replaceVars(const QString &script, const Vars &vars);
+    // Substitute variables first. runScript otherwise opens one SSH exec per line.
+    static QString wholeScriptCommand(const QString &script);
 
     ErrorCode runScript(const ServerCredentials &credentials, QString script,
                         const std::function<ErrorCode(const QString &, libssh::Client &)> &cbReadStdOut = nullptr,

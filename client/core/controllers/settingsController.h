@@ -26,6 +26,9 @@ public:
     void toggleAmneziaDns(bool enable);
     bool isAmneziaDnsEnabled() const;
 
+    bool isIpv6Enabled() const;
+    void toggleIpv6(bool enable);
+
     QString getPrimaryDns() const;
     void setPrimaryDns(const QString &dns);
 
@@ -109,5 +112,4 @@ private:
 };
 
 #endif
-
 

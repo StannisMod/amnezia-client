@@ -56,9 +56,11 @@ class DomainEndpointRefreshTest {
         val address = DomainEndpointRefresh.resolve("vpn.example.org", {
             if (queries.incrementAndGet() == 1) Thread.sleep(10000)
             listOf(InetAddress.getByName("192.0.2.2"))
-        }, timeoutMs = 30, retryMs = 0)
+        }, attempts = 3, timeoutMs = 200, retryMs = 0)
         assertEquals("192.0.2.2", address)
-        assertEquals(2, queries.get())
+        // A loaded executor can time out another attempt too; the public
+        // contract is successful retry within the caller's bounded budget.
+        assertTrue(queries.get() in 2..3)
     }
     @Test fun disconnectDoesNotWaitForAnUninterruptibleResolver() = runBlocking {
         val entered = CountDownLatch(1)

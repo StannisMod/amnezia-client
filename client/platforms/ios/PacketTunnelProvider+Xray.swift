@@ -70,30 +70,12 @@ extension PacketTunnelProvider {
             return
         }
 
-        if splitTunnelType == 1 {
-            var ipv4IncludedRoutes = [NEIPv4Route]()
-
-            for allowedIPString in splitTunnelSites {
-                if let allowedIP = IPAddressRange(from: allowedIPString) {
-                    ipv4IncludedRoutes.append(NEIPv4Route(
-                        destinationAddress: "\(allowedIP.address)",
-                        subnetMask: "\(allowedIP.subnetMask())"))
-                }
-            }
-
-            settings.ipv4Settings?.includedRoutes = ipv4IncludedRoutes
-        } else if splitTunnelType == 2 {
-            var ipv4ExcludedRoutes = [NEIPv4Route]()
-
-            for excludedIPString in splitTunnelSites {
-                if let excludedIP = IPAddressRange(from: excludedIPString) {
-                    ipv4ExcludedRoutes.append(NEIPv4Route(
-                        destinationAddress: "\(excludedIP.address)",
-                        subnetMask: "\(excludedIP.subnetMask())"))
-                }
-            }
-
-            settings.ipv4Settings?.excludedRoutes = ipv4ExcludedRoutes
+        let routes = splitTunnelSites.compactMap { site -> XrayRoute? in
+            guard let range = IPAddressRange(from: site) else { return nil }
+            return XrayRoute(address: "\(range.address)", prefixLength: Int(range.networkPrefixLength))
+        }
+        if !XrayNetworkSettings.applySplit(type: splitTunnelType, routes: routes, to: settings) {
+            xrayLog(.error, message: "Invalid Xray route prefix")
         }
     }
 
@@ -108,30 +90,7 @@ extension PacketTunnelProvider {
             return
         }
 
-        // Tunnel settings
-        let ipv6Enabled = false
-        let hideVPNIcon = false
-
-        let settings = NEPacketTunnelNetworkSettings(tunnelRemoteAddress: "254.1.1.1")
-        settings.mtu = 9000
-
-        settings.ipv4Settings = {
-            let settings = NEIPv4Settings(addresses: ["198.18.0.1"], subnetMasks: ["255.255.0.0"])
-            settings.includedRoutes = [NEIPv4Route.default()]
-            return settings
-        }()
-
-        settings.ipv6Settings = {
-            guard ipv6Enabled else {
-                return nil
-            }
-            let settings = NEIPv6Settings(addresses: ["fd6e:a81b:704f:1211::1"], networkPrefixLengths: [64])
-            settings.includedRoutes = [NEIPv6Route.default()]
-            if hideVPNIcon {
-                settings.excludedRoutes = [NEIPv6Route(destinationAddress: "::", networkPrefixLength: 128)]
-            }
-            return settings
-        }()
+        let settings = XrayNetworkSettings.make()
 
         do {
             let xrayConfig = try JSONDecoder().decode(XrayConfig.self,
@@ -149,6 +108,12 @@ extension PacketTunnelProvider {
             ? NEDNSSettings(servers: dnsArray)
             : NEDNSSettings(servers: ["1.1.1.1"])
             applyXraySplitTunnel(xrayConfig, settings: settings)
+            if xrayConfig.ipv6Enabled == false {
+                // Keep capture while the connection-local Xray policy rejects
+                // IPv6. Dropping the routes would leak through the native NIC.
+                settings.ipv6Settings?.includedRoutes = [NEIPv6Route.default()]
+                settings.ipv6Settings?.excludedRoutes = []
+            }
 
             let xrayConfigData = xrayConfig.config.data(using: .utf8)
 

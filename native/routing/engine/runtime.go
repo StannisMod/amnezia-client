@@ -16,15 +16,18 @@ import (
 // Runtime owns engine workers for every transport. Native hosts separately own
 // their capture descriptor and OS rollback, including on a failed StartRuntime.
 type Runtime struct {
-	box         *box.Box
-	cancel      context.CancelFunc
-	once        sync.Once
-	closeErr    error
-	diagnostics *Diagnostics
-	lifecycle   sync.Mutex
-	closed      bool
-	dns         *networkDNSProxy
-	ctx         context.Context
+	box                 *box.Box
+	cancel              context.CancelFunc
+	once                sync.Once
+	closeErr            error
+	flowPolicy          *newFlowPolicy
+	diagnostics         *Diagnostics
+	lifecycle           sync.Mutex
+	closed              bool
+	applications        *liveAndroidPolicy
+	applicationBaseline string
+	dns                 *networkDNSProxy
+	ctx                 context.Context
 }
 
 func StartRuntime(ctx context.Context, compiled []byte, cachePath string) (*Runtime, error) {
@@ -42,9 +45,11 @@ func startRuntime(ctx context.Context, compiled []byte, cachePath string, networ
 	ctx, cancel := context.WithCancel(ctx)
 	var proxy *networkDNSProxy
 	if networkDNS {
-		proxy = &networkDNSProxy{}
+		proxy = newNetworkDNSProxy(ctx)
 	}
 	ctx = service.ContextWith[*networkDNSProxy](ctx, proxy)
+	flowPolicy := new(newFlowPolicy)
+	ctx = service.ContextWith[*newFlowPolicy](ctx, flowPolicy)
 	instance, err := NewWithCache(ctx, compiled, cachePath)
 	if err != nil {
 		cancel()
@@ -57,7 +62,16 @@ func startRuntime(ctx context.Context, compiled []byte, cachePath string, networ
 		// The pinned Box.Start unwinds its own scope on failure.
 		return nil, errors.New("routing engine startup failed")
 	}
-	runtime := &Runtime{box: instance, cancel: cancel, diagnostics: diagnostics, dns: proxy, ctx: ctx}
+	runtime := &Runtime{box: instance, cancel: cancel, diagnostics: diagnostics, dns: proxy, ctx: ctx, flowPolicy: flowPolicy}
+	runtime.applications = findLiveAndroidPolicy(instance.Router().Rules())
+	if runtime.applications != nil {
+		baseline, _, err := liveAndroidInvariant(compiled)
+		if err != nil {
+			runtime.Close()
+			return nil, err
+		}
+		runtime.applicationBaseline = baseline
+	}
 	if proxy != nil {
 		version := proxy.freeze()
 		generation, err := runtime.dnsGeneration(compiled)
@@ -106,6 +120,25 @@ func (s *Runtime) UpdateNetworkDNS(prepare func() ([]byte, error)) error {
 	if err != nil {
 		return err
 	}
+	if s.applications != nil {
+		baseline, options, err := liveAndroidInvariant(compiled)
+		if err != nil || baseline != s.applicationBaseline {
+			return errors.New("network DNS changed application settings")
+		}
+		next, err := newAndroidUIDSnapshot(options.Applications)
+		if err != nil {
+			return err
+		}
+		current := s.applications.current.Load()
+		if len(next.site) != len(current.site) {
+			return errors.New("network DNS reverted application policy")
+		}
+		for uid := range next.site {
+			if _, ok := current.site[uid]; !ok {
+				return errors.New("network DNS reverted application policy")
+			}
+		}
+	}
 	g, err := s.dnsGeneration(compiled)
 	if err != nil {
 		return err
@@ -115,6 +148,37 @@ func (s *Runtime) UpdateNetworkDNS(prepare func() ([]byte, error)) error {
 	}
 	return nil
 }
+
+// UpdateAndroidApplications commits routing membership together with a fresh
+// real-DNS cache. Existing connections retain their selected outbound.
+func (s *Runtime) UpdateAndroidApplications(compiled []byte) error {
+	s.lifecycle.Lock()
+	defer s.lifecycle.Unlock()
+	if s.closed || s.dns == nil || s.applications == nil {
+		return errors.New("live application update unavailable")
+	}
+	baseline, options, err := liveAndroidInvariant(compiled)
+	if err != nil || baseline != s.applicationBaseline {
+		return errors.New("live update changed non-application settings")
+	}
+	snapshot, err := newAndroidUIDSnapshot(options.Applications)
+	if err != nil {
+		return err
+	}
+	version, err := s.dns.beginApplicationUpdate()
+	if err != nil {
+		return err
+	}
+	generation, err := s.dnsGeneration(compiled)
+	if err != nil {
+		return err
+	}
+	if !s.dns.replaceWith(generation, version, func() { s.applications.current.Store(snapshot) }) {
+		return errors.New("live application update superseded")
+	}
+	return nil
+}
+
 func (s *Runtime) Stats() (tunnel.Stats, error) {
 	out, ok := s.box.Outbound().Outbound("vpn")
 	if !ok {
@@ -126,7 +190,23 @@ func (s *Runtime) Stats() (tunnel.Stats, error) {
 	}
 	return transport.Stats()
 }
-func (s *Runtime) Diagnostics() DiagnosticSnapshot { return s.diagnostics.Snapshot() }
+func (s *Runtime) Diagnostics() DiagnosticSnapshot {
+	result := s.diagnostics.Snapshot()
+	if stats, err := s.Stats(); err == nil {
+		result.VPNRXBytes, result.VPNTXBytes = stats.RXBytes, stats.TXBytes
+		result.VPNHandshakeNano = stats.LastHandshakeNano
+	}
+	if s.dns != nil {
+		s.dns.diagnostics(&result)
+		if result.DNSOldestMS >= 1000 {
+			result.StalledDNSStacks = stalledDNSStacks()
+		}
+	}
+	if s.flowPolicy != nil {
+		result.NewFlowsPaused = s.flowPolicy.paused.Load()
+	}
+	return result
+}
 
 // RefreshUnderlay retains the Box, capture reader, route/flow ownership and
 // private TCP stack. It must never call Network.ResetNetwork: that operation

@@ -10,6 +10,8 @@
 #include <QNetworkInterface>
 
 #include "../client/platforms/windows/daemon/dnsutilswindows.h"
+#include "../client/platforms/windows/daemon/windowsproxyipv6.h"
+#include <memory>
 
 #include <WinSock2.h>  //includes Windows.h
 #include <WS2tcpip.h>
@@ -46,6 +48,8 @@ public:
     bool StopRoutingIpv6();
 
     bool createTun(const QString &dev, const QString &subnet);
+    bool deleteTun(const QString &dev);
+    bool configureProxyIpv6(const QStringList &included, const QStringList &excluded);
     void suspendWcmSvc(bool suspend);
     bool updateResolvers(const QString& ifname, const QList<QHostAddress>& resolvers);
     bool restoreResolvers();
@@ -69,6 +73,8 @@ private:
     QMultiMap<QString, MIB_IPFORWARDROW> m_ipForwardRows;
     bool m_suspended = false;
     DnsUtilsWindows *m_dnsUtil; 
+    NET_IFINDEX m_proxyInterfaceIndex = 0;
+    std::unique_ptr<WindowsProxyIpv6> m_proxyIpv6;
 };
 
 #endif // ROUTERWIN_H

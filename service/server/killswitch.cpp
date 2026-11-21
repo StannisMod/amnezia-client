@@ -1,4 +1,5 @@
 #include "killswitch.h"
+#include "../../client/core/utils/ipv6Policy.h"
 #include "secureQSettings.h"
 
 
@@ -15,6 +16,14 @@
 #include "version.h"
 
 static bool isValidIpOrCidr(const QString &value) {
+#ifdef Q_OS_LINUX
+    if (value.contains(':')) {
+        static const QRegularExpression ipv6("^[0-9a-fA-F:.]+(?:/[0-9]{1,3})?$");
+        const auto subnet = QHostAddress::parseSubnet(value);
+        return ipv6.match(value).hasMatch() && subnet.first.protocol() == QAbstractSocket::IPv6Protocol
+            && subnet.first.scopeId().isEmpty() && subnet.second >= 0;
+    }
+#endif
     static const QRegularExpression re(
         QStringLiteral(R"(^(\d{1,3}\.){3}\d{1,3}(/\d{1,2})?$)"));
     if (!re.match(value).hasMatch()) return false;
@@ -106,28 +115,28 @@ bool KillSwitch::disableKillSwitch() {
     if (isStrictKillSwitchEnabled()) {
         LinuxFirewall::setAnchorEnabled(LinuxFirewall::Both, QStringLiteral("000.allowLoopback"), true);
         LinuxFirewall::setAnchorEnabled(LinuxFirewall::Both, QStringLiteral("100.blockAll"), true);
-        LinuxFirewall::setAnchorEnabled(LinuxFirewall::IPv4, QStringLiteral("110.allowNets"), false);
-        LinuxFirewall::setAnchorEnabled(LinuxFirewall::IPv4, QStringLiteral("120.blockNets"), false);
+        LinuxFirewall::setAnchorEnabled(LinuxFirewall::Both, QStringLiteral("110.allowNets"), false);
+        LinuxFirewall::setAnchorEnabled(LinuxFirewall::Both, QStringLiteral("120.blockNets"), false);
         LinuxFirewall::setAnchorEnabled(LinuxFirewall::Both, QStringLiteral("130.allowMarkedXray"), false);
-        LinuxFirewall::setAnchorEnabled(LinuxFirewall::IPv4, QStringLiteral("200.allowVPN"), false);
+        LinuxFirewall::setAnchorEnabled(LinuxFirewall::Both, QStringLiteral("200.allowVPN"), false);
         LinuxFirewall::setAnchorEnabled(LinuxFirewall::IPv6, QStringLiteral("250.blockIPv6"), true);
         LinuxFirewall::setAnchorEnabled(LinuxFirewall::Both, QStringLiteral("290.allowDHCP"), false);
         LinuxFirewall::setAnchorEnabled(LinuxFirewall::Both, QStringLiteral("300.allowLAN"), false);
-        LinuxFirewall::setAnchorEnabled(LinuxFirewall::IPv4, QStringLiteral("310.blockDNS"), false);
-        LinuxFirewall::setAnchorEnabled(LinuxFirewall::IPv4, QStringLiteral("320.allowDNS"), false);
+        LinuxFirewall::setAnchorEnabled(LinuxFirewall::Both, QStringLiteral("310.blockDNS"), false);
+        LinuxFirewall::setAnchorEnabled(LinuxFirewall::Both, QStringLiteral("320.allowDNS"), false);
         LinuxFirewall::setAnchorEnabled(LinuxFirewall::Both, QStringLiteral("400.allowPIA"), false);
     } else {
         LinuxFirewall::setAnchorEnabled(LinuxFirewall::Both, QStringLiteral("000.allowLoopback"), true);
         LinuxFirewall::setAnchorEnabled(LinuxFirewall::Both, QStringLiteral("100.blockAll"), false);
-        LinuxFirewall::setAnchorEnabled(LinuxFirewall::IPv4, QStringLiteral("110.allowNets"), false);
-        LinuxFirewall::setAnchorEnabled(LinuxFirewall::IPv4, QStringLiteral("120.blockNets"), false);
+        LinuxFirewall::setAnchorEnabled(LinuxFirewall::Both, QStringLiteral("110.allowNets"), false);
+        LinuxFirewall::setAnchorEnabled(LinuxFirewall::Both, QStringLiteral("120.blockNets"), false);
         LinuxFirewall::setAnchorEnabled(LinuxFirewall::Both, QStringLiteral("130.allowMarkedXray"), false);
-        LinuxFirewall::setAnchorEnabled(LinuxFirewall::IPv4, QStringLiteral("200.allowVPN"), false);
+        LinuxFirewall::setAnchorEnabled(LinuxFirewall::Both, QStringLiteral("200.allowVPN"), false);
         LinuxFirewall::setAnchorEnabled(LinuxFirewall::IPv6, QStringLiteral("250.blockIPv6"), false);
         LinuxFirewall::setAnchorEnabled(LinuxFirewall::Both, QStringLiteral("290.allowDHCP"), true);
         LinuxFirewall::setAnchorEnabled(LinuxFirewall::Both, QStringLiteral("300.allowLAN"), true);
-        LinuxFirewall::setAnchorEnabled(LinuxFirewall::IPv4, QStringLiteral("310.blockDNS"), false);
-        LinuxFirewall::setAnchorEnabled(LinuxFirewall::IPv4, QStringLiteral("320.allowDNS"), true);
+        LinuxFirewall::setAnchorEnabled(LinuxFirewall::Both, QStringLiteral("310.blockDNS"), false);
+        LinuxFirewall::setAnchorEnabled(LinuxFirewall::Both, QStringLiteral("320.allowDNS"), true);
         LinuxFirewall::setAnchorEnabled(LinuxFirewall::Both, QStringLiteral("400.allowPIA"), false);
         LinuxFirewall::uninstall();
     }
@@ -145,6 +154,12 @@ bool KillSwitch::disableKillSwitch() {
         MacOSFirewall::setAnchorEnabled(QStringLiteral("300.allowLAN"), false);
         MacOSFirewall::setAnchorEnabled(QStringLiteral("310.blockDNS"), false);
         MacOSFirewall::setAnchorEnabled(QStringLiteral("400.allowPIA"), false);
+    } else if (m_nativeIpv6Blocked) {
+        // The explicit IPv6 preference is independent of KillSwitch. Clearing
+        // KillSwitch must not remove the native session's fail-closed anchor.
+        for (const auto &anchor : {"100.blockAll", "110.allowNets", "120.blockNets", "200.allowVPN",
+                                  "250.blockIPv6", "290.allowDHCP", "300.allowLAN", "310.blockDNS", "400.allowPIA"})
+            MacOSFirewall::setAnchorEnabled(QString::fromLatin1(anchor), false);
     } else {
         MacOSFirewall::uninstall();
     }
@@ -160,6 +175,48 @@ bool KillSwitch::disableKillSwitch() {
     m_allowedRanges.clear();
     return true;
 }
+
+#ifdef Q_OS_WIN
+bool KillSwitch::setNativeIpv6Blocked(bool blocked, const QStringList &endpoints)
+{
+    if (endpoints.size() > 64) return false;
+    QList<QHostAddress> addresses;
+    for (const auto &endpoint : endpoints) {
+        const QHostAddress address(endpoint);
+        if (address.isNull() || !address.scopeId().isEmpty() || address.isMulticast()) return false;
+        addresses << address;
+    }
+    auto *firewall = WindowsFirewall::create(this);
+    return firewall && firewall->setNativeIpv6Blocked(blocked, addresses);
+}
+#endif
+
+#ifdef Q_OS_MACOS
+bool KillSwitch::setNativeIpv6Blocked(bool blocked, const QStringList &endpoints)
+{
+    if (!blocked) {
+        if (!MacOSFirewall::setNativeIpv6Rules({})) return false;
+        m_nativeIpv6Blocked = false;
+        return true;
+    }
+    if (endpoints.size() > 64) return false;
+    QStringList rules;
+    for (const auto &endpoint : endpoints) {
+        if (endpoint.isEmpty()) continue;
+        const QHostAddress address(endpoint);
+        if (address.isNull() || !address.scopeId().isEmpty() || address.isMulticast()) return false;
+        if (address.protocol() == QAbstractSocket::IPv6Protocol)
+            rules << QStringLiteral("pass out quick inet6 to %1 keep state").arg(address.toString());
+    }
+    if (!MacOSFirewall::isInstalled()) MacOSFirewall::install();
+    MacOSFirewall::ensureRootAnchorPriority();
+    // The encrypted underlay remains usable when its endpoint is IPv6. No
+    // arbitrary profile text enters pfctl, only QHostAddress's canonical form.
+    rules << QStringLiteral("block return out quick inet6 all");
+    m_nativeIpv6Blocked = true; // Retain intent even if verification fails.
+    return MacOSFirewall::setNativeIpv6Rules(rules);
+}
+#endif
 
 bool KillSwitch::disableAllTraffic() {
 #ifdef Q_OS_WIN
@@ -254,7 +311,7 @@ bool KillSwitch::resetAllowedRange(const QStringList &ranges) {
     m_allowedRanges = ranges;
 
 #ifdef Q_OS_LINUX
-    LinuxFirewall::setAnchorEnabled(LinuxFirewall::IPv4, QStringLiteral("110.allowNets"), true);
+    LinuxFirewall::setAnchorEnabled(LinuxFirewall::Both, QStringLiteral("110.allowNets"), true);
     LinuxFirewall::updateAllowNets(m_allowedRanges);
 #endif
 
@@ -349,7 +406,7 @@ bool KillSwitch::enablePeerTraffic(const QJsonObject &configStr) {
 
     // killSwitch toggle
     if (QVariant(configStr.value(amnezia::configKey::killSwitchOption).toString()).toBool()) {
-        WindowsFirewall::create(this)->enablePeerTraffic(config);
+        if (!WindowsFirewall::create(this)->enablePeerTraffic(config)) return false;
     }
 
     WindowsDaemon::instance()->prepareActivation(config, inetAdapterIndex);
@@ -432,16 +489,16 @@ bool KillSwitch::enableKillSwitch(const QJsonObject &configStr, int vpnAdapterIn
     // double-check + ensure our firewall is installed and enabled
     LinuxFirewall::setAnchorEnabled(LinuxFirewall::Both, QStringLiteral("000.allowLoopback"), true);
     LinuxFirewall::setAnchorEnabled(LinuxFirewall::Both, QStringLiteral("100.blockAll"), blockAll);
-    LinuxFirewall::setAnchorEnabled(LinuxFirewall::IPv4, QStringLiteral("110.allowNets"), allowNets);
+    LinuxFirewall::setAnchorEnabled(LinuxFirewall::Both, QStringLiteral("110.allowNets"), allowNets);
     LinuxFirewall::updateAllowNets(allownets);
-    LinuxFirewall::setAnchorEnabled(LinuxFirewall::IPv4, QStringLiteral("120.blockNets"), blockNets);
+    LinuxFirewall::setAnchorEnabled(LinuxFirewall::Both, QStringLiteral("120.blockNets"), blockNets);
     LinuxFirewall::updateBlockNets(blocknets);
     LinuxFirewall::setAnchorEnabled(LinuxFirewall::Both, QStringLiteral("130.allowMarkedXray"), true);
-    LinuxFirewall::setAnchorEnabled(LinuxFirewall::IPv4, QStringLiteral("200.allowVPN"), true);
-    LinuxFirewall::setAnchorEnabled(LinuxFirewall::IPv6, QStringLiteral("250.blockIPv6"), true);
+    LinuxFirewall::setAnchorEnabled(LinuxFirewall::Both, QStringLiteral("200.allowVPN"), true);
+    LinuxFirewall::setAnchorEnabled(LinuxFirewall::IPv6, QStringLiteral("250.blockIPv6"), !amnezia::ipv6Policy::tunnelAvailable(configStr));
     LinuxFirewall::setAnchorEnabled(LinuxFirewall::Both, QStringLiteral("290.allowDHCP"), true);
     LinuxFirewall::setAnchorEnabled(LinuxFirewall::Both, QStringLiteral("300.allowLAN"), true);
-    LinuxFirewall::setAnchorEnabled(LinuxFirewall::IPv4, QStringLiteral("310.blockDNS"), true);
+    LinuxFirewall::setAnchorEnabled(LinuxFirewall::Both, QStringLiteral("310.blockDNS"), true);
     QStringList dnsServers;
 
     if (!dns1.isEmpty())
@@ -454,7 +511,7 @@ bool KillSwitch::enableKillSwitch(const QJsonObject &configStr, int vpnAdapterIn
     dnsServers.append(allowedDnsServers);
 
     LinuxFirewall::updateDNSServers(dnsServers);
-    LinuxFirewall::setAnchorEnabled(LinuxFirewall::IPv4, QStringLiteral("320.allowDNS"), true);
+    LinuxFirewall::setAnchorEnabled(LinuxFirewall::Both, QStringLiteral("320.allowDNS"), true);
     LinuxFirewall::setAnchorEnabled(LinuxFirewall::Both, QStringLiteral("400.allowPIA"), true);
 #endif
 
@@ -473,7 +530,7 @@ bool KillSwitch::enableKillSwitch(const QJsonObject &configStr, int vpnAdapterIn
     MacOSFirewall::setAnchorEnabled(QStringLiteral("120.blockNets"), blockNets);
     MacOSFirewall::setAnchorTable(QStringLiteral("120.blockNets"), blockNets, QStringLiteral("blocknets"), blocknets);
     MacOSFirewall::setAnchorEnabled(QStringLiteral("200.allowVPN"), true);
-    MacOSFirewall::setAnchorEnabled(QStringLiteral("250.blockIPv6"), true);
+    MacOSFirewall::setAnchorEnabled(QStringLiteral("250.blockIPv6"), !amnezia::ipv6Policy::tunnelAvailable(configStr));
     MacOSFirewall::setAnchorEnabled(QStringLiteral("290.allowDHCP"), true);
     MacOSFirewall::setAnchorEnabled(QStringLiteral("300.allowLAN"), true);
 

@@ -3,6 +3,7 @@
 #include "selfhosted/serverMigrationController.h"
 
 #include <QCoreApplication>
+#include <QJsonDocument>
 #include <QDirIterator>
 #include <QTranslator>
 #include <QTimer>
@@ -243,6 +244,18 @@ void CoreController::initControllers()
 
     m_appSplitTunnelingUiController = new AppSplitTunnelingUiController(m_appSplitTunnelingController, m_appSplitTunnelingModel, this);
     setQmlContextProperty("AppSplitTunnelingController", m_appSplitTunnelingUiController);
+#ifdef Q_OS_ANDROID
+    auto *android = AndroidController::instance();
+    m_appSplitTunnelingUiController->configureLivePolicy(
+        [this] { return m_connectionController->isConnected(); },
+        [android](qint64 request, const QJsonObject &policy) {
+            android->updateApplicationPolicy(request, QString::fromUtf8(QJsonDocument(policy).toJson(QJsonDocument::Compact)));
+        });
+    connect(android, &AndroidController::applicationPolicyResult, m_appSplitTunnelingUiController,
+            &AppSplitTunnelingUiController::completeApplicationPolicy);
+    connect(m_connectionController, &ConnectionController::connectionStateChanged, m_appSplitTunnelingUiController,
+            [this](Vpn::ConnectionState) { if (m_connectionController->isDisconnected()) m_appSplitTunnelingUiController->connectionClosed(); });
+#endif
 
     m_systemController = new SystemController(this);
     setQmlContextProperty("SystemController", m_systemController);

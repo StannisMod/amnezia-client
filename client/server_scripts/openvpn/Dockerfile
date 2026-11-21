@@ -3,7 +3,7 @@ FROM alpine:3.15
 LABEL maintainer="AmneziaVPN"
 
 #Install required packages
-RUN apk add --no-cache curl openvpn easy-rsa bash netcat-openbsd dumb-init rng-tools
+RUN apk add --no-cache curl openvpn easy-rsa bash netcat-openbsd dumb-init rng-tools iproute2 iptables ip6tables
 RUN apk --update upgrade --no-cache
 
 ENV EASYRSA_BATCH 1

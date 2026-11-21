@@ -1,8 +1,11 @@
 package engine
 
 import (
+	"bytes"
 	"context"
 	"net"
+	"runtime/pprof"
+	"strings"
 	"sync"
 
 	"github.com/sagernet/sing-box/adapter"
@@ -13,6 +16,22 @@ import (
 // Diagnostics reports routing choices rather than transport success. Counters
 // and the last reason stay in memory; no destination names or addresses are kept.
 type DiagnosticSnapshot struct {
+	StalledDNSStacks string `json:"stalled_dns_stacks,omitempty"`
+	VPNRXBytes       uint64 `json:"vpn_rx_bytes"`
+	VPNTXBytes       uint64 `json:"vpn_tx_bytes"`
+	VPNHandshakeNano uint64 `json:"vpn_handshake_ns"`
+	DNSPending       uint64 `json:"dns_pending"`
+	DNSOldestMS      int64  `json:"dns_oldest_ms"`
+	DNSCompleted     uint64 `json:"dns_completed"`
+	DNSFailed        uint64 `json:"dns_failed"`
+	DNSDeadline      uint64 `json:"dns_deadline"`
+	DNSLastMS        int64  `json:"dns_last_ms"`
+	DNSLastFailure   string `json:"dns_last_failure,omitempty"`
+	DNSAvailable     bool   `json:"dns_available"`
+	DNSVersion       uint64 `json:"dns_version"`
+	NewFlowsPaused   bool   `json:"new_flows_paused"`
+	UnknownOwner     uint64 `json:"unknown_owner"`
+	LastOwnerKnown   bool   `json:"last_owner_known"`
 	Direct           uint64 `json:"direct"`
 	VPN              uint64 `json:"vpn"`
 	ManagedDNS       uint64 `json:"managed_dns"`
@@ -25,6 +44,28 @@ type DiagnosticSnapshot struct {
 	LastNetwork      string `json:"last_network,omitempty"`
 	LastDomainSource string `json:"last_domain_source,omitempty"`
 }
+
+// Aggregated (debug=1) profiles contain symbols, not argument contents. Exclude
+// optional pprof labels as those may contain application-provided identity.
+func stalledDNSStacks() string {
+	var raw bytes.Buffer
+	if profile := pprof.Lookup("goroutine"); profile != nil {
+		_ = profile.WriteTo(&raw, 1)
+	}
+	var result strings.Builder
+	for _, line := range strings.Split(raw.String(), "\n") {
+		if strings.HasPrefix(line, "# labels:") {
+			continue
+		}
+		if result.Len()+len(line)+1 > 128*1024 {
+			break
+		}
+		result.WriteString(line)
+		result.WriteByte('\n')
+	}
+	return result.String()
+}
+
 type Diagnostics struct {
 	mu       sync.Mutex
 	snapshot DiagnosticSnapshot
@@ -42,6 +83,10 @@ func (d *Diagnostics) record(m adapter.InboundContext, rule adapter.Rule, out ad
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	s := &d.snapshot
+	s.LastOwnerKnown = m.ProcessInfo != nil && m.ProcessInfo.UserId >= 0
+	if !s.LastOwnerKnown {
+		s.UnknownOwner++
+	}
 	s.LastOutbound = out.Tag()
 	s.LastNetwork = m.Network
 	s.LastRule = ""

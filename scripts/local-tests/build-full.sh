@@ -10,12 +10,15 @@ if [[ -n "$rebuild" && "$rebuild" != --rebuild ]]; then
 fi
 docker info >/dev/null
 ensure_image() {
-    if [[ "$rebuild" == --rebuild ]] || ! docker image inspect "$1" >/dev/null 2>&1; then
-        docker build --network host -t "$1" -f "$repo/scripts/local-tests/$2" "$repo/scripts/local-tests"
+    local image=$1 dockerfile=$2
+    shift 2
+    if [[ "$rebuild" == --rebuild ]] || ! docker image inspect "$image" >/dev/null 2>&1; then
+        docker build --network host -t "$image" -f "$repo/scripts/local-tests/$dockerfile" "$@" "$repo/scripts/local-tests"
     fi
 }
 ensure_image amnezia-local-qt-tests Dockerfile.qt
-ensure_image amnezia-local-full-build Dockerfile.full
+ensure_image amnezia-local-qt-tests-ubuntu22 Dockerfile.qt --build-arg BASE_UBUNTU_VERSION=22.04
+ensure_image amnezia-local-full-build-ubuntu22 Dockerfile.full
 # Dependencies and build artifacts persist in this dedicated Docker volume;
 # source changes made by CMake/Qt translation tools stay in the private copy.
 docker run --rm --network host \
@@ -25,8 +28,8 @@ docker run --rm --network host \
     --mount "type=bind,source=$repo,target=/src,readonly" \
     --mount "type=bind,source=$git_metadata,target=/input/worktree-git,readonly" \
     --mount "type=bind,source=$git_common_metadata,target=/input/common-git,readonly" \
-    --mount type=volume,source=amnezia-local-full-build,target=/work \
-    amnezia-local-full-build bash -ec '
+    --mount type=volume,source=amnezia-local-full-build-ubuntu22,target=/work \
+    amnezia-local-full-build-ubuntu22 bash -ec '
         # Source must exactly match this worktree; dependencies/build caches live elsewhere.
         rm -rf /work/src
         mkdir -p /work/src
@@ -43,7 +46,7 @@ docker run --rm --network host \
         fi
         git config --global --add safe.directory /work/src
         conan profile detect --force
-        cmake -S /work/src -B /work/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DAMNEZIA_BUILD_TESTS=ON -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+        cmake -S /work/src -B /work/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DAMNEZIA_BUILD_TESTS=ON -DAMNEZIA_CONAN_PREBUILTS=OFF -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
         cmake --build /work/build -j 6
         ctest --test-dir /work/build/client/tests --output-on-failure --timeout 120
     '

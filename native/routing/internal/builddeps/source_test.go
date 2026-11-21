@@ -31,3 +31,15 @@ func TestLinkedSourceMatchesLock(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestMainModuleScopeCannotBeOverriddenByComponentProfile(t *testing.T) {
+	for path, want := range map[string]string{
+		"github.com/StannisMod/amnezia-client/native/routing": routingComponentProfile,
+		"github.com/amnezia-vpn/amneziawg-android":            "desktop_android",
+		"github.com/amnezia-vpn/amneziawg-apple":              "apple",
+	} {
+		if got := profileForMain(path); got != want {
+			t.Fatalf("module %s profile=%s want=%s", path, got, want)
+		}
+	}
+}

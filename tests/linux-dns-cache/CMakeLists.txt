@@ -25,3 +25,15 @@ target_link_libraries(test_linux_exclusion_routes PRIVATE Qt6::Core Qt6::Network
 add_test(NAME LinuxExclusionRoutes COMMAND bash
     ${CMAKE_CURRENT_SOURCE_DIR}/run-route-tests.sh $<TARGET_FILE:test_linux_exclusion_routes>)
 set_tests_properties(LinuxExclusionRoutes PROPERTIES TIMEOUT 60 SKIP_RETURN_CODE 77)
+
+add_executable(test_linux_proxy_ipv6 testLinuxProxyIpv6.cpp)
+target_link_libraries(test_linux_proxy_ipv6 PRIVATE Qt6::Core Qt6::Network Qt6::Test)
+add_test(NAME LinuxProxyIpv6 COMMAND bash
+    ${CMAKE_CURRENT_SOURCE_DIR}/run-route-tests.sh $<TARGET_FILE:test_linux_proxy_ipv6>)
+set_tests_properties(LinuxProxyIpv6 PROPERTIES TIMEOUT 60 SKIP_RETURN_CODE 77)
+
+add_executable(test_linux_default_gateway testLinuxDefaultGateway.cpp)
+target_link_libraries(test_linux_default_gateway PRIVATE Qt6::Core Qt6::Network Qt6::Test)
+add_test(NAME LinuxDefaultGateway COMMAND bash
+    ${CMAKE_CURRENT_SOURCE_DIR}/run-route-tests.sh $<TARGET_FILE:test_linux_default_gateway>)
+set_tests_properties(LinuxDefaultGateway PROPERTIES TIMEOUT 60 SKIP_RETURN_CODE 77)

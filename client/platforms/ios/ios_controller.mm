@@ -526,6 +526,7 @@ bool IosController::setupOpenVPN()
 
     QJsonObject openVPNConfig {};
     openVPNConfig.insert(configKey::config, ovpnConfig);
+    openVPNConfig.insert("ipv6Enabled", m_rawConfig.value("ipv6_enabled").toBool(true));
 
     if (ovpn.contains(configKey::mtu)) {
         openVPNConfig.insert(configKey::mtu, ovpn[configKey::mtu]);
@@ -604,6 +605,7 @@ bool IosController::setupWireGuard()
 
     insertNonEmptyAwgParams(wgConfig, config);
 
+    wgConfig.insert("ipv6Enabled", m_rawConfig.value("ipv6_enabled").toBool(true));
     if (m_rawConfig.contains("sing_box_routing")) {
         wgConfig.insert("routingTransport", "wireguard");
         wgConfig.insert("routingConfig", QString::fromUtf8(QJsonDocument(m_rawConfig.value("sing_box_routing").toObject()).toJson(QJsonDocument::Compact)));
@@ -635,6 +637,7 @@ bool IosController::setupXray()
 
     finalConfig.insert(configKey::splitTunnelSites, splitTunnelSites);
     finalConfig.insert(configKey::config, xrayConfigStr);
+    finalConfig.insert("ipv6Enabled", m_rawConfig.value("ipv6_enabled").toBool(true));
 
     QJsonDocument finalConfigDoc(finalConfig);
     QString finalConfigStr(finalConfigDoc.toJson(QJsonDocument::Compact));
@@ -651,6 +654,7 @@ bool IosController::setupSSXray()
     finalConfig.insert(configKey::dns1, m_rawConfig[configKey::dns1]);
     finalConfig.insert(configKey::dns2, m_rawConfig[configKey::dns2]);
     finalConfig.insert(configKey::config, ssXrayConfigStr);
+    finalConfig.insert("ipv6Enabled", m_rawConfig.value("ipv6_enabled").toBool(true));
 
     QJsonDocument finalConfigDoc(finalConfig);
     QString finalConfigStr(finalConfigDoc.toJson(QJsonDocument::Compact));
@@ -701,6 +705,7 @@ bool IosController::setupAwg()
 
     insertNonEmptyAwgParams(wgConfig, config);
 
+    wgConfig.insert("ipv6Enabled", m_rawConfig.value("ipv6_enabled").toBool(true));
     if (m_rawConfig.contains("sing_box_routing")) {
         wgConfig.insert("routingTransport", "awg");
         wgConfig.insert("routingConfig", QString::fromUtf8(QJsonDocument(m_rawConfig.value("sing_box_routing").toObject()).toJson(QJsonDocument::Compact)));
@@ -1288,4 +1293,3 @@ bool IosController::isTestFlight() {
     NSURL *receiptURL = [[NSBundle mainBundle] appStoreReceiptURL];
     return receiptURL && [[receiptURL lastPathComponent] isEqualToString:@"sandboxReceipt"];
 }
-

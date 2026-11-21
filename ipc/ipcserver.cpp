@@ -154,6 +154,11 @@ void IpcServer::clearLogs()
     Logger::clearLogs(true);
 }
 
+bool IpcServer::configureProxyIpv6(const QStringList &included, const QStringList &excluded)
+{
+    return Router::configureProxyIpv6(included, excluded);
+}
+
 bool IpcServer::createTun(const QString &dev, const QString &subnet)
 {
 #ifdef MZ_DEBUG
@@ -206,6 +211,17 @@ bool IpcServer::StopRoutingIpv6()
 #endif
 
     return Router::StopRoutingIpv6();
+}
+
+bool IpcServer::setNativeIpv6Blocked(bool blocked, QStringList endpoints)
+{
+#if defined(Q_OS_WIN) || defined(Q_OS_MACOS)
+    return KillSwitch::instance()->setNativeIpv6Blocked(blocked, endpoints);
+#else
+    Q_UNUSED(blocked)
+    Q_UNUSED(endpoints)
+    return false;
+#endif
 }
 
 void IpcServer::setLogsEnabled(bool enabled)

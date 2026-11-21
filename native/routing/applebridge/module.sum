@@ -1,5 +1,5 @@
-github.com/StannisMod/gvisor v0.0.0-20261106123454-9cf7fba2d57c h1:pEWgJFRhdRNuYXaNs2Adxlx7hLX3su+12nAgx05rg6k=
-github.com/StannisMod/gvisor v0.0.0-20261106123454-9cf7fba2d57c/go.mod h1:QkHjoMIBaYtpVufgwv3keYAbln78mBoCuShZrPrer1Q=
+github.com/StannisMod/gvisor v0.0.0-20261111225907-cb0e626090af h1:HE7FHuAWFw7N4s/DMQxujkk1eT3AfW1ImKL0v/AkcCI=
+github.com/StannisMod/gvisor v0.0.0-20261111225907-cb0e626090af/go.mod h1:QkHjoMIBaYtpVufgwv3keYAbln78mBoCuShZrPrer1Q=
 github.com/amnezia-vpn/amnezia-libxray v1.0.3 h1:xaBuYYVwJgwDZEg4zjzpbg2bDlOczXxM7QNV97Z4ZSU=
 github.com/amnezia-vpn/amnezia-libxray v1.0.3/go.mod h1:rhrXlhRYuWZK7Ok3IDM/JxiaPPszmiJxoWFABwAm6Sg=
 github.com/amnezia-vpn/amnezia-xray-core v1.260728.0 h1:RBlb6zkrAeGVjlFDFJJRcUvueYNesAQ3uzfu9l+mp8Y=
@@ -188,6 +188,8 @@ golang.org/x/tools v0.47.0 h1:7Kn5x/d1svx/PzryTsqeoZN4TZwqeH5pGWjefhLi/1Q=
 golang.org/x/tools v0.47.0/go.mod h1:dFHnyTvFWY212G+h7ZY4Vsp/K3U4/7W9TyVaAul8uCA=
 golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2 h1:B82qJJgjvYKsXS9jeunTOisW56dUokqW/FOteYJJ/yg=
 golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2/go.mod h1:deeaetjYA+DHMHg+sMSMI58GrEteJUUzzw7en6TJQcI=
+golang.zx2c4.com/wireguard v0.0.0-20250521234502-f333402bd9cb h1:whnFRlWMcXI9d+ZbWg+4sHnLp52d5yiIPUxMBSt4X9A=
+golang.zx2c4.com/wireguard v0.0.0-20250521234502-f333402bd9cb/go.mod h1:rpwXGsirqLqN2L0JDJQlwOboGHmptD5ZD6T2VmcqhTw=
 golang.zx2c4.com/wireguard/windows v1.0.1 h1:eOxiDVbywPC+ZQqvdCK7x+ZwWXKbYv50TtH8ysFIbw8=
 golang.zx2c4.com/wireguard/windows v1.0.1/go.mod h1:+fbT3FFdX4zzYDLwJh5+HPEcNN/3HyNdzhNSVsQM+zs=
 gonum.org/v1/gonum v0.17.0 h1:VbpOemQlsSMrYmn7T2OUvQ4dqxQXU+ouZFQsZOx50z4=

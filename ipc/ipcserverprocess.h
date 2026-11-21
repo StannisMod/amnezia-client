@@ -3,6 +3,21 @@
 
 #include "ipc.h"
 #include <QObject>
+#if defined(Q_OS_LINUX) && !defined(Q_OS_ANDROID)
+#include "../client/platforms/linux/daemon/linuxopenvpnipv6routes.h"
+#include "../client/platforms/linux/daemon/linuxopenvpndevice.h"
+#include <memory>
+#endif
+#ifdef Q_OS_WIN
+#include "../client/platforms/windows/daemon/windowsopenvpnipv6api.h"
+#include "../client/platforms/windows/daemon/windowsopenvpnipv6routes.h"
+#include <memory>
+#endif
+
+#if defined(Q_OS_MACOS) && !defined(MACOS_NE)
+#include "../client/platforms/macos/daemon/macopenvpnipv6routes.h"
+#include <memory>
+#endif
 
 #ifndef Q_OS_IOS
 #include "rep_ipc_process_interface_source.h"
@@ -18,6 +33,7 @@ public:
     void terminate() override;
     void kill() override;
     void close() override;
+    bool addOpenVpnIpv6Hosts(const QString &localIpv4, const QStringList &hosts, bool throughVpn) override;
 
     void setArguments(const QStringList &arguments) override;
     void setInputChannelMode(QProcess::InputChannelMode mode) override;
@@ -40,6 +56,17 @@ signals:
 private:
     amnezia::PermittedProcess m_program = amnezia::PermittedProcess::Invalid;
     QSharedPointer<QProcess> m_process;
+    QStringList m_arguments;
+#if defined(Q_OS_LINUX) && !defined(Q_OS_ANDROID)
+    std::unique_ptr<LinuxOpenVpnIpv6Routes> m_ipv6Routes;
+    std::unique_ptr<LinuxOpenVpnDevice> m_openVpnDevice;
+#endif
+#ifdef Q_OS_WIN
+    std::unique_ptr<WindowsOpenVpnIpv6Routes> m_windowsIpv6Routes;
+#endif
+#if defined(Q_OS_MACOS) && !defined(MACOS_NE)
+    std::unique_ptr<MacOpenVpnIpv6Routes> m_macIpv6Routes;
+#endif
 };
 
 #else

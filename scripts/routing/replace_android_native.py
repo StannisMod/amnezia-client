@@ -10,6 +10,8 @@ from pathlib import Path
 import subprocess
 import zipfile
 
+from android_host_sources import changed_host_sources
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -20,8 +22,7 @@ def main():
     args = parser.parse_args()
     # A native-only update is valid only while production Android sources and
     # protocol configuration serialization match the packaged client baseline.
-    changed = subprocess.check_output(["git", "diff", "--name-only", args.baseline_sha, "HEAD", "--", "client/android", "client/platforms/android"], text=True)
-    assert not changed.strip(), "Android host changed; use an APK rebuilt from this commit"
+    assert not changed_host_sources(args.baseline_sha), "Android/Qt host changed; use an APK rebuilt from this commit"
     target = "lib/x86_64/libwg-go.so"
     with zipfile.ZipFile(args.apk) as original, zipfile.ZipFile(args.output, "w") as updated:
         assert target in original.namelist()

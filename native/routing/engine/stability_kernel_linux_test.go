@@ -30,6 +30,9 @@ import (
 // This opt-in path is only permitted inside the disposable lab container.
 // The independent kernel TCP peer lives in its own network namespace.
 func stabilityKernelPeer(t *testing.T, config awg.Config) (netip.AddrPort, net.Listener) {
+	if os.Getenv("AMNEZIA_MTU_LAB") == "1" {
+		return stabilityMTUPeer(t, config)
+	}
 	t.Helper()
 	if mode := os.Getenv("AMNEZIA_STABILITY_LAB"); mode != "isolated-container" && mode != "isolated-namespace" {
 		t.Fatal("kernel peer requires the isolated lab wrapper")

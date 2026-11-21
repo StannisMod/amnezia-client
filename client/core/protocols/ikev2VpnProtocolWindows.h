@@ -53,6 +53,9 @@ private:
 
 private:
     QJsonObject m_config;
+    bool m_ipv6Enabled = true;
+    bool m_nativeIpv6PolicyApplied = false;
+    bool setNativeIpv6Blocked(bool blocked);
 
     //RAS functions and parameters
     HRASCONN        hRasConn{nullptr};

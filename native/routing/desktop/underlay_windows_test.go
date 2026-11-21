@@ -10,6 +10,9 @@ import (
 )
 
 func TestNativeRouteABIAndLoopback(t *testing.T) {
+	if unsafe.Sizeof(winUnicastAddress{}) != 80 || unsafe.Offsetof(winUnicastAddress{}.LUID) != 32 || unsafe.Offsetof(winUnicastAddress{}.DadState) != 64 {
+		t.Fatal("Windows unicast address API ABI changed")
+	}
 	if _, unsafeFastPath := any(&windowsPacketConn{}).(syscall.Conn); unsafeFastPath {
 		t.Fatal("UDP fast path can bypass native protection")
 	}

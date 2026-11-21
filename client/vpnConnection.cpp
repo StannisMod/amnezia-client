@@ -5,8 +5,12 @@
 #include <QFile>
 #include <QHostInfo>
 #include <QJsonObject>
+#include <QJsonArray>
+#include <QJsonDocument>
 #include <QObject>
 #include <QSharedPointer>
+#include <QPointer>
+#include <utility>
 #include <QString>
 #include <QStringList>
 #include <QTimer>
@@ -15,6 +19,7 @@
 #include <core/configurators/wireguardConfigurator.h>
 
 #ifdef AMNEZIA_DESKTOP
+    #include <core/protocols/openVpnProtocol.h>
     #include "core/utils/ipcClient.h"
     #include <core/protocols/wireGuardProtocol.h>
     #include <QRemoteObjectPendingCallWatcher>
@@ -43,8 +48,25 @@ VpnConnection::VpnConnection(SecureServersRepository* serversRepository, SecureA
       m_serversRepository(serversRepository),
       m_appSettingsRepository(appSettingsRepository),
       m_checkTimer(this),
+      m_ipv6SiteRefreshTimer(this),
       m_connectionState(Vpn::ConnectionState::Disconnected)
 {
+#if defined(Q_OS_LINUX) && !defined(Q_OS_ANDROID)
+    m_ipv6SiteRefreshTimer.setObjectName("ipv6SiteRefresh");
+    m_ipv6SiteRefreshTimer.setInterval(30000);
+    connect(&m_ipv6SiteRefreshTimer, &QTimer::timeout, this, &VpnConnection::refreshIpv6Sites);
+#endif
+    connect(this, &VpnConnection::connectionStateChanged, this, [this](Vpn::ConnectionState state) {
+        if (state != Vpn::ConnectionState::Connected) {
+            m_ipv6SiteRefreshTimer.stop();
+            ++m_siteLookupGeneration;
+            m_siteLookupPending = false;
+            for (int id : std::exchange(m_siteLookupIds, {})) QHostInfo::abortHostLookup(id);
+        }
+#if defined(Q_OS_LINUX) && !defined(Q_OS_ANDROID)
+        else if (m_vpnProtocol && m_vpnProtocol->supportsIpv6HostUpdates()) m_ipv6SiteRefreshTimer.start();
+#endif
+    });
 #if defined(Q_OS_IOS) || defined(MACOS_NE)
     m_checkTimer.setInterval(1000);
     connect(IosController::Instance(), &IosController::connectionStateChanged, this, &VpnConnection::setConnectionState);
@@ -54,6 +76,16 @@ VpnConnection::VpnConnection(SecureServersRepository* serversRepository, SecureA
 
 VpnConnection::~VpnConnection()
 {
+    ++m_siteLookupGeneration;
+    m_ipv6SiteRefreshTimer.stop();
+    for (int id : std::exchange(m_siteLookupIds, {})) QHostInfo::abortHostLookup(id);
+    if (m_vpnProtocol) {
+        m_vpnProtocol->stop(); // Keep the normal route/resolver rollback signals.
+        m_vpnProtocol->disconnect(this);
+    }
+    // A protocol destructor can wait for IPC; release it while our members
+    // still exist and any queued DNS callbacks have already been invalidated.
+    m_vpnProtocol.clear();
 }
 
 void VpnConnection::onBytesChanged(quint64 receivedBytes, quint64 sentBytes)
@@ -214,7 +246,24 @@ void VpnConnection::setRepositories(SecureServersRepository* serversRepository, 
     m_appSettingsRepository = appSettingsRepository;
 }
 
-void VpnConnection::addSitesRoutes(const QString &gw, amnezia::RouteMode mode)
+int VpnConnection::lookupSiteAddresses(const QString &site, std::function<void(const QHostInfo &)> done)
+{
+    return QHostInfo::lookupHost(site, this, std::move(done));
+}
+
+void VpnConnection::refreshIpv6Sites()
+{
+#ifdef AMNEZIA_DESKTOP
+    if (m_connectionState != Vpn::ConnectionState::Connected || !m_vpnProtocol
+        || !m_vpnProtocol->isConnected() || !m_vpnProtocol->supportsIpv6HostUpdates()
+        || !m_appSettingsRepository || !m_appSettingsRepository->isSitesSplitTunnelingEnabled()) return;
+    const auto mode = m_appSettingsRepository->routeMode();
+    if (mode != RouteMode::VpnOnlyForwardSites && mode != RouteMode::VpnAllExceptSites) return;
+    addSitesRoutes({}, mode, true);
+#endif
+}
+
+void VpnConnection::addSitesRoutes(const QString &gw, amnezia::RouteMode mode, bool ipv6Only)
 {
 #ifdef AMNEZIA_DESKTOP
     if (!m_appSettingsRepository) {
@@ -222,6 +271,15 @@ void VpnConnection::addSitesRoutes(const QString &gw, amnezia::RouteMode mode)
         return;
     }
 
+    if (m_siteLookupPending) return;
+    m_siteLookupPending = true;
+    const auto generation = ++m_siteLookupGeneration;
+    QTimer::singleShot(20000, this, [this, generation] {
+        if (generation != m_siteLookupGeneration || !m_siteLookupPending) return;
+        ++m_siteLookupGeneration;
+        m_siteLookupPending = false;
+        for (int id : std::exchange(m_siteLookupIds, {})) QHostInfo::abortHostLookup(id);
+    });
     QStringList ips;
     QStringList sites;
     const QVariantMap &m = m_appSettingsRepository->vpnSites(mode);
@@ -239,63 +297,76 @@ void VpnConnection::addSitesRoutes(const QString &gw, amnezia::RouteMode mode)
         }
     }
     ips.removeDuplicates();
+    const auto knownIps = ips;
+    // These legacy IPC helpers install IPv4 routes. IPv6 capture is configured
+    // by the protocol; keep IPv6 rules in the shared profile/site list.
+    ips.removeIf([](const QString &value) {
+        return QHostAddress::parseSubnet(value).first.protocol() != QAbstractSocket::IPv4Protocol;
+    });
 
-    IpcClient::withInterface([&](QSharedPointer<IpcInterfaceReplica> iface) {
+
+    if (!ipv6Only) IpcClient::withInterface([&](QSharedPointer<IpcInterfaceReplica> iface) {
         iface->routeAddList(gw, ips);
     });
+    if (sites.isEmpty()) { m_siteLookupPending = false; return; }
 
     auto remainingLookups = QSharedPointer<int>::create(sites.size());
     auto needFlush = QSharedPointer<bool>::create(false);
 
-    // re-resolve domains
+    const QPointer<VpnProtocol> protocol(m_vpnProtocol.data());
+    const QPointer<VpnConnection> self(this);
+    // Each answer belongs to this connection and policy, never a later session.
     for (const QString &site : sites) {
-        const auto &cbResolv = [this, site, gw, mode, ips, remainingLookups, needFlush](const QHostInfo &hostInfo) {
-            QStringList resolvedIps;
-            for (const QHostAddress &addr : hostInfo.addresses()) {
-                if (addr.protocol() == QAbstractSocket::NetworkLayerProtocol::IPv4Protocol) {
-                    resolvedIps.append(addr.toString());
+        const auto cbResolv = [self, protocol, site, gw, mode, knownIps, remainingLookups, needFlush, generation, ipv6Only](const QHostInfo &hostInfo) {
+            const auto release = [self, generation, remainingLookups] {
+                if (!self || self->m_siteLookupGeneration != generation) return false;
+                if (--(*remainingLookups) != 0) return false;
+                self->m_siteLookupPending = false;
+                self->m_siteLookupIds.clear();
+                return true;
+            };
+            const auto current = [self, protocol, mode, site, generation] {
+                return self && self->m_siteLookupGeneration == generation && protocol
+                    && self->m_vpnProtocol.data() == protocol.data() && protocol->isConnected()
+                    && self->m_appSettingsRepository && self->m_appSettingsRepository->isSitesSplitTunnelingEnabled()
+                    && self->m_appSettingsRepository->routeMode() == mode
+                    && self->m_appSettingsRepository->vpnSites(mode).contains(site);
+            };
+            if (!current()) { release(); return; }
+            QStringList ipv4, ipv6;
+            for (const auto &address : hostInfo.addresses()) {
+                if (knownIps.contains(address.toString())) continue;
+                if (!ipv6Only && address.protocol() == QAbstractSocket::IPv4Protocol) ipv4 << address.toString();
+                else if (address.protocol() == QAbstractSocket::IPv6Protocol && address.scopeId().isEmpty()
+                         && !address.isLinkLocal() && !address.isMulticast() && !address.isLoopback()) ipv6 << address.toString();
+            }
+            ipv4.removeDuplicates(); ipv6.removeDuplicates();
+            if (!ipv4.isEmpty()) IpcClient::withInterface([&](QSharedPointer<IpcInterfaceReplica> iface) { iface->routeAddList(gw, ipv4); });
+            const auto finish = [self, current, release, site, mode, ipv4, ipv6, needFlush](bool installedIpv6) {
+                if (!current()) { release(); return; }
+                auto added = ipv4;
+                if (installedIpv6) added << ipv6;
+                else if (!ipv6.isEmpty()) qWarning() << "IPv6 domain routes were not installed" << site;
+                if (!added.isEmpty()) {
+                    self->m_appSettingsRepository->addVpnSite(mode, site, added);
+                    *needFlush = true;
                 }
-            }
-            resolvedIps.removeDuplicates();
-            qDebug() << "[SplitTunneling] addSitesRoutes resolved" << site << "->" << resolvedIps;
-
-            QStringList newIps;
-            for (const QString &ip : resolvedIps) {
-                if (!ips.contains(ip)) {
-                    IpcClient::withInterface([gw, ip](QSharedPointer<IpcInterfaceReplica> iface) {
-                        iface->routeAddList(gw, QStringList() << ip);
-                    });
-                    newIps.append(ip);
-                }
-            }
-
-            if (!newIps.isEmpty()) {
-                m_appSettingsRepository->addVpnSite(mode, site, newIps);
-                *needFlush = true;
-            }
-
-            if (--(*remainingLookups) > 0)
-                return;
-
-            if (!*needFlush)
-                return;
-
-            // Async flush: never waitForFinished() here — that re-enters the event loop and
-            // can re-enter this QHostInfo callback until the stack overflows (0xc00000fd).
-            IpcClient::withInterface([this](QSharedPointer<IpcInterfaceReplica> iface) {
-                QRemoteObjectPendingReply<bool> reply = iface->flushDns();
-                auto *watcher = new QRemoteObjectPendingCallWatcher(reply, this);
-                QObject::connect(watcher, &QRemoteObjectPendingCallWatcher::finished, this,
+                if (!release() || !*needFlush) return;
+                IpcClient::withInterface([self](QSharedPointer<IpcInterfaceReplica> iface) {
+                    auto *watcher = new QRemoteObjectPendingCallWatcher(iface->flushDns(), self);
+                    QObject::connect(watcher, &QRemoteObjectPendingCallWatcher::finished, self,
                         [](QRemoteObjectPendingCallWatcher *call) {
-                            if (call->error() != QRemoteObjectPendingCall::NoError
-                                || !call->returnValue().toBool()) {
+                            if (call->error() != QRemoteObjectPendingCall::NoError || !call->returnValue().toBool())
                                 qWarning() << "VpnConnection::addSitesRoutes: Failed to flush DNS";
-                            }
                             call->deleteLater();
                         });
-            });
+                });
+            };
+            if (ipv6.isEmpty()) finish(true);
+            else protocol->addResolvedIpv6Hosts(ipv6, mode == RouteMode::VpnOnlyForwardSites, finish);
         };
-        QHostInfo::lookupHost(site, this, cbResolv);
+        const int id = lookupSiteAddresses(site, cbResolv);
+        if (id >= 0) m_siteLookupIds.append(id);
     }
 #endif
 }
@@ -403,10 +474,65 @@ void VpnConnection::connectToVpn(const QString &serverId, DockerContainer contai
 
     createProtocolConnections();
 
+#ifdef AMNEZIA_DESKTOP
+    if (auto *openvpn = qobject_cast<OpenVpnProtocol *>(m_vpnProtocol.data()); openvpn && container == DockerContainer::OpenVpn) {
+        const auto expected = m_serversRepository->serverJsonById(serverId);
+        if (expected) {
+            connect(openvpn, &VpnProtocol::connectionStateChanged, this,
+                [this, openvpn, serverId, expected = *expected](Vpn::ConnectionState state) {
+                    if (m_vpnProtocol.data() == openvpn && state == Vpn::ConnectionState::Connected
+                        && openvpn->serverAssignedIpv6()) rememberOpenVpnIpv6Capability(serverId, expected);
+                });
+        }
+    }
+#endif
+
     if (ErrorCode err = m_vpnProtocol->start(); err != ErrorCode::NoError) {
         setConnectionState(Vpn::ConnectionState::Error);
         emit vpnProtocolError(err);
     }
+}
+
+void VpnConnection::rememberOpenVpnIpv6Capability(const QString &serverId, const QJsonObject &expected)
+{
+    if (!m_serversRepository || m_serversRepository->serverJsonById(serverId) != std::optional<QJsonObject>(expected)) return;
+    const auto kind = m_serversRepository->serverKind(serverId);
+    switch (kind) {
+    case serverConfigUtils::ConfigType::SelfHostedAdmin:
+    case serverConfigUtils::ConfigType::SelfHostedUser:
+    case serverConfigUtils::ConfigType::Native:
+    case serverConfigUtils::ConfigType::AmneziaPremiumV2:
+    case serverConfigUtils::ConfigType::AmneziaFreeV3:
+    case serverConfigUtils::ConfigType::ExternalPremium: break;
+    default: return;
+    }
+    // Preserve opaque provider/legacy fields: changing a local observation
+    // must not round-trip the whole record through a narrower typed model.
+    auto containers = expected.value(configKey::containers).toArray();
+    int index = -1;
+    for (int i = 0; i < containers.size(); ++i) {
+        if (containers[i].toObject().value(configKey::container).toString()
+            != ContainerUtils::containerToString(DockerContainer::OpenVpn)) continue;
+        if (index != -1) return; // Ambiguous duplicate owner.
+        index = i;
+    }
+    if (index == -1) return;
+    auto container = containers[index].toObject();
+    const auto protocolName = ProtocolUtils::protoToString(Proto::OpenVpn);
+    auto protocol = container.value(protocolName).toObject();
+    const auto document = QJsonDocument::fromJson(protocol.value(configKey::lastConfig).toString().toUtf8());
+    if (!document.isObject()) return;
+    auto client = document.object();
+    if (!client.value(configKey::config).isString() || client.value("ipv6Tunnel").toBool()) return;
+    client.insert("ipv6Tunnel", true);
+    protocol.insert(configKey::lastConfig, QString::fromUtf8(QJsonDocument(client).toJson(QJsonDocument::Compact)));
+    container.insert(protocolName, protocol);
+    containers[index] = container;
+    auto updated = expected;
+    updated.insert(configKey::containers, containers);
+    // Learn only for the next connection, without notifying transport restart
+    // observers (including an unrelated local proxy owned by this record).
+    m_serversRepository->editServer(serverId, updated, kind, SecureServersRepository::EditEffect::ObservedCapability);
 }
 
 void VpnConnection::createProtocolConnections()
@@ -529,8 +655,8 @@ void VpnConnection::appendSplitTunnelingConfig()
     m_vpnConfiguration.insert(configKey::splitTunnelType, routeMode);
     m_vpnConfiguration.insert(configKey::splitTunnelSites, sitesJsonArray);
 
-#if defined(Q_OS_ANDROID) || defined(Q_OS_IOS) || defined(Q_OS_LINUX) || defined(Q_OS_WIN)
-    if (m_appSettingsRepository->isSingBoxRoutingEnabled()
+#if defined(Q_OS_ANDROID) || defined(Q_OS_IOS) || defined(Q_OS_LINUX) || defined(Q_OS_WIN) || (defined(Q_OS_MACOS) && defined(MACOS_NE))
+    if ((m_appSettingsRepository->isSingBoxRoutingEnabled() || !m_appSettingsRepository->isIpv6Enabled())
             && ProtocolUtils::supportsDomainRouting(ProtocolUtils::protoFromString(protocolName))) {
         m_vpnConfiguration.insert("sing_box_routing", m_appSettingsRepository->isSitesSplitTunnelingEnabled()
             ? m_appSettingsRepository->domainRoutingConfig()
@@ -569,6 +695,15 @@ void VpnConnection::appendSplitTunnelingConfig()
 
     m_vpnConfiguration.insert(configKey::appSplitTunnelType, appsRouteMode);
     m_vpnConfiguration.insert(configKey::splitTunnelApps, appsJsonArray);
+#ifdef Q_OS_ANDROID
+    m_vpnConfiguration.remove("android_app_routing");
+    if (appsRouteMode == amnezia::AppsRouteMode::VpnOnlyForwardApps
+        && (protocolName == ProtocolUtils::protoToString(Proto::Awg)
+            || protocolName == ProtocolUtils::protoToString(Proto::WireGuard))) {
+        const auto appPolicy = m_appSettingsRepository->androidAppRoutingPolicy();
+        if (!appPolicy.isEmpty()) m_vpnConfiguration.insert("android_app_routing", appPolicy);
+    }
+#endif
 
     qDebug() << QString("Site split tunneling is %1, route mode is %2")
                         .arg(m_appSettingsRepository->isSitesSplitTunnelingEnabled() ? "enabled" : "disabled")

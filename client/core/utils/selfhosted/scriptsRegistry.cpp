@@ -6,6 +6,7 @@
 #include <QObject>
 #include <QLoggingCategory>
 #include "core/utils/networkUtilities.h"
+#include "core/configurators/wireguardConfigurator.h"
 #include "core/utils/containerEnum.h"
 #include "core/utils/containers/containerUtils.h"
 #include "core/utils/protocolEnum.h"
@@ -110,6 +111,32 @@ QString amnezia::scriptData(amnezia::ProtocolScriptType type, DockerContainer co
         return "";
     }
     QByteArray data = file.readAll();
+    data.replace("\r", "");
+    if (type == ProtocolScriptType::run_container
+        && (ContainerUtils::isAwgContainer(container) || container == DockerContainer::WireGuard || container == DockerContainer::Xray || container == DockerContainer::OpenVpn || container == DockerContainer::Ipsec)) {
+        QFile ipv6(":/server_scripts/prepare_ipv6_network.sh");
+        if (!ipv6.open(QIODevice::ReadOnly)) return {};
+        data.prepend(ipv6.readAll() + "\n");
+    }
+    if (type == ProtocolScriptType::container_startup
+        && (ContainerUtils::isAwgContainer(container) || container == DockerContainer::WireGuard || container == DockerContainer::OpenVpn)) {
+        QFile ipv6(":/server_scripts/enable_ipv6_forwarding.sh");
+        if (!ipv6.open(QIODevice::ReadOnly) || !data.startsWith("#!")) return {};
+        data.insert(data.indexOf('\n') + 1, ipv6.readAll() + "\n");
+    }
+    if (type == ProtocolScriptType::container_startup && container == DockerContainer::OpenVpn) {
+        QFile migration(":/server_scripts/openvpn/migrate_ipv6.sh");
+        if (!migration.open(QIODevice::ReadOnly)) return {};
+        data.insert(data.indexOf('\n') + 1, migration.readAll() + "\n");
+    }
+    if ((type == ProtocolScriptType::configure_container || type == ProtocolScriptType::container_startup)
+        && container == DockerContainer::Ipsec) {
+        QFile ipv6(":/server_scripts/ipsec/enable_ipv6.sh");
+        if (!ipv6.open(QIODevice::ReadOnly) || !data.startsWith("#!")) return {};
+        data.insert(data.indexOf('\n') + 1, ipv6.readAll() + "\n");
+    }
+    // Helpers may be embedded from a Windows checkout too. Normalize the
+    // complete composition, including every prepended/inserted resource.
     data.replace("\r", "");
     return data;
 }
@@ -223,6 +250,7 @@ amnezia::ScriptVars amnezia::genWireGuardVars(const ContainerConfig &containerCo
         
         vars.append({ { "$WIREGUARD_SUBNET_IP", config.subnetAddress.isEmpty() ? protocols::wireguard::defaultSubnetAddress : config.subnetAddress } });
         vars.append({ { "$WIREGUARD_SUBNET_CIDR", config.subnetCidr.isEmpty() ? protocols::wireguard::defaultSubnetCidr : config.subnetCidr } });
+        vars.append({ { "$WIREGUARD_IPV6_ADDRESS", WireguardConfigurator::serverIPv6CidrFromInterfaceConfig("Address = " + config.ipv6Address) } });
         vars.append({ { "$WIREGUARD_SERVER_PORT", config.port.isEmpty() ? protocols::wireguard::defaultPort : config.port } });
     }
     
@@ -238,6 +266,7 @@ amnezia::ScriptVars amnezia::genAwgVars(const ContainerConfig &containerConfig)
         
         vars.append({ { "$AWG_SUBNET_IP", config.subnetAddress.isEmpty() ? protocols::wireguard::defaultSubnetAddress : config.subnetAddress } });
         vars.append({ { "$WIREGUARD_SUBNET_CIDR", config.subnetCidr.isEmpty() ? protocols::wireguard::defaultSubnetCidr : config.subnetCidr } });
+        vars.append({ { "$WIREGUARD_IPV6_ADDRESS", WireguardConfigurator::serverIPv6CidrFromInterfaceConfig("Address = " + config.ipv6Address) } });
         vars.append({ { "$AWG_SERVER_PORT", config.port.isEmpty() ? protocols::awg::defaultPort : config.port } });
         vars.append({ { "$JUNK_PACKET_COUNT", config.junkPacketCount } });
         vars.append({ { "$JUNK_PACKET_MIN_SIZE", config.junkPacketMinSize } });

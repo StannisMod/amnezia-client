@@ -155,7 +155,7 @@ PageType {
                 Layout.rightMargin: 16
                 visible: !root.isUnsupportedContainer
                          && ServersUiController.isProcessedServerHasWriteAccess()
-                         && ["awg", "wireguard"].indexOf(ContainerProps.containerTypeToString(ServersUiController.processedContainerIndex)) >= 0
+                         && ["awg", "wireguard", "ipsec"].indexOf(ContainerProps.containerTypeToString(ServersUiController.processedContainerIndex)) >= 0
                 text: qsTr("Update protocol")
                 onClicked: {
                     var serverId = ServersUiController.processedServerId

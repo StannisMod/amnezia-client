@@ -39,6 +39,7 @@ public:
 
     ExportResult generateFullAccessConfig(const QString &serverId);
     ExportResult generateConnectionConfig(const QString &serverId, int containerIndex, const QString &clientName, bool updatable = false);
+    bool acknowledgeConnectionExport(const QString &serverId, int containerIndex, const QString &config);
     ExportResult generateConnectionUpdates(const QString &serverId, int containerIndex, const QString &clientPublicKey);
     ExportResult generateOpenVpnConfig(const QString &serverId, const QString &clientName);
     ExportResult generateWireGuardConfig(const QString &serverId, const QString &clientName);

@@ -13,6 +13,7 @@
 
 #include "core/utils/api/apiUtils.h"
 #include "core/controllers/selfhosted/installController.h"
+#include "core/controllers/selfhosted/connectionUpdatesController.h"
 #include "core/controllers/connectionController.h"
 #include "core/utils/networkUtilities.h"
 #include "core/utils/errorStrings.h"
@@ -397,7 +398,7 @@ void InstallUiController::updateProtocolSoftware(const QString &serverId, int co
     const DockerContainer container = static_cast<DockerContainer>(containerIndex);
     const auto admin = m_serversController->selfHostedAdminConfig(serverId);
     if (!admin.has_value() || !admin->containers.contains(container)
-        || (container != DockerContainer::WireGuard && container != DockerContainer::Awg2)) {
+        || (container != DockerContainer::WireGuard && container != DockerContainer::Awg2 && container != DockerContainer::Ipsec)) {
         emit installationErrorOccurred(ErrorCode::ProtocolUpdateRejected);
         return;
     }
@@ -414,24 +415,51 @@ void InstallUiController::updateProtocolSoftware(const QString &serverId, int co
     // Take credentials on the owning thread. The worker has no repository/model
     // access and never changes cached profiles or emits client revocations.
     const auto credentials = admin->credentials();
+    const auto deliveryMetadata = admin->connectionUpdates;
+    const auto expected = admin->toJson();
+    const bool hasCachedClient = admin->containerConfig(container).protocolConfig.hasClientConfig();
     m_serverConfigUpdateInProgress = true;
     emit serverIsBusy(true);
-    auto *watcher = new QFutureWatcher<ErrorCode>(this);
-    connect(watcher, &QFutureWatcher<ErrorCode>::finished, this, [this, watcher]() {
-        const auto error = watcher->result();
+    struct Outcome { ErrorCode error; QString message; QJsonObject assignments; QStringList probes; bool synchronize = false; };
+    auto *watcher = new QFutureWatcher<Outcome>(this);
+    connect(watcher, &QFutureWatcher<Outcome>::finished, this, [this, watcher, serverId, container, expected]() {
+        auto result = watcher->result();
+        const auto error = result.error;
         watcher->deleteLater();
         m_serverConfigUpdateInProgress = false;
         emit serverIsBusy(false);
         if (error == ErrorCode::NoError) {
-            emit updateContainerFinished(tr("Protocol updated. Keys, users and connection settings were preserved."), false);
+            if (result.synchronize && (!m_connectionController->isDisconnected()
+                || !m_installController->applyPreparedAdministratorIPv6(serverId, container, expected, result.assignments, result.probes))) {
+                result.message = tr("Protocol updated. The saved client IPv6 settings could not be updated safely; its existing configuration was preserved.");
+            }
+            emit updateContainerFinished(result.message.isEmpty() ? tr("Protocol updated. Keys, users and connection settings were preserved.") : result.message, false);
         } else {
             emit installationErrorOccurred(error);
         }
     });
     // SSH schedules its blocking calls on Qt's global pool. The outer task
     // must not occupy that pool's only worker on a single-CPU machine.
-    watcher->setFuture(QtConcurrent::run(&m_protocolSoftwareUpdatePool, [credentials, container]() {
-        return InstallController::updateProtocolSoftware(credentials, container);
+    watcher->setFuture(QtConcurrent::run(&m_protocolSoftwareUpdatePool, [credentials, container, deliveryMetadata, hasCachedClient]() -> Outcome {
+        const auto error = InstallController::updateProtocolSoftware(credentials, container);
+        if (error != ErrorCode::NoError) return {error, {}};
+        // IKEv2 assigns virtual addresses during negotiation; its unchanged
+        // certificate profile has no WireGuard peer-address metadata to refresh.
+        if (container == DockerContainer::Ipsec) return {ErrorCode::NoError, {}};
+        QJsonObject ipv6;
+        const auto ipv6Error = ConnectionUpdatesController::prepareServerIPv6(credentials, container, ipv6, deliveryMetadata);
+        if (ipv6Error != ErrorCode::NoError)
+            return {ErrorCode::NoError, tr("Protocol updated. IPv6 setup did not finish; run the update again to resume it.")};
+        if (ipv6.value("result") == "unavailable")
+            return {ErrorCode::NoError, tr("Protocol updated. IPv6 could not be verified on this server; IPv4 settings were preserved.")};
+        Outcome result{ErrorCode::NoError, {}};
+        if (hasCachedClient) {
+            if (ConnectionUpdatesController::fetchPeerIPv6Assignments(credentials, container, result.assignments) != ErrorCode::NoError
+                || ConnectionUpdatesController::fetchPathMtuProbeAddresses(credentials, container, result.probes) != ErrorCode::NoError) {
+                result.message = tr("Protocol updated. The saved client IPv6 settings could not be read; its existing configuration was preserved.");
+            } else result.synchronize = true;
+        }
+        return result;
     }));
 }
 

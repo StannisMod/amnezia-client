@@ -3,6 +3,7 @@
 #include <QProcess>
 
 #include <QThread>
+#include <QHostInfo>
 
 #include <chrono>
 
@@ -27,6 +28,12 @@ Ikev2Protocol::Ikev2Protocol(const QJsonObject &configuration, QObject* parent) 
 {
     self = this;
     readIkev2Configuration(configuration);
+    connect(this, &VpnProtocol::connectionStateChanged, this, [this](Vpn::ConnectionState state) {
+        if (state != Vpn::ConnectionState::Disconnected || connectionState() != state
+            || !m_nativeIpv6PolicyApplied) return;
+        if (setNativeIpv6Blocked(false)) m_nativeIpv6PolicyApplied = false;
+        else emit protocolError(ErrorCode::AmneziaServiceConnectionFailed);
+    }, Qt::QueuedConnection);
 }
 
 Ikev2Protocol::~Ikev2Protocol()
@@ -44,6 +51,12 @@ void Ikev2Protocol::stop()
             setConnectionState(Vpn::ConnectionState::Error);
         }
         else {
+            if (m_nativeIpv6PolicyApplied && !setNativeIpv6Blocked(false)) {
+                setLastError(ErrorCode::AmneziaServiceConnectionFailed);
+                setConnectionState(Vpn::ConnectionState::Error);
+                return;
+            }
+            m_nativeIpv6PolicyApplied = false;
             setConnectionState(Vpn::ConnectionState::Disconnected);
         }
     }
@@ -174,6 +187,22 @@ void Ikev2Protocol::newConnectionStateEventReceived(UINT unMsg, tagRASCONNSTATE 
 void Ikev2Protocol::readIkev2Configuration(const QJsonObject &configuration)
 {
     m_config = configuration.value(ProtocolUtils::key_proto_config_data(Proto::Ikev2)).toObject();
+    m_ipv6Enabled = configuration.value("ipv6_enabled").toBool(true);
+}
+
+bool Ikev2Protocol::setNativeIpv6Blocked(bool blocked)
+{
+    QStringList endpoints;
+    if (blocked) {
+        const auto host = QHostInfo::fromName(m_config.value(configKey::hostName).toString());
+        if (host.error() != QHostInfo::NoError || host.addresses().isEmpty()) return false;
+        for (const auto &address : host.addresses()) endpoints << address.toString();
+        endpoints.removeDuplicates();
+    }
+    auto service = IpcClient::Interface();
+    if (!service || !service->isInitialized()) return false;
+    auto reply = service->setNativeIpv6Blocked(blocked, endpoints);
+    return reply.waitForFinished() && reply.returnValue();
 }
 
 ErrorCode Ikev2Protocol::start()
@@ -224,8 +253,14 @@ ErrorCode Ikev2Protocol::start()
 
     {
      {
-      if ( !create_new_vpn(tunnelName(), m_config[configKey::hostName].toString())){
-                                                                                    qDebug() <<"Can't create the VPN connect";
+       if (!setNativeIpv6Blocked(!m_ipv6Enabled)) {
+           setLastError(ErrorCode::AmneziaServiceConnectionFailed);
+           return ErrorCode::AmneziaServiceConnectionFailed;
+       }
+       m_nativeIpv6PolicyApplied = !m_ipv6Enabled;
+       if ( !create_new_vpn(tunnelName(), m_config[configKey::hostName].toString())){
+           stop();
+           return ErrorCode::InternalError;
 }
 }
 }
@@ -253,6 +288,8 @@ ErrorCode Ikev2Protocol::start()
 {
     if (!connect_to_vpn(tunnelName())) {
         qDebug()<<"We can't connect to VPN";
+        stop();
+        return ErrorCode::InternalError;
     }
 }
 //setConnectionState(Connecting);
@@ -272,13 +309,14 @@ bool Ikev2Protocol::create_new_vpn(const QString & vpn_name,
     pras->dwType = RASET_Vpn;
     pras->dwRedialCount = 1;
     pras->dwRedialPause = 60;
-    pras->dwfNetProtocols =  RASNP_Ip|RASNP_Ipv6;
+    pras->dwfNetProtocols = RASNP_Ip | (m_ipv6Enabled ? RASNP_Ipv6 : 0);
     pras->dwEncryptionType = ET_RequireMax;
     wcscpy_s(pras->szLocalPhoneNumber, serv_addr.toStdWString().c_str());
     wcscpy_s(pras->szDeviceType, RASDT_Vpn);
     pras->dwfOptions = RASEO_RemoteDefaultGateway;
     pras->dwfOptions |= RASEO_RequireDataEncryption;
     pras->dwfOptions2 |= RASEO2_RequireMachineCertificates;
+    if (m_ipv6Enabled) pras->dwfOptions2 |= RASEO2_IPv6RemoteDefaultGateway;
     pras->dwVpnStrategy = VS_Ikev2Only;
     const auto nRet = ::RasSetEntryProperties(nullptr, vpn_name.toStdWString().c_str(), pras, pras->dwSize, NULL, 0);
     free(pras);

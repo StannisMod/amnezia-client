@@ -32,6 +32,7 @@ struct OpenVpnClientConfig {
     QString nativeConfig;
     QString clientId;
     bool blockOutsideDns = false;
+    bool ipv6Tunnel = false; // Observed server configuration and active TUN address.
     
     QJsonObject toJson() const;
     static OpenVpnClientConfig fromJson(const QJsonObject& json);

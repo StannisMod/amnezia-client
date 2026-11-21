@@ -22,6 +22,7 @@ public:
     static bool flushDns();
     static void resetIpStack();
     static bool createTun(const QString &dev, const QString &subnet);
+    static bool configureProxyIpv6(const QStringList &included, const QStringList &excluded);
     static bool deleteTun(const QString &dev);
     static bool StartRoutingIpv6();
     static bool StopRoutingIpv6();

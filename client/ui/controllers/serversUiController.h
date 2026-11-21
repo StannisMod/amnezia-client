@@ -28,6 +28,7 @@ class ServersUiController : public QObject
     Q_PROPERTY(bool isDefaultServerDefaultContainerHasSplitTunneling READ isDefaultServerDefaultContainerHasSplitTunneling NOTIFY defaultServerIdChanged)
     Q_PROPERTY(bool isDefaultServerFromApi READ isDefaultServerFromApi NOTIFY defaultServerIdChanged)
     Q_PROPERTY(bool defaultServerHasOutdatedAwgContainer READ defaultServerHasOutdatedAwgContainer NOTIFY defaultServerIdChanged)
+    Q_PROPERTY(bool defaultServerSupportsPerAppSiteRules READ defaultServerSupportsPerAppSiteRules NOTIFY defaultServerIdChanged)
     
     Q_PROPERTY(QString processedServerId READ getProcessedServerId WRITE setProcessedServerId NOTIFY processedServerIdChanged)
     Q_PROPERTY(int processedContainerIndex READ getProcessedContainerIndex WRITE setProcessedContainerIndex NOTIFY processedContainerIndexChanged)
@@ -77,6 +78,7 @@ public slots:
 
     bool serverHasOutdatedAwgContainer(const QString &serverId) const;
     bool defaultServerHasOutdatedAwgContainer() const;
+    bool defaultServerSupportsPerAppSiteRules() const;
     bool isContainerOutdatedAwg(int containerIndex) const;
     bool isProcessedContainerOutdatedAwg() const;
 

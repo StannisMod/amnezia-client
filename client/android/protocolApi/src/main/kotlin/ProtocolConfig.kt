@@ -62,6 +62,10 @@ open class ProtocolConfig protected constructor(
         internal var allowSplitTunneling: Boolean = true
             private set
 
+        private var fullIpv6CaptureRequired: Boolean = false
+
+        fun requireFullIpv6Capture() = apply { fullIpv6CaptureRequired = true }
+
         open var mtu: Int = 0
             protected set
 
@@ -123,26 +127,21 @@ open class ProtocolConfig protected constructor(
                 removeRoute(InetNetwork("0.0.0.0", 0))
                 removeRoute(InetNetwork("::", 0))
                 removeRoute(InetNetwork("2000::", 3))
+                removeRoute(InetNetwork("::", 1))
+                removeRoute(InetNetwork("8000::", 1))
                 prependRoutes {
                     addRoutes(includedAddresses)
                 }
             } else if (excludedAddresses.isNotEmpty()) {
                 prependRoutes {
                     addRoute(InetNetwork("0.0.0.0", 0))
-                    addRoute(InetNetwork("2000::", 3))
+                    addRoute(InetNetwork("::", 0))
                     excludeRoutes(excludedAddresses)
                 }
             }
         }
 
         private fun processRoutes() {
-            // replace ::/0 as it may cause LAN connection issues
-            val ipv6DefaultRoute = InetNetwork("::", 0)
-            if (routes.removeIf { it.include && it.inetNetwork == ipv6DefaultRoute }) {
-                prependRoutes {
-                    addRoute(InetNetwork("2000::", 3))
-                }
-            }
             // for older versions of Android, build a list of subnets without excluded routes
             // and add them to routes
             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU && routes.any { !it.include }) {
@@ -152,7 +151,8 @@ open class ProtocolConfig protected constructor(
                     else ipRangeSet.remove(IpRange(it.inetNetwork))
                 }
                 ipRangeSet.remove(IpRange("127.0.0.0", 8))
-                ipRangeSet.remove(IpRange("::1", 128))
+                // Loopback belongs to the kernel's local table. Subtracting
+                // ::1 needlessly fragments an IPv6 default into many routes.
                 routes.clear()
                 ipRangeSet.subnets().forEach(::addRoute)
             }
@@ -179,6 +179,13 @@ open class ProtocolConfig protected constructor(
 
         protected fun configBuild() {
             processSplitTunneling()
+            if (fullIpv6CaptureRequired) {
+                // OFF is an enforcement policy, not a destination include
+                // rule. Install it after split processing removes defaults.
+                routes.removeIf { it.inetNetwork.isIpv6 }
+                addRoute(InetNetwork("::", 1))
+                addRoute(InetNetwork("8000::", 1))
+            }
             processRoutes()
             validate()
         }

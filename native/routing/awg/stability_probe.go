@@ -1,4 +1,4 @@
-//go:build stability_trace
+//go:build stability_trace && !amnezia_gvisor_2026
 
 package awg
 
