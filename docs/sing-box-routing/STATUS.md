@@ -1,5 +1,24 @@
 # Implementation checkpoint — automated validation
 
+## Per-resolver native DNS settings — 2026-11-21
+
+`NativeDNSSettings.swift` prepares a connection-local copy with one IPv4 DNS
+capture address per original resolver, preserving order, duplicates, domain
+scope and search metadata. Only individual capture /32 routes are added; native
+IPv4 routes/settings and the original settings object are not modified. Specific
+route/address collisions fail closed; encrypted DNS is not silently downgraded.
+IPv6 upstream bindings remain unavailable, while retaining a local endpoint for
+AAAA NODATA. iOS 26/macOS 26 resolver failover to the system is disabled.
+
+Resolver paths must be supplied explicitly by the native owner. Apple documents
+that system routes and interface scoping supersede included/excluded routes:
+https://developer.apple.com/documentation/networkextension/routing-your-vpn-network-traffic
+The planner therefore does not guess the DNS scope from a default route or move
+all split DNS through the tunnel. Establishing the original scope and publishing
+prepared guards transactionally with packet dispatch/teardown are still pending.
+The initial planner requires a native IPv4 interface; IPv6-only native interface
+capture setup remains to integrate. SDK/settings regression tests are pending.
+
 ## Strict IPv6 OFF clarification — 2026-11-21
 
 The user clarified that OFF means all IPv6 traffic, including DNS upstream
