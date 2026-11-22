@@ -2,6 +2,12 @@
 
 ## Native Apple WG/AWG reader integration — 2026-11-22
 
+Run `45046664006` at `670b469` failed iPhoneOS typecheck because Swift's Darwin
+import did not expose the routing-message declarations (`rt_msghdr`/`RTM_*`).
+The native bridging header now explicitly includes the system `<net/route.h>`;
+SDK validation of that correction is pending. The failed job log is preserved,
+and its result is not relabelled as an infrastructure error.
+
 The single existing AWG/Xray/routing Go archive now wraps the native `wgTurnOn`
 TUN reader with a synchronous packet filter. The pinned upstream ownership entry
 is checked before patching; changed/multiple entry points fail the build. Shared
