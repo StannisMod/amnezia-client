@@ -53,6 +53,12 @@ class PacketTunnelProvider: NEPacketTunnelProvider, NativeNetworkSettingsFailure
     var wireguardHealthGeneration: UInt64 = 0
     var routedAdapter: RoutingPacketTunnel?
     var ovpnAdapter: OpenVPNAdapter?
+    let xrayLifecycleQueue = DispatchQueue(label: "org.amnezia.xray-lifecycle")
+    var xrayGeneration: UInt64 = 0
+    var xrayClosing = false
+    var xrayActive = false
+    var xrayReady = false
+    var xrayStopWaiters: [() -> Void] = []
     private lazy var openVPNPacketFlowAdapter = PacketTunnelFlowAdapter(flow: packetFlow)
     private let pathMonitorQueue = DispatchQueue(label: Constants.processQueueName + ".path-monitor")
     private let networkChangeQueue = DispatchQueue(label: Constants.processQueueName + ".network-change")
@@ -488,8 +494,7 @@ class PacketTunnelProvider: NEPacketTunnelProvider, NativeNetworkSettingsFailure
         updateActiveInterfaceIndex(for: changePath)
         reasserting = true
         xrayLog(.info, message: "Applying network change to xray tunnel")
-        stopXray { }
-        startXray { [weak self] error in
+        restartXray { [weak self] error in
             self?.reasserting = false
             completion(error)
         }

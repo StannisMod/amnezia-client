@@ -1,5 +1,35 @@
 # Implementation checkpoint — automated validation
 
+## Native Xray reader lifetime preparation — 2026-11-22
+
+Run `45058827484` at `9ae44af` passed the complete hosted matrix, including
+Apple SDK, public-policy, native DNS/filter and settings-callback tests. Physical
+Apple VPN runtime and arbitrary external routing overrides are not proven.
+
+The Apple HEV framework now has checked hooks at its existing sole TUN reader
+and readiness boundary. No extra reader/runtime is created. ON has no registered
+filter and a C-side disabled gate skips packet callbacks; packets pass unchanged.
+HEV Stop is serialized with event-fd
+retirement; the real write assertion is retained, EINTR is retried, and no busy
+wait can touch a retired fd. The recipe checks required callback references in
+the resulting archive so a stale unhooked framework cannot silently pass.
+
+`NativeTunnelRunner` remembers Stop before readiness, sends quit once and joins
+the returning reader before completing Stop. Native Xray startup/stop is now
+generation-serialized, late settings/readiness callbacks cannot launch a stopped
+session, duplicate starts are rejected, and failed startup is cleaned up.
+The actual HEV 2.15.0 reader/lifecycle source was cached once for offline overlay
+verification. Five Python tests and overlay application/idempotence against that
+source passed in the bounded sandbox. Hosted tests additionally build the real
+host HEV source from the existing Conan source cache and run its reader with a
+socket-pair UTUN fixture, checking readiness, consumption, joined Stop and late
+quit after fd retirement. Those tests, Swift runner tests and SDK/full linkage
+are pending; this fixture is not physical VPN acceptance.
+
+This step does not yet register the Xray DNS controller/filter. That activation,
+owned Xray socket-callback lifetime, and remaining Android/desktop native adapters
+are still required before universal AAAA NODATA or merge readiness.
+
 ## iPhoneOS public-policy correction — 2026-11-22
 
 Run `45051442590` at `46f425a` failed because `<net/route.h>` is absent from the

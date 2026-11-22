@@ -9,6 +9,7 @@ enum XrayErrors: Error {
     case cantParseListenAndPort
     case cantAcquireLocalPort
     case cantSaveHevSocksConfig
+    case stopped
 }
 
 extension Constants {
@@ -80,7 +81,41 @@ extension PacketTunnelProvider {
     }
 
     func startXray(completionHandler: @escaping (Error?) -> Void) {
+        enqueueXrayStart(expectedGeneration: nil, completionHandler: completionHandler)
+    }
 
+    private func enqueueXrayStart(expectedGeneration: UInt64?, completionHandler: @escaping (Error?) -> Void) {
+        xrayLifecycleQueue.async {
+            if let expectedGeneration, self.xrayGeneration != expectedGeneration {
+                completionHandler(XrayErrors.stopped)
+                return
+            }
+            guard !self.xrayClosing, !self.xrayActive else {
+                completionHandler(NativeTunnelRunner.RunError.alreadyRunning)
+                return
+            }
+            self.xrayGeneration &+= 1
+            self.xrayActive = true
+            self.xrayReady = false
+            let generation = self.xrayGeneration
+            self.startXraySession(generation: generation) { error in
+                self.xrayLifecycleQueue.async {
+                    guard self.xrayGeneration == generation else {
+                        completionHandler(XrayErrors.stopped)
+                        return
+                    }
+                    if let error {
+                        self.stopXray { completionHandler(error) }
+                    } else {
+                        self.xrayReady = true
+                        completionHandler(nil)
+                    }
+                }
+            }
+        }
+    }
+
+    private func startXraySession(generation: UInt64, completionHandler: @escaping (Error?) -> Void) {
         // Xray configuration
         guard let protocolConfiguration = self.protocolConfiguration as? NETunnelProviderProtocol,
               let providerConfiguration = protocolConfiguration.providerConfiguration,
@@ -141,27 +176,41 @@ extension PacketTunnelProvider {
             let updatedData = try JSONSerialization.data(withJSONObject: jsonDict, options: [])
 
             setTunnelNetworkSettings(settings) { [weak self] error in
-                if let error {
-                    completionHandler(error)
-                    return
-                }
-
-                self?.updateActiveInterfaceIndexForCurrentPath()
-
-                // Launch xray
-                self?.setupAndStartXray(configData: updatedData) { xrayError in
-                    if let xrayError {
-                        completionHandler(xrayError)
+                guard let self else { completionHandler(XrayErrors.stopped); return }
+                self.xrayLifecycleQueue.async {
+                    guard self.xrayGeneration == generation, !self.xrayClosing else {
+                        completionHandler(XrayErrors.stopped)
                         return
                     }
+                    if let error {
+                        completionHandler(error)
+                        return
+                    }
+                    self.updateActiveInterfaceIndexForCurrentPath()
+                    self.setupAndStartXray(configData: updatedData) { xrayError in
+                        if let xrayError {
+                            completionHandler(xrayError)
+                            return
+                        }
 
-                    // Launch hevSocks
-                    self?.setupAndRunTun2socks(configData: updatedData,
-                                               address: address,
-                                               port: port,
-                                               username: socksCredentials.username,
-                                               password: socksCredentials.password,
-                                               completionHandler: completionHandler)
+                        self.setupAndRunTun2socks(configData: updatedData, address: address, port: port,
+                            username: socksCredentials.username, password: socksCredentials.password,
+                            completionHandler: { error in
+                            self.xrayLifecycleQueue.async {
+                                guard self.xrayGeneration == generation, !self.xrayClosing else {
+                                    completionHandler(XrayErrors.stopped)
+                                    return
+                                }
+                                completionHandler(error)
+                            }
+                        }, exited: { error in
+                            self.xrayLifecycleQueue.async {
+                                if let error, self.xrayGeneration == generation, !self.xrayClosing {
+                                    self.stopXray { self.cancelTunnelWithError(error) }
+                                }
+                            }
+                        })
+                    }
                 }
             }
         } catch {
@@ -170,10 +219,42 @@ extension PacketTunnelProvider {
         }
     }
 
-    func stopXray(completionHandler: () -> Void) {
-        Socks5Tunnel.quit()
-        LibXrayStopXray()
-        completionHandler()
+    func stopXray(completionHandler: @escaping () -> Void) {
+        stopXrayRequest(forRestart: false) { _ in completionHandler() }
+    }
+
+    func restartXray(completionHandler: @escaping (Error?) -> Void) {
+        stopXrayRequest(forRestart: true) { [weak self] generation in
+            guard let self, let generation else { completionHandler(XrayErrors.stopped); return }
+            self.enqueueXrayStart(expectedGeneration: generation, completionHandler: completionHandler)
+        }
+    }
+
+    private func stopXrayRequest(forRestart: Bool, completionHandler: @escaping (UInt64?) -> Void) {
+        xrayLifecycleQueue.async {
+            if forRestart && (!self.xrayReady || self.xrayClosing) {
+                completionHandler(nil)
+                return
+            }
+            self.xrayGeneration &+= 1
+            self.xrayReady = false
+            let generation = self.xrayGeneration
+            let completed = { completionHandler(generation) }
+            guard self.xrayActive || self.xrayClosing else { completed(); return }
+            self.xrayStopWaiters.append(completed)
+            guard !self.xrayClosing else { return }
+            self.xrayClosing = true
+            Socks5Tunnel.quit {
+                self.xrayLifecycleQueue.async {
+                    LibXrayStopXray()
+                    self.xrayActive = false
+                    self.xrayClosing = false
+                    let completions = self.xrayStopWaiters
+                    self.xrayStopWaiters.removeAll()
+                    for completion in completions { completion() }
+                }
+            }
+        }
     }
 
     func sockCallback(fd: uintptr_t) {
@@ -283,8 +364,9 @@ extension PacketTunnelProvider {
                                       address: String,
                                       port: Int,
                                       username: String,
-                                      password: String,
-                                      completionHandler: @escaping (Error?) -> Void) {
+                                       password: String,
+                                       completionHandler: @escaping (Error?) -> Void,
+                                       exited: @escaping (Error?) -> Void) {
         let config = """
         tunnel:
           mtu: 9000
@@ -310,10 +392,6 @@ extension PacketTunnelProvider {
             return
         }
 
-        DispatchQueue.global().async {
-            xrayLog(.info, message: "Hev socks started")
-            completionHandler(nil)
-            Socks5Tunnel.run(withConfig: configurationFilePath)
-        }
+        Socks5Tunnel.start(withConfig: configurationFilePath, started: completionHandler, exited: exited)
     }
 }

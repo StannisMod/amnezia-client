@@ -582,6 +582,10 @@ jobs:
         run: |
           set -euo pipefail
           python3 -B -m unittest discover -s scripts/routing -p 'test_prepare_apple*.py'
+          python3 -B -m unittest discover -s scripts/routing -p test_hev_native_dns.py
+          swiftc -swift-version 5 -warnings-as-errors client/platforms/ios/NativeTunnelRunner.swift \
+            client/tests/native-tunnel-runner/main.swift -o "$RUNNER_TEMP/native-tunnel-runner-tests"
+          "$RUNNER_TEMP/native-tunnel-runner-tests"
           git clone --depth 1 --branch v3.1.4 https://github.com/amnezia-vpn/amneziawg-apple.git "$RUNNER_TEMP/routing-apple"
           test "$(git -C "$RUNNER_TEMP/routing-apple" rev-parse HEAD)" = 811f5c8213e6b257e9520fff713ec4d22086e9ac
           module="$RUNNER_TEMP/routing-apple/Sources/WireGuardKitGo"
@@ -666,6 +670,13 @@ jobs:
         run: |
           set -o pipefail
           deploy/build.sh -t ios 2>&1 | tee client-build.log
+      - name: Exercise the actual host HEV reader and joined Stop without a VPN server
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_dir="$(conan cache path hev-socks5-tunnel/2.15.0 --folder=source)"
+          python3 -B scripts/routing/test_native_hev_reader.py \
+            --source "$source_dir" --work "$RUNNER_TEMP/native-hev-reader" 2>&1 | tee native-hev-reader.log
       - name: Record baseline result (signed IPA remains blocked)
         if: always()
         env:
@@ -677,6 +688,7 @@ jobs:
           name: routing-client-ios-unsigned-baseline
           path: |
             client-build.log
+            native-hev-reader.log
             routing-build-manifest.json
             deploy/build/client/tests/qt-regression.xml
             deploy/build/client/tests/Testing/Temporary/LastTest.log
