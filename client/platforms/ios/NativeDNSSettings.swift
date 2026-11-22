@@ -6,7 +6,7 @@ import Darwin
 // the OS retains server ordering/selection, rather than hiding a fallback
 // policy behind a single synthetic address.
 struct NativeDNSSettings {
-    enum Path: Equatable { case tunnel, underlay, loopback, native, unavailable }
+    enum Path: Equatable { case tunnel, underlay, loopback, interface(UInt32), unavailable }
     struct Binding {
         let address: String
         let upstream: String

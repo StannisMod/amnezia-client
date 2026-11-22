@@ -581,7 +581,7 @@ jobs:
           GOTELEMETRY: 'off'
         run: |
           set -euo pipefail
-          python3 -B -m unittest discover -s scripts/routing -p test_prepare_apple.py
+          python3 -B -m unittest discover -s scripts/routing -p 'test_prepare_apple*.py'
           git clone --depth 1 --branch v3.1.4 https://github.com/amnezia-vpn/amneziawg-apple.git "$RUNNER_TEMP/routing-apple"
           test "$(git -C "$RUNNER_TEMP/routing-apple" rev-parse HEAD)" = 811f5c8213e6b257e9520fff713ec4d22086e9ac
           module="$RUNNER_TEMP/routing-apple/Sources/WireGuardKitGo"
@@ -615,18 +615,21 @@ jobs:
           swiftc -swift-version 5 -warnings-as-errors -import-objc-header "$module/amnezia_routing.h" \
             client/platforms/ios/NativeDNSGuard.swift client/platforms/ios/NativeDNSResolver.swift \
             client/platforms/ios/NativeDNSRoute.swift \
+            client/platforms/ios/NativeDNSSettings.swift \
             client/tests/native-dns-resolver/main.swift -Xlinker "$RUNNER_TEMP/routing-apple-host.dylib" \
             -o "$RUNNER_TEMP/native-dns-resolver-tests"
           DYLD_LIBRARY_PATH="$RUNNER_TEMP" "$RUNNER_TEMP/native-dns-resolver-tests"
           swiftc -swift-version 5 -warnings-as-errors -import-objc-header "$module/amnezia_routing.h" \
             client/platforms/ios/NativeDNSGuard.swift client/platforms/ios/NativeDNSResolver.swift \
-            client/platforms/ios/NativeDNSSettings.swift client/tests/native-dns-settings/main.swift \
+            client/platforms/ios/NativeDNSSettings.swift client/platforms/ios/NativeDNSRoute.swift \
+            client/tests/native-dns-settings/main.swift \
             -Xlinker "$RUNNER_TEMP/routing-apple-host.dylib" -o "$RUNNER_TEMP/native-dns-settings-tests"
           DYLD_LIBRARY_PATH="$RUNNER_TEMP" "$RUNNER_TEMP/native-dns-settings-tests"
           swiftc -swift-version 5 -warnings-as-errors -import-objc-header "$module/amnezia_routing.h" \
             client/platforms/ios/NativeDNSGuard.swift client/platforms/ios/NativeDNSResolver.swift \
             client/platforms/ios/NativeDNSSettings.swift client/platforms/ios/NativeDNSController.swift \
             client/platforms/ios/NativeDNSPacketFilter.swift \
+            client/platforms/ios/NativeNetworkSettingsResult.swift \
             client/tests/native-dns-controller/main.swift -Xlinker "$RUNNER_TEMP/routing-apple-host.dylib" \
             -o "$RUNNER_TEMP/native-dns-controller-tests"
           DYLD_LIBRARY_PATH="$RUNNER_TEMP" "$RUNNER_TEMP/native-dns-controller-tests"

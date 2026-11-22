@@ -80,3 +80,43 @@ require(duplicates.bindings.count == 2 && duplicates.bindings[0].address != dupl
         "server list was silently deduplicated")
 
 print("PASS: native DNS per-server settings, explicit scope, strict IPv6 OFF, metadata, collision and no downgrade")
+
+let routeSettings = original()
+let lan = [NativeDNSRoute.ConnectedRoute(address: "192.168.1.10", mask: "255.255.255.0", index: 7)]
+func selected(_ server: String, all: Bool = false, enforce: Bool = false, local: Bool = false,
+              routes: [NativeDNSRoute.ConnectedRoute] = lan) throws -> NativeDNSSettings.Path {
+    try NativeDNSRoute.path(server: server, settings: routeSettings, connected: routes,
+                           includeAll: all, enforce: enforce, excludeLocal: local)
+}
+let tunnelDNS = try selected("10.77.0.53")
+require(tunnelDNS == .tunnel, "native connected-subnet DNS lost tunnel scope")
+let publicDNS = try selected("192.0.2.53")
+require(publicDNS == .tunnel, "native full route was not retained")
+let lanDNS = try selected("192.168.1.53")
+require(lanDNS == .interface(7), "more specific connected underlay DNS scope changed")
+let fullPolicy = try selected("192.168.1.53", all: true)
+require(fullPolicy == .tunnel, "includeAllNetworks policy was ignored")
+let excludedLocal = try selected("192.168.1.53", all: true, local: true)
+require(excludedLocal == .interface(7), "explicit local-network exclusion was ignored")
+routeSettings.ipv4Settings?.includedRoutes = [
+    NEIPv4Route(destinationAddress: "10.77.0.0", subnetMask: "255.255.255.0")]
+let splitDirect = try selected("192.0.2.53")
+require(splitDirect == .underlay, "include-only native DNS was forced through tunnel")
+routeSettings.ipv4Settings?.includedRoutes = [NEIPv4Route.default()]
+let enforced = try selected("192.168.1.53", enforce: true)
+require(enforced == .underlay, "enforced explicit exclusion lost primary underlay scope")
+routeSettings.ipv4Settings?.excludedRoutes = []
+let enforcedTunnel = try selected("192.168.1.53", enforce: true)
+require(enforcedTunnel == .tunnel, "enforced native route was overridden by local subnet")
+let ambiguous = try selected("192.168.1.53", routes: lan + [
+    NativeDNSRoute.ConnectedRoute(address: "192.168.1.20", mask: "255.255.255.0", index: 8)])
+require(ambiguous == .unavailable, "ambiguous local DNS scope silently chose another interface")
+let deniedV6 = try selected("2001:db8::53", all: true)
+require(deniedV6 == .unavailable, "includeAllNetworks enabled IPv6 DNS transport")
+routeSettings.ipv4Settings?.includedRoutes = [
+    NEIPv4Route(destinationAddress: "192.0.2.0", subnetMask: "255.0.255.0")]
+do {
+    _ = try selected("192.0.2.53")
+    fatalError("invalid native route selected an upstream path")
+} catch NativeDNSRoute.PolicyError.invalidRoute {}
+print("PASS: public native DNS policy full/include/exclude, connected interfaces, enforcement and strict OFF")

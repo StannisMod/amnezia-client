@@ -70,7 +70,8 @@ func nativeIntercept(_ wire: Data) -> Bool {
     }
 }
 func apply(_ enabled: Bool = true, server: String = "10.77.0.53") {
-    controller.apply(original: settings(server: server), blocked: enabled, writer: { wire in
+    controller.apply(original: settings(server: server), blocked: enabled,
+        paths: { [server: .tunnel, "2001:db8::53": .unavailable] }, writer: { wire in
         state.update { $0.packets.append(wire) }; return true
     }, exchange: { _, _ in
         return { _, _, _, _ in
@@ -144,7 +145,8 @@ require(stopped.wait(timeout: .now() + 5) == .success, "final DNS stop did not f
 let timeoutState = State()
 let timed = NativeDNSController(publicationTimeout: 0.1)
 timed.start()
-timed.apply(original: settings(), blocked: true, writer: { _ in true },
+timed.apply(original: settings(), blocked: true,
+    paths: { ["10.77.0.53": .tunnel, "2001:db8::53": .unavailable] }, writer: { _ in true },
     exchange: { _, _ in return { _, _, _, _ in throw NativeDNSResolverError.scopeUnavailable } },
     failure: { timeoutState.update { $0.failures += 1 } },
     publish: { value, reply in timeoutState.update { $0.prepared.append(value); $0.replies.append(reply) } },
@@ -155,4 +157,16 @@ timeoutState.read { $0.replies[0] }(nil)
 timed.stop { stopped.signal() }
 require(stopped.wait(timeout: .now() + 5) == .success, "publication timeout left retiring DNS generations alive")
 require(timeoutState.read { $0.errors.count == 1 && $0.failures == 1 }, "late publication completed a failed generation twice")
+let fast = NativeNetworkSettingsResult()
+fast.complete(NativeDNSResolverError.scopeUnavailable)
+let fastResult = fast.wait(until: Date().addingTimeInterval(0.1))
+require(fastResult.completed && fastResult.error != nil, "native adapter lost a callback before waiting")
+fast.complete(nil)
+require(fast.wait(until: Date()).error != nil, "duplicate native callback replaced the first error")
+let asynchronous = NativeNetworkSettingsResult()
+DispatchQueue.global().async { asynchronous.complete(nil) }
+let asynchronousResult = asynchronous.wait(until: Date().addingTimeInterval(5))
+require(asynchronousResult.completed && asynchronousResult.error == nil, "native adapter lost an asynchronous callback")
+let missing = NativeNetworkSettingsResult()
+require(!missing.wait(until: Date().addingTimeInterval(0.01)).completed, "missing native callback was treated as success")
 print("PASS: native DNS prepare/publish, IPv6 upstream rejection, rollback, stop race, native passthrough and ON")

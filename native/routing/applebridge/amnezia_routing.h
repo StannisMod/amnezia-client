@@ -7,7 +7,6 @@
 #include <resolv.h>
 #include <arpa/inet.h>
 #include <net/if.h>
-#include <net/route.h>
 #include <errno.h>
 #include <string.h>
 #include <stdio.h>

@@ -36,7 +36,8 @@ struct Constants {
   static let kMessageKeySplitTunnelSites = "SplitTunnelSites"
 }
 
-class PacketTunnelProvider: NEPacketTunnelProvider {
+class PacketTunnelProvider: NEPacketTunnelProvider, NativeNetworkSettingsFailurePolicy {
+    var requiresConfirmedNativeSettings: Bool { nativeWireguardDNSFilterLease() != nil }
     var wgAdapter: WireGuardAdapter?
     let wireguardRefreshQueue = DispatchQueue(label: "org.amnezia.wireguard-endpoint")
     var wireguardOriginalConfiguration: TunnelConfiguration?
@@ -148,22 +149,68 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
     func applyNativeDNS(_ controller: NativeDNSController, settings: NEPacketTunnelNetworkSettings,
                         blocked: Bool, publish: @escaping NativeDNSController.Publish,
                         completion: @escaping (Error?) -> Void) {
-        controller.apply(original: settings, blocked: blocked,
-            writer: { [weak self] packet in
-                guard let self else { return false }
-                return self.packetFlow.writePackets([packet], withProtocols: [NSNumber(value: AF_INET)])
-            }, exchange: { [weak self] binding, addresses in
-                return { [weak self] query, transport, timeout, reply in
-                    guard let self else { throw NativeDNSResolverError.scopeUnavailable }
-                    return try NativeDNSScopedOperation(provider: self, server: binding.upstream,
-                        tunnelAddresses: addresses, interface: { [weak self] index in
-                            guard let path = self?.pathMonitor.currentPath, path.status == .satisfied else { return nil }
-                            return path.availableInterfaces.first { UInt32($0.index) == index }
-                        }, query: query, transport: transport, timeout: timeout, completion: reply)
+        controller.apply(original: settings, blocked: blocked, paths: { [weak self] in
+            guard let self else { throw NativeDNSController.ControllerError.stopped }
+            let snapshot = self.pathMonitor.currentPath
+            let available = snapshot.availableInterfaces
+            var indexes = Set(available.map { UInt32($0.index) })
+            if #available(iOS 18.0, macOS 15.0, *), let virtual = self.virtualInterface {
+                indexes.remove(UInt32(virtual.index))
+            }
+            let sourceAddresses = settings.ipv4Settings?.addresses ?? []
+            let allConnected = try NativeDNSRoute.connectedRoutes(indexes: indexes)
+            let own = Set(allConnected.filter { route in
+                sourceAddresses.contains(route.address) && available.contains {
+                    UInt32($0.index) == route.index && $0.type == .other
                 }
-            }, failure: { [weak self] in
-                self?.cancelTunnelWithError(NSError(domain: "NativeDNSGuard", code: 1))
-            }, publish: publish, completion: completion)
+            }.map(\.index))
+            let connected = allConnected.filter { !own.contains($0.index) }
+            var includeAll = false, enforce = false, excludeLocal = false
+            if #available(iOS 14.2, macOS 11.0, *), let config = self.protocolConfiguration as? NETunnelProviderProtocol {
+                includeAll = config.includeAllNetworks
+                enforce = config.enforceRoutes
+                excludeLocal = config.excludeLocalNetworks
+            }
+            var paths: [String: NativeDNSSettings.Path] = [:]
+            for server in settings.dnsSettings?.servers ?? [] {
+                paths[server] = try NativeDNSRoute.path(server: server, settings: settings, connected: connected,
+                    includeAll: includeAll, enforce: enforce, excludeLocal: excludeLocal)
+            }
+            return paths
+        }, writer: { [weak self] packet in
+            guard let self else { return false }
+            return self.packetFlow.writePackets([packet], withProtocols: [NSNumber(value: AF_INET)])
+        }, exchange: { [weak self] binding, addresses in
+            return { [weak self] query, transport, timeout, reply in
+                guard let self else { throw NativeDNSResolverError.scopeUnavailable }
+                return try NativeDNSScopedOperation.start(provider: self, binding: binding,
+                    interface: { [weak self] index in
+                        self?.nativeDNSInterface(index: index, tunnelAddresses: addresses)
+                    }, query: query, transport: transport, timeout: timeout, completion: reply)
+            }
+        }, failure: { [weak self] in
+            self?.cancelTunnelWithError(NSError(domain: "NativeDNSGuard", code: 1))
+        }, publish: publish, completion: completion)
+    }
+
+    private func nativeDNSInterface(index: UInt32?, tunnelAddresses: [String]) -> Network.NWInterface? {
+        let path = pathMonitor.currentPath
+        if index == nil && path.status != .satisfied { return nil }
+        let active = path.availableInterfaces.filter { candidate in
+            if index == nil && !path.usesInterfaceType(candidate.type) { return false }
+            if #available(iOS 18.0, macOS 15.0, *), let virtual = virtualInterface,
+               virtual.index == candidate.index { return false }
+            if candidate.type == .other {
+                guard let own = try? NativeDNSRoute.interfaceOwnsIPv4(
+                    index: UInt32(candidate.index), addresses: tunnelAddresses), !own else { return false }
+            }
+            return true
+        }
+        if let index { return active.first { UInt32($0.index) == index } }
+        for type in [Network.NWInterface.InterfaceType.wiredEthernet, .wifi, .cellular, .other] {
+            if let primary = active.first(where: { $0.type == type }) { return primary }
+        }
+        return nil
     }
 
     private func publishNativeWireguardSettings(_ settings: NEPacketTunnelNetworkSettings,

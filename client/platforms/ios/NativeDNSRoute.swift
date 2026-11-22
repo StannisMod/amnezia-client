@@ -1,82 +1,112 @@
 import Foundation
+import NetworkExtension
 import Darwin
 
-// Ask the kernel for the selected route to the original numeric DNS server.
-// This sends a local routing-socket request, not a DNS/network probe. Native
-// owners must map the returned index to an explicit tunnel/underlay interface;
-// unknown or unavailable interfaces are errors, never a default-path fallback.
+// Public native policy inputs only. Routing sockets / net/route.h are not
+// available in iPhoneOS SDKs. Do not copy private kernel structure definitions.
 enum NativeDNSRoute {
-    enum LookupError: Error { case unavailable, invalidResponse }
+    struct ConnectedRoute {
+        let address: String
+        let mask: String
+        let index: UInt32
+    }
+    enum PolicyError: Error { case invalidRoute, unavailable }
 
-    static func interfaceIndex(server: String) throws -> UInt32 {
-        var destination = sockaddr_in()
-        destination.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
-        destination.sin_family = sa_family_t(AF_INET)
-        destination.sin_addr = try NativeDNSResolver.validateIPv4Server(server)
-        let fd = socket(PF_ROUTE, SOCK_RAW, AF_INET)
-        guard fd >= 0 else { throw LookupError.unavailable }
-        defer { close(fd) }
-        guard fcntl(fd, F_SETFL, O_NONBLOCK) == 0 else { throw LookupError.unavailable }
-        var header = rt_msghdr()
-        header.rtm_msglen = UInt16(MemoryLayout<rt_msghdr>.size + MemoryLayout<sockaddr_in>.size)
-        header.rtm_version = UInt8(RTM_VERSION)
-        header.rtm_type = UInt8(RTM_GET)
-        header.rtm_addrs = RTA_DST
-        header.rtm_pid = getpid()
-        header.rtm_seq = Int32.random(in: 1...Int32.max)
-        var request = withUnsafeBytes(of: &header) { Data($0) }
-        withUnsafeBytes(of: &destination) { request.append(contentsOf: $0) }
-        let sent = request.withUnsafeBytes { Darwin.write(fd, $0.baseAddress, $0.count) }
-        guard sent == request.count else { throw LookupError.unavailable }
-        let deadline = DispatchTime.now() + .milliseconds(250)
-        var bytes = [UInt8](repeating: 0, count: 8192)
-        while DispatchTime.now() < deadline {
-            let now = DispatchTime.now().uptimeNanoseconds
-            guard now < deadline.uptimeNanoseconds else { break }
-            let remaining = Int32(max(1, (deadline.uptimeNanoseconds - now) / 1_000_000))
-            var descriptor = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
-            let ready = poll(&descriptor, 1, remaining)
-            if ready < 0 && errno == EINTR { continue }
-            guard ready > 0, descriptor.revents & Int16(POLLIN) != 0 else { throw LookupError.unavailable }
-            let count = bytes.withUnsafeMutableBytes { Darwin.read(fd, $0.baseAddress, $0.count) }
-            guard count >= MemoryLayout<rt_msghdr>.size else { throw LookupError.invalidResponse }
-            var reply = rt_msghdr()
-            withUnsafeMutableBytes(of: &reply) { target in
-                bytes.withUnsafeBytes { source in
-                    target.copyMemory(from: UnsafeRawBufferPointer(rebasing: source.prefix(target.count)))
-                }
-            }
-            guard reply.rtm_pid == header.rtm_pid, reply.rtm_seq == header.rtm_seq else { continue }
-            guard reply.rtm_version == UInt8(RTM_VERSION), reply.rtm_type == UInt8(RTM_GET),
-                  Int(reply.rtm_msglen) <= count, Int(reply.rtm_msglen) >= MemoryLayout<rt_msghdr>.size,
-                  reply.rtm_errno == 0, reply.rtm_index > 0,
-                  reply.rtm_flags & (RTF_REJECT | RTF_BLACKHOLE) == 0 else {
-                throw LookupError.unavailable
-            }
-            return UInt32(reply.rtm_index)
+    static func path(server: String, settings: NEPacketTunnelNetworkSettings,
+                     connected: [ConnectedRoute], includeAll: Bool, enforce: Bool,
+                     excludeLocal: Bool) throws -> NativeDNSSettings.Path {
+        if server.contains(":") { return .unavailable }
+        let address = try NativeDNSResolver.validateIPv4Server(server)
+        let ip = UInt32(bigEndian: address.s_addr)
+        if ip >> 24 == 127 { return .loopback }
+        let addresses = settings.ipv4Settings?.addresses ?? []
+        let masks = settings.ipv4Settings?.subnetMasks ?? []
+        guard addresses.count == masks.count else { throw PolicyError.invalidRoute }
+        let sourceRoutes = try zip(addresses, masks).map { try prefix(address: $0.0, mask: $0.1, matching: ip) }
+        let included = try ((settings.ipv4Settings?.includedRoutes ?? []).map {
+            try prefix(address: $0.destinationAddress, mask: $0.destinationSubnetMask, matching: ip)
+        } + sourceRoutes).max() ?? -1
+        let excluded = try (settings.ipv4Settings?.excludedRoutes ?? []).map {
+            try prefix(address: $0.destinationAddress, mask: $0.destinationSubnetMask, matching: ip)
+        }.max() ?? -1
+        let local = try connected.map {
+            (try prefix(address: $0.address, mask: $0.mask, matching: ip), $0.index)
+        }.filter { $0.0 > 0 }
+        let localPrefix = local.map { $0.0 }.max() ?? -1
+        let localInterfaces = Set(local.filter { $0.0 == localPrefix }.map { $0.1 })
+        func localPath() -> NativeDNSSettings.Path {
+            guard localInterfaces.count == 1, let index = localInterfaces.first else { return .unavailable }
+            return .interface(index)
         }
-        throw LookupError.unavailable
+        if includeAll {
+            // Native builders explicitly exclude the remote VPN endpoint.
+            if excluded == 32 { return .underlay }
+            if excludeLocal && localPrefix >= 0 { return localPath() }
+            return .tunnel
+        }
+        if enforce {
+            if excludeLocal && localPrefix >= 0 { return localPath() }
+            return included > excluded ? .tunnel : .underlay
+        }
+        if localPrefix >= 0 && localPrefix > max(included, excluded) { return localPath() }
+        return included > excluded ? .tunnel : .underlay
     }
 
-    static func interfaceOwnsIPv4(index: UInt32, addresses: [String]) -> Bool {
-        var name = [CChar](repeating: 0, count: Int(IF_NAMESIZE))
-        guard if_indextoname(index, &name) != nil else { return false }
-        let expected = String(cString: name)
+    // Snapshot connected underlay subnets from public getifaddrs. The caller
+    // supplies only currently available underlying-interface indexes, excluding
+    // its own virtual interface. A stale/unavailable selected index cannot
+    // silently become another interface during forwarding.
+    static func connectedRoutes(indexes: Set<UInt32>) throws -> [ConnectedRoute] {
         var first: UnsafeMutablePointer<ifaddrs>?
-        guard getifaddrs(&first) == 0 else { return false }
+        guard getifaddrs(&first) == 0 else { throw PolicyError.unavailable }
         defer { freeifaddrs(first) }
+        var result: [ConnectedRoute] = []
         var current = first
         while let entry = current {
             defer { current = entry.pointee.ifa_next }
-            guard String(cString: entry.pointee.ifa_name) == expected,
-                  let address = entry.pointee.ifa_addr, address.pointee.sa_family == sa_family_t(AF_INET) else { continue }
-            let value = UnsafeRawPointer(address).assumingMemoryBound(to: sockaddr_in.self).pointee.sin_addr
-            var copy = value
-            var text = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
-            let capacity = socklen_t(text.count)
-            if inet_ntop(AF_INET, &copy, &text, capacity) != nil,
-               addresses.contains(String(cString: text)) { return true }
+            let index = if_nametoindex(entry.pointee.ifa_name)
+            guard indexes.contains(index), let address = entry.pointee.ifa_addr,
+                  let mask = entry.pointee.ifa_netmask,
+                  address.pointee.sa_family == sa_family_t(AF_INET),
+                  mask.pointee.sa_family == 0 || mask.pointee.sa_family == sa_family_t(AF_INET) else { continue }
+            if let address = text(address), let mask = text(mask) {
+                result.append(ConnectedRoute(address: address, mask: mask, index: index))
+            }
         }
-        return false
+        return result
+    }
+
+    static func interfaceOwnsIPv4(index: UInt32, addresses: [String]) throws -> Bool {
+        try connectedRoutes(indexes: [index]).contains { addresses.contains($0.address) }
+    }
+
+    private static func text(_ pointer: UnsafePointer<sockaddr>) -> String? {
+        guard let offset = MemoryLayout<sockaddr_in>.offset(of: \.sin_addr),
+              Int(pointer.pointee.sa_len) >= offset else { return nil }
+        // BSD netmasks may omit trailing zero bytes. Read only the public
+        // sockaddr's declared length, padding the remaining address with zero.
+        let count = min(MemoryLayout<in_addr>.size, Int(pointer.pointee.sa_len) - offset)
+        let source = UnsafeRawPointer(pointer).advanced(by: offset).assumingMemoryBound(to: UInt8.self)
+        var address = in_addr()
+        withUnsafeMutableBytes(of: &address) { target in
+            for index in 0..<count { target[index] = source[index] }
+        }
+        var bytes = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
+        let capacity = socklen_t(bytes.count)
+        guard inet_ntop(AF_INET, &address, &bytes, capacity) != nil else { return nil }
+        return String(cString: bytes)
+    }
+
+    private static func prefix(address: String, mask: String, matching ip: UInt32) throws -> Int {
+        func numeric(_ value: String) throws -> UInt32 {
+            guard !value.utf8.contains(0) else { throw PolicyError.invalidRoute }
+            var parsed = in_addr()
+            guard value.withCString({ inet_pton(AF_INET, $0, &parsed) }) == 1 else { throw PolicyError.invalidRoute }
+            return UInt32(bigEndian: parsed.s_addr)
+        }
+        let source = try numeric(address), bits = try numeric(mask)
+        let inverse = ~bits
+        guard inverse & (inverse &+ 1) == 0 else { throw PolicyError.invalidRoute }
+        return (source & bits) == (ip & bits) ? bits.nonzeroBitCount : -1
     }
 }

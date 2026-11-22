@@ -1,5 +1,34 @@
 # Implementation checkpoint — automated validation
 
+## iPhoneOS public-policy correction — 2026-11-22
+
+Run `45051442590` at `46f425a` failed because `<net/route.h>` is absent from the
+iPhoneOS SDK. The earlier bridging-header correction was therefore insufficient.
+The failed log is preserved as `ci-46f425a-ios.log`; no private routing structures
+were copied and no assertion/compiler check was waived.
+
+RTM_GET and the unavailable include have been removed. DNS paths are now
+prepared from the native connection's explicit included/excluded routes,
+connected source subnet, public includeAllNetworks/enforceRoutes/local-exclusion
+flags, and public getifaddrs snapshots of available underlays. Ambiguous local
+interfaces are unavailable, not arbitrarily selected. Forwarding binds the
+chosen tunnel or physical interface explicitly, with no default-network retry.
+This is public connection-policy selection, not a claim to mirror arbitrary
+external administrator routing-table changes. Those edge cases and native
+adapter acceptance remain unverified.
+
+Policy preparation runs on the controller's generation queue, so a deferred old
+preparation cannot publish into a later session. Changed scopes invalidate DNS
+reuse. The pinned native Swift adapter also needs a durable settings-result cell:
+its original bare condition signal can lose a fast failure before waiting.
+A checked build-tree copy fixes that race without editing the submodule. OFF
+also requires confirmed settings and throws on timeout rather than starting
+an unconfigured backend. ON routes/configuration and its existing five-second
+timeout policy are unchanged.
+New tests cover public scope selection and fast/async/missing settings callbacks.
+Five local ownership/Swift-overlay Python tests passed offline within the
+2-CPU/4-GiB container; new SDK/runtime verification remains pending.
+
 ## Native Apple WG/AWG reader integration — 2026-11-22
 
 Run `45046664006` at `670b469` failed iPhoneOS typecheck because Swift's Darwin

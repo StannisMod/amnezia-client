@@ -67,9 +67,12 @@ IPv4 application routing, DNS scope, TLS validation, or ON behavior.
    OpenVPN connection wiring is now implemented via `NativeDNSController`,
    pending SDK/lifecycle/route tests. It stages before DNS publication, commits
    or rolls back generations, intercepts only reserved endpoints in the existing
-   reader, and stops on disconnect/fatal error. Original IPv4 DNS scope is
-   selected using the kernel route and an explicit interface, never a default
-   dialer. This has not yet passed adapter-level VPN runtime acceptance.
+   reader, and stops on disconnect/fatal error. IPv4 DNS scope is selected from
+   the native connection's public routing policy and connected-underlay snapshot,
+   then bound explicitly, never retried through a default dialer. iPhoneOS has no
+   public net/route.h; the attempted RTM_GET implementation was removed after
+   hosted compile failure. Arbitrary external routing-table overrides and actual
+   adapter-level VPN runtime acceptance remain unverified.
    Native WG/AWG wiring now reuses the same controller, with the Go backend's
    existing TUN reader invoking a synchronous filter from the existing unified
    runtime. IPv6 is rejected there; ordinary IPv4/native protocols pass

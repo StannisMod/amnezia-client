@@ -35,6 +35,7 @@ final class NativeDNSController {
     }
 
     func apply(original: NEPacketTunnelNetworkSettings, blocked: Bool,
+               paths: @escaping () throws -> [String: NativeDNSSettings.Path],
                writer: @escaping (Data) -> Bool,
                exchange: @escaping (NativeDNSSettings.Binding, [String]) -> NativeDNSExchange,
                failure: @escaping () -> Void, publish: @escaping Publish,
@@ -52,22 +53,20 @@ final class NativeDNSController {
                     var newlyPrepared = false
                     var settings = original
                     if blocked {
-                        let servers = original.dnsSettings?.servers ?? []
-                        let paths = Dictionary(servers.map { ($0, NativeDNSSettings.Path.native) },
-                                               uniquingKeysWith: { first, _ in first })
+                        let selected = try paths()
                         self.packets.lock()
                         let occupied = Set(self.connections.flatMap { $0.addresses })
                         let existing = self.connections.last
                         self.packets.unlock()
-                        if let existing, existing.matches(original),
-                           let plan = try? NativeDNSSettings(original: original, paths: paths,
+                        if let existing, existing.matches(original, paths: selected),
+                           let plan = try? NativeDNSSettings(original: original, paths: selected,
                                occupied: occupied.subtracting(existing.addresses), captures: existing.orderedAddresses) {
                             // Endpoint/path refreshes with unchanged DNS must not
                             // reset established DNS TCP sessions needlessly.
                             connection = existing
                             settings = plan.settings
                         } else {
-                            let plan = try NativeDNSSettings(original: original, paths: paths, occupied: occupied)
+                            let plan = try NativeDNSSettings(original: original, paths: selected, occupied: occupied)
                             connection = try Connection(plan: plan, writer: writer, exchange: exchange, failure: failure)
                             newlyPrepared = true
                             settings = plan.settings
@@ -188,6 +187,7 @@ final class NativeDNSController {
         let orderedAddresses: [String]
         private let upstreams: [String]
         private let sourceAddresses: [String]
+        private let paths: [NativeDNSSettings.Path]
         let targets: Set<UInt32>
         private let guards: [UInt32: NativeDNSGuard]
         init(plan: NativeDNSSettings, writer: @escaping (Data) -> Bool,
@@ -219,9 +219,16 @@ final class NativeDNSController {
             orderedAddresses = plan.bindings.map(\.address)
             upstreams = plan.bindings.map(\.upstream)
             sourceAddresses = plan.settings.ipv4Settings?.addresses ?? []
+            paths = plan.bindings.map(\.path)
         }
-        func matches(_ original: NEPacketTunnelNetworkSettings) -> Bool {
-            original.dnsSettings?.servers == upstreams && original.ipv4Settings?.addresses == sourceAddresses
+        func matches(_ original: NEPacketTunnelNetworkSettings, paths requested: [String: NativeDNSSettings.Path]) -> Bool {
+            let selected = upstreams.map { server -> NativeDNSSettings.Path in
+                if server.contains(":") { return .unavailable }
+                if server.hasPrefix("127.") { return .loopback }
+                return requested[server] ?? .unavailable
+            }
+            return original.dnsSettings?.servers == upstreams &&
+                original.ipv4Settings?.addresses == sourceAddresses && selected == paths
         }
         func feed(_ packet: Data, destination: UInt32) -> NativeDNSGuard.Disposition {
             guards[destination]?.feed(packet) ?? .failed
