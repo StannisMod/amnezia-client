@@ -96,6 +96,37 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         openVPNPacketFlowAdapter.setIPv6Blocked(blocked)
     }
 
+    func startOpenVPNNativeDNS() {
+        openVPNPacketFlowAdapter.nativeDNS.start()
+    }
+
+    func stopOpenVPNNativeDNS(completion: @escaping () -> Void) {
+        openVPNPacketFlowAdapter.nativeDNS.stop(completion: completion)
+    }
+
+    func applyOpenVPNNetworkSettings(_ settings: NEPacketTunnelNetworkSettings,
+                                    completion: @escaping (Error?) -> Void) {
+        openVPNPacketFlowAdapter.nativeDNS.apply(original: settings, blocked: openVpnBlocksIPv6,
+            writer: { [weak self] packet in
+                guard let self else { return false }
+                return self.packetFlow.writePackets([packet], withProtocols: [NSNumber(value: AF_INET)])
+            }, exchange: { [weak self] binding, addresses in
+                return { [weak self] query, transport, timeout, reply in
+                    guard let self else { throw NativeDNSResolverError.scopeUnavailable }
+                    return try NativeDNSScopedOperation(provider: self, server: binding.upstream,
+                        tunnelAddresses: addresses, interface: { [weak self] index in
+                            guard let path = self?.pathMonitor.currentPath, path.status == .satisfied else { return nil }
+                            return path.availableInterfaces.first { UInt32($0.index) == index }
+                        }, query: query, transport: transport, timeout: timeout, completion: reply)
+                }
+            }, failure: { [weak self] in
+                self?.cancelTunnelWithError(NSError(domain: "NativeDNSGuard", code: 1))
+            }, publish: { [weak self] prepared, done in
+                guard let self else { done(NativeDNSController.ControllerError.stopped); return }
+                self.setTunnelNetworkSettings(prepared, completionHandler: done)
+            }, completion: completion)
+    }
+
     override func setTunnelNetworkSettings(_ tunnelNetworkSettings: NETunnelNetworkSettings?,
                                           completionHandler: (@Sendable (Error?) -> Void)? = nil) {
         if nativeWireguardBlocksIPv6, let settings = tunnelNetworkSettings as? NEPacketTunnelNetworkSettings {
@@ -522,6 +553,7 @@ extension WireGuardLogLevel {
 }
 
 final class PacketTunnelFlowAdapter: NSObject, OpenVPNAdapterPacketFlow {
+  let nativeDNS = NativeDNSController()
   private let flow: NEPacketTunnelFlow
   private let policyLock = NSLock()
   private var blockIPv6 = true
@@ -558,7 +590,16 @@ final class PacketTunnelFlowAdapter: NSObject, OpenVPNAdapterPacketFlow {
         self.readLogCounter += 1
       }
 #endif
-      let (accepted, families) = self.permitted(packets, protocols)
+      var forwarded: [Data] = []
+      var forwardedFamilies: [NSNumber] = []
+      guard packets.count == protocols.count else { completionHandler([], []); return }
+      for (packet, family) in zip(packets, protocols) {
+        if !self.nativeDNS.intercept(packet) {
+          forwarded.append(packet)
+          forwardedFamilies.append(family)
+        }
+      }
+      let (accepted, families) = self.permitted(forwarded, forwardedFamilies)
       completionHandler(accepted, families)
     }
   }

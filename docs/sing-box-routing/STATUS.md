@@ -1,5 +1,34 @@
 # Implementation checkpoint — automated validation
 
+## Apple native OpenVPN connection wiring — 2026-11-22
+
+Hosted Actions execution recovered: run `44997772637` at `c2a6e6d` passed all
+required jobs. This validates the preceding components/settings tests, not the
+connection wiring described here.
+
+Native OpenVPN now calls `NativeDNSController` before publishing its OFF network
+settings. Prepared endpoints are staged in the existing packet-flow reader;
+ordinary packets retain the native adapter, and the existing IPv6 rejection
+remains after DNS dispatch. Publication commits the new generation or rolls back
+to the old one. Retired/failed/stopped capture addresses cannot fall through to
+the native backend. Normal disconnect, fatal errors and explicit Stop tear down
+guards and their operations. ON keeps original DNS settings and routing.
+
+IPv4 forwarding resolves the original server's selected kernel route with a
+bounded local RTM_GET request and requires that exact tunnel or currently
+available underlay interface. No route/default-network fallback exists. The
+kernel lookup runs outside the guard callback queue and cannot revive a
+cancelled operation. IPv6 resolver bindings remain unavailable, with local AAAA
+NODATA and SERVFAIL for other queries. There is no privileged IPv6 exception.
+
+New hosted tests cover actual Darwin loopback route lookup and controller
+prepare-before-publish, per-server separation, IPv6-only upstream rejection,
+publication rollback, Stop racing a late settings callback, native packet
+passthrough and unchanged ON. SDK compilation and those tests are pending.
+This is not physical Apple VPN runtime acceptance or universal-backend support.
+Apple native WG/AWG, Xray and the remaining Android/desktop native paths still
+need connection integration and adapter-level acceptance.
+
 ## Hosted validation unavailable — 2026-11-21
 
 Source `f234c59` adds the per-resolver settings planner and hosted regression

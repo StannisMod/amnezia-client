@@ -6,7 +6,7 @@ import Darwin
 // the OS retains server ordering/selection, rather than hiding a fallback
 // policy behind a single synthetic address.
 struct NativeDNSSettings {
-    enum Path: Equatable { case tunnel, underlay, loopback, unavailable }
+    enum Path: Equatable { case tunnel, underlay, loopback, native, unavailable }
     struct Binding {
         let address: String
         let upstream: String
@@ -19,7 +19,7 @@ struct NativeDNSSettings {
     // Scope must come from the native connection's actual resolver policy.
     // Reconstructing it from included/excluded routes alone is insufficient:
     // system routes and interface-scoped DNS can supersede those routes.
-    init(original: NEPacketTunnelNetworkSettings, paths: [String: Path]) throws {
+    init(original: NEPacketTunnelNetworkSettings, paths: [String: Path], occupied: Set<String> = []) throws {
         guard let dns = original.dnsSettings, !dns.servers.isEmpty, dns.servers.count <= 32,
               let copy = original.copy() as? NEPacketTunnelNetworkSettings else {
             throw PlanError.invalidSettings
@@ -33,7 +33,7 @@ struct NativeDNSSettings {
         let masks = ipv4?.subnetMasks ?? []
         guard !addresses.isEmpty, addresses.count == masks.count else { throw PlanError.invalidSettings }
         let connected = try zip(addresses, masks).map { try Route(address: $0.0, mask: $0.1) }
-        var occupied = Set(addresses + dns.servers + [original.tunnelRemoteAddress])
+        var occupied = occupied.union(addresses + dns.servers + [original.tunnelRemoteAddress])
         var result: [Binding] = []
         for upstream in dns.servers {
             let path: Path

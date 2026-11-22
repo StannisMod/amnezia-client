@@ -20,6 +20,7 @@ extension PacketTunnelProvider {
         openVpnBlocksIPv6 = false
         openVpnStopping = false
         setOpenVPNIPv6Blocked(true)
+        startOpenVPNNativeDNS()
 
         guard let protocolConfiguration = self.protocolConfiguration as? NETunnelProviderProtocol,
               let providerConfiguration = protocolConfiguration.providerConfiguration,
@@ -254,7 +255,7 @@ extension PacketTunnelProvider {
         if vpnReachability.isTracking {
             vpnReachability.stopTracking()
         }
-        ovpnAdapter?.disconnect()
+        stopOpenVPNNativeDNS { [weak self] in self?.ovpnAdapter?.disconnect() }
     }
 }
 
@@ -602,7 +603,7 @@ extension PacketTunnelProvider: OpenVPNAdapterDelegate {
         lastOpenVPNSettings = effectiveSettings
 
         // Set the network settings for the current tunneling session.
-        setTunnelNetworkSettings(effectiveSettings) { error in
+        applyOpenVPNNetworkSettings(effectiveSettings) { error in
             if let error {
                 ovpnLog(.error, title: "SetTunnelNetworkSettings", message: error.localizedDescription)
             } else {
@@ -860,14 +861,12 @@ extension PacketTunnelProvider: OpenVPNAdapterDelegate {
                 logOpenVPNConnectionInfo()
                 refreshOpenVPNSettingsAfterConnect()
             case .disconnected:
-                guard let stopHandler = stopHandler else { return }
-
                 if vpnReachability.isTracking {
                     vpnReachability.stopTracking()
                 }
-
-                stopHandler()
+                let stopped = stopHandler
                 self.stopHandler = nil
+                stopOpenVPNNativeDNS { stopped?() }
             case .reconnecting:
                 reasserting = true
             default:
@@ -883,6 +882,9 @@ extension PacketTunnelProvider: OpenVPNAdapterDelegate {
         // Handle only fatal errors
         guard let fatal = nsError.userInfo[OpenVPNAdapterErrorFatalKey] as? Bool,
               fatal == true else { return }
+        openVpnStopping = true
+        setOpenVPNIPv6Blocked(true)
+        stopOpenVPNNativeDNS {}
 
         if vpnReachability.isTracking {
             vpnReachability.stopTracking()

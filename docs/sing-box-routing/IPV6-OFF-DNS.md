@@ -64,6 +64,12 @@ IPv4 application routing, DNS scope, TLS validation, or ON behavior.
    remain to wire. No IPv6 DNS control-plane exception is authorized.
 2. Integrate native Apple WG/AWG and OpenVPN without a second packetFlow reader
    or Go runtime, preserving transport socket ownership and native non-DNS I/O.
+   OpenVPN connection wiring is now implemented via `NativeDNSController`,
+   pending SDK/lifecycle/route tests. It stages before DNS publication, commits
+   or rolls back generations, intercepts only reserved endpoints in the existing
+   reader, and stops on disconnect/fatal error. Original IPv4 DNS scope is
+   selected using the kernel route and an explicit interface, never a default
+   dialer. This has not yet passed adapter-level VPN runtime acceptance.
 3. Audit Android/desktop native WG, OpenVPN, Xray and Windows IKEv2 paths against
    the same policy; add adapters where managed DNS is not already intercepted.
 4. Test each adapter's real UDP/TCP DNS and IPv4/split/teardown behavior.

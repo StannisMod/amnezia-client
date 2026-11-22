@@ -1,5 +1,6 @@
 import Foundation
 import Network
+import Darwin
 
 func require(_ value: @autoclosure () -> Bool, _ message: String) {
     if !value() { fatalError(message) }
@@ -131,6 +132,10 @@ for server in ["", "dns.example", "0.0.0.0", "224.0.0.53", "255.255.255.255", "1
 for server in ["192.0.2.53", "10.0.0.53", "127.0.0.1"] {
     _ = try NativeDNSResolver.validateIPv4Server(server)
 }
+let loopbackIndex = try NativeDNSRoute.interfaceIndex(server: "127.0.0.1")
+require(loopbackIndex == if_nametoindex("lo0"), "kernel DNS route lookup selected another interface")
+require(NativeDNSRoute.interfaceOwnsIPv4(index: loopbackIndex, addresses: ["127.0.0.1"]),
+        "DNS route source-interface validation failed")
 
 do {
     let fixture = try Fixture(.udp, mode: .dropFirst)
