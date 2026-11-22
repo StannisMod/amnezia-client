@@ -22,6 +22,7 @@ def main():
     stage = args.work.resolve()
     for source, target in (("module.mod", "go.mod"), ("module.sum", "go.sum"),
                            ("native_dns_apple.go", "native_dns_apple.go"),
+                           ("native_filter_apple.go", "native_filter_apple.go"),
                            ("amnezia_routing.h", "amnezia_routing.h")):
         shutil.copy2(bridge / source, stage / target)
     (stage / "amnezia-routing").symlink_to(root / "native/routing", target_is_directory=True)

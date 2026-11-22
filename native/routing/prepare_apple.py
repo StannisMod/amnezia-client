@@ -12,9 +12,16 @@ def prepare_module(core, destination):
     bridge = core / "applebridge"
     for source, target in (("module.mod", "go.mod"), ("module.sum", "go.sum"),
                             ("routing_apple.go", "routing_apple.go"),
-                            ("native_dns_apple.go", "native_dns_apple.go"),
+                             ("native_dns_apple.go", "native_dns_apple.go"),
+                            ("native_filter_apple.go", "native_filter_apple.go"),
                            ("amnezia_routing.h", "amnezia_routing.h")):
         shutil.copy2(bridge / source, destination / target)
+    api = destination / "api-apple.go"
+    text = api.read_text()
+    original = "dev := device.NewDevice(tun, conn.NewStdNetBind(), logger)"
+    if text.count(original) != 1:
+        raise RuntimeError("Unexpected native AWG TUN ownership entry point")
+    api.write_text(text.replace(original, "dev := device.NewDevice(amneziaNativeFilterTUN(tun), conn.NewStdNetBind(), logger)"))
     makefile = destination / "Makefile"
     text = makefile.read_text()
     original = "go build -ldflags=-w"

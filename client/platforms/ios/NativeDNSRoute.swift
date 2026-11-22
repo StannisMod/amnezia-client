@@ -73,7 +73,8 @@ enum NativeDNSRoute {
             let value = UnsafeRawPointer(address).assumingMemoryBound(to: sockaddr_in.self).pointee.sin_addr
             var copy = value
             var text = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
-            if inet_ntop(AF_INET, &copy, &text, socklen_t(text.count)) != nil,
+            let capacity = socklen_t(text.count)
+            if inet_ntop(AF_INET, &copy, &text, capacity) != nil,
                addresses.contains(String(cString: text)) { return true }
         }
         return false

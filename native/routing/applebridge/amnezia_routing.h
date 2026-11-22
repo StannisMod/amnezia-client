@@ -13,6 +13,15 @@
 #endif
 typedef int32_t (*AmneziaPacketWriter)(void *, const uint8_t *, int32_t);
 typedef void (*AmneziaHostRelease)(void *);
+// Synchronous native packet filter: nonzero consumes/rejects, zero preserves
+// native bytes. Never retain the borrowed packet or call FilterStop inline.
+// Start consumes the retained host on success and failure. Stop joins callbacks
+// before releasing it. One registration per packet-tunnel extension process.
+typedef int32_t (*AmneziaPacketFilter)(void *, const uint8_t *, int32_t);
+int64_t AmneziaNativePacketFilterStart(void *, AmneziaPacketFilter, AmneziaHostRelease);
+void AmneziaNativePacketFilterStop(int64_t);
+int32_t AmneziaNativePacketFilterFeed(uint8_t *, int32_t);
+static inline int32_t amnezia_filter_packet(AmneziaPacketFilter fn, void *host, const uint8_t *data, int32_t size) { return fn(host,data,size); }
 // Native DNS callbacks are asynchronous: dispatch/cancel/failure must return
 // promptly, copy borrowed buffers, and never call Stop inline. All callbacks
 // finish before the consumed retained host is released.

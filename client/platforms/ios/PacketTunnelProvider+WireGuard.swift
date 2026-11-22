@@ -75,6 +75,13 @@ extension PacketTunnelProvider {
                         !wgConfig.permitsNativePeerRange($0.stringRepresentation)
                     }
                 }
+                do {
+                    try startNativeWireguardDNS()
+                } catch {
+                    errorNotifier.notify(PacketTunnelProviderError.couldNotStartBackend)
+                    completionHandler(PacketTunnelProviderError.couldNotStartBackend)
+                    return
+                }
             }
 
             wg_log(.info, message: "Starting tunnel from the " +
@@ -101,6 +108,11 @@ extension PacketTunnelProvider {
                     self?.startWireguardEndpointWatchdog()
                     completionHandler(nil)
                     return
+                }
+                let failedFilter = self?.nativeWireguardDNSFilterLease()
+                self?.nativeWireguardDNS.stop { [weak self] in
+                    failedFilter?.stop()
+                    self?.retireNativeWireguardDNSFilter(failedFilter)
                 }
 
                 switch adapterError {
@@ -397,13 +409,23 @@ extension PacketTunnelProvider {
         }
         wg_log(.info, message: "Stopping tunnel: reason: \(reason.amneziaDescription)")
 
-        wgAdapter?.stop { error in
-            ErrorNotifier.removeLastErrorFile()
-
-            if let error {
-                wg_log(.error, message: "Failed to stop WireGuard adapter: \(error.localizedDescription)")
+        let filter = nativeWireguardDNSFilterLease()
+        nativeWireguardDNS.stop { [weak self] in
+            guard let self, let adapter = self.wgAdapter else {
+                filter?.stop()
+                self?.retireNativeWireguardDNSFilter(filter)
+                completionHandler()
+                return
             }
-            completionHandler()
+            adapter.stop { [weak self] error in
+                filter?.stop()
+                self?.retireNativeWireguardDNSFilter(filter)
+                ErrorNotifier.removeLastErrorFile()
+
+                if let error {
+                    wg_log(.error, message: "Failed to stop WireGuard adapter: \(error.localizedDescription)")
+                }
+                completionHandler()
 
 #if os(macOS)
             // HACK: This is a filthy hack to work around Apple bug 32073323 (dup'd by us as 47526107).
@@ -411,6 +433,7 @@ extension PacketTunnelProvider {
             // sufficient quantities of users.
             exit(0)
 #endif
+            }
         }
     }
 }

@@ -19,13 +19,15 @@ struct NativeDNSSettings {
     // Scope must come from the native connection's actual resolver policy.
     // Reconstructing it from included/excluded routes alone is insufficient:
     // system routes and interface-scoped DNS can supersede those routes.
-    init(original: NEPacketTunnelNetworkSettings, paths: [String: Path], occupied: Set<String> = []) throws {
+    init(original: NEPacketTunnelNetworkSettings, paths: [String: Path], occupied: Set<String> = [],
+         captures: [String]? = nil) throws {
         guard let dns = original.dnsSettings, !dns.servers.isEmpty, dns.servers.count <= 32,
               let copy = original.copy() as? NEPacketTunnelNetworkSettings else {
             throw PlanError.invalidSettings
         }
         // Do not silently turn authenticated DNS into plaintext forwarding.
         guard type(of: dns) == NEDNSSettings.self else { throw PlanError.encryptedDNS }
+        guard captures == nil || captures?.count == dns.servers.count else { throw PlanError.invalidSettings }
         let ipv4 = original.ipv4Settings
         let included = try (ipv4?.includedRoutes ?? []).map(Route.init)
         let excluded = try (ipv4?.excludedRoutes ?? []).map(Route.init)
@@ -35,7 +37,7 @@ struct NativeDNSSettings {
         let connected = try zip(addresses, masks).map { try Route(address: $0.0, mask: $0.1) }
         var occupied = occupied.union(addresses + dns.servers + [original.tunnelRemoteAddress])
         var result: [Binding] = []
-        for upstream in dns.servers {
+        for (index, upstream) in dns.servers.enumerated() {
             let path: Path
             if let ip = Self.ipv4(upstream) {
                 _ = try NativeDNSResolver.validateIPv4Server(upstream)
@@ -59,7 +61,10 @@ struct NativeDNSSettings {
             }
             // Reserve only individual /32s. Do not hijack an explicit split
             // route or a real interface/resolver/remote address.
-            guard let capture = (1...253).map({ "198.19.255.\($0)" }).first(where: { candidate in
+            let pool = (1...253).map { "198.19.255.\($0)" }
+            let candidates = captures.map { [$0[index]] } ?? pool
+            guard let capture = candidates.first(where: { candidate in
+                guard pool.contains(candidate) else { return false }
                 guard !occupied.contains(candidate), let ip = Self.ipv4(candidate) else { return false }
                 return !(included + excluded + connected).contains { $0.prefix > 1 && $0.contains(ip) }
             }) else { throw PlanError.noCaptureAddress }

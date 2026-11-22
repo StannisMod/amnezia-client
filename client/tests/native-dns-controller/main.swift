@@ -48,18 +48,29 @@ func packet(address: String, id: UInt16, type: UInt16 = 28) -> Data {
     return Data(bytes)
 }
 
-func settings() -> NEPacketTunnelNetworkSettings {
+func settings(server: String = "10.77.0.53") -> NEPacketTunnelNetworkSettings {
     let value = NEPacketTunnelNetworkSettings(tunnelRemoteAddress: "203.0.113.1")
     value.ipv4Settings = NEIPv4Settings(addresses: ["10.77.0.2"], subnetMasks: ["255.255.255.0"])
     value.ipv4Settings?.includedRoutes = [NEIPv4Route.default()]
-    value.dnsSettings = NEDNSSettings(servers: ["10.77.0.53", "2001:db8::53"])
+    value.dnsSettings = NEDNSSettings(servers: [server, "2001:db8::53"])
     return value
 }
 
 let state = State()
 let controller = NativeDNSController()
-func apply(_ enabled: Bool = true) {
-    controller.apply(original: settings(), blocked: enabled, writer: { wire in
+let nativeFilter = try NativeDNSPacketFilter { wire in
+    if wire.first.map({ $0 >> 4 == 6 }) == true { return true }
+    return controller.intercept(wire)
+}
+func nativeIntercept(_ wire: Data) -> Bool {
+    wire.withUnsafeBytes { raw in
+        AmneziaNativePacketFilterFeed(
+            UnsafeMutablePointer(mutating: raw.bindMemory(to: UInt8.self).baseAddress),
+            Int32(wire.count)) != 0
+    }
+}
+func apply(_ enabled: Bool = true, server: String = "10.77.0.53") {
+    controller.apply(original: settings(server: server), blocked: enabled, writer: { wire in
         state.update { $0.packets.append(wire) }; return true
     }, exchange: { _, _ in
         return { _, _, _, _ in
@@ -75,49 +86,73 @@ controller.start()
 apply()
 state.wait { $0.prepared.count == 1 }
 let first = state.read { $0.prepared[0].dnsSettings!.servers }
-require(controller.intercept(packet(address: first[0], id: 1)), "guard not ready before publication")
+require(nativeIntercept(packet(address: first[0], id: 1)), "native TUN guard not ready before publication")
 state.wait { $0.packets.count == 1 }
 require(state.read { $0.packets[0][31] & 15 == 0 && $0.packets[0][35] == 0 }, "AAAA was not NODATA")
 require(controller.intercept(packet(address: first[1], id: 2)), "IPv6-only resolver has no local AAAA endpoint")
 state.wait { $0.packets.count == 2 }
 require(state.read { $0.exchanges == 0 }, "AAAA used native upstream")
-require(controller.intercept(packet(address: first[1], id: 3, type: 1)), "IPv6-only upstream A escaped policy")
+require(nativeIntercept(packet(address: first[1], id: 3, type: 1)), "IPv6-only upstream A escaped native TUN policy")
 state.wait { $0.packets.count == 3 }
 require(state.read { $0.packets[2][31] & 15 == 2 && $0.exchanges == 0 }, "IPv6 upstream was contacted or failed open")
 require(!controller.intercept(packet(address: "192.0.2.9", id: 4)), "ordinary native IPv4 was captured")
+require(!nativeIntercept(packet(address: "192.0.2.9", id: 4)), "native TUN changed ordinary IPv4")
 require(!controller.intercept(Data([0x60] + [UInt8](repeating: 0, count: 39))), "native IPv6 was moved to DNS proxy")
+require(nativeIntercept(Data([0x60] + [UInt8](repeating: 0, count: 39))), "native TUN allowed IPv6 with OFF")
 state.read { $0.replies[0] }(nil)
 state.wait { $0.errors.count == 1 }
 
 apply()
 state.wait { $0.prepared.count == 2 }
-let rollback = state.read { $0.prepared[1].dnsSettings!.servers }
-require(Set(first).isDisjoint(with: rollback), "staging repurposed an active resolver endpoint")
-state.read { $0.replies[1] }(NativeDNSResolverError.scopeUnavailable)
+require(state.read { $0.prepared[1].dnsSettings!.servers == first }, "unchanged DNS refresh republished new endpoints")
+state.read { $0.replies[1] }(nil)
 state.wait { $0.errors.count == 2 }
-require(state.read { $0.errors == [false, true] }, "publication failure was hidden")
+apply(server: "10.77.0.54")
+state.wait { $0.prepared.count == 3 }
+let rollback = state.read { $0.prepared[2].dnsSettings!.servers }
+require(Set(first).isDisjoint(with: rollback), "staging repurposed an active resolver endpoint")
+state.read { $0.replies[2] }(NativeDNSResolverError.scopeUnavailable)
+state.wait { $0.errors.count == 3 }
+require(state.read { $0.errors == [false, false, true] }, "publication failure was hidden")
 require(controller.intercept(packet(address: first[0], id: 5)), "rollback lost previous DNS generation")
 state.wait { $0.packets.count == 4 }
 require(controller.intercept(packet(address: rollback[0], id: 6)), "failed staged endpoint fell through to native")
 
-apply()
-state.wait { $0.prepared.count == 3 }
+apply(server: "10.77.0.55")
+state.wait { $0.prepared.count == 4 }
 let stopped = DispatchSemaphore(value: 0)
 controller.stop { stopped.signal() }
 require(stopped.wait(timeout: .now() + 5) == .success, "DNS stop could not cancel staged generation")
-state.read { $0.replies[2] }(nil)
-state.wait { $0.errors.count == 3 }
-require(state.read { $0.errors[2] }, "late settings publication reactivated a stopped generation")
+state.read { $0.replies[3] }(nil)
+state.wait { $0.errors.count == 4 }
+require(state.read { $0.errors[3] }, "late settings publication reactivated a stopped generation")
 require(controller.intercept(packet(address: first[0], id: 7)), "stopped endpoint fell through to native")
 require(state.read { $0.failures == 0 && $0.packets.count == 4 }, "late reply or normal stop reported native failure")
+nativeFilter.stop()
+nativeFilter.stop()
+require(!nativeIntercept(Data([0x60] + [UInt8](repeating: 0, count: 39))), "retired native filter still changes packets")
 
 controller.start()
 apply(false)
-state.wait { $0.prepared.count == 4 }
-require(state.read { $0.prepared[3].dnsSettings!.servers == settings().dnsSettings!.servers }, "ON DNS settings changed")
-state.read { $0.replies[3] }(nil)
-state.wait { $0.errors.count == 4 }
+state.wait { $0.prepared.count == 5 }
+require(state.read { $0.prepared[4].dnsSettings!.servers == settings().dnsSettings!.servers }, "ON DNS settings changed")
+state.read { $0.replies[4] }(nil)
+state.wait { $0.errors.count == 5 }
 require(!controller.intercept(packet(address: first[0], id: 8)), "ON retained the previous DNS interception policy")
 controller.stop { stopped.signal() }
 require(stopped.wait(timeout: .now() + 5) == .success, "final DNS stop did not finish")
+let timeoutState = State()
+let timed = NativeDNSController(publicationTimeout: 0.1)
+timed.start()
+timed.apply(original: settings(), blocked: true, writer: { _ in true },
+    exchange: { _, _ in return { _, _, _, _ in throw NativeDNSResolverError.scopeUnavailable } },
+    failure: { timeoutState.update { $0.failures += 1 } },
+    publish: { value, reply in timeoutState.update { $0.prepared.append(value); $0.replies.append(reply) } },
+    completion: { error in timeoutState.update { $0.errors.append(error != nil) } })
+timeoutState.wait { $0.errors.count == 1 }
+require(timeoutState.read { $0.errors == [true] && $0.failures == 1 }, "missing native publication callback did not fail closed")
+timeoutState.read { $0.replies[0] }(nil)
+timed.stop { stopped.signal() }
+require(stopped.wait(timeout: .now() + 5) == .success, "publication timeout left retiring DNS generations alive")
+require(timeoutState.read { $0.errors.count == 1 && $0.failures == 1 }, "late publication completed a failed generation twice")
 print("PASS: native DNS prepare/publish, IPv6 upstream rejection, rollback, stop race, native passthrough and ON")

@@ -70,6 +70,12 @@ IPv4 application routing, DNS scope, TLS validation, or ON behavior.
    reader, and stops on disconnect/fatal error. Original IPv4 DNS scope is
    selected using the kernel route and an explicit interface, never a default
    dialer. This has not yet passed adapter-level VPN runtime acceptance.
+   Native WG/AWG wiring now reuses the same controller, with the Go backend's
+   existing TUN reader invoking a synchronous filter from the existing unified
+   runtime. IPv6 is rejected there; ordinary IPv4/native protocols pass
+   unchanged. Registration spans temporary native backend restarts and is
+   released after backend Stop joins callbacks. Local filter race/C ABI/overlay
+   tests passed; SDK and real adapter runtime verification are pending.
 3. Audit Android/desktop native WG, OpenVPN, Xray and Windows IKEv2 paths against
    the same policy; add adapters where managed DNS is not already intercepted.
 4. Test each adapter's real UDP/TCP DNS and IPv4/split/teardown behavior.

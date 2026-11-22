@@ -99,6 +99,36 @@ static void release_host(void *ctx) {
     pthread_mutex_unlock(&h->lock);
 }
 
+static int32_t filter_packet(void *ctx, const uint8_t *packet, int32_t size) {
+    Host *h = ctx;
+    assert(size >= 1);
+    pthread_mutex_lock(&h->lock);
+    assert(h->releases == 0);
+    h->dispatches++;
+    pthread_cond_broadcast(&h->changed);
+    while (h->delayed) pthread_cond_wait(&h->changed, &h->lock);
+    assert(h->releases == 0);
+    pthread_mutex_unlock(&h->lock);
+    return (packet[0] >> 4) == 6;
+}
+
+typedef struct { Host *host; int64_t handle; } FilterThread;
+static void *feed_filter(void *unused) {
+    (void)unused;
+    uint8_t packet[] = {0x60, 0, 0, 0};
+    assert(AmneziaNativePacketFilterFeed(packet, sizeof(packet)) == 1);
+    return NULL;
+}
+static void *stop_filter(void *arg) {
+    FilterThread *thread = arg;
+    pthread_mutex_lock(&thread->host->lock);
+    thread->host->cancels++;
+    pthread_cond_broadcast(&thread->host->changed);
+    pthread_mutex_unlock(&thread->host->lock);
+    AmneziaNativePacketFilterStop(thread->handle);
+    return NULL;
+}
+
 static void put16(uint8_t *p, unsigned value) { p[0] = value >> 8; p[1] = value; }
 
 static unsigned packet(uint8_t *p, unsigned id, unsigned type) {
@@ -161,6 +191,35 @@ int main(void) {
     assert(h.releases == 2);
     pthread_cond_destroy(&h.changed);
     pthread_mutex_destroy(&h.lock);
+    Host filter = {.lock = PTHREAD_MUTEX_INITIALIZER, .changed = PTHREAD_COND_INITIALIZER, .delayed = 1};
+    Host rejected = {.lock = PTHREAD_MUTEX_INITIALIZER, .changed = PTHREAD_COND_INITIALIZER};
+    int64_t filter_handle = AmneziaNativePacketFilterStart(&filter, filter_packet, release_host);
+    assert(filter_handle > 0);
+    assert(AmneziaNativePacketFilterStart(&rejected, filter_packet, release_host) < 0);
+    assert(rejected.releases == 1);
+    pthread_t feeding, stopping;
+    FilterThread thread = {.host = &filter, .handle = filter_handle};
+    assert(pthread_create(&feeding, NULL, feed_filter, NULL) == 0);
+    wait_count(&filter, &filter.dispatches, 1);
+    assert(pthread_create(&stopping, NULL, stop_filter, &thread) == 0);
+    wait_count(&filter, &filter.cancels, 1);
+    pthread_mutex_lock(&filter.lock);
+    assert(filter.releases == 0);
+    filter.delayed = 0;
+    pthread_cond_broadcast(&filter.changed);
+    pthread_mutex_unlock(&filter.lock);
+    assert(pthread_join(feeding, NULL) == 0);
+    assert(pthread_join(stopping, NULL) == 0);
+    assert(filter.releases == 1);
+    AmneziaNativePacketFilterStop(filter_handle);
+    assert(filter.releases == 1);
+    uint8_t native[] = {0x45, 0, 0, 0};
+    assert(AmneziaNativePacketFilterFeed(native, sizeof(native)) == 0);
+    pthread_cond_destroy(&filter.changed);
+    pthread_mutex_destroy(&filter.lock);
+    pthread_cond_destroy(&rejected.changed);
+    pthread_mutex_destroy(&rejected.lock);
     puts("PASS: DNS C ABI NODATA/forwarding, packet scope, cancellation and retained-host lifetime");
+    puts("PASS: native TUN filter scope, duplicate admission and in-flight callback lifetime");
     return 0;
 }

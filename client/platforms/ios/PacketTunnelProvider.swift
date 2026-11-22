@@ -73,6 +73,9 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
     // Only the legacy WireGuardAdapter uses this guard. Shared routing owns
     // its own capture and DNS policy.
     var nativeWireguardBlocksIPv6 = false
+    let nativeWireguardDNS = NativeDNSController()
+    private var nativeWireguardDNSFilter: NativeDNSPacketFilter?
+    private let nativeWireguardDNSFilterLock = NSLock()
     var openVpnStopping = true
     var openVpnLocalAddress: String?
     var openVpnLocalMask: String?
@@ -100,13 +103,52 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         openVPNPacketFlowAdapter.nativeDNS.start()
     }
 
+    func startNativeWireguardDNS() throws {
+        nativeWireguardDNSFilterLock.lock()
+        defer { nativeWireguardDNSFilterLock.unlock() }
+        guard nativeWireguardDNSFilter == nil else { throw NativeDNSGuard.StartError.unavailable }
+        nativeWireguardDNSFilter = try NativeDNSPacketFilter { [weak self] packet in
+            guard let self else { return true }
+            if packet.first.map({ $0 >> 4 == 6 }) == true { return true }
+            return self.nativeWireguardDNS.intercept(packet)
+        }
+        nativeWireguardDNS.start()
+    }
+
+    func nativeWireguardDNSFilterLease() -> NativeDNSPacketFilter? {
+        nativeWireguardDNSFilterLock.lock()
+        defer { nativeWireguardDNSFilterLock.unlock() }
+        return nativeWireguardDNSFilter
+    }
+
+    func retireNativeWireguardDNSFilter(_ filter: NativeDNSPacketFilter?) {
+        filter?.stop()
+        nativeWireguardDNSFilterLock.lock()
+        if nativeWireguardDNSFilter === filter { nativeWireguardDNSFilter = nil }
+        nativeWireguardDNSFilterLock.unlock()
+    }
+
     func stopOpenVPNNativeDNS(completion: @escaping () -> Void) {
         openVPNPacketFlowAdapter.nativeDNS.stop(completion: completion)
     }
 
     func applyOpenVPNNetworkSettings(_ settings: NEPacketTunnelNetworkSettings,
                                     completion: @escaping (Error?) -> Void) {
-        openVPNPacketFlowAdapter.nativeDNS.apply(original: settings, blocked: openVpnBlocksIPv6,
+        guard openVpnBlocksIPv6 else {
+            setTunnelNetworkSettings(settings, completionHandler: completion)
+            return
+        }
+        applyNativeDNS(openVPNPacketFlowAdapter.nativeDNS, settings: settings, blocked: openVpnBlocksIPv6,
+            publish: { [weak self] prepared, done in
+                guard let self else { done(NativeDNSController.ControllerError.stopped); return }
+                self.setTunnelNetworkSettings(prepared, completionHandler: done)
+            }, completion: completion)
+    }
+
+    func applyNativeDNS(_ controller: NativeDNSController, settings: NEPacketTunnelNetworkSettings,
+                        blocked: Bool, publish: @escaping NativeDNSController.Publish,
+                        completion: @escaping (Error?) -> Void) {
+        controller.apply(original: settings, blocked: blocked,
             writer: { [weak self] packet in
                 guard let self else { return false }
                 return self.packetFlow.writePackets([packet], withProtocols: [NSNumber(value: AF_INET)])
@@ -121,10 +163,12 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
                 }
             }, failure: { [weak self] in
                 self?.cancelTunnelWithError(NSError(domain: "NativeDNSGuard", code: 1))
-            }, publish: { [weak self] prepared, done in
-                guard let self else { done(NativeDNSController.ControllerError.stopped); return }
-                self.setTunnelNetworkSettings(prepared, completionHandler: done)
-            }, completion: completion)
+            }, publish: publish, completion: completion)
+    }
+
+    private func publishNativeWireguardSettings(_ settings: NEPacketTunnelNetworkSettings,
+                                              completion: @escaping (Error?) -> Void) {
+        super.setTunnelNetworkSettings(settings, completionHandler: completion)
     }
 
     override func setTunnelNetworkSettings(_ tunnelNetworkSettings: NETunnelNetworkSettings?,
@@ -133,6 +177,12 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
             // The backend has no IPv6 AllowedIPs. Keep capture anyway, also on
             // adapter path updates; otherwise traffic escapes over the underlay.
             WGConfig.retainBlockedIPv6Capture(in: settings)
+            applyNativeDNS(nativeWireguardDNS, settings: settings, blocked: true,
+                publish: { [weak self] prepared, done in
+                    guard let self else { done(NativeDNSController.ControllerError.stopped); return }
+                    self.publishNativeWireguardSettings(prepared, completion: done)
+                }, completion: { completionHandler?($0) })
+            return
         }
         super.setTunnelNetworkSettings(tunnelNetworkSettings, completionHandler: completionHandler)
     }

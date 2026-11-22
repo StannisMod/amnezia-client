@@ -83,7 +83,9 @@ class AwgApple(ConanFile):
             exported = {tuple(line.split()[-2:]) for line in symbols.getvalue().splitlines()}
             for entry_point in ("_AmneziaRoutingBuildInfo", "_AmneziaNativeDNSStart",
                                 "_AmneziaNativeDNSFeed", "_AmneziaNativeDNSComplete",
-                                "_AmneziaNativeDNSReject", "_AmneziaNativeDNSStop"):
+                                "_AmneziaNativeDNSReject", "_AmneziaNativeDNSStop",
+                                "_AmneziaNativePacketFilterStart", "_AmneziaNativePacketFilterFeed",
+                                "_AmneziaNativePacketFilterStop"):
                 if ("T", entry_point) not in exported:
                     raise RuntimeError(f"Apple archive is missing required entry point {entry_point}")
             self.run(f'python3 "{os.path.join(core, "internal", "builddeps", "verify.py")}" --module "{module}" --scope apple --archive "{archive}" --output "{os.path.join(module, "routing-tcp-provenance.json")}"')

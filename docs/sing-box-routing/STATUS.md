@@ -1,5 +1,35 @@
 # Implementation checkpoint — automated validation
 
+## Native Apple WG/AWG reader integration — 2026-11-22
+
+The single existing AWG/Xray/routing Go archive now wraps the native `wgTurnOn`
+TUN reader with a synchronous packet filter. The pinned upstream ownership entry
+is checked before patching; changed/multiple entry points fail the build. Shared
+routing is not wrapped. ON has no active filter and native bytes remain native.
+OFF registers the Swift DNS controller and rejects IPv6 at that same reader;
+non-DNS IPv4, ICMP/opaque native packets and TUN headroom remain unchanged.
+
+The provider prepares/publishes native WG DNS settings through the same
+transactional controller as OpenVPN, including adapter settings/path updates.
+The filter remains registered across temporary native backend suspension. Stop
+first cancels DNS, then joins the native backend, then unregisters/releases the
+filter host. Duplicate admission is rejected; unregister joins in-flight
+callbacks before host release. Late cleanup uses the original filter lease.
+Unchanged DNS is reused during endpoint/settings refreshes instead of resetting
+DNS TCP sessions. An OFF settings publication without its callback fails the
+connection before the native adapter's five-second proceed-anyway timeout;
+late callbacks cannot re-enable that failed generation. Stop also joins already
+retiring generations. ON retains its original settings publication path.
+
+Local offline verification passed ten Apple-parent race repetitions of
+`dnsguard`, the executable C ABI test including in-flight filter teardown, and
+three ownership-overlay Python tests. These used one 2-CPU/4-GiB no-swap
+container and existing dependency caches. No packages were downloaded.
+New Swift/native filter tests, SDK/full application builds and adapter runtime
+acceptance remain pending. Missing native IPv4 interface or original resolver
+policy remains a fail-closed unsupported configuration, not silently invented
+DNS. Xray and remaining Android/desktop native integration are still outstanding.
+
 ## Apple native OpenVPN connection wiring — 2026-11-22
 
 Hosted Actions execution recovered: run `44997772637` at `c2a6e6d` passed all

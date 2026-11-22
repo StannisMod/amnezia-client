@@ -6,15 +6,26 @@ import NetworkExtension
 // publication with preparation, rollback, generation retirement and Stop.
 final class NativeDNSController {
     typealias Publish = (NEPacketTunnelNetworkSettings, @escaping (Error?) -> Void) -> Void
-    enum ControllerError: Error { case stopped }
+    enum ControllerError: Error { case stopped, publicationTimedOut }
     private let queue = DispatchQueue(label: "org.amnezia.native-dns-settings")
     private let packets = NSLock()
     private var connections: [Connection] = []
-    private var reserved: Set<String> = []
+    private var reserved: Set<UInt32> = []
     private var stopped = true
     private var epoch: UInt64 = 0
     private var applying = false
     private var pending: [() -> Void] = []
+    private let retirement = DispatchGroup()
+    private let publicationTimeout: TimeInterval
+    private final class Publication { var finished = false }
+
+    init(publicationTimeout: TimeInterval = 4) {
+        // The native WireGuard adapter waits five seconds before proceeding.
+        // Return failure first; never let that timeout start an unconfigured
+        // OFF tunnel or stall all future settings updates indefinitely.
+        precondition(publicationTimeout > 0 && publicationTimeout <= 4)
+        self.publicationTimeout = publicationTimeout
+    }
 
     func start() {
         queue.async {
@@ -38,6 +49,7 @@ final class NativeDNSController {
                 }
                 do {
                     var connection: Connection?
+                    var newlyPrepared = false
                     var settings = original
                     if blocked {
                         let servers = original.dnsSettings?.servers ?? []
@@ -45,36 +57,65 @@ final class NativeDNSController {
                                                uniquingKeysWith: { first, _ in first })
                         self.packets.lock()
                         let occupied = Set(self.connections.flatMap { $0.addresses })
+                        let existing = self.connections.last
                         self.packets.unlock()
-                        let plan = try NativeDNSSettings(original: original, paths: paths, occupied: occupied)
-                        connection = try Connection(plan: plan, writer: writer, exchange: exchange, failure: failure)
-                        settings = plan.settings
+                        if let existing, existing.matches(original),
+                           let plan = try? NativeDNSSettings(original: original, paths: paths,
+                               occupied: occupied.subtracting(existing.addresses), captures: existing.orderedAddresses) {
+                            // Endpoint/path refreshes with unchanged DNS must not
+                            // reset established DNS TCP sessions needlessly.
+                            connection = existing
+                            settings = plan.settings
+                        } else {
+                            let plan = try NativeDNSSettings(original: original, paths: paths, occupied: occupied)
+                            connection = try Connection(plan: plan, writer: writer, exchange: exchange, failure: failure)
+                            newlyPrepared = true
+                            settings = plan.settings
+                        }
                     }
                     self.packets.lock()
-                    if let connection {
+                    if let connection, newlyPrepared {
                         self.connections.append(connection)
-                        self.reserved.formUnion(connection.addresses)
+                        self.reserved.formUnion(connection.targets)
                     }
                     self.packets.unlock()
                     let prepared = connection
+                    let staged = newlyPrepared
+                    let publication = Publication()
+                    let finish: (Error?, Bool) -> Void = { error, timedOut in
+                        guard !publication.finished else { return }
+                        publication.finished = true
+                        let current = !self.stopped && self.epoch == epoch
+                        self.packets.lock()
+                        let retired: [Connection]
+                        if timedOut && current {
+                            self.stopped = true
+                            self.epoch &+= 1
+                            retired = self.connections
+                            self.connections.removeAll()
+                        } else if error == nil && current {
+                            retired = self.connections.filter { $0 !== prepared }
+                            self.connections = prepared.map { [$0] } ?? []
+                            if !blocked { self.reserved.removeAll() }
+                        } else {
+                            retired = staged ? (prepared.map { [$0] } ?? []) : []
+                            if staged { self.connections.removeAll { $0 === prepared } }
+                        }
+                        self.packets.unlock()
+                        self.retire(retired) { self.next() }
+                        if timedOut && current { failure() }
+                        // Wake the adapter before its five-second fallback;
+                        // Stop separately joins cleanup of all generations.
+                        completion(current ? error : ControllerError.stopped)
+                    }
+                    let timer = DispatchWorkItem { finish(ControllerError.publicationTimedOut, true) }
+                    if blocked {
+                        self.queue.asyncAfter(deadline: .now() + self.publicationTimeout, execute: timer)
+                    }
                     publish(settings) { error in
                         self.queue.async {
-                            let current = !self.stopped && self.epoch == epoch
-                            self.packets.lock()
-                            let retired: [Connection]
-                            if error == nil && current {
-                                retired = self.connections.filter { $0 !== prepared }
-                                self.connections = prepared.map { [$0] } ?? []
-                                if !blocked { self.reserved.removeAll() }
-                            } else {
-                                retired = prepared.map { [$0] } ?? []
-                                self.connections.removeAll { $0 === prepared }
-                            }
-                            self.packets.unlock()
-                            self.retire(retired) {
-                                completion(current ? error : ControllerError.stopped)
-                                self.next()
-                            }
+                            timer.cancel()
+                            finish(error, false)
                         }
                     }
                 } catch {
@@ -101,7 +142,7 @@ final class NativeDNSController {
     func intercept(_ packet: Data) -> Bool {
         guard let destination = Self.destination(packet) else { return false }
         packets.lock()
-        let owner = connections.reversed().first { $0.addresses.contains(destination) }
+        let owner = connections.reversed().first { $0.targets.contains(destination) }
         let captured = reserved.contains(destination)
         packets.unlock()
         if let owner { _ = owner.feed(packet, destination: destination); return true }
@@ -116,7 +157,9 @@ final class NativeDNSController {
             let retired = self.connections
             self.connections.removeAll()
             self.packets.unlock()
-            self.retire(retired, completion: completion)
+            self.retire(retired) {
+                self.retirement.notify(queue: self.queue) { completion() }
+            }
         }
     }
 
@@ -124,20 +167,29 @@ final class NativeDNSController {
         let group = DispatchGroup()
         for connection in connections {
             group.enter()
-            connection.stop { group.leave() }
+            retirement.enter()
+            connection.stop {
+                group.leave()
+                self.retirement.leave()
+            }
         }
         group.notify(queue: queue) { completion() }
     }
 
-    private static func destination(_ packet: Data) -> String? {
+    private static func destination(_ packet: Data) -> UInt32? {
         guard packet.count >= 20, packet[packet.startIndex] >> 4 == 4 else { return nil }
         let base = packet.startIndex
-        return (16..<20).map { String(packet[base + $0]) }.joined(separator: ".")
+        return UInt32(packet[base + 16]) << 24 | UInt32(packet[base + 17]) << 16 |
+            UInt32(packet[base + 18]) << 8 | UInt32(packet[base + 19])
     }
 
     private final class Connection {
         let addresses: Set<String>
-        private let guards: [String: NativeDNSGuard]
+        let orderedAddresses: [String]
+        private let upstreams: [String]
+        private let sourceAddresses: [String]
+        let targets: Set<UInt32>
+        private let guards: [UInt32: NativeDNSGuard]
         init(plan: NativeDNSSettings, writer: @escaping (Data) -> Bool,
              exchange: (NativeDNSSettings.Binding, [String]) -> NativeDNSExchange,
              failure: @escaping () -> Void) throws {
@@ -157,10 +209,21 @@ final class NativeDNSController {
                 for guardDNS in prepared.values { guardDNS.stop {} }
                 throw error
             }
-            guards = prepared
+            let mapped = Dictionary(uniqueKeysWithValues: prepared.map { address, guardDNS in
+                let key = address.split(separator: ".").reduce(UInt32(0)) { ($0 << 8) | UInt32($1)! }
+                return (key, guardDNS)
+            })
+            guards = mapped
+            targets = Set(mapped.keys)
             addresses = Set(prepared.keys)
+            orderedAddresses = plan.bindings.map(\.address)
+            upstreams = plan.bindings.map(\.upstream)
+            sourceAddresses = plan.settings.ipv4Settings?.addresses ?? []
         }
-        func feed(_ packet: Data, destination: String) -> NativeDNSGuard.Disposition {
+        func matches(_ original: NEPacketTunnelNetworkSettings) -> Bool {
+            original.dnsSettings?.servers == upstreams && original.ipv4Settings?.addresses == sourceAddresses
+        }
+        func feed(_ packet: Data, destination: UInt32) -> NativeDNSGuard.Disposition {
             guards[destination]?.feed(packet) ?? .failed
         }
         func stop(completion: @escaping () -> Void) {

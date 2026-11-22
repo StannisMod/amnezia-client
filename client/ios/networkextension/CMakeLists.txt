@@ -104,6 +104,7 @@ target_sources(${CLIENT_IOS_NE_TARGET_NAME} PRIVATE
     ${CLIENT_ROOT_DIR}/platforms/ios/NativeDNSRoute.swift
     ${CLIENT_ROOT_DIR}/platforms/ios/NativeDNSScopedOperation.swift
     ${CLIENT_ROOT_DIR}/platforms/ios/NativeDNSController.swift
+    ${CLIENT_ROOT_DIR}/platforms/ios/NativeDNSPacketFilter.swift
     ${CLIENT_ROOT_DIR}/platforms/ios/EndpointRefreshPolicy.swift
     ${CLIENT_ROOT_DIR}/platforms/ios/PacketTunnelProvider+OpenVPN.swift
     ${CLIENT_ROOT_DIR}/platforms/ios/OpenVPNIPv6Policy.swift
