@@ -273,19 +273,10 @@ jobs:
           chmod +x "${packages[0]}"
           sudo modprobe tun
           python3 -u scripts/routing/run_linux_service_container.py --package "${packages[0]}" --peer "$RUNNER_TEMP/installed-routing-peer" --qt-probe "$GITHUB_WORKSPACE/routing-service-probe-build/routing-service-probe" --openvpn-policies "$RUNNER_TEMP/openvpn-qt-policies.json" --openvpn-route-fixture "$GITHUB_WORKSPACE/deploy/build/client/tests/routing/openvpn_ipv6_route_fixture" --report "$GITHUB_WORKSPACE/linux-installed-service.json"
-      - name: Preserve real WSS/TCP sockets through isolated underlay outages
-        id: tcp-stability
-        shell: bash
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y iproute2 nftables tcpdump
-          sudo modprobe tun
-          bash scripts/routing/run_linux_tcp_ci.sh
-      - name: Record native TCP acceptance with the packaged sources
+      - name: Record build result separately from the independent TCP acceptance job
         if: always()
         env:
           BUILD_OUTCOME: ${{ steps.build.outcome }}
-          TCP_ACCEPTANCE_OUTCOME: ${{ steps.tcp-stability.outcome }}
         run: python scripts/routing/build_manifest.py linux
       - uses: actions/upload-artifact@v4
         if: always()
@@ -305,10 +296,61 @@ jobs:
             deploy/build/client/tests/Testing/Temporary/LastTest.log
             deploy/build/AmneziaVPN_*_linux_x64.run
             linux-installed-service.json
-            tcp-stability-artifacts/**
             linux-installed-service.rescue.json
             linux-installed-service.journal.log
             linux-installed-service.boot.log
+
+  linux-tcp-stability:
+    needs: cancel-superseded
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: native/routing/go.mod
+          cache-dependency-path: native/routing/go.sum
+      - uses: actions/setup-python@v6
+        with: {python-version: '3.12'}
+      - name: Prepare pinned modules and isolated native test dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update
+          sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y iproute2 nftables tcpdump
+          sudo modprobe tun
+          cd native/routing
+          go mod download
+          go mod verify
+      - name: Preserve real WSS/TCP sockets through isolated underlay outages
+        id: tcp-stability
+        shell: bash
+        run: bash scripts/routing/run_linux_tcp_ci.sh
+      - name: Record standalone source-scoped TCP evidence, not installer acceptance
+        if: always()
+        shell: bash
+        env:
+          TCP_ACCEPTANCE_OUTCOME: ${{ steps.tcp-stability.outcome }}
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, subprocess
+          helper = pathlib.Path(os.environ['RUNNER_TEMP']) / 'tcp-stability/amnezia-routing'
+          report = {
+              'source_sha': subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
+              'workflow_run': os.environ['GITHUB_RUN_ID'],
+              'tcp_connection_stability': os.environ['TCP_ACCEPTANCE_OUTCOME'],
+              'helper_sha256': hashlib.sha256(helper.read_bytes()).hexdigest() if helper.exists() else None,
+              'installer_acceptance': 'NOT RUN',
+          }
+          pathlib.Path('tcp-stability-evidence.json').write_text(json.dumps(report, indent=2) + '\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: routing-linux-tcp-stability
+          path: |
+            tcp-stability-artifacts/**
+            tcp-stability-evidence.json
 
   client-windows:
     needs: cancel-superseded
@@ -756,16 +798,34 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install DNS and native routing test dependencies
-        run: sudo apt-get update && sudo apt-get install -y qt6-base-dev ninja-build iproute2
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The hosted mirror list selected an unreachable EC2 mirror and
+          # stalled before compilation in 45152767498. Keep normal TLS/package
+          # signature verification; use Ubuntu's canonical archive on this
+          # disposable runner rather than retrying that regional mirror.
+          if [ -f /etc/apt/apt-mirrors.txt ]; then
+            printf '%s\n' 'https://archive.ubuntu.com/ubuntu' | sudo tee /etc/apt/apt-mirrors.txt
+          fi
+          sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update 2>&1 | tee dns-dependencies.log
+          sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y qt6-base-dev ninja-build iproute2 2>&1 | tee -a dns-dependencies.log
       - name: Test cache commands and production exclusion routes
         run: |
           cmake -S tests/linux-dns-cache -B build-dns-tests -G Ninja
           cmake --build build-dns-tests
           sudo env AMNEZIA_REQUIRE_ROUTE_TESTS=1 ctest --test-dir build-dns-tests --output-on-failure
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: routing-linux-dns-regression
+          path: |
+            dns-dependencies.log
+            build-dns-tests/Testing/Temporary/LastTest.log
 
   build-gate:
     if: always()
-    needs: [cancel-superseded, core-tests, core-cross-compile, client-linux, client-windows, client-android, client-ios, apple-tcp-recovery, linux-dns-regression]
+    needs: [cancel-superseded, core-tests, core-cross-compile, client-linux, linux-tcp-stability, client-windows, client-android, client-ios, apple-tcp-recovery, linux-dns-regression]
     runs-on: ubuntu-22.04
     steps:
       - name: Fail for any failed, cancelled or skipped required lane

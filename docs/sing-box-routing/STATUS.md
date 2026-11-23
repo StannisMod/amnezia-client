@@ -1,5 +1,32 @@
 # Implementation checkpoint — automated validation
 
+## Hosted budget/mirror failure correction — 2026-11-23
+
+Run `45152767498` at `b20a6ee` did not pass the aggregate gate. Mac Intel's
+complete core lane and all twenty targeted MTU recovery repetitions passed
+(23 passes of that test including the core suite). The earlier 272.946429 ms
+failure remains unresolved; successful repetitions are not a causal fix.
+
+Three required jobs were cancelled, with distinct evidence:
+
+- `client-linux` (`137618102234`) exhausted its 120-minute job limit.
+  The WSS/TCP script only started at 12:04:52Z, after nearly 117 minutes of
+  preceding work, and was cut off at 12:08:19Z. Logs show live TCP progress, not
+  a demonstrated shutdown deadlock. No acceptance PASS is assigned.
+- `linux-dns-regression` (`137618102314`) exhausted 15 minutes in apt, selecting
+  `us-east-2.ec2.archive.ubuntu.com`; tests never started. Its direct job API log
+  is retained as `ci-b20a6ee-linux-dns-cancelled-api.log`.
+- Apple ARM recovery (`137618102309`) was never acquired by a hosted runner.
+  GitHub reports pool capacity constraints. The required ARM pool is retained.
+
+The WSS/TCP script is moved unchanged to its own required 45-minute job, with
+helper hash/source/run evidence separate from the installer build manifest.
+The installer manifest no longer implies that this separate test ran there.
+Neither test deadlines/assertions nor the existing client build budget change.
+DNS setup now uses the canonical Ubuntu HTTPS archive instead of the failed
+regional mirror, bounded acquisition timeouts, and always-uploaded setup logs.
+Offline YAML/required-gate checks passed; hosted correction results are pending.
+
 ## Native Apple Xray DNS activation — 2026-11-23
 
 Run `45141358149` at `7751c9c` passed Apple SDK/full app, native socket binding
