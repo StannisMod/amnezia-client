@@ -2,6 +2,18 @@
 
 ## Native Apple Xray DNS activation — 2026-11-23
 
+Run `45141358149` at `7751c9c` passed Apple SDK/full app, native socket binding
+and DNS/filter checks, but the overall gate failed: Mac Intel
+`TestMaturePathMTUAndTCPRecoveryWorkersRetainTCP` completed the existing TCP
+payload in 272.946429 ms after confirmed MTU (limit remains 250 ms). First
+resumed byte was at 25.954601 ms. Failed job `137580999053` is preserved in
+`ci-7751c9c-macos-intel-failed.log`. This is unresolved, not waived as flaky.
+Ten focused Linux race repetitions passed with the unchanged test; that does not
+prove the Mac cause. The test now records bounded receiver progress and timeout
+counts on slow completion without changing the assertion or logging in its
+packet/reader hot path. Three focused Linux repetitions of that instrumentation
+passed. New hosted evidence is required; no causal recovery fix is claimed.
+
 The next layer registers the existing DNS controller/filter before publishing
 OFF DNS settings, enables interception in the sole HEV reader only for OFF, and
 orders teardown as DNS cancellation/join, HEV reader join, Xray shutdown, then
@@ -18,8 +30,8 @@ IPv6 DNS path. Xray startup now checks/frees its owned native error result.
 Local bounded offline socket-policy race tests (ten repetitions) and four
 checked Apple overlay tests passed. Fresh C ABI compilation and DNS/filter
 cancellation/retained-host tests also passed, including the new socket bridge in
-the archive. Apple SDK/full app, native socket binding checks and activated
-adapter acceptance remain pending.
+the archive. Apple SDK/full app and native socket binding checks passed in that
+hosted run; activated physical adapter acceptance remains pending.
 This is not universal backend completion or physical Apple VPN acceptance.
 
 ## Native Xray reader lifetime preparation — 2026-11-22

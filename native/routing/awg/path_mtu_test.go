@@ -151,6 +151,14 @@ func testRetainedUploadMTU(t *testing.T, a, b *FlowStack, filter *atomic.Bool, d
 	var corrupted atomic.Bool
 	firstPayload := make(chan time.Time, 1)
 	completedPayload := make(chan time.Time, 1)
+	// Retain bounded receiver-side progress for diagnosing a failed timing
+	// bound. Do not log synchronously in the reader or relax the full-payload
+	// assertion when a hosted runner is slow.
+	type progressPoint struct {
+		bytes int64
+		at    time.Time
+	}
+	progress := make(chan progressPoint, 16)
 	listener, err := b.ListenTCPAddrPort(netip.MustParseAddrPort("10.77.0.2:18081"))
 	if err != nil {
 		t.Fatal(err)
@@ -197,8 +205,17 @@ func testRetainedUploadMTU(t *testing.T, a, b *FlowStack, filter *atomic.Bool, d
 					corrupted.Store(true)
 				}
 			}
-			if total := received.Add(int64(n)); n > 0 && total == 256*1024+6 {
-				completedPayload <- time.Now()
+			if total := received.Add(int64(n)); n > 0 {
+				now := time.Now()
+				if (total-6)/(16*1024) > max(base-6, 0)/(16*1024) {
+					select {
+					case progress <- progressPoint{bytes: total - 6, at: now}:
+					default:
+					}
+				}
+				if total == 256*1024+6 {
+					completedPayload <- now
+				}
 			}
 			if err != nil {
 				return
@@ -235,6 +252,7 @@ func testRetainedUploadMTU(t *testing.T, a, b *FlowStack, filter *atomic.Bool, d
 		t.Fatal(err)
 	}
 	afterRegulation := time.Now()
+	timeoutsAtRegulation := a.stack.Stats().TCP.Timeouts.Value()
 	until = time.Now().Add(8 * time.Second)
 	for received.Load() < 256*1024+6 && time.Now().Before(until) {
 		time.Sleep(10 * time.Millisecond)
@@ -269,6 +287,15 @@ func testRetainedUploadMTU(t *testing.T, a, b *FlowStack, filter *atomic.Bool, d
 	}
 	observerDelay := time.Since(completedAt)
 	t.Logf("same TCP transferred complete payload after client MTU reduction in %s; from confirmed MTU=%s; first resumed byte=%s; completion observer delay=%s; original oversized packets dropped=%d", completedAt.Sub(repairStarted), completionLatency, firstLatency, observerDelay, dropped.Load())
+	if completionLatency > 200*time.Millisecond {
+		points := make([]string, 0, len(progress))
+		for len(progress) > 0 {
+			point := <-progress
+			points = append(points, fmt.Sprintf("%dB@%s", point.bytes, point.at.Sub(afterRegulation)))
+		}
+		t.Logf("slow retained TCP diagnostic: timeouts at confirmed MTU=%d, at completion observation=%d; receiver progress=%v",
+			timeoutsAtRegulation, a.stack.Stats().TCP.Timeouts.Value(), points)
+	}
 	return completionLatency
 }
 

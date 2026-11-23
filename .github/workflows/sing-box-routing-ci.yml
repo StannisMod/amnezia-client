@@ -100,8 +100,18 @@ jobs:
             package_args=(-p 1)
           fi
           race_mod=$(python prepare_race.py --output "$RUNNER_TEMP")
+          echo "AMNEZIA_RACE_MOD=$race_mod" >> "$GITHUB_ENV"
           go test -mod=readonly -modfile="$race_mod" -tags with_gvisor,amnezia_race_dependency -race -count=3 "${package_args[@]}" -json ./... | tee test-results.jsonl
           go test -mod=readonly -modfile="$race_mod" -tags with_gvisor,amnezia_race_dependency -race -count=3 "${package_args[@]}" -json gvisor.dev/gvisor/pkg/tcpip/transport/tcp gvisor.dev/gvisor/pkg/tcpip/adapters/gonet | tee dependency-test-results.jsonl
+      - name: Diagnose retained TCP MTU completion on Intel without relaxing the bound
+        if: ${{ always() && matrix.os == 'macos-15-intel' && env.AMNEZIA_RACE_MOD != '' }}
+        shell: bash
+        run: |
+          set -o pipefail
+          go test -mod=readonly -modfile="$AMNEZIA_RACE_MOD" \
+            -tags with_gvisor,amnezia_race_dependency -race -count=20 \
+            -run '^TestMaturePathMTUAndTCPRecoveryWorkersRetainTCP$' -json ./awg \
+            | tee mtu-focused-results.jsonl
       - name: Verify native IPv6 source-scoped routing on macOS
         if: runner.os == 'macOS'
         shell: bash
@@ -119,6 +129,7 @@ jobs:
           path: |
             native/routing/test-results.jsonl
             native/routing/dependency-test-results.jsonl
+            native/routing/mtu-focused-results.jsonl
             native/routing/native-ipv6-scope.log
             native-ipv6-scope.json
           if-no-files-found: error

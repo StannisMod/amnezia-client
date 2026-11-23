@@ -30,14 +30,24 @@ IPv4 application routing, DNS scope, TLS validation, or ON behavior.
 
 ## Work remaining
 
+Current implementation checkpoint (2026-11-23): native Apple WG/AWG and
+OpenVPN wiring passed the complete hosted matrix at `9ae44af`; HEV reader and
+joined-stop preparation passed at `d6114dd`. Native Apple Xray activation is
+implemented at `7751c9c`; hosted run `45141358149` passed Apple checks, but its
+overall gate failed the Mac Intel retained-TCP/MTU latency bound (unresolved).
+The chronological
+notes below describe the stages that led here, not the current wiring status.
+No physical Apple adapter acceptance is claimed. Android/desktop native paths
+and Windows IKEv2 still prevent universal completion.
+
 1. Shared primitive implemented under `native/routing/dnsguard`: an in-memory
    frontend handles UDP/TCP DNS over IPv4/IPv6. AAAA is answered locally; A uses
    an explicit scoped exchange preserving UDP/TCP. Parent cancellation closes
    the frontend and pending exchanges. A native TUN wrapper intercepts only
    the configured managed-DNS address; other packets and TUN headroom pass
    unchanged. Packet tests and ten race-instrumented repetitions passed locally
-   in the bounded 2-CPU/4-GiB offline laboratory. **Not wired into a product
-   backend yet.** Native adapter scope/lifetime integration remains required.
+   in the bounded 2-CPU/4-GiB offline laboratory. Initially not wired into a
+   product backend; native Apple wiring is now implemented as described above.
    The asynchronous native-exchange bridge validates response identity/question,
    rejects duplicate/late replies, cancels native I/O before releasing its owner,
    bounds admission and never selects a fallback resolver. The Apple C ABI has
