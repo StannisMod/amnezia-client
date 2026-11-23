@@ -97,6 +97,9 @@ class PacketTunnelProvider: NEPacketTunnelProvider, NativeNetworkSettingsFailure
     var protoType: TunnelProtoType?
     
     var activeIfaceIdx: UInt32 = 0
+    let nativeXraySockets = NativeXraySockets()
+    let nativeXrayDNS = NativeDNSController()
+    var nativeXrayDNSFilter: NativeDNSPacketFilter?
 
     func openVPNPacketFlow() -> OpenVPNAdapterPacketFlow {
         openVPNPacketFlowAdapter
@@ -292,6 +295,7 @@ class PacketTunnelProvider: NEPacketTunnelProvider, NativeNetworkSettingsFailure
     }
 
     func updateActiveInterfaceIndex(for path: Network.NWPath?) {
+        defer { nativeXraySockets.update(index: nativeXrayScopeIndex()) }
         guard let path else {
             activeIfaceIdx = 0
             return
@@ -323,6 +327,13 @@ class PacketTunnelProvider: NEPacketTunnelProvider, NativeNetworkSettingsFailure
         currentPath = pathMonitor.currentPath
         currentPathSignature = pathSignature(for: pathMonitor.currentPath)
         updateActiveInterfaceIndex(for: pathMonitor.currentPath)
+    }
+
+    func nativeXrayScopeIndex() -> UInt32 {
+        guard pathMonitor.currentPath.status == .satisfied else { return 0 }
+        let addresses = XrayNetworkSettings.make().ipv4Settings?.addresses ?? []
+        guard let selected = nativeDNSInterface(index: nil, tunnelAddresses: addresses) else { return 0 }
+        return UInt32(selected.index)
     }
 
   override func handleAppMessage(_ messageData: Data, completionHandler: ((Data?) -> Void)? = nil) {

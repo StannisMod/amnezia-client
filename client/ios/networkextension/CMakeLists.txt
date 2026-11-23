@@ -117,6 +117,7 @@ target_sources(${CLIENT_IOS_NE_TARGET_NAME} PRIVATE
     ${CLIENT_ROOT_DIR}/platforms/ios/NativeDNSPacketFilter.swift
     ${CLIENT_ROOT_DIR}/platforms/ios/NativeNetworkSettingsResult.swift
     ${CLIENT_ROOT_DIR}/platforms/ios/NativeTunnelRunner.swift
+    ${CLIENT_ROOT_DIR}/platforms/ios/NativeXraySockets.swift
     ${CLIENT_ROOT_DIR}/platforms/ios/EndpointRefreshPolicy.swift
     ${CLIENT_ROOT_DIR}/platforms/ios/PacketTunnelProvider+OpenVPN.swift
     ${CLIENT_ROOT_DIR}/platforms/ios/OpenVPNIPv6Policy.swift

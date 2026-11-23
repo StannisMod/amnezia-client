@@ -13,6 +13,11 @@
 #endif
 typedef int32_t (*AmneziaPacketWriter)(void *, const uint8_t *, int32_t);
 typedef void (*AmneziaHostRelease)(void *);
+// Go-owned socket scope; no borrowed Swift/provider context. Stop joins bind
+// callbacks. Updates with zero suspend dials; stale handles are ignored.
+int64_t AmneziaNativeXraySocketsStart(uint32_t, int32_t);
+void AmneziaNativeXraySocketsUpdate(int64_t, uint32_t);
+void AmneziaNativeXraySocketsStop(int64_t);
 // Synchronous native packet filter: nonzero consumes/rejects, zero preserves
 // native bytes. Never retain the borrowed packet or call FilterStop inline.
 // Start consumes the retained host on success and failure. Stop joins callbacks
@@ -75,6 +80,18 @@ static inline char *amnezia_system_dns(void) {
 #else
     return NULL;
 #endif
+}
+static inline int amnezia_bind_xray_interface(int fd,uint32_t index,int32_t block_ipv6) {
+#ifdef __APPLE__
+    if(!index)return -1;
+    struct sockaddr_storage local;socklen_t length=sizeof(local);
+    if(getsockname(fd,(struct sockaddr *)&local,&length)!=0)return -1;
+    if(local.ss_family==AF_INET)return setsockopt(fd,IPPROTO_IP,IP_BOUND_IF,&index,sizeof(index));
+    if(local.ss_family==AF_INET6 && !block_ipv6)return setsockopt(fd,IPPROTO_IPV6,IPV6_BOUND_IF,&index,sizeof(index));
+#else
+    (void)fd;(void)index;(void)block_ipv6;
+#endif
+    return -1;
 }
 static inline int amnezia_bind_dns_interface(int fd,const char *name) {
 #ifdef __APPLE__

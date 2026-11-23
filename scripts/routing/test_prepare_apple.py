@@ -18,6 +18,9 @@ class PrepareAppleTest(unittest.TestCase):
         module = Path(temporary.name)
         (module / "api-apple.go").write_text(entry)
         (module / "Makefile").write_text("go build -ldflags=-w\n")
+        (module / "api-xray.go").write_text(
+            '\t"syscall"\n\t"github.com/xtls/xray-core/transport/internet"\n' +
+            PREPARE.LEGACY_XRAY_CALLBACK)
         return module
 
     def test_native_reader_is_wrapped_once_and_bridge_is_copied(self):
@@ -29,6 +32,13 @@ class PrepareAppleTest(unittest.TestCase):
                          (CORE / "applebridge/native_filter_apple.go").read_bytes())
         self.assertIn("amnezia_apple_bridge", (module / "Makefile").read_text())
         self.assertIn("AmneziaNativePacketFilterStart", (module / "amnezia_routing.h").read_text())
+        self.assertEqual((module / "api-xray.go").read_text().count("RegisterDialerController"), 1)
+        self.assertIn("legacy socket callbacks are disabled", (module / "api-xray.go").read_text())
+        self.assertTrue((module / "native_xray_apple.go").exists())
+
+    def test_changed_legacy_callback_is_rejected(self):
+        with self.assertRaisesRegex(RuntimeError, "legacy Xray socket callback"):
+            PREPARE.prepare_xray("func LibXraySetSockCallback() {}")
 
     def test_changed_native_ownership_entry_is_rejected(self):
         module = self.prepare("dev := changedNativeDeviceFactory(tun)\n")

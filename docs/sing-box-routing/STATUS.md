@@ -1,5 +1,27 @@
 # Implementation checkpoint — automated validation
 
+## Native Apple Xray DNS activation — 2026-11-23
+
+The next layer registers the existing DNS controller/filter before publishing
+OFF DNS settings, enables interception in the sole HEV reader only for OFF, and
+orders teardown as DNS cancellation/join, HEV reader join, Xray shutdown, then
+filter and socket-policy retirement. Original resolver order, metadata and
+route-derived scope are retained by the same native DNS planner. ON leaves the
+HEV interception gate disabled.
+
+The old unretained Swift socket callback is disabled by a checked upstream
+overlay. One Go dialer controller owns a handle-scoped underlay policy; updates
+with no interface suspend new dials, binding errors propagate, OFF rejects IPv6
+sockets, and Stop joins callbacks. There is no provider pointer or privileged
+IPv6 DNS path. Xray startup now checks/frees its owned native error result.
+
+Local bounded offline socket-policy race tests (ten repetitions) and four
+checked Apple overlay tests passed. Fresh C ABI compilation and DNS/filter
+cancellation/retained-host tests also passed, including the new socket bridge in
+the archive. Apple SDK/full app, native socket binding checks and activated
+adapter acceptance remain pending.
+This is not universal backend completion or physical Apple VPN acceptance.
+
 ## Native Xray reader lifetime preparation — 2026-11-22
 
 Run `45058827484` at `9ae44af` passed the complete hosted matrix, including
@@ -24,11 +46,12 @@ source passed in the bounded sandbox. Hosted tests additionally build the real
 host HEV source from the existing Conan source cache and run its reader with a
 socket-pair UTUN fixture, checking readiness, consumption, joined Stop and late
 quit after fd retirement. Those tests, Swift runner tests and SDK/full linkage
-are pending; this fixture is not physical VPN acceptance.
+passed in hosted run `45068248166` at `d6114dd` (complete matrix success);
+this fixture is not physical VPN acceptance.
 
-This step does not yet register the Xray DNS controller/filter. That activation,
-owned Xray socket-callback lifetime, and remaining Android/desktop native adapters
-are still required before universal AAAA NODATA or merge readiness.
+That reader-preparation commit did not register the Xray DNS controller/filter;
+the subsequent activation layer above builds on it. Remaining Android/desktop
+native adapters are still required before universal AAAA NODATA or merge readiness.
 
 ## iPhoneOS public-policy correction — 2026-11-22
 
