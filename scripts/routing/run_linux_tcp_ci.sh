@@ -39,6 +39,20 @@ for direction in download upload; do
     ' _ "$output/engine.test" 2>&1 | tee "$output/$direction.log"
 done
 
+# Native per-link DNS must reach an endpoint assigned to that link. A loopback
+# service is not a valid substitute for systemd-resolved's interface binding.
+# This is an isolated socket/scope fixture, not installed-adapter acceptance.
+go test -mod=readonly -tags with_gvisor -c -o "$output/dnsguard.test" ./dnsguard
+"${privilege[@]}" env AMNEZIA_DNS_LOCAL_INTERFACE_TEST=isolated-namespace \
+  unshare --mount --net --fork bash -ec '
+    mount --make-rprivate /
+    ip link set lo up
+    ip link add dns-fixture type dummy
+    ip addr add 192.0.2.10/32 dev dns-fixture
+    ip link set dns-fixture up
+    "$1" -test.run "^TestSocketFrontendNativeLinkScope$" -test.count 3 -test.timeout 30s -test.v
+  ' _ "$output/dnsguard.test" 2>&1 | tee "$output/native-dns-local-scope.log"
+
 # Detect the real endpoint route from inside the helper; no test command may
 # reopen its socket. Delete the old physical interface, retain the server's
 # public identity, then verify the same WSS/bulk sockets on the new gateway.

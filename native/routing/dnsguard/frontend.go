@@ -57,29 +57,7 @@ func New(parent context.Context, address netip.Addr, exchange Exchange) (*Fronte
 	}
 	ctx, cancel := context.WithCancel(parent)
 	f := &Frontend{device: device, address: address, ctx: ctx, cancel: cancel}
-	handler := dns.HandlerFunc(func(w dns.ResponseWriter, request *dns.Msg) {
-		var answer *dns.Msg
-		if request.Opcode == dns.OpcodeQuery && len(request.Question) != 1 {
-			answer = new(dns.Msg).SetRcode(request, dns.RcodeFormatError)
-		} else if request.Opcode == dns.OpcodeQuery && request.Question[0].Qtype == dns.TypeAAAA {
-			// Local policy is not an authenticated denial by the upstream.
-			answer = new(dns.Msg).SetReply(request)
-			answer.RecursionAvailable = true
-			answer.AuthenticatedData = false
-		} else {
-			queryCtx, stop := context.WithTimeout(ctx, 5*time.Second)
-			var err error
-			answer, err = exchange(queryCtx, w.RemoteAddr().Network(), request.Copy())
-			stop()
-			if err != nil || answer == nil {
-				answer = new(dns.Msg).SetRcode(request, dns.RcodeServerFailure)
-			} else {
-				answer = answer.Copy()
-				answer.Id = request.Id
-			}
-		}
-		_ = w.WriteMsg(answer)
-	})
+	handler := newHandler(ctx, exchange)
 	f.udp = &dns.Server{PacketConn: udp, Handler: handler, UDPSize: 4096,
 		ReadTimeout: 5 * time.Second, WriteTimeout: 5 * time.Second}
 	f.tcp = &dns.Server{Listener: tcp, Handler: handler,
@@ -107,6 +85,34 @@ func New(parent context.Context, address netip.Addr, exchange Exchange) (*Fronte
 	}
 	go func() { <-ctx.Done(); _ = f.Close() }()
 	return f, nil
+}
+
+// Both the packet frontend and the native desktop loopback frontend use the
+// same wire policy. Neither this handler nor its listeners select an upstream.
+func newHandler(ctx context.Context, exchange Exchange) dns.Handler {
+	return dns.HandlerFunc(func(w dns.ResponseWriter, request *dns.Msg) {
+		var answer *dns.Msg
+		if request.Opcode == dns.OpcodeQuery && len(request.Question) != 1 {
+			answer = new(dns.Msg).SetRcode(request, dns.RcodeFormatError)
+		} else if request.Opcode == dns.OpcodeQuery && request.Question[0].Qtype == dns.TypeAAAA {
+			// Local policy is not an authenticated denial by the upstream.
+			answer = new(dns.Msg).SetReply(request)
+			answer.RecursionAvailable = true
+			answer.AuthenticatedData = false
+		} else {
+			queryCtx, stop := context.WithTimeout(ctx, 5*time.Second)
+			var err error
+			answer, err = exchange(queryCtx, w.RemoteAddr().Network(), request.Copy())
+			stop()
+			if err != nil || answer == nil {
+				answer = new(dns.Msg).SetRcode(request, dns.RcodeServerFailure)
+			} else {
+				answer = answer.Copy()
+				answer.Id = request.Id
+			}
+		}
+		_ = w.WriteMsg(answer)
+	})
 }
 
 // Device exposes packet I/O only; it installs no OS routes or capture reader.

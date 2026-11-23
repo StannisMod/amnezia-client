@@ -1,6 +1,41 @@
 # Implementation checkpoint — automated validation
 
+## Native desktop DNS-only socket frontend preparation — 2026-11-23
+
+Native desktop kernel/process backends cannot use a second TUN reader. A
+local UDP/TCP frontend is prepared in `dnsguard.NewSocket`, sharing the
+packet frontend's exact AAAA/A wire policy while leaving all non-DNS packets
+with the native backend. It accepts only a matched, explicitly assigned local
+IPv4 listener pair and an explicit scoped exchange; it installs no DNS settings,
+routes, TUN, upstream selection or fallback. Both listeners are consumed even
+on constructor failure. Cancellation joins handlers, and unexpected listener
+exit invalidates the endpoint.
+
+An isolated native-interface experiment showed that link-bound resolver
+requests cannot reach loopback; they do reach that interface's own IPv4 address.
+The frontend therefore verifies exact, unambiguous local address ownership,
+rejects non-local client sources (no recursive service for remote VPN peers),
+and has a real SO_BINDTODEVICE UDP/TCP NODATA fixture with a negative loopback
+control. The fixture is added to the required isolated Linux TCP job.
+
+The complete dnsguard suite passed ten local offline race repetitions within
+2 CPU/4 GiB, including real UDP/TCP loopback NODATA/A/SERVFAIL, listener mismatch
+and wildcard rejection, cancellation and unexpected-listener teardown.
+Evidence: `native-dns-socket-frontend-20261123.log`. This primitive
+is NOT activated in desktop adapters. The updated assigned-interface and socket
+suite also passed ten offline race repetitions in the same bounded sandbox;
+evidence: `native-dns-assigned-socket-20261123-v2.log` (also includes explicit
+non-local peer rejection and local loopback-alias preservation).
+Per-resolver settings publication,
+original scope, native adapter lifecycle and crash/fail-closed ownership remain
+to integrate. It does not close the remaining backend completion requirement.
+
 ## Hosted budget/mirror failure correction — 2026-11-23
+
+Correction commit `35fb4c0` passed the complete hosted matrix in run
+`45172934409`, including the independent required Linux TCP job, DNS regression
+and both Apple recovery pools. This verifies the CI correction, not a causal fix
+for the earlier isolated Mac MTU latency failure.
 
 Run `45152767498` at `b20a6ee` did not pass the aggregate gate. Mac Intel's
 complete core lane and all twenty targeted MTU recovery repetitions passed
