@@ -12,6 +12,10 @@ android {
 }
 
 dependencies {
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
+    testImplementation(project(":utils"))
+    testImplementation(project(":protocolApi"))
     compileOnly(project(":utils"))
     compileOnly(project(":protocolApi"))
     implementation(project(":xray:libXray"))

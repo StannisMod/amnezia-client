@@ -138,6 +138,60 @@ unrelated native traffic stays blocked during strict DNS bootstrap and that an
 ordinary DNS socket remains blocked after the temporary exception is removed.
 This does not replace Android/iOS device handover or macOS PF/WFP acceptance.
 
+### Native IPv6 source/scoped-route probe
+
+`scripts/routing/run_native_ipv6_scope.py` uses `cmd/native-ipv6-peer` to put two
+independent TCP/UDP origins behind two owned TUNs. The sending sockets use the OS
+TCP stack. It changes the unscoped destination route A→B→A while retaining both
+old sockets, checks the new TCP/UDP path and exact server accept counts, then
+removes the owned routes and closes both interfaces. It changes no default
+route, DNS or firewall setting.
+
+macOS uses interface-scoped host routes. XNU's
+[`in6_selectroute`](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/netinet6/in6_src.c)
+selects an interface using an established socket's source address; this probe
+must verify that behavior on each supported native runner before relying on it
+in the OpenVPN route manager. It is wired into the existing macOS core-test
+lanes and requires both the explicit `AMNEZIA_NATIVE_IPV6_LAB=owned-runner`
+opt-in and a GitHub Actions runner. Linux calibration requires
+`AMNEZIA_NATIVE_IPV6_LAB=isolated-container`, root inside an empty network
+namespace, and uses source-policy rules instead. Linux results and Darwin
+cross-compilation do not prove macOS runtime behavior, production OpenVPN
+integration, or physical network handover.
+
+`MacOpenVpnIpv6PolicyTest` is a portable transaction test for desktop OpenVPN.
+It prepares interface-scoped source pins before changing the unscoped route,
+retains them across repeated direction changes, borrows matching foreign scoped
+rows without adopting ownership, and rejects foreign unscoped host routes.
+Temporary protocol-cloned cache rows are not borrowed as durable pins: a
+matching scoped clone is replaced through the kernel's `RTM_ADD` operation,
+without deleting a route first. Permanent foreign scoped routes remain borrowed
+and untouched. The [XNU replacement path](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/net/route.c)
+checks the clone's parent while holding the routing table lock.
+Failed operations are rolled back even if the mutation reached the kernel before
+its reply failed. An unsuccessful cleanup keeps source pins until the primary
+route can be removed. The native adapter must make owned changes idempotent and
+must distinguish a missing route from an unsuccessful query.
+
+These transaction tests run with an injected route API. The production
+`macopenvpnipv6native.h` adapter now uses real Darwin SDK routing structures,
+`sysctl` route snapshots and a bounded `PF_ROUTE` exchange. It matches kernel
+replies by process/sequence/type, checks the kernel error and reconciles the
+resulting route. It does not use route metrics as ownership markers. The service
+constructs its route owner before starting OpenVPN and releases it before
+notifying clients of process completion. Portable table-selection tests exercise
+the same source-interface and handover selection functions as the adapter.
+
+This Linux validation does not compile the Darwin-only code. The real SDK target
+`mac_openvpn_ipv6_api_compile`, actual installed-service IPv6 packets and old TCP
+preservation are still required. The existing IPC route fixture can be built on
+macOS and requires `--ipc-process` plus an explicit owned macOS VM/runner guard;
+it cannot substitute a local route owner for the installed service. The client
+still does not advertise `supportsIpv6HostUpdates()` on macOS pending those
+native gates. The native probe above is also still required. In particular, [Apple network_cmds route.c](https://github.com/apple-oss-distributions/network_cmds/blob/main/route.tproj/route.c) can return a zero process
+status even when its route request fails; an adapter must reconcile the actual
+kernel result rather than treating the process status as proof of mutation.
+
 Desktop endpoint bootstrap queries only the peer hostname through the privileged
 service's private UDP socket, using public resolvers 1.1.1.1 and 8.8.8.8 on
 alternating attempts. Linux/PF exceptions are restricted to its owned source port,
@@ -146,3 +200,194 @@ saved hostname and keys are retained. This bypasses system DNS caches and tunnel
 DNS, but private/split-horizon names and networks blocking both public UDP DNS
 resolvers are not supported by this bootstrap path. Truncated DNS replies fail
 closed; there is no TCP fallback. Destination-routing DNS is separate.
+
+### IPv4-only OpenVPN servers
+
+The installed Linux suite also runs `legacy-full`, `legacy-export`,
+`legacy-include` and `legacy-exclude` using configurations emitted by the actual
+Qt configurator. The server has no IPv6 pool, while an independent native path
+can reach GUA, ULA and NAT64 origins. Selected IPv6 must be rejected, DIRECT
+exceptions must still carry TCP/UDP, and two original IPv4 TCP sockets must
+survive. The old configuration fails this test by reaching the native origin.
+
+`block-ipv6` needs IPv6 capture, as shown in the
+[OpenVPN manual](https://openvpn.net/community-docs/community-articles/openvpn-2-7-manual/).
+The managed blocking fallback supplies a local IPv6 address when no explicit
+one exists, installs the selected routes, and uses `setenv opt disable-dco`
+because DCO bypasses userspace ICMP rejection. Its separate marker prevents an
+exported blocking profile from being mistaken for authenticated IPv6 support.
+After support is confirmed, regeneration removes only this managed fallback;
+explicit administrator addresses and blocks remain intact.
+
+The UDP witness enables Linux `IPV6_RECVERR` to observe the ICMPv6 rejection.
+Ordinary UDP applications may ignore that soft error; this test does not claim
+that every application's UDP receive call fails immediately.
+
+`legacy-api` checks the same IPv4-only case with an API-supplied profile.
+Provider-owned IPv4 redirect and subnet directives are retained while IPv6
+capture is enforced. Capability-learning tests cover Native, SelfHostedUser,
+SelfHostedAdmin, PremiumV2, FreeV3 and ExternalPremium records, preserving their
+keys, credentials and API metadata. The observation emits a separate UI
+notification, so it does not trigger the local proxy's ordinary configuration
+restart handler. It applies to the next connection; an authoritative provider
+profile refresh can replace the cached observation. This test does not claim
+that the current blocked session gains IPv6 without reconnecting.
+
+The installed Linux suite also forces an IPv4-only server while keeping the
+Qt-generated `full`, `include` and `exclude` profiles' cached IPv6 capability.
+`AMNEZIA_OPENVPN_STALE_CAPABILITY=1` selects this case in the existing TLS lab.
+An interface-bound native connection proves each GUA/ULA/NAT64 origin is live;
+selected route lookups must point to the actual tunnel, DIRECT TCP/UDP must
+still work, and two original IPv4 TCP sockets must survive. Selected sockets
+may time out in this stale-capability case: this is a capture/fail-closed
+regression, not proof of fast rejection or successful IPv6 service. The strict
+ICMP/fast-rejection assertions for ordinary `legacy-*` profiles remain intact.
+
+### Android OpenVPN3 configuration compatibility
+
+`ConnectionTest::openVpnTunBuilderIpv6Compatibility` runs in the ordinary Qt
+suite. Android local profile generation removes only the owned OpenVPN2
+fallback `ifconfig-ipv6` line: shipped OpenVPN3 rejects that client-side option
+even with `setenv opt`. The block marker, `block-ipv6`, routes, credentials and
+explicit administrator configuration are retained. Desktop OpenVPN2 profiles
+and exports retain their capture address.
+
+To check the real JNI library from a normal APK on an owned emulator, first
+generate profiles with the compiled Qt test, then run:
+
+```sh
+QT_QPA_PLATFORM=offscreen AMNEZIA_OPENVPN_TUN_BUILDER_FIXTURE=/tmp/openvpn-tun-builder-policies.json \
+  deploy/build/client/tests/test_connection openVpnIpv6ProfileAndExport openVpnTunBuilderIpv6Compatibility
+AMNEZIA_ANDROID_NATIVE_CONFIG_PROBE=owned-emulator \
+  python3 scripts/routing/run_android_openvpn_config_probe.py \
+  --sdk "$ANDROID_HOME" --apk /path/to/normal-x86_64.apk \
+  --policies /tmp/openvpn-tun-builder-policies.json --report /tmp/openvpn3-startup.json
+```
+
+This extracts the unchanged APK's JNI libraries and compiles the repository's
+SWIG wrappers plus a separate probe. It neither installs nor modifies the APK.
+`eval_config` alone is insufficient: the probe initializes native connection
+options and refuses the socket before transport. A structural invalid control
+must fail. The optional `--tls-fixture` mode accepts only the fixed local
+emulator gateway/port, records native TUN callbacks after a fixture TLS
+handshake, and returns no TUN descriptor. Neither mode proves actual Android
+TUN routing or packet forwarding.
+
+The local IPv4-only server probe showed that OpenVPN3 drops IPv6 route callbacks
+without a server-assigned IPv6 address and asks the adapter to block the whole
+family. The actual packet suite additionally tests the site prefixes supplied
+to the common Android builder, including selective DIRECT exceptions. API35
+packet acceptance passed. The old compiler failed the API28 scope-transition
+gate; the ordinary `9a64032` APK passes the seven current cases on API28 and
+API35 with exact IPv6 defaults and kernel-owned loopback. The same seven cases
+also pass with a narrow `/128` DIRECT exception: the excluded IPv6 address stays
+native, and its adjacent address stays captured. The two exclusion profiles
+come from the actual Qt producer and each contain 128 IPv6 routes.
+Apple adapters have a separate
+Swift capture/filter implementation and require their own SDK/runtime validation.
+
+`ProtocolConfigIpv6Test` exercises the actual common Android configuration
+builder: full capture includes GUA, ULA and NAT64, excluding an IPv4 endpoint
+preserves IPv6 capture, and an IPv4-only inclusion list does not capture IPv6.
+Full `::/0` stays intact when only IPv4 destinations are excluded. The compiler
+does not subtract `::1`: the kernel local table keeps loopback local, checked
+with actual TCP and UDP in every OpenVPN packet case. Explicit IPv6 exceptions
+still use the pre-API33 CIDR complement where needed. The local JVM Android stub selects that compiler;
+these unit checks do not substitute for real API33+ route acceptance. Both
+existing Android package workflows run `:protocolApi:testDebugUnitTest` beside
+the existing `:utils:testDebugUnitTest`, without another job.
+
+The separate [Android OpenVPN Docker package](../../scripts/routing/android-openvpn/README.md)
+runs real TLS/TUN packet checks using an ordinary x86_64 APK and the Qt-checked
+policy fixture. It requires no QUIC/Go probe and reports focused runs separately
+from the complete seven-case suite. The existing API28/API35 Android acceptance
+lanes include it; no new jobs or remote runs are needed.
+
+Apple OpenVPN uses `OpenVPNIPv6Policy.swift` for full/include/exclude IPv6
+scope, selected IPv6 DNS routes, exact managed OpenVPN2 option adaptation, and
+packet-family blocking. The provider retains authenticated IPv6 addresses or
+uses a local capture-only /128 when absent. It no longer clears IPv6 settings
+on macOS. IPv4-only inclusion leaves unselected IPv6 direct; IPv6 server transport
+gets a direct host exception. The flow adapter blocks both directions when the
+profile requests blocking or the server supplies no IPv6 address. This prevents
+native bypass; it does not promise fast ICMP rejection of blocked IPv6 flows.
+
+Run the shared production logic locally with Swift 6.1 (Swift 5 language mode):
+
+```sh
+swiftc -swift-version 5 -warnings-as-errors client/platforms/ios/OpenVPNIPv6Policy.swift client/tests/openvpn-ipv6-policy/main.swift -o /tmp/openvpn-ipv6-policy
+/tmp/openvpn-ipv6-policy client/tests/data/openvpn-tun-builder-policies.json
+```
+
+On Linux this checks real Swift route/packet/config logic and all nine Qt-checked
+profiles, but cannot import NetworkExtension. On macOS the same executable also
+checks actual NE settings construction and address preservation. Existing Apple
+jobs run these tests and typecheck the helper against the iOS SDK. Linux syntax
+parsing alone is not an Apple SDK build, a real TUN packet test, or evidence of
+native Apple acceptance; those remain required gates before release.
+
+
+### Installed Windows OpenVPN packet regression
+
+`run_windows_openvpn_acceptance.py` uses the ordinary installed service through
+`openvpn_ipv6_route_fixture --ipc-process`. It requires Windows, an explicitly
+named disposable VM, and `AMNEZIA_IPV6_LAB=owned-windows-vm`. It never installs a
+substitute service or changes the developer host's networking. The VM must use
+an isolated SLIRP network whose Linux-side host is `10.0.2.2`; the fixture URL is
+restricted to that host or loopback. The Qt runtime DLLs and Python must be on
+PATH. Install the ordinary MSI before running this suite.
+
+Export native Windows policies from the actual `test_connection.exe` test
+`openVpnIpv6ProfileAndExport` with `AMNEZIA_OPENVPN_POLICY_FIXTURE` set to the
+output JSON path. Run `scripts/routing/android-openvpn/local_server.py` on the
+Linux side with `--client-platform windows --persistent-ipv6`, that policy file,
+and `--output` pointing to a private synthetic fixture JSON. Windows mode
+requires `AMNEZIA_ANDROID_OPENVPN_FIXTURE=owned-container` and
+`AMNEZIA_WINDOWS_OPENVPN_FIXTURE=owned-vm-network`. The existing server refuses
+an external network interface: share only the owned VM's otherwise empty
+Docker namespace, with NET_ADMIN and `/dev/net/tun`, not the host network.
+Serve the JSON only through the VM's loopback-bound SLIRP fixture endpoint;
+remove it on completion. Never publish the generated private TLS credentials.
+Windows fixture mode also exposes read-only origin counters on Linux loopback
+port 21945. The guest checks their per-run deltas, including zero deliveries
+for blocked probes; this endpoint contains no TLS credentials.
+
+With `--ipv6`, the server emits `full`, `include`, `exclude`, and `api-full`.
+Without it, it emits `legacy-full`, `legacy-include`, `legacy-exclude`,
+`legacy-export`, `legacy-api`, and `stale-full`. Configure the normal CTest
+suite for the cases provided by the currently running server, for example:
+
+```powershell
+cmake -S client/tests/routing -B openvpn-tests `
+  -DCMAKE_PREFIX_PATH="$env:QT_ROOT_PATH/msvc2022_64" `
+  -DAMNEZIA_ROUTE_FIXTURE_IPC=ON `
+  -DAMNEZIA_WINDOWS_OPENVPN_VM_NAME=YOUR_OWNED_VM_NAME `
+  -DAMNEZIA_WINDOWS_OPENVPN_FIXTURE_URL=http://10.0.2.2:8080/private-fixture.json `
+  '-DAMNEZIA_WINDOWS_OPENVPN_CASES=full;include;exclude;api-full'
+cmake --build openvpn-tests --config Release
+ctest --test-dir openvpn-tests -C Release -L openvpn --output-on-failure
+```
+
+The same cache options work in the full client test build. Tests are registered
+only when the explicit fixture URL, VM name and case list are configured;
+unconfigured unit runs do not claim native acceptance. CTest serializes these
+tests. Reconfigure with the six legacy names for the IPv4-only server phase.
+No GitHub run is dispatched by this integration.
+
+Each profile first proves all four native TCP/UDP origins are reachable, then
+checks the real VPN, DIRECT or BLOCKED outcome. The `/128` exception must leave
+the adjacent IPv6 address captured. Independent server origin counts must match
+the native baselines plus delivered probes; a blocked probe must never reach an
+origin. The include case also registers `WindowsOpenVpnRoutePreservation`:
+six original native/VPN IPv4/IPv6 TCP sockets stay open through bidirectional
+and repeated host-route changes, while new sockets must use the selected path.
+A separately owned native host route must reject a conflicting VPN update and
+survive service-process cleanup; the test then removes only its exact fixture
+row. This catches both the TAP on-link-gateway mistake and removal of the sole route
+available to an established VPN-source socket.
+
+Each run writes `openvpn-acceptance/<case>-*/report.json`, stops OpenVPN through
+its management channel, releases the real service process, deletes its private
+profile, and compares the OS routes with the pre-start snapshot. Cleanup or
+restoration errors fail the test. These Windows results do not establish Apple
+runtime behavior or the cause of a physical Telegram/OpenCode incident.

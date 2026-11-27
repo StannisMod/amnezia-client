@@ -9,12 +9,22 @@ from conan.tools.env import Environment
 
 import os
 import shlex
+import importlib.util
+from pathlib import Path
 
 
 class AmneziaXrayBindings(ConanFile):
     name = "amnezia-xray-bindings"
     version = "1.4.0"
     settings = "os", "arch", "compiler"
+
+    def export_sources(self):
+        root = Path(self.recipe_folder).parents[1]
+        copy(self, "native_dns.py", self.recipe_folder, self.export_sources_folder)
+        copy(self, "*", str(root / "native/routing/nativedns"),
+             str(Path(self.export_sources_folder) / "native-dns-core"))
+        copy(self, "native_dns.go", str(root / "native/routing/desktopbridge"),
+             str(Path(self.export_sources_folder) / "native-dns-support"))
 
     _arch_map = {
         "x86": "386",
@@ -87,6 +97,7 @@ class AmneziaXrayBindings(ConanFile):
         env.define("GOMODCACHE", os.path.join(self.build_folder, "gopath", "pkg", "mod"))
         env.define("GOCACHE", os.path.join(self.build_folder, "gocache"))
         env.define("GOOS", self._goos)
+        env.define("GOFLAGS", "-mod=readonly -tags=amnezia_native_dns")
         if self._is_windows:
             env.define("OS", "windows")
         self._ldflags = tc.ldflags
@@ -94,6 +105,13 @@ class AmneziaXrayBindings(ConanFile):
         tc.generate(env)
 
     def build(self):
+        spec = importlib.util.spec_from_file_location("native_dns_overlay",
+            str(Path(self.export_sources_folder) / "native_dns.py"))
+        overlay = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(overlay)
+        overlay.prepare(self.source_folder,
+            Path(self.export_sources_folder) / "native-dns-core",
+            Path(self.export_sources_folder) / "native-dns-support/native_dns.go")
         with chdir(self, self.source_folder):
             for arch in self._archs:
                 build_dir = os.path.join(self.build_folder, arch) if self._is_multiarch else self.build_folder

@@ -1,11 +1,19 @@
 <RCC>
     <qresource prefix="/server_scripts">
         <file>update_wireguard.sh</file>
+        <file>update_ipsec.sh</file>
         <file>migration/agent.py</file>
         <file>migration/relay.py</file>
         <file>connection_updates/Dockerfile</file>
         <file>connection_updates/service.go</file>
         <file>connection_updates/rollout.go</file>
+        <file>connection_updates/ipv6_migration.go</file>
+        <file>connection_updates/config_transaction.go</file>
+        <file>connection_updates/config_runtime.go</file>
+        <file>connection_updates/config_ipv6_runtime.go</file>
+        <file>connection_updates/ipv6_publication.go</file>
+        <file>connection_updates/ipv6_upgrade.go</file>
+        <file>connection_updates/config_forwarding.go</file>
         <file>connection_updates/readiness.go</file>
         <file>connection_updates/go.mod</file>
         <file>connection_updates/install.sh</file>
@@ -14,6 +22,8 @@
         <file>awg/Dockerfile</file>
         <file>awg/run_container.sh</file>
         <file>awg/start.sh</file>
+        <file alias="mtu/controller.py">../../server/mtu/controller.py</file>
+        <file alias="mtu/supervisor.py">../../server/mtu/supervisor.py</file>
         <file>awg/template.conf</file>
         <file>awg_legacy/configure_container.sh</file>
         <file>awg_legacy/Dockerfile</file>
@@ -31,6 +41,7 @@
         <file>install_conntrack.sh</file>
         <file>ipsec/configure_container.sh</file>
         <file>ipsec/Dockerfile</file>
+        <file>ipsec/enable_ipv6.sh</file>
         <file>ipsec/mobileconfig.plist</file>
         <file>ipsec/run_container.sh</file>
         <file>ipsec/start.sh</file>
@@ -51,8 +62,11 @@
         <file>openvpn/Dockerfile</file>
         <file>openvpn/run_container.sh</file>
         <file>openvpn/start.sh</file>
+        <file>openvpn/migrate_ipv6.sh</file>
         <file>openvpn/template.ovpn</file>
         <file>prepare_host.sh</file>
+        <file>prepare_ipv6_network.sh</file>
+        <file>enable_ipv6_forwarding.sh</file>
         <file>remove_all_containers.sh</file>
         <file>remove_container.sh</file>
         <file>setup_host_firewall.sh</file>

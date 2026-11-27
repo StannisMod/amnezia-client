@@ -80,8 +80,14 @@ class AwgApple(ConanFile):
                 raise RuntimeError("Apple routing archive was not produced")
             symbols = io.StringIO()
             self.run(f'nm -g "{archive}"', stdout=symbols)
-            if "_AmneziaRoutingBuildInfo" not in symbols.getvalue():
-                raise RuntimeError("Apple archive is missing verified routing provenance")
+            exported = {tuple(line.split()[-2:]) for line in symbols.getvalue().splitlines()}
+            for entry_point in ("_AmneziaRoutingBuildInfo", "_AmneziaNativeDNSStart",
+                                "_AmneziaNativeDNSFeed", "_AmneziaNativeDNSComplete",
+                                "_AmneziaNativeDNSReject", "_AmneziaNativeDNSStop",
+                                "_AmneziaNativePacketFilterStart", "_AmneziaNativePacketFilterFeed",
+                                "_AmneziaNativePacketFilterStop"):
+                if ("T", entry_point) not in exported:
+                    raise RuntimeError(f"Apple archive is missing required entry point {entry_point}")
             self.run(f'python3 "{os.path.join(core, "internal", "builddeps", "verify.py")}" --module "{module}" --scope apple --archive "{archive}" --output "{os.path.join(module, "routing-tcp-provenance.json")}"')
 
         # tool_requires are available to self.run(), not to subprocesses

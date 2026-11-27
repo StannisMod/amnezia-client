@@ -23,6 +23,7 @@ public:
     Q_PROPERTY(bool isNotificationPermissionGranted READ isNotificationPermissionGranted NOTIFY onNotificationStateChanged)
     Q_PROPERTY(bool isKillSwitchEnabled READ isKillSwitchEnabled WRITE toggleKillSwitch NOTIFY killSwitchEnabledChanged)
     Q_PROPERTY(bool strictKillSwitchEnabled READ isStrictKillSwitchEnabled WRITE toggleStrictKillSwitch NOTIFY strictKillSwitchEnabledChanged)
+    Q_PROPERTY(bool ipv6Enabled READ isIpv6Enabled WRITE toggleIpv6 NOTIFY ipv6EnabledChanged)
 
     Q_PROPERTY(bool isDevModeEnabled READ isDevModeEnabled NOTIFY devModeEnabled)
     Q_PROPERTY(QString gatewayEndpoint READ getGatewayEndpoint WRITE setGatewayEndpoint NOTIFY gatewayEndpointChanged)
@@ -35,6 +36,9 @@ public:
 public slots:
     void toggleAmneziaDns(bool enable);
     bool isAmneziaDnsEnabled();
+
+    bool isIpv6Enabled();
+    void toggleIpv6(bool enable);
 
     QString getPrimaryDns();
     void setPrimaryDns(const QString &dns);
@@ -102,6 +106,7 @@ public slots:
     void disableHomeAdLabel();
 
 signals:
+    void ipv6EnabledChanged();
     void primaryDnsChanged();
     void secondaryDnsChanged();
     void loggingStateChanged();

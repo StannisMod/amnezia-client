@@ -2,6 +2,12 @@ find_package(Qt6 REQUIRED COMPONENTS Test)
 
 include(CTest)
 
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT ANDROID)
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    add_test(NAME IPv6NetworkPreparationTest
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_ipv6_network_prepare.py")
+endif()
+
 function(amnezia_copy_runtime_dlls)
     if(NOT WIN32)
         return()
@@ -110,6 +116,42 @@ if(NOT ANDROID)
         add_executable(test_protocol_disconnect testProtocolDisconnect.cpp)
         target_link_libraries(test_protocol_disconnect PRIVATE Qt6::Test test_common)
         add_test(NAME ProtocolDisconnectTest COMMAND test_protocol_disconnect)
+    endif()
+
+    if(WIN32)
+        add_executable(test_ikev2_native_client
+            ../../tests/ikev2-dns-session/testNativeClient.cpp
+            ../platforms/windows/daemon/windowsdnsrecovery.cpp
+            ../platforms/windows/daemon/windowsdnspolicy.cpp)
+        target_include_directories(test_ikev2_native_client PRIVATE ../platforms/windows/daemon ../../ipc)
+        target_link_libraries(test_ikev2_native_client PRIVATE Qt6::Test test_common iphlpapi advapi32 dnsapi ole32 oleaut32 wbemuuid)
+        add_test(NAME Ikev2NativeClientTest COMMAND test_ikev2_native_client)
+        set_tests_properties(Ikev2NativeClientTest PROPERTIES TIMEOUT 90
+            LABELS "requires-native-ikev2-fixture")
+    endif()
+
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        find_package(Qt6 REQUIRED COMPONENTS DBus)
+        add_executable(test_xray_gui_stop
+            ../../tests/xray-service-stop/testFullClient.cpp
+            ../platforms/linux/daemon/linuxdnsrecovery.cpp)
+        target_include_directories(test_xray_gui_stop PRIVATE ../platforms/linux/daemon)
+        target_link_libraries(test_xray_gui_stop PRIVATE Qt6::Test Qt6::DBus test_common)
+        add_test(NAME XrayServiceGuiStopTest COMMAND test_xray_gui_stop)
+        set_tests_properties(XrayServiceGuiStopTest PROPERTIES TIMEOUT 60)
+        set(_shipped_gui_qrc ${QRC})
+        list(FILTER _shipped_gui_qrc EXCLUDE REGEX "qrc_(countries|serverScripts)\\.cpp$")
+        add_executable(test_shipped_gui_xray_stop
+            ../../tests/xray-service-stop/testShippedGui.cpp
+            ../platforms/linux/daemon/linuxdnsrecovery.cpp
+            ${_shipped_gui_qrc} ${I18NQRC})
+        target_include_directories(test_shipped_gui_xray_stop PRIVATE ../platforms/linux/daemon)
+        # OBJECT libraries' object files do not propagate through test_common's
+        # public link interface; shipped QML needs the real registration objects.
+        target_link_libraries(test_shipped_gui_xray_stop PRIVATE Qt6::Test Qt6::DBus
+            SortFilterProxyModel test_common)
+        add_test(NAME ShippedGuiXrayStopTest COMMAND test_shipped_gui_xray_stop)
+        set_tests_properties(ShippedGuiXrayStopTest PROPERTIES TIMEOUT 60 SKIP_RETURN_CODE 77)
     endif()
 
     add_executable(test_signal_order

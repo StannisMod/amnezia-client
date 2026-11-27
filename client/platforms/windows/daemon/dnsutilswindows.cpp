@@ -3,6 +3,8 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "dnsutilswindows.h"
+#include "windowsdnsrecovery.h"
+#include "windowsdnspolicy.h"
 
 #include <WS2tcpip.h>
 #include <iphlpapi.h>
@@ -36,12 +38,14 @@ DnsUtilsWindows::DnsUtilsWindows(QObject* parent) : DnsUtils(parent) {
 
 DnsUtilsWindows::~DnsUtilsWindows() {
   MZ_COUNT_DTOR(DnsUtilsWindows);
-  restoreResolvers();
+  restoreResolversForCurrentOwner();
   logger.debug() << "DnsUtilsWindows destroyed.";
 }
 
-bool DnsUtilsWindows::updateResolvers(const QString& ifname,
-                                      const QList<QHostAddress>& resolvers) {
+bool DnsUtilsWindows::updateResolversNative(const QString& ifname,
+                                      const QList<QHostAddress>& resolvers, bool strict) {
+  if (strict)
+    return !m_dnsRecovery.isEmpty() && WindowsDnsRecovery::apply(m_dnsRecovery, false);
   MIB_IF_ROW2 entry;
   if (ConvertInterfaceAliasToLuid((wchar_t*)ifname.utf16(),
                                   &entry.InterfaceLuid) != 0) {
@@ -156,7 +160,13 @@ bool DnsUtilsWindows::updateResolversNetsh(
   return netsh.exitCode() == 0;
 }
 
-bool DnsUtilsWindows::restoreResolvers() {
+bool DnsUtilsWindows::restoreResolversNative(bool strict) {
+  if (strict && !m_dnsRecovery.isEmpty()) {
+    if (!WindowsDnsRecovery::apply(m_dnsRecovery, true)) return false;
+    m_dnsRecovery = {};
+    m_luid = 0;
+    return true;
+  }
   if (m_luid == 0) {
     // If the DNS hasn't been configured, there is nothing to restore.
     return true;
@@ -180,4 +190,36 @@ bool DnsUtilsWindows::restoreResolvers() {
     return updateResolversNetsh(entry.InterfaceIndex, empty);
   }
   return updateResolversWin32(entry.InterfaceGuid, empty);
+}
+
+bool DnsUtilsWindows::prepareDnsRecovery(NativeDnsGuard &guard, const QString &ifname,
+                                       const QList<QHostAddress> &endpoints) {
+  const auto original = guard.originalResolvers();
+  if (original.isEmpty()) return false;
+  const auto snapshot = WindowsDnsRecovery::capture(ifname, endpoints, m_dnsRecovery, original);
+  if (snapshot.isEmpty() || snapshot["native_dns_policy"] != QJsonValue(m_selectedPolicyProof)
+      || !guard.storeDnsRecovery(snapshot)) return false;
+  m_dnsRecovery = snapshot;
+  return true;
+}
+
+bool DnsUtilsWindows::selectResolverPolicy(const QString &ifname,
+                                         const QList<QHostAddress> &resolvers,
+                                         const QJsonArray &requested, QJsonArray &selected)
+{
+  m_selectedPolicyProof = {};
+  const auto native = WindowsDnsPolicy::captureSelected(ifname, resolvers);
+  if (!native) return false;
+  selected = requested.isEmpty() ? native->resolverPolicy : requested;
+  if (!requested.isEmpty()) {
+    if (requested.size() != native->resolverPolicy.size()) return false;
+    for (int i = 0; i < requested.size(); ++i) {
+      const auto policy = native->resolverPolicy[i].toObject();
+      // Do not invent precedence between negotiated protocol metadata and an
+      // independently selected native encrypted resolver policy.
+      if (policy["transport"] != QJsonValue("plain") && requested[i] != policy) return false;
+    }
+  }
+  m_selectedPolicyProof = native->snapshot;
+  return true;
 }

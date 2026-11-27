@@ -2,18 +2,39 @@ name: Android routed VPN acceptance
 
 on:
   push:
-    branches: [dev, feature/sing-box-routing]
+    branches: [dev, feature/sing-box-routing, feature/android-primary-awg-core]
     paths:
-      - .github/workflows/routing-android-acceptance.yml
-      - recipes/libagw/**
+      - client/**
+      - common/**
+      - third_party/**
+      - cmake/**
+      - deploy/**
+      - CMakeLists.txt
+      - CMakePresets.json
+      - .gitmodules
+      - scripts/routing/android_host_sources.py
+      - scripts/routing/test_android_host_sources.py
+      - scripts/routing/test_android_upload_mtu_metrics.py
+      - scripts/routing/test_android_app_policy_metrics.py
+      - native/routing/androidbridge/**
       - scripts/routing/android/**
+      - scripts/routing/android-app-probe/**
+      - .github/workflows/routing-android-acceptance.yml
+      - recipes/**
+      - scripts/routing/android/**
+      - scripts/routing/xray_ipv6_fixture.py
+      - scripts/routing/build_xray_fixture.py
       - scripts/routing/run_android_acceptance.py
+      - scripts/routing/run_android_ci_extra_acceptance.sh
+      - scripts/routing/run_android_openvpn_acceptance.py
+      - scripts/routing/android-openvpn/**
       - native/routing/cmd/android-fixture/**
       - native/routing/cmd/traffic-probe/**
       - native/routing/internal/fixturequic/**
       - native/routing/awg/**
       - native/routing/engine/**
       - native/routing/mobile/**
+      - scripts/routing/ci_apt_mirrors.py
       - scripts/routing/build_android_native.sh
       - scripts/routing/replace_android_native.py
       - scripts/routing/verify_android_payload.py
@@ -37,10 +58,28 @@ concurrency:
 
 jobs:
   actual-apk-service:
+    name: ${{ matrix.check_name }}
     runs-on: ubuntu-22.04
     timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {transport: awg, api: 35, focus: '', check_name: 'actual-apk-service (awg)'}
+          - {transport: wireguard, api: 35, focus: '', check_name: 'actual-apk-service (wireguard)'}
+          - {transport: awg, api: 29, focus: '--app-policy-only --package-lifecycle --private-dns-opportunistic', check_name: 'actual-apk-service (awg, API29 app policy)'}
+          - {transport: wireguard, api: 29, focus: '--app-policy-only --package-lifecycle --private-dns-opportunistic', check_name: 'actual-apk-service (wireguard, API29 app policy)'}
+          - {transport: awg, api: 28, focus: '--api28-compat-only', check_name: 'actual-apk-service (awg, API28 compatibility)'}
+          - {transport: wireguard, api: 28, focus: '--api28-compat-only', check_name: 'actual-apk-service (wireguard, API28 compatibility)'}
     steps:
       - uses: actions/checkout@v4
+      - name: Select direct Ubuntu mirrors and bound package network retries
+        run: sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT python3 scripts/routing/ci_apt_mirrors.py
+      - name: Install isolated fault-test tools
+        run: sudo apt-get update && sudo apt-get install -y nftables
+      - name: Install local OpenVPN fixture server
+        if: ${{ matrix.transport == 'awg' && (matrix.api == 35 || matrix.api == 28) }}
+        run: sudo apt-get install -y openvpn
       - uses: actions/setup-go@v5
         with:
           go-version-file: native/routing/go.mod
@@ -50,13 +89,20 @@ jobs:
       - uses: android-actions/setup-android@v4
         with:
           packages: 'platform-tools platforms;android-36 build-tools;36.0.0'
+      - name: Verify packaged-host compatibility boundary
+        run: |
+          python3 scripts/routing/test_android_host_sources.py
+          python3 scripts/routing/test_android_upload_mtu_metrics.py
+          python3 scripts/routing/test_android_app_policy_metrics.py
       - name: Select an APK with compatible production Android host sources
         env:
           GH_TOKEN: ${{ github.token }}
           APK_OVERRIDE: ${{ inputs.apk_run_id }}
         run: |
           python3 - <<'PYSELECT'
-          import json, os, pathlib, subprocess, time, urllib.error, urllib.parse, urllib.request
+          import json, os, pathlib, subprocess, sys, time, urllib.error, urllib.parse, urllib.request
+          sys.path.insert(0, 'scripts/routing')
+          from android_host_sources import changed_host_sources
           repo = os.environ['GITHUB_REPOSITORY']
           branch = urllib.parse.quote(os.environ['GITHUB_REF_NAME'], safe='')
           def api(path):
@@ -65,18 +111,27 @@ jobs:
                   try:
                       with urllib.request.urlopen(req, timeout=30) as stream: return json.load(stream)
                   except urllib.error.HTTPError as error:
-                      if error.code not in (429, 500, 502, 503, 504) or attempt == 3: raise
+                      rate_limited = error.code == 403 and (
+                          error.headers.get('X-RateLimit-Remaining') == '0'
+                          or error.headers.get('Retry-After') is not None)
+                      if (error.code not in (429, 500, 502, 503, 504) and not rate_limited) or attempt == 3:
+                          print('GitHub API request failed:', error.code, path,
+                                'remaining=', error.headers.get('X-RateLimit-Remaining'), flush=True)
+                          raise
+                      if rate_limited:
+                          delay = min(120, max(1, int(error.headers.get('Retry-After', '60'))))
+                          print('GitHub API rate limit; bounded retry in', delay, 'seconds', flush=True)
+                          time.sleep(delay)
                   except urllib.error.URLError:
                       if attempt == 3: raise
                   time.sleep(2 ** attempt)
           override = os.environ.get('APK_OVERRIDE')
           compatibility = {}
+          terminal_jobs = {}
           def compatible(sha):
               if sha not in compatibility:
                   subprocess.run(['git', 'fetch', '--depth', '1', 'origin', sha], check=True)
-                  code = subprocess.run(['git', 'diff', '--quiet', sha, 'HEAD', '--', 'client/android', 'client/platforms/android', 'recipes', 'cmake', 'deploy/build.sh', 'CMakeLists.txt']).returncode
-                  assert code in (0, 1), 'Android host comparison failed'
-                  compatibility[sha] = code == 0
+                  compatibility[sha] = not changed_host_sources(sha)
               return compatibility[sha]
           selected = None
           deadline = time.monotonic() + 125 * 60
@@ -93,7 +148,15 @@ jobs:
                           if error.code != 404: raise
                   candidates.sort(key=lambda run: run['created_at'], reverse=True)
               for candidate in candidates:
-                  jobs = api(f"actions/runs/{candidate['id']}/jobs?per_page=100")['jobs']
+                  if compatibility.get(candidate['head_sha']) is False:
+                      continue
+                  run_id = candidate['id']
+                  if run_id in terminal_jobs:
+                      jobs = terminal_jobs[run_id]
+                  else:
+                      jobs = api(f"actions/runs/{run_id}/jobs?per_page=100")['jobs']
+                      if candidate['status'] == 'completed':
+                          terminal_jobs[run_id] = jobs
                   android = [j for j in jobs if j['name'] == 'client-android (x86_64, android_x86_64)']
                   if not android or android[0]['status'] != 'completed' or android[0]['conclusion'] != 'success':
                       continue
@@ -164,7 +227,10 @@ jobs:
           go build -mod=readonly -tags amnezia_android_probe -buildmode=pie -o "$RUNNER_TEMP/android-traffic-probe" ./cmd/traffic-probe
       - name: Build the disposable AWG peer and independent egress observers
         working-directory: native/routing
-        run: go build -mod=readonly -tags with_gvisor -o "$RUNNER_TEMP/android-fixture" ./cmd/android-fixture
+        run: go build -mod=readonly -tags with_gvisor,acceptance_trace -o "$RUNNER_TEMP/android-fixture" ./cmd/android-fixture
+      - name: Build the Xray peer from the Android libxray dependency pin
+        if: ${{ matrix.transport == 'awg' && matrix.api != 28 }}
+        run: python3 scripts/routing/build_xray_fixture.py --work "$RUNNER_TEMP/xray-source" --output "$RUNNER_TEMP/xray-fixture" --report "$RUNNER_TEMP/xray-fixture-provenance.json"
       - name: Enable KVM for the disposable emulator
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
@@ -173,27 +239,44 @@ jobs:
       - name: Actual APK, VpnService capture, protected sockets and 100-cycle acceptance
         uses: reactivecircus/android-emulator-runner@v2
         with:
-          api-level: 35
+          api-level: ${{ matrix.api }}
           target: google_apis
           arch: x86_64
+          avd-name: amnezia-routing
           cores: 2
           ram-size: 3072M
           heap-size: 512M
+          # The action writes hw.heapSize, but AVD uses vm.heapSize (integer
+          # MiB). Normalize RAM too instead of relying on integer parsing of M.
+          pre-emulator-launch-script: |
+            sed -i -E '/^(hw.ramSize|hw.heapSize|vm.heapSize)=/d' "$ANDROID_AVD_HOME/amnezia-routing.avd/config.ini"
+            printf 'hw.ramSize=3072\nvm.heapSize=512\n' >> "$ANDROID_AVD_HOME/amnezia-routing.avd/config.ini"
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           script: |
-            "$RUNNER_TEMP/android-fixture" --config "$RUNNER_TEMP/fixture.json" --quic-ca "$RUNNER_TEMP/quic.der" > fixture-server.log 2>&1 & echo $! > "$RUNNER_TEMP/fixture.pid"
+            adb shell getprop dalvik.vm.heapsize
+            adb shell getprop dalvik.vm.heapgrowthlimit
+            adb shell cat /proc/meminfo | head -n 3
+            python3 -c 'import subprocess,re; mem=subprocess.check_output(["adb","shell","cat","/proc/meminfo"],text=True); assert int(re.search(r"MemTotal:\s+(\d+)",mem)[1]) >= 2*1024*1024, "AVD RAM configuration was not applied"; heap=subprocess.check_output(["adb","shell","getprop","dalvik.vm.heapsize"],text=True).strip().lower(); assert re.fullmatch(r"\d+m",heap) and int(heap[:-1]) >= 256, "AVD heap configuration was not applied: "+heap'
+            sudo ip addr add 198.51.100.2/32 dev lo
+            "$RUNNER_TEMP/android-fixture" --shared-ip 198.51.100.2 --endpoint-host 10.0.2.2 --transport "${{ matrix.transport }}" --persistent --bulk --native-dns-port 1053 --native-dot-port 8853 --config "$RUNNER_TEMP/fixture.json" --quic-ca "$RUNNER_TEMP/quic.der" > fixture-server.log 2>&1 & echo $! > "$RUNNER_TEMP/fixture.pid"
             for i in $(seq 1 30); do test -s "$RUNNER_TEMP/fixture.json" && break; sleep 1; done
-            python3 scripts/routing/run_android_acceptance.py --apk "$FEATURE_APK" --fixture "$RUNNER_TEMP/fixture.json" --quic-probe "$RUNNER_TEMP/android-traffic-probe" --quic-ca "$RUNNER_TEMP/quic.der" --work "$RUNNER_TEMP/android-acceptance" --cycles "${{ inputs.cycles || '100' }}"
+            python3 scripts/routing/run_android_acceptance.py --apk "$FEATURE_APK" --fixture "$RUNNER_TEMP/fixture.json" --observer-ip 198.51.100.2 --quic-probe "$RUNNER_TEMP/android-traffic-probe" --quic-ca "$RUNNER_TEMP/quic.der" --work "$RUNNER_TEMP/android-acceptance" --cycles "${{ inputs.cycles || '100' }}" ${{ matrix.focus }} --apk-source-sha "$(python3 -c 'import json;print(json.load(open("tested-apk-source.json"))["head_sha"])')"
+            if [ "${{ matrix.api }}" = 29 ]; then python3 scripts/routing/run_android_work_profile.py --apk "$FEATURE_APK" --fixture "$RUNNER_TEMP/fixture.json" --observer-ip 198.51.100.2 --quic-probe "$RUNNER_TEMP/android-traffic-probe" --quic-ca "$RUNNER_TEMP/quic.der" --work "$RUNNER_TEMP/android-work-profile-acceptance" --apk-source-sha "$(python3 -c 'import json;print(json.load(open("tested-apk-source.json"))["head_sha"])')"; fi
+            if [ "${{ matrix.api }}" = 29 ]; then python3 scripts/routing/run_android_acceptance.py --private-dns-policy-only --apk "$FEATURE_APK" --fixture "$RUNNER_TEMP/fixture.json" --observer-ip 198.51.100.2 --quic-probe "$RUNNER_TEMP/android-traffic-probe" --quic-ca "$RUNNER_TEMP/quic.der" --work "$RUNNER_TEMP/android-private-dns-policy" --apk-source-sha "$(python3 -c 'import json;print(json.load(open("tested-apk-source.json"))["head_sha"])')"; fi
+            bash scripts/routing/run_android_ci_extra_acceptance.sh "${{ matrix.transport }}" "${{ matrix.api }}"
       - name: Stop the local peer and remove ephemeral private configuration
         if: always()
         run: |
           if test -f "$RUNNER_TEMP/fixture.pid"; then kill "$(cat "$RUNNER_TEMP/fixture.pid")" || true; fi
+          if test -f "$RUNNER_TEMP/xray-fixture.pid"; then sudo kill "$(cat "$RUNNER_TEMP/xray-fixture.pid")" || true; fi
+          if sudo test -f "$RUNNER_TEMP/xray-peer/xray.log"; then sudo cat "$RUNNER_TEMP/xray-peer/xray.log" > xray-server.log; fi
+          sudo rm -f "$RUNNER_TEMP/xray-peer/fixture.json" "$RUNNER_TEMP/xray-peer/server.json" "$RUNNER_TEMP/xray-peer/server.key"
           rm -f "$RUNNER_TEMP/fixture.json"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: android-actual-apk-acceptance
+          name: android-actual-apk-acceptance-${{ matrix.transport }}-api${{ matrix.api }}
           if-no-files-found: error
           path: |
             tested-apk-source.json
@@ -205,4 +288,19 @@ jobs:
             ${{ runner.temp }}/android-acceptance/rules.log
             ${{ runner.temp }}/android-acceptance/connectivity.log
             ${{ runner.temp }}/android-acceptance/service-errors.log
+            ${{ runner.temp }}/android-acceptance/network-events.log
+            ${{ runner.temp }}/android-acceptance/network-events-live.log
             ${{ runner.temp }}/android-acceptance/failure-*.log
+            ${{ runner.temp }}/android-work-profile-acceptance/android-acceptance.json
+            ${{ runner.temp }}/android-work-profile-acceptance/*.log
+            ${{ runner.temp }}/android-private-dns-policy/android-acceptance.json
+            ${{ runner.temp }}/android-private-dns-policy/*.log
+            ${{ runner.temp }}/xray-fixture-provenance.json
+            xray-fixture.log
+            xray-server.log
+            ${{ runner.temp }}/android-xray-ipv6/android-acceptance.json
+            ${{ runner.temp }}/android-xray-ipv6/*.log
+            ${{ runner.temp }}/android-openvpn-ipv6/openvpn-acceptance.json
+            ${{ runner.temp }}/android-openvpn-ipv6/*-server.log
+            ${{ runner.temp }}/android-openvpn-ipv6/*/android-acceptance.json
+            ${{ runner.temp }}/android-openvpn-ipv6/*/*.log

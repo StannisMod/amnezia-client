@@ -52,7 +52,7 @@ void ConnectionUiController::openConnection()
             notifyConnectionBlocked(errorCode);
         }
     };
-    if (m_updates && m_updates->available(serverId)) {
+    if (m_updates && m_updates->needsRefreshBeforeConnect(serverId)) {
         m_refreshPending = true;
         m_isConnectionInProgress = true;
         m_connectionStateText = tr("Checking connection updates...");
@@ -63,10 +63,11 @@ void ConnectionUiController::openConnection()
 
 void ConnectionUiController::closeConnection()
 {
+    const bool cancelingPreparation = m_refreshPending && m_connectionController->isDisconnected();
     ++m_refreshGeneration;
     m_refreshPending = false;
     if (m_connectionController->isDisconnected()) onConnectionStateChanged(Vpn::ConnectionState::Disconnected);
-    m_connectionController->closeConnection();
+    if (!cancelingPreparation) m_connectionController->closeConnection();
 }
 
 ErrorCode ConnectionUiController::getLastConnectionError()

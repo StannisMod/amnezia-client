@@ -10,6 +10,9 @@
 #include <QNetworkInterface>
 
 #include "../client/platforms/windows/daemon/dnsutilswindows.h"
+#include "../client/platforms/windows/daemon/windowsproxyipv6.h"
+#include "windowsikev2dns.h"
+#include <memory>
 
 #include <WinSock2.h>  //includes Windows.h
 #include <WS2tcpip.h>
@@ -46,9 +49,14 @@ public:
     bool StopRoutingIpv6();
 
     bool createTun(const QString &dev, const QString &subnet);
+    bool deleteTun(const QString &dev);
+    bool configureProxyIpv6(const QStringList &included, const QStringList &excluded);
     void suspendWcmSvc(bool suspend);
-    bool updateResolvers(const QString& ifname, const QList<QHostAddress>& resolvers);
-    bool restoreResolvers();
+    bool updateResolvers(const QString& ifname, const QList<QHostAddress>& resolvers,
+                         bool ipv6Enabled = true, const QString &owner = {});
+    bool restoreResolvers(const QString &owner = {});
+    DnsUtils *nativeDnsUtility() { return m_dnsUtil; }
+    WindowsIkev2Dns *ikev2Dns() { return m_ikev2Dns; }
 
 private:
     static QList<QString> kIpv6Subnets;
@@ -65,10 +73,16 @@ private:
     QNetworkInterface findLoopbackIface();
 
 private:
-    RouterWin() {m_dnsUtil = new DnsUtilsWindows(this);}
+    RouterWin() {
+        m_dnsUtil = new DnsUtilsWindows(this);
+        m_ikev2Dns = new WindowsIkev2Dns(m_dnsUtil, this);
+    }
     QMultiMap<QString, MIB_IPFORWARDROW> m_ipForwardRows;
     bool m_suspended = false;
     DnsUtilsWindows *m_dnsUtil; 
+    WindowsIkev2Dns *m_ikev2Dns;
+    NET_IFINDEX m_proxyInterfaceIndex = 0;
+    std::unique_ptr<WindowsProxyIpv6> m_proxyIpv6;
 };
 
 #endif // ROUTERWIN_H

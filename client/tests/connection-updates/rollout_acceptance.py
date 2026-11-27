@@ -65,7 +65,13 @@ def main():
                      "wireguard_psk.key": psk, "clientsTable": '[{"clientId":"synthetic-existing-user"}]'}
         for name, value in preserved.items():
             (folder / name).write_text(value)
-        startup = (SOURCE / "awg/start.sh").read_text().replace("$AWG_SUBNET_IP", "10.87.0.1").replace("$WIREGUARD_SUBNET_CIDR", "24")
+        assets, release = vpn.startup_assets("awg")
+        for relative, data in assets.items():
+            target = state / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(data)
+        (state / "mtu/current").symlink_to(release)
+        startup = assets["start.sh"].replace("$AWG_SUBNET_IP", "10.87.0.1").replace("$WIREGUARD_SUBNET_CIDR", "24")
         (state / "start.sh").write_text(startup)
         (state / "start.sh").chmod(0o755)
         run("docker", "create", "--privileged", "--restart", "unless-stopped", "--log-driver", "none", "-p", "51820:51820/udp", "--name", SERVER, TOOL_IMAGE)

@@ -59,6 +59,20 @@ Component.prototype.installationFinishedPageIsShown = function()
 
 Component.prototype.createOperations = function()
 {
+    if (runningOnWindows()) {
+        // IFW performs concurrent Extract before ordinary queued Execute,
+        // regardless of addOperation order. Join synchronously while creating
+        // the operation list, before extraction can touch the installed owner.
+        if (!installer.gainAdminRights()) {
+            throw new Error("Cannot obtain privileges for native service restoration");
+        }
+        var stopped = installer.execute("powershell.exe",
+            ["-NoProfile", "-NonInteractive", "-EncodedCommand", "@AMNEZIA_WINDOWS_STOP_ENCODED@"]);
+        if (!stopped || stopped.length < 2 || Number(stopped[1]) !== 0) {
+            installer.interrupt();
+            throw new Error("Native service restoration is unconfirmed; refusing payload changes");
+        }
+    }
     component.createOperations();
 
     if (runningOnWindows()) {

@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"os"
 	"sync"
+	"sync/atomic"
 
 	"github.com/amnezia-vpn/amneziawg-go/v3/tun"
 	"gvisor.dev/gvisor/pkg/buffer"
@@ -29,39 +30,93 @@ import (
 // while a notifier can send. Shutdown cancels producers, waits for admitted I/O,
 // stops the stack and releases queued views before returning.
 type FlowStack struct {
-	stack    *stack.Stack
-	endpoint *channel.Endpoint
-	notify   *channel.NotificationHandle
-	mtu      int
-	events   chan tun.Event
-	packets  chan *buffer.View
-	done     chan struct{}
-	state    sync.Mutex
-	closed   bool
-	active   sync.WaitGroup
-	once     sync.Once
-	ctx      context.Context
-	cancel   context.CancelFunc
+	pathProbeEvidence map[*pathProbeEvidence]struct{}
+	pathProbeCount    atomic.Int32
+	tcpPathGate       sync.Mutex
+	tcpPathWake       chan struct{}
+	tcpPathProbe      *tcpPathOperation
+	tcpNextID         uint64
+	tcpProbeCursor    uint64
+	tcpProbeBudget    tcpProbeBudget
+	tcpConnections    map[*flowTCPConn]struct{}
+	tcpPathGeneration uint64
+	tcpProofSerial    uint64
+	stack             *stack.Stack
+	endpoint          *channel.Endpoint
+	notify            *channel.NotificationHandle
+	mtu               int
+	link              *flowMTULink
+	mtu4              *atomic.Uint32
+	mtu6              *atomic.Uint32
+	has4, has6        bool
+	minimumMTU        int
+	maximumMTU        int
+	events            chan tun.Event
+	packets           chan *buffer.View
+	outputWake        chan struct{}
+	outputDone        chan struct{}
+	done              chan struct{}
+	state             sync.Mutex
+	closed            bool
+	active            sync.WaitGroup
+	once              sync.Once
+	ctx               context.Context
+	cancel            context.CancelFunc
+}
+
+// Keep MTU changes independent of the gVisor channel API version. Routes
+// query the owned link; no Android TUN or host interface is recreated.
+type flowMTULink struct {
+	*channel.Endpoint
+	value atomic.Uint32
+}
+
+func (l *flowMTULink) MTU() uint32 { return l.value.Load() }
+
+func validFlowMTU(addresses []netip.Addr, mtu int) bool {
+	if mtu < 576 || mtu > 65535 {
+		return false
+	}
+	for _, address := range addresses {
+		if address.Is6() && mtu < 1280 {
+			return false
+		}
+	}
+	return true
 }
 
 // NewFlowTUN creates an owned private packet interface; both returned values
 // share the same idempotent shutdown. It never installs a native OS interface.
 func NewFlowTUN(addresses []netip.Addr, mtu int) (tun.Device, *FlowStack, error) {
-	if len(addresses) == 0 || mtu < 1280 || mtu > 65535 {
+	if len(addresses) == 0 || !validFlowMTU(addresses, mtu) {
 		return nil, nil, errors.New("invalid AWG flow interface")
 	}
+	mtu4, mtu6 := &atomic.Uint32{}, &atomic.Uint32{}
+	mtu4.Store(uint32(mtu))
+	mtu6.Store(uint32(mtu))
 	ctx, cancel := context.WithCancel(context.Background())
-	s := &FlowStack{ctx: ctx, cancel: cancel, mtu: mtu, events: make(chan tun.Event, 1), packets: make(chan *buffer.View), done: make(chan struct{}),
+	s := &FlowStack{tcpPathWake: make(chan struct{}, 1), ctx: ctx, cancel: cancel, mtu: mtu, mtu4: mtu4, mtu6: mtu6, events: make(chan tun.Event, 1), packets: make(chan *buffer.View), done: make(chan struct{}),
+		outputWake: make(chan struct{}, 1), outputDone: make(chan struct{}),
 		endpoint: channel.New(1024, uint32(mtu), ""), stack: stack.New(stack.Options{
-			NetworkProtocols:   []stack.NetworkProtocolFactory{ipv4.NewProtocol, ipv6.NewProtocol},
+			NetworkProtocols:   []stack.NetworkProtocolFactory{flowMTUFactory(ipv4.NewProtocol, mtu4), flowMTUFactory(ipv6.NewProtocol, mtu6)},
 			TransportProtocols: []stack.TransportProtocolFactory{tcp.NewProtocol, udp.NewProtocol, icmp.NewProtocol4, icmp.NewProtocol6}, HandleLocal: true})}
+	go s.runOutput()
 	failed := true
 	defer func() {
 		if failed {
 			s.Close()
 		}
 	}()
-	if err := s.stack.CreateNIC(1, s.endpoint); err != nil {
+	s.minimumMTU, s.maximumMTU = 576, mtu
+	for _, address := range addresses {
+		if address.Is6() {
+			s.minimumMTU = 1280
+		}
+	}
+	s.link = &flowMTULink{Endpoint: s.endpoint}
+	s.invalidateTCPPathLocked(false)
+	s.link.value.Store(uint32(mtu))
+	if err := s.stack.CreateNIC(1, s.link); err != nil {
 		return nil, nil, errors.New(err.String())
 	}
 	sack := tcpip.TCPSACKEnabled(true)
@@ -91,6 +146,7 @@ func NewFlowTUN(addresses []netip.Addr, mtu int) (tun.Device, *FlowStack, error)
 	if has6 {
 		s.stack.AddRoute(tcpip.Route{Destination: header.IPv6EmptySubnet, NIC: 1})
 	}
+	s.has4, s.has6 = has4, has6
 	s.notify = s.endpoint.AddNotify(s)
 	s.events <- tun.EventUp
 	failed = false
@@ -106,9 +162,70 @@ func (s *FlowStack) begin() bool {
 	s.active.Add(1)
 	return true
 }
-func (s *FlowStack) File() *os.File           { return nil }
-func (s *FlowStack) Name() (string, error)    { return "amnezia-awg-flow", nil }
-func (s *FlowStack) MTU() (int, error)        { return s.mtu, nil }
+func (s *FlowStack) File() *os.File        { return nil }
+func (s *FlowStack) Name() (string, error) { return "amnezia-awg-flow", nil }
+func (s *FlowStack) MTU() (int, error) {
+	s.state.Lock()
+	defer s.state.Unlock()
+	return s.mtu, nil
+}
+
+// SetPathMTU changes only this peer's private flow interface, within the
+// original profile ceiling and the inner IP family's minimum. It does not
+// claim that existing TCP has learned a smaller PMTU; regression tests must
+// establish that separately before a controller enables this automatically.
+func (s *FlowStack) SetPathMTU(mtu int) error {
+	return s.setPathMTU(netip.Addr{}, mtu)
+}
+
+func (s *FlowStack) setPathMTU(peer netip.Addr, mtu int) error {
+	s.tcpPathGate.Lock()
+	defer s.tcpPathGate.Unlock()
+	s.state.Lock()
+	defer s.state.Unlock()
+	if s.closed {
+		return net.ErrClosed
+	}
+	minimum := s.minimumMTU
+	if peer.IsValid() {
+		if (peer.Is4() && !s.has4) || (peer.Is6() && !s.has6) {
+			return errors.New("MTU family has no local address")
+		}
+		minimum = minimumPathMTU(peer)
+	}
+	if mtu < minimum || mtu > s.maximumMTU {
+		return errors.New("path MTU outside profile or IP family limits")
+	}
+	if (peer.IsValid() && mtu == s.pathMTULocked(peer)) || (!peer.IsValid() && int(s.mtu4.Load()) == mtu && int(s.mtu6.Load()) == mtu) {
+		return nil
+	}
+	s.invalidateTCPPathLocked(false)
+	if !peer.IsValid() || peer.Is4() {
+		s.mtu4.Store(uint32(mtu))
+	}
+	if !peer.IsValid() || peer.Is6() {
+		s.mtu6.Store(uint32(mtu))
+	}
+	s.mtu = 0
+	if s.has4 {
+		s.mtu = int(s.mtu4.Load())
+	}
+	if s.has6 && int(s.mtu6.Load()) > s.mtu {
+		s.mtu = int(s.mtu6.Load())
+	}
+	s.link.value.Store(uint32(s.mtu))
+	// A verified MTU change is a reason to recheck recovering TCP promptly;
+	// it is never itself proof that a full-sized path has returned.
+	select {
+	case s.tcpPathWake <- struct{}{}:
+	default:
+	}
+	select {
+	case s.events <- tun.EventMTUUpdate:
+	default:
+	}
+	return nil
+}
 func (s *FlowStack) Events() <-chan tun.Event { return s.events }
 func (s *FlowStack) BatchSize() int           { return 1 }
 func (s *FlowStack) Read(packets [][]byte, sizes []int, offset int) (int, error) {
@@ -151,6 +268,7 @@ func (s *FlowStack) Write(packets [][]byte, offset int) (int, error) {
 		default:
 			continue
 		}
+		s.observePathProbe(data)
 		pkt := stack.NewPacketBuffer(stack.PacketBufferOptions{Payload: buffer.MakeWithData(data)})
 		s.endpoint.InjectInbound(protocol, pkt)
 		pkt.DecRef()
@@ -158,22 +276,36 @@ func (s *FlowStack) Write(packets [][]byte, offset int) (int, error) {
 	return len(packets), nil
 }
 func (s *FlowStack) WriteNotify() {
-	if !s.begin() {
-		return
+	// The callback runs on transport send paths while endpoint locks may be
+	// held. Only wake the reader; never wait for the encrypted device here.
+	select {
+	case s.outputWake <- struct{}{}:
+	case <-s.done:
+	default:
 	}
-	defer s.active.Done()
+}
+
+func (s *FlowStack) runOutput() {
+	defer close(s.outputDone)
 	for {
-		pkt := s.endpoint.Read()
-		if pkt == nil {
-			return
-		}
-		view := pkt.ToView()
-		pkt.DecRef()
 		select {
-		case s.packets <- view:
 		case <-s.done:
-			view.Release()
 			return
+		case <-s.outputWake:
+		}
+		for {
+			pkt := s.endpoint.Read()
+			if pkt == nil {
+				break
+			}
+			view := pkt.ToView()
+			pkt.DecRef()
+			select {
+			case s.packets <- view:
+			case <-s.done:
+				view.Release()
+				return
+			}
 		}
 	}
 }
@@ -181,12 +313,14 @@ func (s *FlowStack) Close() error {
 	s.once.Do(func() {
 		s.state.Lock()
 		s.closed = true
+		s.tcpConnections = nil
 		s.cancel()
 		close(s.done)
 		s.state.Unlock()
 		if s.notify != nil {
 			s.endpoint.RemoveNotify(s.notify)
 		}
+		<-s.outputDone
 		s.active.Wait()
 		s.endpoint.Close()
 		s.stack.RemoveNIC(1)
@@ -234,7 +368,7 @@ func (s *FlowStack) DialContext(ctx context.Context, network, address string) (n
 		if err != nil {
 			return nil, err
 		}
-		return conn, nil
+		return s.trackTCP(conn)
 	case "udp", "udp4", "udp6":
 		conn, err := gonet.DialUDP(s.stack, nil, &full, protocol)
 		if err != nil {

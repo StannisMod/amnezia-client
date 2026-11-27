@@ -1,8 +1,12 @@
 #include "installController.h"
+#include "connectionUpdatesController.h"
+#include "core/utils/selfhosted/proxyIpv6Upgrade.h"
+#include "core/utils/connectionUpdates.h"
 
 #include "core/models/protocolConfig.h"
 
 #include <QCoreApplication>
+#include <QCryptographicHash>
 #include <QDebug>
 #include <QEventLoop>
 #include <QFutureWatcher>
@@ -13,6 +17,7 @@
 #include <QtConcurrent>
 
 #include "core/configurators/configuratorBase.h"
+#include "core/configurators/openVpnConfigurator.h"
 #include "core/configurators/xrayConfigurator.h"
 #include "core/models/protocols/xrayProtocolConfig.h"
 #include "core/utils/containerEnum.h"
@@ -273,7 +278,22 @@ ErrorCode InstallController::setupContainer(const ServerCredentials &credentials
 
     setupServerFirewall(credentials, sshSession);
 
-    return startupContainerWorker(credentials, container, config, sshSession);
+    e = startupContainerWorker(credentials, container, config, sshSession);
+    if (e != ErrorCode::NoError) return e;
+    if (container == DockerContainer::WireGuard || container == DockerContainer::Awg2) {
+        QJsonObject ipv6;
+        e = ConnectionUpdatesController::prepareServerIPv6(credentials, container, ipv6);
+        if (e != ErrorCode::NoError) return e;
+        auto installer = createInstaller(container);
+        e = installer->extractConfigFromContainer(container, credentials, &sshSession, config);
+    }
+    if (proxyIpv6Upgrade::supported(container)) {
+        QJsonObject ipv6;
+        const auto ipv6Error = proxyIpv6Upgrade::prepare(credentials, container, ipv6);
+        if (ipv6Error != ErrorCode::NoError || ipv6.value("result") != "verified")
+            qWarning() << "Proxy IPv6 egress not verified:" << ipv6.value("reason").toString();
+    }
+    return e;
 }
 
 ErrorCode InstallController::updateServerConfig(const QString &serverId, DockerContainer container, const ContainerConfig &oldConfig,
@@ -368,6 +388,12 @@ ErrorCode InstallController::updateServerConfig(const QString &serverId, DockerC
     }
 
     if (errorCode == ErrorCode::NoError) {
+        if (container == DockerContainer::OpenVpn && newConfig.protocolConfig.hasClientConfig()) {
+            OpenVpnConfigurator configurator(&sshSession);
+            const auto capabilityError = configurator.refreshIpv6Capability(credentials, container, newConfig.protocolConfig, true);
+            if (capabilityError != ErrorCode::NoError)
+                qWarning() << "OpenVPN update completed, IPv6 capability refresh unavailable:" << static_cast<int>(capabilityError);
+        }
         if (container == DockerContainer::MtProxy) {
             MtProxyInstaller::uploadClientSettingsSnapshot(sshSession, credentials, container, newConfig);
         } else if (container == DockerContainer::Telemt) {
@@ -390,10 +416,11 @@ ErrorCode InstallController::updateServerConfig(const QString &serverId, DockerC
 ErrorCode InstallController::updateProtocolSoftware(const ServerCredentials &credentials, DockerContainer container)
 {
     if (!credentials.isValid()
-        || (container != DockerContainer::Awg2 && container != DockerContainer::WireGuard)) {
+        || (container != DockerContainer::Awg2 && container != DockerContainer::WireGuard && container != DockerContainer::Ipsec)) {
         return ErrorCode::ProtocolUpdateRejected;
     }
-    QFile scriptFile(QStringLiteral(":/server_scripts/update_wireguard.sh"));
+    QFile scriptFile(container == DockerContainer::Ipsec ? QStringLiteral(":/server_scripts/update_ipsec.sh")
+                                                       : QStringLiteral(":/server_scripts/update_wireguard.sh"));
     if (!scriptFile.open(QIODevice::ReadOnly)) {
         return ErrorCode::InternalError;
     }
@@ -422,11 +449,26 @@ ErrorCode InstallController::updateProtocolSoftware(const ServerCredentials &cre
                                          amnezia::scriptData(ProtocolScriptType::dockerfile, container).toUtf8(),
                                          stage + QStringLiteral("/Dockerfile"));
     }
+    if (error == ErrorCode::NoError && container == DockerContainer::Ipsec) {
+        const auto startup = amnezia::scriptData(ProtocolScriptType::container_startup, container).toUtf8();
+        if (startup.isEmpty()) return ErrorCode::InternalError;
+        error = session.uploadFileToHost(credentials, startup, stage + QStringLiteral("/start.sh"));
+        for (const auto &asset : {qMakePair(QStringLiteral("ipsec/enable_ipv6.sh"), QStringLiteral("enable_ipv6.sh")),
+                                  qMakePair(QStringLiteral("prepare_ipv6_network.sh"), QStringLiteral("network.sh"))}) {
+            if (error != ErrorCode::NoError) break;
+            QFile file(QStringLiteral(":/server_scripts/") + asset.first);
+            if (!file.open(QIODevice::ReadOnly)) return ErrorCode::InternalError;
+            const auto contents = file.readAll().replace("\r", "");
+            if (contents.isEmpty()) return ErrorCode::InternalError;
+            error = session.uploadFileToHost(credentials, contents, stage + "/" + asset.second);
+        }
+    }
     if (error != ErrorCode::NoError) {
         return error; // No server state has been touched yet.
     }
     output.clear();
-    const QString kind = container == DockerContainer::Awg2 ? QStringLiteral("awg") : QStringLiteral("wireguard");
+    const QString kind = container == DockerContainer::Ipsec ? QStringLiteral("ipsec")
+                        : container == DockerContainer::Awg2 ? QStringLiteral("awg") : QStringLiteral("wireguard");
     error = session.runScript(credentials,
                               QStringLiteral("sudo sh %1/update.sh %2 %1").arg(stage, kind), collect);
     // libssh's existing runner does not propagate remote exit status. Require an
@@ -563,7 +605,7 @@ ErrorCode InstallController::validateAndPrepareConfig(const QString &serverId)
 
     SshSession sshSession;
     const QString clientName = QString("Admin [%1]").arg(QSysInfo::prettyProductName());
-    const ErrorCode errorCode = processContainerForAdmin(container, containerConfig, credentials, sshSession, serverId, clientName);
+    const ErrorCode errorCode = processContainerForAdmin(container, containerConfig, credentials, sshSession, serverId, clientName, adminConfig->connectionUpdates);
     if (errorCode != ErrorCode::NoError) {
         return errorCode;
     }
@@ -609,6 +651,19 @@ void InstallController::addEmptyServer(const ServerCredentials &credentials)
 
     m_serversRepository->addServer(QString(), serverConfig.toJson(),
                                     serverConfigUtils::ConfigType::SelfHostedAdmin);
+}
+
+bool InstallController::applyPreparedAdministratorIPv6(const QString &serverId, DockerContainer container,
+                                                       const QJsonObject &expected, const QJsonObject &assignments,
+                                                       const QStringList &probes)
+{
+    const auto current=m_serversRepository->selfHostedAdminConfig(serverId);
+    const auto original=m_serversRepository->serverJsonById(serverId);
+    if(!current || !original || current->toJson()!=expected) return false;
+    QJsonObject updated;
+    if(!connectionUpdates::mergeAdministratorIPv6(*original,ContainerUtils::containerToString(container),assignments,probes,updated)) return false;
+    m_serversRepository->editServer(serverId,updated,serverConfigUtils::SelfHostedAdmin);
+    return m_serversRepository->serverJsonById(serverId)==std::optional<QJsonObject>(updated);
 }
 
 ErrorCode InstallController::prepareContainerConfig(DockerContainer container, const ServerCredentials &credentials, ContainerConfig &containerConfig, SshSession &sshSession)
@@ -661,8 +716,16 @@ void InstallController::adminAppendRequested(const QString &serverId, DockerCont
 
 ErrorCode InstallController::processContainerForAdmin(DockerContainer container, ContainerConfig &containerConfig,
                                                       const ServerCredentials &credentials, SshSession &sshSession,
-                                                      const QString &serverId, const QString &clientName)
+                                                      const QString &serverId, const QString &clientName, const QJsonObject &deliveryMetadata)
 {
+    if (container == DockerContainer::WireGuard || container == DockerContainer::Awg2) {
+        QJsonObject ipv6;
+        auto error = ConnectionUpdatesController::prepareServerIPv6(credentials, container, ipv6, deliveryMetadata);
+        if (error != ErrorCode::NoError) return error;
+        auto installer = createInstaller(container);
+        error = installer->extractConfigFromContainer(container, credentials, &sshSession, containerConfig);
+        if (error != ErrorCode::NoError) return error;
+    }
     if (ContainerUtils::isSupportedByCurrentPlatform(container)) {
         ErrorCode errorCode = prepareContainerConfig(container, credentials, containerConfig, sshSession);
         if (errorCode != ErrorCode::NoError) {
@@ -733,8 +796,11 @@ ErrorCode InstallController::runContainerWorker(const ServerCredentials &credent
     amnezia::ScriptVars baseVars = amnezia::genBaseVars(credentials, container, QString(), QString());
     amnezia::ScriptVars protocolVars = amnezia::genProtocolVarsForContainer(container, config);
     baseVars.append(protocolVars);
+    auto script = sshSession.replaceVars(amnezia::scriptData(ProtocolScriptType::run_container, container), baseVars);
+    if (ContainerUtils::isAwgContainer(container) || container == DockerContainer::WireGuard || container == DockerContainer::Xray || container == DockerContainer::OpenVpn)
+        script = SshSession::wholeScriptCommand(script);
     ErrorCode e = sshSession.runScript(
-            credentials, sshSession.replaceVars(amnezia::scriptData(ProtocolScriptType::run_container, container), baseVars),
+            credentials, script,
             cbReadStdOut);
 
     if (stdOut.contains("address already in use"))
@@ -806,8 +872,54 @@ ErrorCode InstallController::startupContainerWorker(const ServerCredentials &cre
     amnezia::ScriptVars baseVars = amnezia::genBaseVars(credentials, container, QString(), QString());
     amnezia::ScriptVars protocolVars = amnezia::genProtocolVarsForContainer(container, config);
     baseVars.append(protocolVars);
-    ErrorCode e = sshSession.uploadTextFileToContainer(container, credentials, sshSession.replaceVars(script, baseVars),
-                                                                "/opt/amnezia/start.sh");
+    ErrorCode e = ErrorCode::NoError;
+    if (container == DockerContainer::OpenVpn) {
+        // Existing images predate the IPv6 forwarding tools. Prepare them only
+        // during this already-requested startup/update, never on connection.
+        QString readiness;
+        e = sshSession.runScript(credentials, sshSession.replaceVars(
+            "sudo docker exec $CONTAINER_NAME sh -ec '"
+            "if ! command -v ip >/dev/null || ! command -v ip6tables >/dev/null; then "
+            "apk add --no-cache iproute2 iptables ip6tables; fi; "
+            "command -v ip >/dev/null; command -v ip6tables >/dev/null; "
+            "echo AMNEZIA_OPENVPN_IPV6_TOOLS_READY'", baseVars),
+            [&readiness](const QString &data, libssh::Client &) { readiness += data; return ErrorCode::NoError; });
+        if (e != ErrorCode::NoError) return e;
+        if (!readiness.split('\n').contains("AMNEZIA_OPENVPN_IPV6_TOOLS_READY"))
+            return ErrorCode::ServerDockerFailedError;
+    }
+    if (ContainerUtils::isAwgContainer(container)) {
+        QMap<QString, QByteArray> files;
+        QByteArray contents;
+        for (const auto &name : { "controller.py", "supervisor.py" }) {
+            QFile resource(QStringLiteral(":/server_scripts/mtu/") + QLatin1String(name));
+            if (!resource.open(QIODevice::ReadOnly))
+                return ErrorCode::InternalError;
+            const QByteArray data = resource.readAll();
+            files.insert(QLatin1String(name), data);
+            contents.append(data);
+        }
+        const QString release = QStringLiteral("/opt/amnezia/mtu/")
+                + QString::fromLatin1(QCryptographicHash::hash(contents, QCryptographicHash::Sha256).toHex());
+        e = sshSession.runScript(credentials, sshSession.replaceVars(
+                "sudo docker exec $CONTAINER_NAME apk add --no-cache python3 iproute2", baseVars));
+        if (e)
+            return e;
+        for (auto it = files.cbegin(); it != files.cend(); ++it) {
+            e = sshSession.uploadTextFileToContainer(container, credentials, QString::fromUtf8(it.value()),
+                                                     release + QLatin1Char('/') + it.key());
+            if (e)
+                return e;
+        }
+        const QString activate = QStringLiteral(
+                "sudo docker exec $CONTAINER_NAME sh -ec 'python3 -m py_compile %1/controller.py %1/supervisor.py; "
+                "ln -sfn %1 /opt/amnezia/mtu/current.next; mv -Tf /opt/amnezia/mtu/current.next /opt/amnezia/mtu/current'").arg(release);
+        e = sshSession.runScript(credentials, sshSession.replaceVars(activate, baseVars));
+        if (e)
+            return e;
+    }
+    e = sshSession.uploadTextFileToContainer(container, credentials, sshSession.replaceVars(script, baseVars),
+                                             "/opt/amnezia/start.sh");
     if (e)
         return e;
 
@@ -1569,7 +1681,7 @@ ErrorCode InstallController::scanServerForInstalledContainers(const QString &ser
         if (!containers.contains(iterator.key())) {
             ContainerConfig containerConfig = iterator.value();
             errorCode = processContainerForAdmin(iterator.key(), containerConfig, credentials, sshSession,
-                                                 serverId, clientName);
+                                                 serverId, clientName, adminConfig->connectionUpdates);
             if (errorCode != ErrorCode::NoError) {
                 return errorCode;
             }
@@ -1691,7 +1803,7 @@ ErrorCode InstallController::installContainer(const QString &serverId, DockerCon
         if (existingConfigModel.container == DockerContainer::None) {
             ContainerConfig containerConfig = iterator.value();
             errorCode = processContainerForAdmin(iterator.key(), containerConfig, credentials, sshSession,
-                                                 serverId, clientName);
+                                                 serverId, clientName, adminConfig->connectionUpdates);
             if (errorCode != ErrorCode::NoError) {
                 return errorCode;
             }

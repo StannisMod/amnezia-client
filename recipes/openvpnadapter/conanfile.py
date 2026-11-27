@@ -45,8 +45,11 @@ class OpenVPNAdapter(ConanFile):
         git.clone(
             url="https://github.com/amnezia-vpn/OpenVPNAdapter.git",
             target=".",
-            args=["--recurse-submodules", "--branch", "master-amnezia"]
+            args=["--no-checkout"]
         )
+        # Keep the packet-flow bridge and IPv6 callback contract reproducible.
+        git.checkout("20b82af890bdf946f82d6efaacb5acc07c61f8de")
+        git.run("submodule update --init --recursive")
 
     def build(self):
         with chdir(self, self.source_folder):

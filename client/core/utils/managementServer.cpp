@@ -20,6 +20,11 @@ bool ManagementServer::isOpen() const
     return (m_socket && m_socket->isOpen());
 }
 
+quint16 ManagementServer::port() const
+{
+    return m_tcpServer ? m_tcpServer->serverPort() : 0;
+}
+
 void ManagementServer::stop()
 {
     if (m_tcpServer) m_tcpServer->close();
@@ -63,6 +68,7 @@ void ManagementServer::onSocketError(QAbstractSocket::SocketError socketError)
 void ManagementServer::onSocketDisconnected()
 {
     if (m_socket) m_socket->deleteLater();
+    emit disconnected();
 }
 
 QPointer<QTcpSocket> ManagementServer::socket() const
@@ -108,5 +114,9 @@ QString ManagementServer::readLine()
         return QString();
     }
 
-    return m_socket->readLine();
+    // QIODevice::readLine() may consume a partial line. Management messages
+    // (including native DNS environments) must survive TCP fragmentation.
+    if (!m_socket->canReadLine())
+        return QString();
+    return QString::fromUtf8(m_socket->readLine());
 }

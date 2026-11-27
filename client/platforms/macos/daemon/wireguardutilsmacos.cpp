@@ -176,8 +176,11 @@ bool WireguardUtilsMacos::addInterface(const InterfaceConfig& config) {
   if (err != 0) {
     logger.error() << "Interface configuration failed:" << strerror(err);
   } else {
+    if (!KillSwitch::instance()->setNativeIpv6Blocked(!config.m_ipv6Enabled,
+            QStringList{config.m_serverIpv6AddrIn})) return false;
     if (config.m_killSwitchEnabled) {
       FirewallParams params { };
+      params.blockIPv6 = !config.m_ipv6Enabled;
       params.dnsServers.append(config.m_primaryDnsServer);
       if (!config.m_secondaryDnsServer.isEmpty()) {
           params.dnsServers.append(config.m_secondaryDnsServer);
@@ -210,6 +213,7 @@ bool WireguardUtilsMacos::deleteInterface() {
   }
 
   if (m_tunnel.state() == QProcess::NotRunning) {
+    KillSwitch::instance()->setNativeIpv6Blocked(false);
     return false;
   }
 
@@ -225,9 +229,10 @@ bool WireguardUtilsMacos::deleteInterface() {
   QFile::remove(wgRuntimeDir.filePath(QString(WG_INTERFACE) + ".name"));
 
   // double-check + ensure our firewall is installed and enabled
+  const bool policyCleared = KillSwitch::instance()->setNativeIpv6Blocked(false);
   KillSwitch::instance()->disableKillSwitch();
 
-  return true;
+  return policyCleared;
 }
 
 // dummy implementations for now
@@ -514,7 +519,7 @@ void WireguardUtilsMacos::applyFirewallRules(FirewallParams& params)
                                 QStringLiteral("blocknets"), params.blockAddrs);
 
   MacOSFirewall::setAnchorEnabled(QStringLiteral("200.allowVPN"), true);
-  MacOSFirewall::setAnchorEnabled(QStringLiteral("250.blockIPv6"), true);
+  MacOSFirewall::setAnchorEnabled(QStringLiteral("250.blockIPv6"), params.blockIPv6);
   MacOSFirewall::setAnchorEnabled(QStringLiteral("290.allowDHCP"), true);
   MacOSFirewall::setAnchorEnabled(QStringLiteral("300.allowLAN"), true);
   MacOSFirewall::setAnchorEnabled(QStringLiteral("310.blockDNS"), true);

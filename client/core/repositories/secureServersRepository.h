@@ -24,10 +24,12 @@ class SecureServersRepository : public QObject
     Q_OBJECT
 
 public:
+    enum class EditEffect { ConnectionSettings, ObservedCapability };
     explicit SecureServersRepository(SecureQSettings *settings, QObject *parent = nullptr);
 
     QString addServer(const QString &serverId, const QJsonObject &serverJson, serverConfigUtils::ConfigType kind);
-    void editServer(const QString &serverId, const QJsonObject &serverJson, serverConfigUtils::ConfigType kind);
+    void editServer(const QString &serverId, const QJsonObject &serverJson, serverConfigUtils::ConfigType kind,
+                    EditEffect effect = EditEffect::ConnectionSettings);
     void removeServer(const QString &serverId);
     serverConfigUtils::ConfigType serverKind(const QString &serverId) const;
 
@@ -49,6 +51,15 @@ public:
     void setDefaultServer(const QString &serverId);
 
     void clearServers();
+    // Local operation secrets never enter serverJsonById/full-access exports.
+    bool pendingPeerExport(const QString &serverId, DockerContainer container, QJsonObject &operation) const;
+    bool compareAndSetPendingPeerExport(const QString &serverId, DockerContainer container,
+                                       const QJsonObject &expected, const QJsonObject &replacement);
+
+
+    bool pendingPeerRevocation(const QString &serverId, DockerContainer container, QJsonObject &operation) const;
+    bool compareAndSetPendingPeerRevocation(const QString &serverId, DockerContainer container,
+                                           const QJsonObject &expected, const QJsonObject &replacement);
 
     QString nextAvailableServerName() const;
 
@@ -57,12 +68,17 @@ public:
     int unsupportedFormatConfigsCount() const;
 
 signals:
+    void serverCapabilityObserved(const QString &serverId);
     void serverAdded(const QString &serverId);
     void serverEdited(const QString &serverId);
     void serverRemoved(const QString &serverId, int removedIndex);
     void defaultServerChanged(const QString &defaultServerId);
 
 private:
+    bool pendingLocalPeerOperation(const char *storageKey, const QString &serverId, DockerContainer container,
+                                   QJsonObject &operation) const;
+    bool compareAndSetLocalPeerOperation(const char *storageKey, const QString &serverId, DockerContainer container,
+                                        const QJsonObject &expected, const QJsonObject &replacement);
     void loadFromStorage();
     void updateDefaultServerFromStorage();
     void persistDefaultServerFields();

@@ -22,6 +22,8 @@ def prepare_module(core, destination):
         "module github.com/StannisMod/amnezia-client/native/routing",
         "module github.com/amnezia-vpn/amneziawg-android", 1,
     )
+    module = module.replace(
+        "=> ./nativedns", "=> ./amnezia-routing/nativedns")
     module += ("\nrequire github.com/StannisMod/amnezia-client/native/routing v0.0.0\n"
                "replace github.com/StannisMod/amnezia-client/native/routing => ./amnezia-routing\n")
     (destination / "go.mod").write_text(module)

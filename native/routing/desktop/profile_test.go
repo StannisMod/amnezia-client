@@ -32,6 +32,8 @@ func testProfile(t *testing.T) map[string]any {
 func TestNativeAWGProfilePreservesParametersAndDomainRules(t *testing.T) {
 	profile := testProfile(t)
 	profile["awg_config_data"].(map[string]any)["persistent_keep_alive"] = "25-35"
+	profile["awg_config_data"].(map[string]any)["path_mtu_probe"] = "10.77.0.2"
+	profile["awg_config_data"].(map[string]any)["path_mtu_probes"] = []string{"10.77.0.2", "fd77::2"}
 	raw, _ := json.Marshal(profile)
 	config, err := ProfileSession(raw)
 	if err != nil {
@@ -46,6 +48,9 @@ func TestNativeAWGProfilePreservesParametersAndDomainRules(t *testing.T) {
 	}
 	if strings.Contains(string(compiled), "203.0.113.234") {
 		t.Fatal("legacy cached IP exclusions reached the domain engine")
+	}
+	if config.AWG.PathMTUProbe.String() != "10.77.0.2" || len(config.AWG.PathMTUProbes) != 2 || !strings.Contains(string(compiled), `"path_mtu_probes":["10.77.0.2","fd77::2"]`) {
+		t.Fatal("desktop MTU measurements were dropped")
 	}
 	if config.Rules.Rules[0].Value != "*.ru" {
 		t.Fatal("domain identity was lost")
@@ -80,6 +85,15 @@ func TestDesktopKeepaliveCompatibility(t *testing.T) {
 
 func TestRejectUnsupportedDesktopPoliciesAndInvalidAWG(t *testing.T) {
 	for _, mutate := range []func(map[string]any){
+		func(p map[string]any) {
+			p["awg_config_data"].(map[string]any)["path_mtu_probe"] = []string{"10.77.0.2"}
+		},
+		func(p map[string]any) { p["awg_config_data"].(map[string]any)["path_mtu_probes"] = "10.77.0.2" },
+		func(p map[string]any) { p["awg_config_data"].(map[string]any)["path_mtu_probes"] = []any{false} },
+		func(p map[string]any) {
+			p["awg_config_data"].(map[string]any)["path_mtu_probes"] = []string{"10.77.0.2", "10.77.0.3"}
+		},
+		func(p map[string]any) { p["awg_config_data"].(map[string]any)["path_mtu_probes"] = []string{"fd77::1"} },
 		func(p map[string]any) { p["appSplitTunnelType"] = 1 },
 		func(p map[string]any) { p["appSplitTunnelType"] = 3 },
 		func(p map[string]any) { p["appSplitTunnelType"] = 2; p["splitTunnelApps"] = []string{"relative.exe"} },
@@ -130,12 +144,14 @@ func TestWireGuardProfileUsesCommonRouting(t *testing.T) {
 	profile["wireguard_config_data"] = data
 	delete(profile, "awg_config_data")
 	data["persistent_keep_alive"] = "25"
+	data["path_mtu_probe"] = "10.77.0.2"
+	data["path_mtu_probes"] = []string{"10.77.0.2", "fd77::2"}
 	raw, _ := json.Marshal(profile)
 	config, err := ProfileSession(raw)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if config.VPN == nil || config.VPN.Type != "wireguard" || config.VPN.WireGuard.Keepalive != 25 {
+	if config.VPN == nil || config.VPN.Type != "wireguard" || config.VPN.WireGuard.Keepalive != 25 || len(config.VPN.WireGuard.PathMTUProbes) != 2 || config.VPN.WireGuard.PathMTUProbe.String() != "10.77.0.2" {
 		t.Fatal("wrong transport")
 	}
 	encoded, err := config.Compile()

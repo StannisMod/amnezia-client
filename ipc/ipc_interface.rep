@@ -24,9 +24,11 @@ class IpcInterface
 
     SLOT( bool createTun(const QString &dev, const QString &subnet) );
     SLOT( bool deleteTun(const QString &dev) );
+    SLOT( bool configureProxyIpv6(const QStringList &included, const QStringList &excluded) );
 
     SLOT( bool StartRoutingIpv6() );
     SLOT( bool StopRoutingIpv6() );
+    SLOT( bool setNativeIpv6Blocked(bool blocked, QStringList endpoints) );
 
     SLOT( bool disableKillSwitch() );
     SLOT( bool disableAllTraffic() );
@@ -37,6 +39,13 @@ class IpcInterface
     SLOT( bool enableKillSwitch( const QJsonObject &excludeAddr, int vpnAdapterIndex) );
     SLOT( bool updateResolvers(const QString& ifname, const QList<QHostAddress>& resolvers) );
     SLOT( bool restoreResolvers() );
+    SLOT( bool updateResolversWithPolicy(const QString& ifname, const QList<QHostAddress>& resolvers, bool ipv6Enabled, const QString& owner) );
+    SLOT( bool restoreResolversWithOwner(const QString& owner) );
+    SIGNAL( nativeDnsFailed(QString owner) );
+    SLOT( bool startIkev2Dns(const QString &owner, const QByteArray &phonebook, const QStringList &endpoints) );
+    SLOT( QString ikev2DnsState(const QString &owner) );
+    SLOT( bool stopIkev2Dns(const QString &owner) );
+    SLOT( bool acknowledgeIkev2DnsStopped(const QString &owner) );
 
     SLOT(bool xrayStart(const QString &config));
     SLOT(bool xrayStop());

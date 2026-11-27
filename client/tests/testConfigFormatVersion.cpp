@@ -2,6 +2,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QSignalSpy>
+#include <QSet>
 #include <QTest>
 #include <QUuid>
 
@@ -14,6 +15,11 @@
 #include "core/utils/serverConfigUtils.h"
 #include "secureQSettings.h"
 #include "vpnConnection.h"
+#include "core/configurators/wireguardConfigurator.h"
+#include "core/models/protocols/wireGuardProtocolConfig.h"
+#include "core/models/protocols/awgProtocolConfig.h"
+#include "core/utils/selfhosted/scriptsRegistry.h"
+#include "core/utils/connectionUpdates.h"
 
 using namespace amnezia;
 
@@ -52,6 +58,149 @@ private:
     SecureQSettings *m_settings = nullptr;
 
 private slots:
+    void peerIPv4AllocationIgnoresNativeOrder()
+    {
+        const QStringList routes { "10.88.0.2", "10.88.0.10", "10.88.0.3" };
+        for (int first = 0; first < routes.size(); ++first) {
+            for (int second = 0; second < routes.size(); ++second) {
+                if (first == second) continue;
+                const auto third = 3 - first - second;
+                QString configuration;
+                for (const int index : {first, second, third})
+                    configuration += "[Peer]\nAllowedIPs = " + routes[index] + "/32\n";
+                const auto ips = WireguardConfigurator::getIpsFromConf(configuration);
+                QCOMPARE(ips.size(), 3);
+                QCOMPARE(ips.last(), QHostAddress("10.88.0.10"));
+                QVERIFY(!ips.contains(QHostAddress(ips.last().toIPv4Address() + 1)));
+                const auto mixed = WireguardConfigurator::getIpsFromConf(configuration
+                    + "  AllowedIPs\t= fd77::2/128, 10.88.0.20/32, 10.88.0.11/32 # peer\n"
+                      "# AllowedIPs = 10.88.0.99/32\n");
+                QCOMPARE(mixed.size(), 5);
+                QCOMPARE(mixed.last(), QHostAddress("10.88.0.20"));
+            }
+        }
+    }
+
+    void testServerIPv6PrefixPersistsWithoutInventingLegacyAddresses()
+    {
+        QSet<QString> prefixes;
+        for (int i = 0; i < 32; ++i) {
+            const auto address = WireguardConfigurator::newServerIPv6Address();
+            const auto subnet = QHostAddress::parseSubnet(address);
+            QCOMPARE(subnet.second, 64);
+            QVERIFY((subnet.first.toIPv6Address()[0] & 0xfe) == 0xfc);
+            QVERIFY(!prefixes.contains(address)); prefixes.insert(address);
+        }
+        const auto address = *prefixes.begin();
+        WireGuardServerConfig wg; wg.ipv6Address = address;
+        const auto restoredWg = WireGuardServerConfig::fromJson(wg.toJson());
+        QCOMPARE(restoredWg.ipv6Address, address); QVERIFY(wg.hasEqualServerSettings(restoredWg));
+        auto changedWg = restoredWg; changedWg.ipv6Address.clear(); QVERIFY(!wg.hasEqualServerSettings(changedWg));
+        AwgServerConfig awg; awg.ipv6Address = address;
+        const auto restoredAwg = AwgServerConfig::fromJson(awg.toJson());
+        QCOMPARE(restoredAwg.ipv6Address, address); QVERIFY(awg.hasEqualServerSettings(restoredAwg));
+        QVERIFY(WireGuardServerConfig::fromJson({}).ipv6Address.isEmpty());
+        QVERIFY(AwgServerConfig::fromJson({}).ipv6Address.isEmpty());
+        QCOMPARE(WireguardConfigurator::serverIPv6CidrFromInterfaceConfig("Address = 10.77.0.1/24, fd77::1/64\n"), QString("fd77::1/64"));
+        QVERIFY(WireguardConfigurator::serverIPv6CidrFromInterfaceConfig("Address = 10.77.0.1/24\n").isEmpty());
+    }
+    void testIPv6PreparationIsPackagedForAWGAndWG()
+    {
+        QFile coordinator(":/server_scripts/connection_updates/ipv6_upgrade.go");
+        QVERIFY(coordinator.open(QIODevice::ReadOnly));
+        QVERIFY(!coordinator.readAll().isEmpty());
+        QFile dockerfile(":/server_scripts/connection_updates/Dockerfile");
+        QVERIFY(dockerfile.open(QIODevice::ReadOnly));
+        QVERIFY(dockerfile.readAll().contains("ipv6_upgrade.go"));
+        for (const auto container : {DockerContainer::Awg, DockerContainer::Awg2, DockerContainer::WireGuard}) {
+            const auto script = scriptData(ProtocolScriptType::run_container, container);
+            QVERIFY(script.contains("AMNEZIA_IPV6_NETWORK_STATUS"));
+            QVERIFY(script.contains("--ipv4=false"));
+            QVERIFY(script.contains("amnezia_attach_ipv6_network \"$CONTAINER_NAME\" || exit 1"));
+            QVERIFY(script.contains("sudo docker network connect \"$amnezia_v6_network_id\" \"$amnezia_v6_container_id\""));
+            QVERIFY(script.contains("attachment-changed-ipv4-or-dns"));
+            const auto startup = scriptData(ProtocolScriptType::container_startup, container);
+            QVERIFY(startup.startsWith("#!/bin/bash\n"));
+            QVERIFY(startup.contains("amnezia_enable_ipv6()"));
+            QVERIFY(startup.contains("--amnezia-prepare-ipv6-forwarding"));
+            QVERIFY(startup.contains("amnezia_enable_ipv6 \"$2\" required || exit 1"));
+            QVERIFY(startup.contains("AMNEZIA_IPV6_FORWARDING_STATUS"));
+        }
+        for (const auto container : {DockerContainer::OpenVpn, DockerContainer::Ipsec}) {
+            const auto script = scriptData(ProtocolScriptType::run_container, container);
+            QVERIFY(script.contains("AMNEZIA_IPV6_NETWORK_STATUS"));
+            QVERIFY(script.contains("amnezia_attach_ipv6_network \"$CONTAINER_NAME\" || exit 1"));
+        }
+    }
+    void testIPv6ScriptAddressIsCanonical()
+    {
+        WireGuardProtocolConfig protocol;
+        protocol.serverConfig.ipv6Address = "fd77::1/64";
+        ContainerConfig container; container.protocolConfig = protocol;
+        auto variables = genWireGuardVars(container);
+        QVERIFY(variables.contains(qMakePair(QString("$WIREGUARD_IPV6_ADDRESS"), QString("fd77::1/64"))));
+        protocol.serverConfig.ipv6Address = "fd77::1/64\";$(untrusted)";
+        container.protocolConfig = protocol;
+        variables = genWireGuardVars(container);
+        QVERIFY(variables.contains(qMakePair(QString("$WIREGUARD_IPV6_ADDRESS"), QString())));
+    }
+    void testClientIPv6AllocationUsesExplicitServerPrefix()
+    {
+        const auto configuration = QString("Address = 10.8.1.0/24, fd77:1234:5678:9::1/64\n");
+        const auto first = WireguardConfigurator::clientIPv6FromInterfaceConfig(configuration, "10.8.1.2");
+        const auto second = WireguardConfigurator::clientIPv6FromInterfaceConfig(configuration, "10.8.1.3");
+        QCOMPARE(QHostAddress(first), QHostAddress("fd77:1234:5678:9:0:1:a08:102"));
+        QVERIFY(first != second);
+        QVERIFY(WireguardConfigurator::clientIPv6FromInterfaceConfig(configuration + "AllowedIPs = " + first + "/128\n", "10.8.1.2").isEmpty());
+        QCOMPARE(first, WireguardConfigurator::clientIPv6FromInterfaceConfig(configuration, "10.8.1.2"));
+        QVERIFY(WireguardConfigurator::clientIPv6FromInterfaceConfig("Address = 10.8.1.0/24", "10.8.1.2").isEmpty());
+        QVERIFY(WireguardConfigurator::clientIPv6FromInterfaceConfig("Address = fd77::1/128", "10.8.1.2").isEmpty());
+        QVERIFY(WireguardConfigurator::clientIPv6FromInterfaceConfig("Address = fe80::1/64", "10.8.1.2").isEmpty());
+        QVERIFY(WireguardConfigurator::clientIPv6FromInterfaceConfig(configuration, "fd77::2").isEmpty());
+    }
+    void testPathMtuProbeUsesExplicitServerAddress()
+    {
+        QCOMPARE(WireguardConfigurator::pathMtuProbeFromInterfaceConfig("Address = 10.8.1.0/24\nAllowedIPs = 10.8.1.2/32"), QString("10.8.1.0"));
+        QCOMPARE(WireguardConfigurator::pathMtuProbeFromInterfaceConfig("Address = fd77::1/64, 10.77.0.9/24\n"), QString("10.77.0.9"));
+        QVERIFY(WireguardConfigurator::pathMtuProbeFromInterfaceConfig("AllowedIPs = 10.77.0.2/32\n").isEmpty());
+        QCOMPARE(WireguardConfigurator::pathMtuProbeFromInterfaceConfig("Address = fd77::1/64\n"), QString("fd77::1"));
+        QCOMPARE(WireguardConfigurator::pathMtuProbeFromInterfaceConfig("[Interface]\nAddress = FD77::9/64 # server\n[Peer]\nAllowedIPs = fd77::2/128\n"), QString("fd77::9"));
+        QCOMPARE(WireguardConfigurator::pathMtuProbeFromInterfaceConfig("Address = fd77::1/64\nAddress = 10.77.0.9/24\n"), QString("10.77.0.9"));
+        QVERIFY(WireguardConfigurator::pathMtuProbeFromInterfaceConfig("[Interface]\n[Peer]\nAddress = fd77::2/128\n").isEmpty());
+        for (const auto &address : {"::/128", "::1/128", "fe80::1/64", "ff02::1/128", "::ffff:192.0.2.1/128", "fd77::1%wg0/64", "fd77::1/129"}) {
+            QVERIFY(WireguardConfigurator::pathMtuProbeFromInterfaceConfig(QString("Address = %1\n").arg(address)).isEmpty());
+        }
+        QVERIFY(WireguardConfigurator::pathMtuProbeFromInterfaceConfig("Address = 127.0.0.1/8\n").isEmpty());
+        QCOMPARE(WireguardConfigurator::pathMtuProbesFromInterfaceConfig("Address = fd77::1/64, 10.77.0.9/24\n[Peer]\nAllowedIPs = fd77::2/128\n"), (QStringList{"10.77.0.9", "fd77::1"}));
+        WireGuardClientConfig wg; wg.pathMtuProbe = "10.77.0.9";
+        wg.pathMtuProbes = QStringList{"10.77.0.9", "fd77::9"};
+        QCOMPARE(WireGuardClientConfig::fromJson(wg.toJson()).pathMtuProbes, wg.pathMtuProbes);
+        AwgClientConfig dualAwg; dualAwg.pathMtuProbes = wg.pathMtuProbes;
+        QCOMPARE(AwgClientConfig::fromJson(dualAwg.toJson()).pathMtuProbes, wg.pathMtuProbes);
+        QCOMPARE(WireGuardClientConfig::fromJson(wg.toJson()).pathMtuProbe, wg.pathMtuProbe);
+        wg.pathMtuProbe = "fd77::9";
+        QCOMPARE(WireGuardClientConfig::fromJson(wg.toJson()).pathMtuProbe, wg.pathMtuProbe);
+        AwgClientConfig awg; awg.pathMtuProbe = wg.pathMtuProbe;
+        QCOMPARE(AwgClientConfig::fromJson(awg.toJson()).pathMtuProbe, awg.pathMtuProbe);
+        QVERIFY(WireGuardClientConfig::fromJson({}).pathMtuProbe.isEmpty());
+        QVERIFY(AwgClientConfig::fromJson({}).pathMtuProbe.isEmpty());
+        wg.clientIp = "10.77.0.2/32";
+        wg.allowedIps = QStringList{"0.0.0.0/0", "::/0"};
+        QVERIFY(!connectionUpdates::usablePathProbe("fd77::9", wg.toJson()));
+        wg.clientIp += ", fd77::2/128";
+        QVERIFY(connectionUpdates::usablePathProbe("fd77::9", wg.toJson()));
+        QVERIFY(!connectionUpdates::usablePathProbe("fd77::2", wg.toJson()));
+        wg.allowedIps = QStringList{"0.0.0.0/0", "fd88::/64"};
+        QVERIFY(!connectionUpdates::usablePathProbe("fd77::9", wg.toJson()));
+    }
+    void testDualStackServerAddressKeepsIPv4HostAndMask()
+    {
+        QCOMPARE(WireguardConfigurator::serverIPv4CidrFromInterfaceConfig("Address = fd77::1/64, 10.77.0.9/20\n"), QString("10.77.0.9/20"));
+        QCOMPARE(WireguardConfigurator::serverIPv4CidrFromInterfaceConfig("Address = 10.77.0.9/32, fd77::1/64\n"), QString("10.77.0.9/32"));
+        QVERIFY(WireguardConfigurator::serverIPv4CidrFromInterfaceConfig("Address = 0.0.0.0/24\n").isEmpty());
+        QVERIFY(WireguardConfigurator::serverIPv4CidrFromInterfaceConfig("Address = fd77::1/64\n").isEmpty());
+        QVERIFY(WireguardConfigurator::serverIPv4CidrFromInterfaceConfig("Address = 10.77.0.9/99\n").isEmpty());
+    }
     void initTestCase()
     {
         const QString testOrg = "AmneziaVPN-Test-" + QUuid::createUuid().toString();

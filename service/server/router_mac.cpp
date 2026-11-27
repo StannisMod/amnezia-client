@@ -132,6 +132,7 @@ bool RouterMac::routeDeleteList(const QString &gw, const QStringList &ips)
 
 bool RouterMac::createTun(const QString &dev, const QString &subnet) {
     qDebug().noquote() << "createTun start";
+    if (dev == "utun22" && m_proxyTunConfigured) return false;
 
     QProcess process;
     QStringList commands;
@@ -143,23 +144,34 @@ bool RouterMac::createTun(const QString &dev, const QString &subnet) {
         qDebug().noquote() << "Could not start activate tun device!\n";
         return false;
     }
-    else if (!process.waitForFinished(2000))
+    else if (!process.waitForFinished(2000) || process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0)
     {
         qDebug().noquote() << "Could not activate tun device!\n";
         return false;
     }
     commands.clear();
 
+    if (dev == "utun22") m_proxyTunConfigured = true;
     return true;
 }
 
-bool RouterMac::updateResolvers(const QString& ifname, const QList<QHostAddress>& resolvers)
+bool RouterMac::configureProxyIpv6(const QStringList &included, const QStringList &excluded)
 {
-    return m_dnsUtil->updateResolvers(ifname, resolvers);
+    if (!m_proxyTunConfigured || m_proxyIpv6) return false;
+    auto policy = std::make_unique<MacProxyIpv6>();
+    if (!policy->configure(included, excluded)) return false;
+    m_proxyIpv6 = std::move(policy);
+    return true;
 }
 
-bool RouterMac::restoreResolvers() {
-    return m_dnsUtil->restoreResolvers();
+bool RouterMac::updateResolvers(const QString& ifname, const QList<QHostAddress>& resolvers,
+                               bool ipv6Enabled, const QString &owner)
+{
+    return m_dnsUtil->updateResolvers(ifname, resolvers, ipv6Enabled, owner);
+}
+
+bool RouterMac::restoreResolvers(const QString &owner) {
+    return m_dnsUtil->restoreResolvers(owner);
 }
 
 bool RouterMac::routeAddXray(const QString& ifname, const QString& gateway)
@@ -255,7 +267,12 @@ bool RouterMac::routeDeleteXray(const QString& ifname, const QString& gateway)
 bool RouterMac::deleteTun(const QString &dev)
 {
     qDebug().noquote() << "deleteTun start";
-
+    if (dev == "utun22") {
+        const bool cleared = !m_proxyIpv6 || m_proxyIpv6->clear();
+        m_proxyIpv6.reset();
+        m_proxyTunConfigured = false;
+        return cleared;
+    }
     return true;
 }
 

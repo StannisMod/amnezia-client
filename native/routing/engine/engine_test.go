@@ -58,6 +58,14 @@ func TestFakeIPRealDNSUnreachableIPv6(t *testing.T) {
 	}
 }
 
+func TestFakeIPRealAddressCIDRPolicy(t *testing.T) {
+	for _, protocol := range []string{"awg", "wireguard"} {
+		t.Run(protocol, func(t *testing.T) {
+			testFakeIPSharedAddressEgress(t, rules.Direct, true, false, true, protocol, "cidr")
+		})
+	}
+}
+
 func TestFakeIPRealDNSOverAWG(t *testing.T) {
 	for _, policy := range []rules.Action{rules.VPN, rules.Direct} {
 		t.Run(string(policy), func(t *testing.T) { testFakeIPSharedAddressEgress(t, policy, true, true, true) })
@@ -99,6 +107,7 @@ func testFakeIPSharedAddressEgress(t *testing.T, defaultPolicy rules.Action, rea
 	}
 	params := map[string]string{"jc": "2", "jmin": "40", "jmax": "80", "s1": "16", "s2": "24", "h1": "1001", "h2": "1002", "h3": "1003", "h4": "1004"}
 	standardWG := len(transport) > 0 && transport[0] == "wireguard"
+	cidrPolicy := len(transport) > 1 && transport[1] == "cidr"
 	if standardWG {
 		params = nil
 	}
@@ -184,11 +193,16 @@ func testFakeIPSharedAddressEgress(t *testing.T, defaultPolicy rules.Action, rea
 		defer server.Shutdown()
 		addr := netip.MustParseAddrPort(pc.LocalAddr().String())
 		policy := rules.Config{Version: 1, Default: defaultPolicy, Rules: []rules.Rule{
+			{Kind: rules.CIDR, Value: "127.0.0.0/8", Action: rules.Direct},
 			{Kind: rules.Suffix, Value: "*.corp.example.test", Action: rules.Direct},
 			{Kind: rules.Suffix, Value: "*.ru", Action: rules.Direct},
 		}}
 		if defaultPolicy == rules.Direct {
-			policy.Rules = append(policy.Rules, rules.Rule{Kind: rules.Domain, Value: "b.vpn.test", Action: rules.VPN})
+			if cidrPolicy {
+				policy.Rules = append(policy.Rules, rules.Rule{Kind: rules.CIDR, Value: "10.77.0.0/24", Action: rules.VPN})
+			} else {
+				policy.Rules = append(policy.Rules, rules.Rule{Kind: rules.Domain, Value: "b.vpn.test", Action: rules.VPN})
+			}
 		}
 		session := SessionConfig{Rules: policy, AWG: awg.Config{Address: []netip.Addr{netip.MustParseAddr("10.77.0.1")}, PrivateKey: aPriv, PublicKey: bPub, Endpoint: netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), bPort), ListenPort: aPort, AllowedIPs: []netip.Prefix{netip.MustParsePrefix("0.0.0.0/0")}, Parameters: params}, Resolver: addr, ResolverAction: dnsPath}
 		if standardWG {
@@ -247,6 +261,11 @@ func testFakeIPSharedAddressEgress(t *testing.T, defaultPolicy rules.Action, rea
 		expectedDirect++
 	}
 	flows := []struct{ domain, want string }{{"a.direct.ru", "DIRECT"}, {"b.vpn.test", "TUNNEL"}, {"unlisted.test", defaultObserver}}
+	if cidrPolicy {
+		defaultObserver = "TUNNEL"
+		expectedDirect = 1
+		flows[2].want = defaultObserver
+	}
 	if realDNS {
 		flows = append(flows, struct{ domain, want string }{"git.corp.example.test", "DIRECT"})
 		expectedDirect++
@@ -280,7 +299,7 @@ func testFakeIPSharedAddressEgress(t *testing.T, defaultPolicy rules.Action, rea
 		}
 	}
 	snapshot := diagnostics.Snapshot()
-	if snapshot.Direct == 0 || snapshot.VPN == 0 || snapshot.ManagedDNS < 3 || snapshot.Default == 0 {
+	if snapshot.Direct == 0 || snapshot.VPN == 0 || snapshot.ManagedDNS < 3 || (!cidrPolicy && snapshot.Default == 0) {
 		t.Fatal("routing diagnostics lost managed DNS or default decisions", snapshot)
 	}
 	if realDNS && !dualStack && defaultPolicy == rules.VPN {
@@ -356,6 +375,18 @@ func testFakeIPSharedAddressEgress(t *testing.T, defaultPolicy rules.Action, rea
 	}
 	if directConnections.Load() != expectedDirect {
 		t.Fatal("VPN failure fell back to DIRECT")
+	}
+	if realDNS {
+		// A server-first literal DIRECT flow must not wait for DNS or VPN.
+		// No application bytes are available for HTTP/TLS sniffing here.
+		literalApp, literalCapture := net.Pipe()
+		defer literalApp.Close()
+		literalApp.SetDeadline(time.Now().Add(2 * time.Second))
+		go instance.Router().RouteConnectionEx(ctx, literalCapture, adapter.InboundContext{Inbound: TUNTag, Network: "tcp", Destination: M.Socksaddr{Addr: netip.MustParseAddr("127.0.0.1"), Port: port}}, nil)
+		label := make([]byte, len("DIRECT"))
+		if _, err := io.ReadFull(literalApp, label); err != nil || string(label) != "DIRECT" {
+			t.Fatalf("literal DIRECT while VPN down: %q %v", label, err)
+		}
 	}
 }
 

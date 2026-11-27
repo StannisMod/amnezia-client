@@ -3,6 +3,7 @@ module github.com/StannisMod/amnezia-client/native/routing
 go 1.27.1
 
 require (
+	github.com/StannisMod/amnezia-client/native/routing/nativedns v0.0.0
 	github.com/amnezia-vpn/amneziawg-go/v3 v3.1.20260814
 	github.com/godbus/dbus/v5 v5.2.2
 	github.com/miekg/dns v1.1.72
@@ -18,6 +19,8 @@ require (
 	golang.zx2c4.com/wireguard v0.0.0-20231211153847-12269c276173
 	gvisor.dev/gvisor v0.0.0-20231202080848-1f7806d17489
 )
+
+replace github.com/StannisMod/amnezia-client/native/routing/nativedns => ./nativedns
 
 require (
 	github.com/andybalholm/brotli v1.1.0 // indirect
@@ -71,4 +74,4 @@ require (
 )
 
 // Immutable Amnezia RACK recovery backport; internal/builddeps/lock.json.
-replace gvisor.dev/gvisor => github.com/StannisMod/gvisor v0.0.0-20261106123450-8155b9498bd4
+replace gvisor.dev/gvisor => github.com/StannisMod/gvisor v0.0.0-20261111220521-edf112b2636e

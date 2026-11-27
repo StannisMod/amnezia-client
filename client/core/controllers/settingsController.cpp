@@ -46,6 +46,16 @@ void SettingsController::toggleAmneziaDns(bool enable)
     m_appSettingsRepository->setUseAmneziaDns(enable);
 }
 
+bool SettingsController::isIpv6Enabled() const
+{
+    return m_appSettingsRepository->isIpv6Enabled();
+}
+
+void SettingsController::toggleIpv6(bool enable)
+{
+    m_appSettingsRepository->setIpv6Enabled(enable);
+}
+
 bool SettingsController::isAmneziaDnsEnabled() const
 {
     return m_appSettingsRepository->useAmneziaDns();
@@ -115,6 +125,7 @@ QByteArray SettingsController::backupAppConfig() const
     config["Conf/killSwitchEnabled"] = isKillSwitchEnabled();
     config["Conf/strictKillSwitchEnabled"] = isStrictKillSwitchEnabled();
     config["Conf/useAmneziaDns"] = isAmneziaDnsEnabled();
+    config["Conf/ipv6Enabled"] = isIpv6Enabled();
 
     return QJsonDocument(config).toJson();
 }
@@ -372,4 +383,3 @@ QString SettingsController::nextAvailableServerName() const
 {
     return m_serversRepository->nextAvailableServerName();
 }
-

@@ -24,6 +24,8 @@ def main():
     parser.add_argument('--ubuntu-version', choices=('22.04','24.04'), default='22.04')
     parser.add_argument('--peer', type=Path, required=True)
     parser.add_argument('--qt-probe', type=Path, required=True)
+    parser.add_argument('--openvpn-route-fixture', type=Path, help='production Linux IPv6 host-route driver')
+    parser.add_argument('--openvpn-policies', type=Path, help='Qt-generated synthetic full/include/exclude profiles')
     parser.add_argument('--report', type=Path, required=True)
     parser.add_argument('--diagnose-capture-mark', action='store_true')
     parser.add_argument('--helper', type=Path, help='diagnostic replacement; not installer acceptance')
@@ -31,7 +33,7 @@ def main():
     args = parser.parse_args()
     repo = Path(__file__).resolve().parents[2]
     runtime = Path(os.environ['RUNNER_TEMP']).resolve()
-    for path in (args.package, args.peer, args.qt_probe, args.helper, args.service):
+    for path in (args.package, args.peer, args.qt_probe, args.openvpn_policies, args.openvpn_route_fixture, args.helper, args.service):
         if path is not None:
             path.resolve(strict=True)
             if not (path.resolve().is_relative_to(repo) or path.resolve().is_relative_to(runtime)):
@@ -68,23 +70,58 @@ def main():
         execute('env', 'QT_QPA_PLATFORM=offscreen', 'bash', str(repo / 'scripts/routing/install_service_in_container.sh'),
                 str(args.package.resolve()), str(args.helper.resolve()) if args.helper else '',
                 str(args.service.resolve()) if args.service else '', timeout=240)
+        if args.openvpn_policies:
+            listener_before = execute('stat', '-Lc', '%d:%i', '/var/run/amneziavpn/daemon.socket',
+                                      capture_output=True, text=True).stdout.strip()
+            modes = [(mode, False) for mode in ('full', 'include', 'exclude', 'legacy-full', 'legacy-export', 'legacy-include', 'legacy-exclude', 'legacy-api', 'api-full')]
+            modes += [(mode, True) for mode in ('full', 'include', 'exclude')]
+            for mode, stale in modes:
+                print('OpenVPN acceptance:', mode, 'stale capability' if stale else 'declared capability', flush=True)
+                execute('env', 'AMNEZIA_OPENVPN_SOURCE_ROOT=' + str(repo),
+                        'AMNEZIA_OPENVPN_BINARY=/opt/AmneziaVPN/bin/openvpn',
+                        'AMNEZIA_OPENVPN_CLIENT_POLICIES=' + str(args.openvpn_policies.resolve()),
+                        'AMNEZIA_OPENVPN_POLICY_MODE=' + mode,
+                        'AMNEZIA_OPENVPN_STALE_CAPABILITY=' + ('1' if stale else '0'),
+                        'AMNEZIA_OPENVPN_STOP_OPERATION=kill',
+                        *(['AMNEZIA_OPENVPN_IPC_SERVICE=/opt/AmneziaVPN/bin/AmneziaVPN-service']
+                          if args.openvpn_route_fixture and mode in ('full', 'include') else []),
+                        *(['AMNEZIA_OPENVPN_ROUTE_FIXTURE=' + str(args.openvpn_route_fixture.resolve())]
+                          if args.openvpn_route_fixture else []),
+                        'unshare', '--mount', '--net', '--fork', 'bash', '-ec',
+                        'mount --make-rprivate /; mkdir -p /run/netns; mount -t tmpfs tmpfs /run/netns; exec python3 "$1"',
+                        'sh', str(repo / 'server/ipv6/lab/test_openvpn.py'), timeout=90)
+                listener_after = execute('stat', '-Lc', '%d:%i', '/var/run/amneziavpn/daemon.socket',
+                                         capture_output=True, text=True).stdout.strip()
+                if listener_after != listener_before:
+                    raise RuntimeError('OpenVPN fixture replaced the installed service control socket')
+        # Exercise the installed Qt service's proxy TUN and dual-stack firewall
+        # before the routed-session suite takes its original-state snapshot.
+        execute('bash', '-ec', '''
+ip link add amnproxytest0 type dummy
+trap 'ip link del amnproxytest0' EXIT
+ip link set amnproxytest0 up
+ip -6 addr add 2001:db8:2::2/64 dev amnproxytest0 nodad
+AMNEZIA_PROXY_ROUTE_TEST=isolated-docker AMNEZIA_PROXY_DIRECT_DEVICE=amnproxytest0 "$1" proxy-ipv6
+''', 'sh', str(args.qt_probe.resolve()))
         execute('python3', '-u', str(repo / 'scripts/routing/run_service_acceptance.py'),
                 '--peer', str(args.peer.resolve()), '--qt-probe', str(args.qt_probe.resolve()),
                 '--report', '/artifacts/' + report.name, '--resolver-cycles', '100', '--ci-rescue',
                 *(['--diagnose-capture-mark'] if args.diagnose_capture_mark else []),
                 *([] if args.helper or args.service else ['--require-notices']), timeout=1000)
     finally:
-        report.parent.mkdir(parents=True, exist_ok=True)
-        # Preserve PID 1 output even if systemd never reached journald.
-        with report.with_suffix('.boot.log').open('w') as log:
-            subprocess.run(['docker', 'logs', name], stdout=log, stderr=subprocess.STDOUT, timeout=30, check=False)
-        # Copy diagnostics even when acceptance, its watchdog or the container fails.
-        subprocess.run(['docker', 'cp', name + ':/artifacts/.', str(report.parent)], timeout=30, check=False)
-        with report.with_suffix('.journal.log').open('w') as log:
-            subprocess.run(['docker', 'exec', name, 'journalctl', '--no-pager', '-u', 'AmneziaVPN', '-u', 'systemd-resolved'],
-                           stdout=log, stderr=subprocess.STDOUT, timeout=30, check=False)
-        subprocess.run(['docker', 'rm', '--force', name], timeout=30, check=False)
-        subprocess.run(['docker', 'image', 'rm', image], timeout=30, check=False)
+        try:
+            report.parent.mkdir(parents=True, exist_ok=True)
+            # Preserve PID 1 output even if systemd never reached journald.
+            with report.with_suffix('.boot.log').open('w') as log:
+                subprocess.run(['docker', 'logs', name], stdout=log, stderr=subprocess.STDOUT, timeout=30, check=False)
+            # Copy diagnostics even when acceptance, its watchdog or the container fails.
+            subprocess.run(['docker', 'cp', name + ':/artifacts/.', str(report.parent)], timeout=30, check=False)
+            with report.with_suffix('.journal.log').open('w') as log:
+                subprocess.run(['docker', 'exec', name, 'journalctl', '--no-pager', '-u', 'AmneziaVPN', '-u', 'systemd-resolved'],
+                               stdout=log, stderr=subprocess.STDOUT, timeout=30, check=False)
+        finally:
+            subprocess.run(['docker', 'rm', '--force', name], timeout=30, check=False)
+            subprocess.run(['docker', 'image', 'rm', image], timeout=30, check=False)
 
 
 if __name__ == '__main__':

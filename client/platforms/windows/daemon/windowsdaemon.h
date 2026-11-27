@@ -22,6 +22,9 @@ class WindowsDaemon final : public Daemon {
  public:
   WindowsDaemon();
   ~WindowsDaemon();
+  bool ownsNativeLifecycle() const override {
+    return m_wgutils && m_wgutils->ownsNativeLifecycle();
+  }
 
   void prepareActivation(const InterfaceConfig& config, int inetAdapterIndex = 0) override;
   void activateSplitTunnel(const InterfaceConfig& config, int vpnAdapterIndex = 0) override;

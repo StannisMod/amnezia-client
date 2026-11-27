@@ -5,11 +5,17 @@ from conan.tools.files import get, copy, chdir
 from conan.tools.gnu import AutotoolsToolchain
 
 import os
+import importlib.util
+from pathlib import Path
 
 class AwgWindows(ConanFile):
     name = "awg-windows"
     version = "3.1.20260814"
     settings = "os", "arch"
+
+    def export_sources(self):
+        for name in ("native_dns.py", "native_dns_windows.go"):
+            copy(self, name, self.recipe_folder, self.export_sources_folder)
 
     @property
     def _goarm(self):
@@ -90,6 +96,12 @@ class AwgWindows(ConanFile):
         tc.generate(env)
 
     def build(self):
+        spec = importlib.util.spec_from_file_location("native_windows_dns",
+            str(Path(self.export_sources_folder) / "native_dns.py"))
+        overlay = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(overlay)
+        overlay.prepare(self.source_folder,
+            Path(self.export_sources_folder) / "native_dns_windows.go")
         with chdir(self, self.source_folder):
             self.run(f'go build -buildmode c-shared -ldflags="-w -s" -trimpath -v -o "{os.path.join(self.build_folder, "tunnel.dll")}"')
 

@@ -15,6 +15,9 @@ import net.openvpn.ovpn3.ClientAPI_TransportStats
 import org.amnezia.vpn.protocol.ProtocolState
 import org.amnezia.vpn.protocol.ProtocolState.CONNECTED
 import org.amnezia.vpn.protocol.ProtocolState.DISCONNECTED
+import org.amnezia.vpn.protocol.ProtocolState.DISCONNECTING
+import org.amnezia.vpn.protocol.NativeDnsServer
+import org.amnezia.vpn.protocol.NativeDnsTransport
 import org.amnezia.vpn.protocol.ProtocolState.RECONNECTING
 import org.amnezia.vpn.util.Log
 import org.amnezia.vpn.util.net.InetNetwork
@@ -24,13 +27,47 @@ private const val TAG = "OpenVpnClient"
 private const val EMULATED_EXCLUDE_ROUTES = (1 shl 16)
 
 class OpenVpnClient(
-    private val configBuilder: OpenVpnConfig.Builder,
+    private var configBuilder: OpenVpnConfig.Builder,
     private val state: MutableStateFlow<ProtocolState>,
     private val getLocalNetworks: (Boolean) -> List<InetNetwork>,
     internal var establish: (OpenVpnConfig.Builder) -> Int,
     private val protect: (Int) -> Boolean,
-    private val onError: (String) -> Unit
+    private val onError: (String) -> Unit,
+    private val builderFactory: (() -> OpenVpnConfig.Builder)? = null,
+    private val ipv6Off: Boolean = false,
+    private val permitConnected: () -> Boolean = { true },
+    private val permitDisconnected: () -> Boolean = { true },
+    private val currentOwner: () -> Boolean = { true },
+    private val nativeFailure: () -> Unit = {},
+    private val dnsBind: (Long, Int) -> Boolean = { _, _ -> false },
+    private val dnsFailed: (Long) -> Unit = {},
+    private val dnsRetired: (Long) -> Unit = {},
+    private val dnsTunnelAllowed: () -> Boolean = { false }
 ) : ClientAPI_OpenVPNClient() {
+    private val orderedDns = mutableListOf<NativeDnsServer>()
+    private val orderedDomains = mutableListOf<String>()
+    val selectedDns: List<NativeDnsServer> get() = orderedDns.toList()
+    val selectedSearchDomains: List<String> get() = orderedDomains.toList()
+
+    override fun tun_builder_dns_bind(handle: Long, fd: Int): Boolean = dnsBind(handle, fd)
+    override fun tun_builder_dns_failed(handle: Long) { dnsFailed(handle) }
+    override fun tun_builder_dns_retired(handle: Long) { dnsRetired(handle) }
+    override fun tun_builder_dns_tunnel_allowed(): Boolean = dnsTunnelAllowed()
+    override fun tun_builder_set_adapter_domain_suffix(name: String): Boolean =
+        !ipv6Off && super.tun_builder_set_adapter_domain_suffix(name)
+    override fun tun_builder_dns_server(address: String, port: Int, ipv6: Boolean): Boolean {
+        if (!ipv6Off || port !in 1..65535) return false
+        configBuilder.addDnsServer(parseInetAddress(address))
+        orderedDns += NativeDnsServer(address, port)
+        return true
+    }
+    override fun tun_builder_dns_transport(address: String, port: Int, ipv6: Boolean,
+                                            transport: String, serverName: String): Boolean {
+        if (!ipv6Off || port !in 1..65535 || transport != "tls") return false
+        configBuilder.addDnsServer(parseInetAddress(address))
+        orderedDns += NativeDnsServer(address, port, NativeDnsTransport.TLS, serverName)
+        return true
+    }
 
     /**************************************************************************
      * Tun builder callbacks
@@ -53,6 +90,9 @@ class OpenVpnClient(
     // Should be called first.
     override fun tun_builder_new(): Boolean {
         Log.d(TAG, "tun_builder_new")
+        builderFactory?.let { configBuilder = it() }
+        orderedDns.clear()
+        orderedDomains.clear()
         configBuilder.clearAddresses()
         return true
     }
@@ -104,6 +144,7 @@ class OpenVpnClient(
     override fun tun_builder_add_dns_server(address: String, ipv6: Boolean): Boolean {
         Log.d(TAG, "tun_builder_add_dns_server: $address, $ipv6")
         configBuilder.addDnsServer(parseInetAddress(address))
+        orderedDns += NativeDnsServer(address)
         return true
     }
 
@@ -176,6 +217,7 @@ class OpenVpnClient(
     override fun tun_builder_add_search_domain(domain: String): Boolean {
         Log.d(TAG, "tun_builder_add_search_domain: $domain")
         configBuilder.setSearchDomain(domain)
+        orderedDomains += domain
         return true
     }
 
@@ -306,7 +348,7 @@ class OpenVpnClient(
     // The remote and ipv6 are the remote host this socket will connect to
     override fun socket_protect(socket: Int, remote: String, ipv6: Boolean): Boolean {
         Log.d(TAG, "socket_protect: $socket, $remote, $ipv6")
-        return protect(socket)
+        return currentOwner() && (!ipv6Off || !ipv6) && protect(socket)
     }
 
     // Stop the client.  Only meaningful when connect() is running.
@@ -362,13 +404,14 @@ class OpenVpnClient(
     // Callback for delivering events during connect() call.
     // Will be called from the thread executing connect().
     override fun event(event: ClientAPI_Event) {
+        if (!currentOwner()) return
         val name = event.name
         val info = event.info
         Log.d(TAG, "OpenVpn event: $name: $info")
         when (name) {
             "COMPRESSION_ENABLED", "WARN" -> Log.w(TAG, "$name: $info")
-            "CONNECTED" -> state.value = CONNECTED
-            "DISCONNECTED" -> state.value = DISCONNECTED
+            "CONNECTED" -> if (permitConnected()) state.value = CONNECTED else nativeFailure()
+            "DISCONNECTED" -> state.value = if (permitDisconnected()) DISCONNECTED else DISCONNECTING
             "RECONNECTING" -> {
                 state.getAndUpdate { state ->
                     if (state == DISCONNECTED || state == CONNECTED) RECONNECTING
@@ -377,8 +420,9 @@ class OpenVpnClient(
             }
         }
         if (event.error || event.fatal) {
-            state.value = DISCONNECTED
+            state.value = if (permitDisconnected()) DISCONNECTED else DISCONNECTING
             onError("OpenVpn ${if (event.error) "ERROR" else "FATAL"}: $name: $info")
+            nativeFailure()
         }
     }
 

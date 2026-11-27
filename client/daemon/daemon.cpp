@@ -78,7 +78,7 @@ bool Daemon::activate(const InterfaceConfig& config) {
         return false;
       }
 
-      if (!dnsutils()->restoreResolvers()) {
+      if (config.m_ipv6PolicyEnabled && !dnsutils()->restoreResolvers()) {
         return false;
       }
 
@@ -142,7 +142,7 @@ bool Daemon::activate(const InterfaceConfig& config) {
     return false;
   }
 
-  if (!maybeUpdateResolvers(config)) {
+  if (config.m_ipv6PolicyEnabled && !maybeUpdateResolvers(config)) {
     return false;
   }
 
@@ -153,6 +153,10 @@ bool Daemon::activate(const InterfaceConfig& config) {
       return false;
     }
   }
+
+  // OFF scope planning must see the final native IPv4/split routes, before
+  // publishing managed resolver endpoints. ON keeps its original ordering.
+  if (!config.m_ipv6PolicyEnabled && !maybeUpdateResolvers(config)) return false;
 
   bool status = run(Up, config);
   logger.debug() << "Connection status:" << status;
@@ -176,16 +180,25 @@ bool Daemon::maybeUpdateResolvers(const InterfaceConfig& config) {
 
     // If the DNS is not the Gateway, it's a user defined DNS
     // thus, not add any other :)
-    if (config.m_primaryDnsServer == config.m_serverIpv4Gateway) {
+    if (config.m_primaryDnsServer == config.m_serverIpv4Gateway
+            && !config.m_serverIpv6Gateway.isEmpty()) {
       resolvers.append(QHostAddress(config.m_serverIpv6Gateway));
     }
 
-    if (!dnsutils()->updateResolvers(wgutils()->interfaceName(), resolvers)) {
+    QObject::connect(dnsutils(), &DnsUtils::nativeDnsFailed,
+                     this, &Daemon::nativeDnsFailure, Qt::UniqueConnection);
+    if (!dnsutils()->updateResolvers(wgutils()->interfaceName(), resolvers,
+                                    config.m_ipv6PolicyEnabled)) {
       return false;
     }
   }
 
   return true;
+}
+
+void Daemon::nativeDnsFailure() {
+  deactivate();
+  emit backendFailure();
 }
 
 // static
@@ -269,6 +282,11 @@ bool Daemon::parseConfig(const QJsonObject& obj, InterfaceConfig& config) {
 
   config.m_deviceIpv4Address = obj.value("deviceIpv4Address").toString();
   config.m_deviceIpv6Address = obj.value("deviceIpv6Address").toString();
+  if (obj.contains("ipv6_enabled") && !obj.value("ipv6_enabled").isBool()) return false;
+  config.m_ipv6PolicyEnabled = obj.value("ipv6_enabled").toBool(true);
+  config.m_ipv6Enabled = config.m_ipv6PolicyEnabled
+      && !config.m_deviceIpv6Address.isEmpty()
+      && config.m_deviceIpv6Address.section('/', 0, 0) != QStringLiteral("fd58:baa6:dead::1");
   if (config.m_deviceIpv4Address.isNull() &&
       config.m_deviceIpv6Address.isNull()) {
     logger.warning() << "no device addresses found in jsonConfig input";
@@ -477,21 +495,19 @@ bool Daemon::parseConfig(const QJsonObject& obj, InterfaceConfig& config) {
 bool Daemon::deactivate(bool emitSignals) {
   Q_ASSERT(wgutils() != nullptr);
 
-  // Deactivate the main interface.
-  if (!m_connections.isEmpty()) {
-    const ConnectionState& state = m_connections.first();
-    if (!run(Down, state.m_config)) {
-      return false;
-    }
-  }
-
-  m_handshakeTimer.stop();
-
-  // Cleanup DNS before acknowledging teardown to a domain endpoint recovery.
+  // Retain platform split/routing state while DNS restoration is uncertain.
+  // run(Down) may stop the native application-split manager.
   const bool dnsRestored = dnsutils()->restoreResolvers();
   if (!dnsRestored) {
     logger.warning() << "Failed to restore DNS resolvers.";
+    return false;
   }
+
+  if (!m_connections.isEmpty()) {
+    const ConnectionState& state = m_connections.first();
+    if (!run(Down, state.m_config)) return false;
+  }
+  m_handshakeTimer.stop();
 
   // Cleanup peers and routing
   for (const ConnectionState& state : m_connections) {
@@ -510,9 +526,15 @@ bool Daemon::deactivate(bool emitSignals) {
   }
   m_excludedAddrSet.clear();
 
-  m_connections.clear();
   // The acknowledgment must follow DNS, route and interface cleanup.
+#ifdef Q_OS_WIN
+  // A non-running adapter does not prove its SCM worker has joined.
+  const bool deleted = wgutils()->deleteInterface();
+#else
   const bool deleted = wgutils()->deleteInterface() || !wgutils()->interfaceExists();
+#endif
+  if (!deleted) return false;
+  m_connections.clear();
   if (emitSignals) emit disconnected();
   return deleted && dnsRestored;
 }
@@ -533,6 +555,8 @@ bool Daemon::supportServerSwitching(const InterfaceConfig& config) const {
   return current.m_privateKey == config.m_privateKey &&
          current.m_deviceIpv4Address == config.m_deviceIpv4Address &&
          current.m_deviceIpv6Address == config.m_deviceIpv6Address &&
+         current.m_ipv6Enabled == config.m_ipv6Enabled &&
+         current.m_ipv6PolicyEnabled == config.m_ipv6PolicyEnabled &&
          current.m_serverIpv4Gateway == config.m_serverIpv4Gateway &&
          current.m_serverIpv6Gateway == config.m_serverIpv6Gateway;
 }

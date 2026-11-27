@@ -47,6 +47,22 @@ PageType {
                 spacing: 0
 
                 ListItemType {
+                    Layout.fillWidth: true
+                    text: qsTr("Tunnel IPv6")
+                    subtitle: qsTr("Enabled by default. Changes apply on the next connection. When disabled, IPv6 is blocked instead of bypassing the VPN.")
+                    onClicked: {
+                        ipv6Switch.toggle()
+                        ipv6Switch.toggled()
+                    }
+                    SwitchType {
+                        id: ipv6Switch
+                        focusPolicy: Qt.NoFocus
+                        checked: SettingsController.ipv6Enabled
+                        onToggled: SettingsController.ipv6Enabled = checked
+                    }
+                }
+
+                ListItemType {
                     id: amneziaDnsRow
 
                     Layout.fillWidth: true

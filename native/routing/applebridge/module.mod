@@ -4,6 +4,7 @@ go 1.27.1
 
 require (
 	github.com/StannisMod/amnezia-client/native/routing v0.0.0
+	github.com/StannisMod/amnezia-client/native/routing/nativedns v0.0.0
 	github.com/amnezia-vpn/amnezia-libxray v1.0.3
 	github.com/amnezia-vpn/amneziawg-go/v3 v3.1.20260814
 	github.com/xtls/xray-core v1.260724.0
@@ -73,6 +74,7 @@ require (
 	golang.org/x/time v0.15.0 // indirect
 	golang.org/x/tools v0.47.0 // indirect
 	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2 // indirect
+	golang.zx2c4.com/wireguard v0.0.0-20250521234502-f333402bd9cb // indirect
 	golang.zx2c4.com/wireguard/windows v1.0.1 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260414002931-afd174a4e478 // indirect
 	google.golang.org/grpc v1.82.1 // indirect
@@ -87,5 +89,7 @@ replace github.com/xtls/xray-core => github.com/amnezia-vpn/amnezia-xray-core v1
 
 replace github.com/StannisMod/amnezia-client/native/routing => ./amnezia-routing
 
+replace github.com/StannisMod/amnezia-client/native/routing/nativedns => ./amnezia-routing/nativedns
+
 // Immutable Amnezia RACK recovery backport; internal/builddeps/lock.json.
-replace gvisor.dev/gvisor => github.com/StannisMod/gvisor v0.0.0-20261106123454-9cf7fba2d57c
+replace gvisor.dev/gvisor => github.com/StannisMod/gvisor v0.0.0-20261111225907-cb0e626090af

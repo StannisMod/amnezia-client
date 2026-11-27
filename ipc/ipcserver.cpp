@@ -26,10 +26,12 @@
 IpcServer::IpcServer(QObject *parent) : IpcInterfaceSource(parent)
 {
     connect(&m_pingHelper, &PingHelper::connectionLose, this, &IpcServer::connectionLose);
+    Router::connectNativeDnsFailure(this, [this](const QString &owner) { emit nativeDnsFailed(owner); });
 }
 
 int IpcServer::createPrivilegedProcess()
 {
+    if (m_shuttingDown) return -1;
 #ifdef MZ_DEBUG
     qDebug() << "IpcServer::createPrivilegedProcess";
 #endif
@@ -45,12 +47,16 @@ int IpcServer::createPrivilegedProcess()
         return -1;
     }
 
+    // Register this source once. Reattaching replicas share the service-owned
+    // source; registering it again reports a duplicate QtRO root source.
     // Make sure any connections are handed to QtRO
-    QObject::connect(pd.localServer.data(), &QLocalServer::newConnection, this, [pd]() {
+    QObject::connect(pd.localServer.data(), &QLocalServer::newConnection, this,
+                     [pd, remotingEnabled = QSharedPointer<bool>::create(false)]() {
         qDebug() << "IpcServer new connection";
         if (pd.serverNode) {
             pd.serverNode->addHostSideConnection(pd.localServer->nextPendingConnection());
-            pd.serverNode->enableRemoting(pd.ipcProcess.data());
+            if (!*remotingEnabled)
+                *remotingEnabled = pd.serverNode->enableRemoting(pd.ipcProcess.data());
         }
     });
 
@@ -62,6 +68,24 @@ int IpcServer::createPrivilegedProcess()
     m_processes.insert(m_localpid, pd);
 
     return m_localpid;
+}
+
+void IpcServer::freezeForShutdown()
+{
+    m_shuttingDown = true;
+    for (const auto &descriptor : m_processes) descriptor.ipcProcess->freezeForShutdown();
+}
+
+bool IpcServer::shutdownNativeProcesses()
+{
+    bool stopped = true;
+    for (const auto &descriptor : m_processes) {
+        if (!descriptor.ipcProcess->processStopped()) {
+            descriptor.ipcProcess->terminate();
+            stopped = false; // Native management remains live until joined.
+        }
+    }
+    return stopped;
 }
 
 int IpcServer::routeAddList(const QString &gw, const QStringList &ips)
@@ -154,6 +178,11 @@ void IpcServer::clearLogs()
     Logger::clearLogs(true);
 }
 
+bool IpcServer::configureProxyIpv6(const QStringList &included, const QStringList &excluded)
+{
+    return Router::configureProxyIpv6(included, excluded);
+}
+
 bool IpcServer::createTun(const QString &dev, const QString &subnet)
 {
 #ifdef MZ_DEBUG
@@ -190,6 +219,31 @@ bool IpcServer::restoreResolvers()
     return Router::restoreResolvers();
 }
 
+bool IpcServer::updateResolversWithPolicy(const QString &ifname, const QList<QHostAddress> &resolvers,
+                                         bool ipv6Enabled, const QString &owner)
+{
+    // A generation identifier, not an authentication token.
+    if (owner.isEmpty() || owner.size() > 128 || owner.contains(QChar(0))) return false;
+    return Router::updateResolvers(ifname, resolvers, ipv6Enabled, owner);
+}
+
+bool IpcServer::restoreResolversWithOwner(const QString &owner)
+{
+    if (owner.isEmpty() || owner.size() > 128 || owner.contains(QChar(0))) return false;
+    return Router::restoreResolvers(owner);
+}
+
+bool IpcServer::startIkev2Dns(const QString &owner, const QByteArray &phonebook, const QStringList &endpoints)
+{
+    return !m_shuttingDown && Router::startIkev2Dns(owner, phonebook, endpoints);
+}
+QString IpcServer::ikev2DnsState(const QString &owner) { return Router::ikev2DnsState(owner); }
+bool IpcServer::stopIkev2Dns(const QString &owner) { return Router::stopIkev2Dns(owner); }
+bool IpcServer::acknowledgeIkev2DnsStopped(const QString &owner)
+{
+    return Router::acknowledgeIkev2DnsStopped(owner);
+}
+
 bool IpcServer::StartRoutingIpv6()
 {
 #ifdef MZ_DEBUG
@@ -206,6 +260,21 @@ bool IpcServer::StopRoutingIpv6()
 #endif
 
     return Router::StopRoutingIpv6();
+}
+
+bool IpcServer::setNativeIpv6Blocked(bool blocked, QStringList endpoints)
+{
+    if (!m_startupDnsRecoveryReady) return false;
+#ifdef Q_OS_WIN
+    if (Router::nativeBackendOwnsLifecycle()) return false;
+#endif
+#if defined(Q_OS_WIN) || defined(Q_OS_MACOS)
+    return KillSwitch::instance()->setNativeIpv6Blocked(blocked, endpoints);
+#else
+    Q_UNUSED(blocked)
+    Q_UNUSED(endpoints)
+    return false;
+#endif
 }
 
 void IpcServer::setLogsEnabled(bool enabled)

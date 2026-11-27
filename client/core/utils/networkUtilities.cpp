@@ -1,6 +1,9 @@
 #include "networkUtilities.h"
 #include <QtNetwork/qnetworkinterface.h>
 #include <cstddef>
+#ifdef Q_OS_LINUX
+#include "../../platforms/linux/daemon/linuxdefaultgateway.h"
+#endif
 
 #ifdef Q_OS_WIN
     #include <windows.h>
@@ -159,19 +162,18 @@ bool NetworkUtilities::checkIPv4Format(const QString &ip)
 
 bool NetworkUtilities::checkIpSubnetFormat(const QString &ip)
 {
-    if (!ip.contains("/"))
-        return checkIPv4Format(ip);
-
-    QStringList parts = ip.split("/");
-    if (parts.size() != 2)
-        return false;
-
-    bool ok;
-    int subnet = parts.at(1).toInt(&ok);
-    if (subnet >= 0 && subnet <= 32 && ok)
-        return checkIPv4Format(parts.at(0));
-    else
-        return false;
+    if (!ip.contains('/')) {
+        const QHostAddress address(ip);
+        return checkIPv4Format(ip) || (address.protocol() == QAbstractSocket::IPv6Protocol && address.scopeId().isEmpty());
+    }
+    const auto parts = ip.split('/');
+    if (parts.size() != 2) return false;
+    bool valid;
+    const int prefix = parts[1].toInt(&valid);
+    if (!valid || prefix < 0) return false;
+    const QHostAddress address(parts[0]);
+    if (address.protocol() == QAbstractSocket::IPv6Protocol) return address.scopeId().isEmpty() && prefix <= 128;
+    return prefix <= 32 && checkIPv4Format(parts[0]);
 }
 
 // static
@@ -291,125 +293,7 @@ QPair<QString, QNetworkInterface> NetworkUtilities::getGatewayAndIface()
     return { resGateway, QNetworkInterface::interfaceFromIndex(resIndex) };
 #endif
 #ifdef Q_OS_LINUX
-    constexpr int BUFFER_SIZE = 8192;
-    int     received_bytes = 0, msg_len = 0, route_attribute_len = 0;
-    int     sock = -1, msgseq = 0;
-    struct  nlmsghdr *nlh, *nlmsg;
-    struct  rtmsg *route_entry;
-    // This struct contain route attributes (route type)
-    struct  rtattr *route_attribute;
-    char    gateway_address[INET_ADDRSTRLEN], interface[IF_NAMESIZE];
-    char    msgbuf[100], buffer[BUFFER_SIZE];
-    char    *ptr = buffer;
-    struct timeval tv;
-
-    if ((sock = socket(AF_NETLINK, SOCK_RAW, NETLINK_ROUTE)) < 0) {
-        perror("socket failed");
-        return {};
-    }
-
-    memset(msgbuf, 0, sizeof(msgbuf));
-    memset(gateway_address, 0, sizeof(gateway_address));
-    memset(interface, 0, sizeof(interface));
-    memset(buffer, 0, sizeof(buffer));
-
-    /* point the header and the msg structure pointers into the buffer */
-    nlmsg = (struct nlmsghdr *)msgbuf;
-
-    /* Fill in the nlmsg header*/
-    nlmsg->nlmsg_len = NLMSG_LENGTH(sizeof(struct rtmsg));
-    nlmsg->nlmsg_type = RTM_GETROUTE; // Get the routes from kernel routing table .
-    nlmsg->nlmsg_flags = NLM_F_DUMP | NLM_F_REQUEST; // The message is a request for dump.
-    nlmsg->nlmsg_seq = msgseq++; // Sequence of the message packet.
-    nlmsg->nlmsg_pid = getpid(); // PID of process sending the request.
-
-    /* 1 Sec Timeout to avoid stall */
-    tv.tv_sec = 1;
-    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (struct timeval *)&tv, sizeof(struct timeval));
-    /* send msg */
-    if (send(sock, nlmsg, nlmsg->nlmsg_len, 0) < 0) {
-        perror("send failed");
-        return {};
-    }
-
-    /* receive response */
-    do
-    {
-        received_bytes = recv(sock, ptr, sizeof(buffer) - msg_len, 0);
-        if (received_bytes < 0) {
-            perror("Error in recv");
-            return {};
-        }
-
-        nlh = (struct nlmsghdr *) ptr;
-
-        /* Check if the header is valid */
-        if((NLMSG_OK(nlh, received_bytes) == 0) ||
-            (nlh->nlmsg_type == NLMSG_ERROR))
-        {
-            perror("Error in received packet");
-            return {};
-        }
-
-        /* If we received all data break */
-        if (nlh->nlmsg_type == NLMSG_DONE)
-            break;
-        else {
-            ptr += received_bytes;
-            msg_len += received_bytes;
-        }
-
-        /* Break if its not a multi part message */
-        if ((nlh->nlmsg_flags & NLM_F_MULTI) == 0)
-            break;
-    }
-    while ((nlh->nlmsg_seq != msgseq) || (nlh->nlmsg_pid != getpid()));
-
-    /* parse response */
-    int remaining = msg_len + received_bytes;
-    nlh = (struct nlmsghdr *) buffer;
-    for ( ; NLMSG_OK(nlh, remaining); nlh = NLMSG_NEXT(nlh, remaining))
-    {
-        /* Get the route data */
-        route_entry = (struct rtmsg *) NLMSG_DATA(nlh);
-
-        /* We are just interested in main routing table */
-        if (route_entry->rtm_table != RT_TABLE_MAIN)
-            continue;
-
-        /* Reset per-route to avoid cross-route state pollution */
-        memset(gateway_address, 0, sizeof(gateway_address));
-        memset(interface, 0, sizeof(interface));
-
-        route_attribute = (struct rtattr *) RTM_RTA(route_entry);
-        route_attribute_len = RTM_PAYLOAD(nlh);
-
-        /* Loop through all attributes */
-        for ( ; RTA_OK(route_attribute, route_attribute_len);
-             route_attribute = RTA_NEXT(route_attribute, route_attribute_len))
-        {
-            switch(route_attribute->rta_type) {
-            case RTA_OIF:
-                if_indextoname(*(int *)RTA_DATA(route_attribute), interface);
-                break;
-            case RTA_GATEWAY:
-                inet_ntop(AF_INET, RTA_DATA(route_attribute),
-                          gateway_address, sizeof(gateway_address));
-                break;
-            default:
-                break;
-            }
-        }
-
-        if ((*gateway_address) && (*interface)) {
-            qDebug() << "Gateway " << gateway_address << " for interface " << interface;
-            break;
-        }
-    }
-    if (!(*gateway_address) || !(*interface))
-        qDebug() << "getGatewayAndIface: no gateway found";
-    close(sock);
-    return { gateway_address, QNetworkInterface::interfaceFromName(interface) };
+    return amnezia::linuxNetwork::defaultGateway();
 #endif
 #if defined(Q_OS_MAC) && !defined(Q_OS_IOS) && !defined(MACOS_NE)
     QString gateway;

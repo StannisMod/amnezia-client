@@ -21,8 +21,9 @@ class WindowsTunnelService final : public QObject {
   ~WindowsTunnelService();
 
   bool start(const QString& configData);
-  void stop();
+  bool stop();
   bool isRunning();
+  bool ownsNativeLifecycle() const { return m_service || m_process; }
   QString uapiCommand(const QString& command);
 
  signals:
@@ -40,6 +41,7 @@ class WindowsTunnelService final : public QObject {
   // These are really SC_HANDLEs in disguise.
   void* m_scm = nullptr;
   void* m_service = nullptr;
+  void* m_process = nullptr; // Pinned native worker, retained across stop retries.
 };
 
 #endif  // WINDOWSTUNNELSERVICE_H

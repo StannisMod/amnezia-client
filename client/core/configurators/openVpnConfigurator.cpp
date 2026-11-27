@@ -8,6 +8,8 @@
 #include <QString>
 #include <QTemporaryDir>
 #include <QTemporaryFile>
+#include <QElapsedTimer>
+#include <QThread>
 #if defined(Q_OS_ANDROID) || defined(Q_OS_IOS)
     #include <QGuiApplication>
 #else
@@ -16,6 +18,8 @@
 
 #include "core/utils/errorCodes.h"
 #include "core/utils/routeModes.h"
+#include "core/utils/openVpnIpv6.h"
+#include "core/utils/openVpnDnsScripts.h"
 #include "core/utils/commonStructs.h"
 #include "core/utils/networkUtilities.h"
 #include "core/utils/containerEnum.h"
@@ -142,10 +146,53 @@ ProtocolConfig OpenVpnConfigurator::createConfig(const ServerCredentials &creden
     clientConfig.nativeConfig = config;
     clientConfig.clientId = connData.clientId;
     clientConfig.blockOutsideDns = false;
-    
     protocolConfig.setClientConfig(clientConfig);
-    
-    return protocolConfig;
+    ProtocolConfig result = protocolConfig;
+    // Capability discovery is best effort; failed SSH must not discard a
+    // successfully issued profile. An unobserved new profile remains IPv4-only.
+    refreshIpv6Capability(credentials, container, result);
+    return result;
+}
+
+bool OpenVpnConfigurator::applyObservedIpv6Capability(ProtocolConfig &profile,
+                                                       const QString &serverConfig, const QString &kernelAddresses)
+{
+    auto *openVpn = profile.as<OpenVpnProtocolConfig>();
+    if (!openVpn || !openVpn->clientConfig) return false;
+    const bool active = openVpnIpv6::activeServerTunnel(serverConfig, kernelAddresses);
+    // A configured pool without a ready address is an inconclusive observation
+    // during startup/DAD, not evidence that this server is IPv4-only.
+    if (!active && openVpnIpv6::serverPoolDirective().match(serverConfig).hasMatch()) return false;
+    openVpn->clientConfig->ipv6Tunnel = active;
+    return true;
+}
+
+ErrorCode OpenVpnConfigurator::refreshIpv6Capability(const ServerCredentials &credentials,
+                                                      DockerContainer container, ProtocolConfig &profile, bool waitForTunnel)
+{
+    const auto *openVpn = profile.as<OpenVpnProtocolConfig>();
+    if (!openVpn || !openVpn->clientConfig) return ErrorCode::InternalError;
+    ErrorCode capabilityError = ErrorCode::NoError;
+    const auto serverText = readCapabilityFile(credentials, container,
+        "/opt/amnezia/openvpn/server.conf", capabilityError);
+    if (capabilityError != ErrorCode::NoError) return capabilityError;
+    QElapsedTimer elapsed;
+    elapsed.start();
+    for (;;) {
+        const auto addresses = readCapabilityFile(credentials, container,
+            "/proc/net/if_inet6", capabilityError);
+        if (capabilityError != ErrorCode::NoError) return capabilityError;
+        if (applyObservedIpv6Capability(profile, serverText, addresses)) return ErrorCode::NoError;
+        if (!waitForTunnel || elapsed.elapsed() >= 5000) return ErrorCode::ProtocolUpdateOutcomeUnknown;
+        QThread::msleep(250);
+    }
+}
+
+QByteArray OpenVpnConfigurator::readCapabilityFile(const ServerCredentials &credentials,
+                                                    DockerContainer container, const QString &path, ErrorCode &error)
+{
+    if (!m_sshSession) { error = ErrorCode::InternalError; return {}; }
+    return m_sshSession->getTextFileFromContainer(container, credentials, path, error);
 }
 
 ProtocolConfig OpenVpnConfigurator::processConfigWithLocalSettings(const ConnectionSettings &settings,
@@ -154,7 +201,10 @@ ProtocolConfig OpenVpnConfigurator::processConfigWithLocalSettings(const Connect
     applyDnsToNativeConfig(settings.dns, protocolConfig);
 
     QString config = protocolConfig.nativeConfig();
-
+    const auto *openVpn = protocolConfig.as<OpenVpnProtocolConfig>();
+    const bool ipv6Tunnel = settings.ipv6Enabled && openVpn && openVpn->clientConfig && openVpn->clientConfig->ipv6Tunnel;
+    config.remove(openVpnIpv6::blockingBlock());
+    config.remove(openVpnIpv6::captureBlock());
     if (!settings.isApiConfig) {
         QRegularExpression regex("redirect-gateway.*");
         config.replace(regex, "");
@@ -166,23 +216,37 @@ ProtocolConfig OpenVpnConfigurator::processConfigWithLocalSettings(const Connect
 
         if (!settings.splitTunneling.isSitesSplitTunnelingEnabled) {
             config.append("\nredirect-gateway def1 ipv6 bypass-dhcp\n");
-            config.append("block-ipv6\n");
-        } else if (settings.splitTunneling.routeMode == RouteMode::VpnOnlyForwardSites) {
-            // no redirect-gateway
-        } else if (settings.splitTunneling.routeMode == RouteMode::VpnAllExceptSites) {
-#if !defined(Q_OS_ANDROID) && !defined(Q_OS_IOS) && !defined(MACOS_NE)
-            config.append("\nredirect-gateway ipv6 !ipv4 bypass-dhcp\n");
-#endif
-            config.append("block-ipv6\n");
         }
     }
+    // Provider-owned IPv4 directives remain intact, but an API profile must
+    // satisfy the same IPv6 capture contract as native/self-hosted profiles.
+    const auto &split = settings.splitTunneling;
+    const auto mode = !split.isSitesSplitTunnelingEnabled || split.siteRoutes.isEmpty()
+        ? RouteMode::VpnAllSites : split.routeMode;
+    const QStringList dns{settings.dns.primaryDns, settings.dns.secondaryDns};
+    config.append(ipv6Tunnel ? openVpnIpv6::captureDirectives(mode, split.siteRoutes, dns)
+        : openVpnIpv6::blockingDirectives(config, settings.ipv6Enabled ? mode : RouteMode::VpnAllSites,
+                                         split.siteRoutes, dns));
+
+#ifdef MZ_ANDROID
+    config = openVpnIpv6::forTunBuilder(config);
+#endif
 
 #ifndef MZ_WINDOWS
     config.replace("block-outside-dns", "");
 #endif
 
 #if (defined(MZ_MACOS) || defined(MZ_LINUX))
-    config.append(QString("\nscript-security 2\n"
+    bool serviceDns = false;
+#if (defined(MZ_LINUX) && !defined(MZ_ANDROID)) || (defined(MZ_MACOS) && !defined(MACOS_NE))
+    serviceDns = !settings.ipv6Enabled;
+#endif
+    const auto resolverScript = qApp->applicationDirPath() + "/update-resolv-conf.sh";
+    if (serviceDns) {
+        // Only remove our exact bundled writer; do not silently rewrite a
+        // provider's unrelated scripts or routing hooks.
+        config = openVpnNativeDns::withoutBundledResolverScript(config, resolverScript);
+    } else config.append(QString("\nscript-security 2\n"
                          "up %1/update-resolv-conf.sh\n"
                          "down %1/update-resolv-conf.sh\n")
                   .arg(qApp->applicationDirPath()));
@@ -198,6 +262,11 @@ ProtocolConfig OpenVpnConfigurator::processConfigWithExportSettings(const Export
     applyDnsToNativeConfig(settings.dns, protocolConfig);
 
     QString config = protocolConfig.nativeConfig();
+    const auto *openVpn = protocolConfig.as<OpenVpnProtocolConfig>();
+    const bool ipv6Tunnel = openVpn && openVpn->clientConfig && openVpn->clientConfig->ipv6Tunnel;
+    config.remove(openVpnIpv6::blockingBlock());
+    config.remove(openVpnIpv6::captureBlock());
+
 
     QRegularExpression regex("redirect-gateway.*");
     config.replace(regex, "");
@@ -208,7 +277,8 @@ ProtocolConfig OpenVpnConfigurator::processConfigWithExportSettings(const Export
     }
 
     config.append("\nredirect-gateway def1 ipv6 bypass-dhcp\n");
-    config.append("block-ipv6\n");
+    config.append(ipv6Tunnel ? openVpnIpv6::captureDirectives(RouteMode::VpnAllSites, {}, {})
+        : openVpnIpv6::blockingDirectives(config, RouteMode::VpnAllSites, {}, {}));
     config.replace("block-outside-dns", "");
 
     protocolConfig.setNativeConfig(config);

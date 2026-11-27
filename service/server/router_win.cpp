@@ -309,8 +309,27 @@ void RouterWin::resetIpStack()
     }
 }
 
+bool RouterWin::configureProxyIpv6(const QStringList &included, const QStringList &excluded)
+{
+    if (!m_proxyInterfaceIndex || m_proxyIpv6) return false;
+    auto policy = std::make_unique<WindowsProxyIpv6>(m_proxyInterfaceIndex);
+    if (!policy->configure(included, excluded)) return false;
+    m_proxyIpv6 = std::move(policy);
+    return true;
+}
+
+bool RouterWin::deleteTun(const QString &dev)
+{
+    if (dev != "tun2") return true;
+    const bool cleared = !m_proxyIpv6 || m_proxyIpv6->clear();
+    m_proxyIpv6.reset();
+    m_proxyInterfaceIndex = 0;
+    return cleared;
+}
+
 bool RouterWin::createTun(const QString &dev, const QString &subnet)
 {
+    if (dev == "tun2" && m_proxyInterfaceIndex) return false;
     NET_LUID luid;
     DWORD res = ConvertInterfaceAliasToLuid(reinterpret_cast<const wchar_t*>(dev.utf16()), &luid);
     if (res != NO_ERROR) {
@@ -371,12 +390,19 @@ bool RouterWin::createTun(const QString &dev, const QString &subnet)
         return false;
     }
 
-    res = WaitForSingleObject(hEvent, 10000);
+    if (res == ERROR_OBJECT_ALREADY_EXISTS) {
+        ctx.found = GetUnicastIpAddressEntry(&row) == NO_ERROR;
+    } else {
+        res = WaitForSingleObject(hEvent, 10000);
+    }
     if (res == WAIT_TIMEOUT) {
         qCritical() << "Timeout of waiting for IP assignment for " << dev << " device";
         return false;
     }
 
+    if (ctx.found && dev == "tun2") {
+        if (ConvertInterfaceLuidToIndex(&luid, &m_proxyInterfaceIndex) != NO_ERROR) return false;
+    }
     return ctx.found;
 }
 
@@ -513,13 +539,14 @@ BOOL RouterWin::SuspendProcess(BOOL fSuspend, DWORD dwProcessId)
     return ok;
 }
 
-bool RouterWin::updateResolvers(const QString& ifname, const QList<QHostAddress>& resolvers)
+bool RouterWin::updateResolvers(const QString& ifname, const QList<QHostAddress>& resolvers,
+                               bool ipv6Enabled, const QString &owner)
 {
-    return m_dnsUtil->updateResolvers(ifname, resolvers);
+    return m_dnsUtil->updateResolvers(ifname, resolvers, ipv6Enabled, owner);
 }
 
-bool RouterWin::restoreResolvers() {
-    return m_dnsUtil->restoreResolvers();
+bool RouterWin::restoreResolvers(const QString &owner) {
+    return m_dnsUtil->restoreResolvers(owner);
 }
 
 QNetworkInterface RouterWin::findLoopbackIface()

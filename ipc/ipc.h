@@ -64,6 +64,7 @@ inline QStringList sanitizeArguments(PermittedProcess proc, const QStringList &a
         namedArgs["--config"] = [](const QString& v) { return !v.isEmpty(); };
         namedArgs["--management"] = [](const QString& v) { return !v.isEmpty(); };
         namedArgs["--management-client"] = nullptr;
+        namedArgs["--management-up-down"] = nullptr;
         positionalArgs.append([](const QString& v) {
             bool ok;
             int port = v.toInt(&ok);

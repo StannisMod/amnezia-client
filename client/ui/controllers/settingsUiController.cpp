@@ -50,6 +50,18 @@ bool SettingsUiController::isAmneziaDnsEnabled()
     return m_settingsController->isAmneziaDnsEnabled();
 }
 
+bool SettingsUiController::isIpv6Enabled()
+{
+    return m_settingsController->isIpv6Enabled();
+}
+
+void SettingsUiController::toggleIpv6(bool enable)
+{
+    if (isIpv6Enabled() == enable) return;
+    m_settingsController->toggleIpv6(enable);
+    emit ipv6EnabledChanged();
+}
+
 QString SettingsUiController::getPrimaryDns()
 {
     return m_settingsController->getPrimaryDns();
@@ -133,6 +145,7 @@ void SettingsUiController::restoreAppConfigFromData(const QByteArray &data)
         emit amneziaDnsToggled(amneziaDnsEnabled);
 
         emit restoreBackupFinished();
+        emit ipv6EnabledChanged();
         emit autoStartChanged();
         emit startMinimizedChanged();
 
@@ -152,6 +165,7 @@ QString SettingsUiController::getAppVersion()
 void SettingsUiController::clearSettings()
 {
     m_settingsController->clearSettings();
+    emit ipv6EnabledChanged();
     emit autoStartChanged();
     emit startMinimizedChanged();
     emit resetLanguageToSystem();

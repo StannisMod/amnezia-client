@@ -6,4 +6,5 @@ public:
     QDebug debug() { return qDebug(); }
     QDebug warning() { return qWarning(); }
     QDebug error() { return qCritical(); }
+    QString sensitive(const QString &) { return QStringLiteral("<sensitive>"); }
 };

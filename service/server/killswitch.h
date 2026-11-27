@@ -25,6 +25,9 @@ public:
     bool beginRoutedSession(const QString &helperPath);
     bool routedInterfaceReady(const QString &captureId);
     bool endRoutedSession();
+#if defined(Q_OS_MACOS) || defined(Q_OS_WIN)
+    bool setNativeIpv6Blocked(bool blocked, const QStringList &endpoints = {});
+#endif
 
 private:
     KillSwitch(QObject* parent) {};
@@ -34,6 +37,9 @@ private:
     bool m_routedSession = false;
     QString m_routingHelperPath;
     quint64 m_routingLuid = 0;
+#ifdef Q_OS_MACOS
+    bool m_nativeIpv6Blocked = false;
+#endif
 
 };
 

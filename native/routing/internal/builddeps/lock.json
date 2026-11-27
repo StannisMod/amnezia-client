@@ -6,32 +6,38 @@
       "upstream_version": "v0.0.0-20231202080848-1f7806d17489",
       "upstream_commit": "1f7806d17489620e45d46c33933cf8f7010a1436",
       "module": "github.com/StannisMod/gvisor",
-      "version": "v0.0.0-20261106123450-8155b9498bd4",
-      "commit": "8155b9498bd45bf332199ed5167cbfc6963ebd67",
-      "sum": "h1:W+1xMS1yGhKupMJUMVALHrMsBK5jXUEXVEQYqJ68r/g=",
+      "version": "v0.0.0-20261111220521-edf112b2636e",
+      "commit": "edf112b2636e4b08828e064dd7613711f3d151bf",
+      "sum": "h1:mVHrJflTkuOmfhdOWFACr1m2I7tgeEro4f+UIX8UzKI=",
       "go_mod_sum": "h1:10sU+Uh5KKNv1+2x2A0Gvzt8FjD3ASIhorV3YsauXhk=",
       "source_sha256": {
-        "pkg/tcpip/transport/tcp/snd.go": "bdfbdcbedd9514c418bc95f70e8ce92ef804694b41314d1dfbcbd11b692448fb",
+        "pkg/tcpip/transport/tcp/snd.go": "f8436a9c05e78720c75d6223a62514dd418c0096f2b54f87a4a83d61abe387ac",
         "pkg/tcpip/transport/tcp/rack.go": "dcc688b482f3a1af74228b97544cf008baa454ec1536a53c0e5bb40f67266407",
         "pkg/tcpip/transport/tcp/segment.go": "1670f3cffb98140b2d37f1cca2817ab740479cc11af8e0f616397c247c4945c8",
-        "pkg/amnezia/recovery.go": "4a36bb0e633e1cf6551b54f135702223bcb402a0929aab6a9ba0af344762dcb9",
-        "NOTICE-AMNEZIA": "6ee2f057c37cfa924a29b5cecf032670156f85b30e6190ce835180543c7d2035"
+        "pkg/amnezia/recovery.go": "9c28c3a8aeb8247e1b32398f8bedb20d4a82cdec95a2ea6439e92ed97502282b",
+        "NOTICE-AMNEZIA": "72d6d1c41e7a4b412ef3f5a4147ad7a6912cd5cd349cbeae5677907f1b05c1b0",
+        "pkg/tcpip/transport/tcp/verified_path_probe.go": "c74bd0368bee4488c851633a0c555d6646bd24b30e5044357af0fa927db4ccde",
+        "pkg/tcpip/transport/tcp/tcp_state_autogen.go": "3a401fbfbe7f570e1c520775baba7d71590537a5969f2bfa96c770a7fdc107b0",
+        "pkg/tcpip/adapters/gonet/verified_path_probe.go": "ac1670df1de90153fce42e33a467b8c34ff95b69e947345e7fc75e71940294e8"
       }
     },
     "apple": {
       "upstream_version": "v0.0.0-20260122175437-89a5d21be8f0",
       "upstream_commit": "89a5d21be8f0440c78fa6bbc01f98e23021e7132",
       "module": "github.com/StannisMod/gvisor",
-      "version": "v0.0.0-20261106123454-9cf7fba2d57c",
-      "commit": "9cf7fba2d57c7fe7251d3b491d2cb513b8a2cc60",
-      "sum": "h1:pEWgJFRhdRNuYXaNs2Adxlx7hLX3su+12nAgx05rg6k=",
+      "version": "v0.0.0-20261111225907-cb0e626090af",
+      "commit": "cb0e626090af904ad920b2def837bce403efcd57",
+      "sum": "h1:HE7FHuAWFw7N4s/DMQxujkk1eT3AfW1ImKL0v/AkcCI=",
       "go_mod_sum": "h1:QkHjoMIBaYtpVufgwv3keYAbln78mBoCuShZrPrer1Q=",
       "source_sha256": {
-        "pkg/tcpip/transport/tcp/snd.go": "19e587cc956d858a4a6c2561df7c66f327e6fc2a92173aa8ec5df0a4c13b8b74",
+        "NOTICE-AMNEZIA": "0827a8351d35d46d77275d5a94c559cbf2fd450965a63c864c8cddeeeb93a85c",
+        "pkg/amnezia/recovery.go": "cd80f57ec6ccf6ba52a542f65d865b1b4d5517c1885119096ec20909b5bed2f2",
+        "pkg/tcpip/adapters/gonet/verified_path_probe.go": "ac1670df1de90153fce42e33a467b8c34ff95b69e947345e7fc75e71940294e8",
         "pkg/tcpip/transport/tcp/rack.go": "bfaf2f56c70ca6e990ad2b50b0a272eb8416dd288903b0f55293ace4eb73e1e0",
         "pkg/tcpip/transport/tcp/segment.go": "ba770fe775df4ec70589ed34d307938ea1b0d27dc47164c1774d868c58368374",
-        "pkg/amnezia/recovery.go": "0e77f1b176445f79e0b09e3dbf8bd072d7bd21b2c3b749bc5e3f61d8b917f77e",
-        "NOTICE-AMNEZIA": "fc17dfae8a058fadf375dbff4812da8a5f869b1e72ac01c6d934cfaa5f14cb52"
+        "pkg/tcpip/transport/tcp/snd.go": "1275ca138d5b082fed59cbc9e8d2c3d8f3dce419d21044ac78e270d9e8f708c0",
+        "pkg/tcpip/transport/tcp/tcp_state_autogen.go": "ecd600781b76071489f5c5b4cebe051970c4c202a340d8417fcfdf69c2529247",
+        "pkg/tcpip/transport/tcp/verified_path_probe.go": "b4cf64a8bf5726bcac5eeebb60cc01a94629471a4c3de385379978217074d587"
       }
     }
   }

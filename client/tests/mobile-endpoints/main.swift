@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(NetworkExtension)
+import NetworkExtension
+#endif
 
 func require(_ value: @autoclosure () -> Bool, _ message: String) {
     if !value() { fatalError(message) }
@@ -14,10 +17,12 @@ require(policy.nextDelay(for: replacement) == 0, "new path starts immediately")
 policy.cancel()
 require(!policy.accepts(replacement), "stop invalidates pending DNS")
 
-func config(_ host: String) throws -> WGConfig {
-    let raw: [String: Any] = ["dns1": "1.1.1.1", "dns2": "", "mtu": "1280", "hostName": host,
+func config(_ host: String, ipv6Enabled: Bool? = nil, routed: Bool = false) throws -> WGConfig {
+    var raw: [String: Any] = ["dns1": "1.1.1.1", "dns2": "", "mtu": "1280", "hostName": host,
         "port": 51820, "client_ip": "10.8.0.2/32", "client_priv_key": "PRIVATE", "server_pub_key": "PUBLIC",
         "allowed_ips": ["0.0.0.0/0", "::/0"], "splitTunnelType": 0, "splitTunnelSites": []]
+    if let ipv6Enabled { raw["ipv6Enabled"] = ipv6Enabled }
+    if routed { raw["routingConfig"] = "{}" }
     return try JSONDecoder().decode(WGConfig.self, from: JSONSerialization.data(withJSONObject: raw))
 }
 let domain = try config("vpn.example.org")
@@ -28,6 +33,34 @@ let ipv6 = try config("2001:db8::1")
 require(ipv6.str.contains("Endpoint = [2001:db8::1]:51820"), "IPv6 endpoints need brackets")
 let bracketed = try config("[2001:db8::1]")
 require(bracketed.str.contains("Endpoint = [2001:db8::1]:51820"), "IPv6 must not be bracketed twice")
+for enabled in [nil, true, false] as [Bool?] {
+    for routed in [false, true] {
+        let value = try config("vpn.example.org", ipv6Enabled: enabled, routed: routed)
+        require(value.nativeIPv6Blocked == (enabled == false && !routed), "Only explicit native OFF enables the guard")
+        require(value.permitsNativePeerRange("0.0.0.0/0"), "OFF preserves IPv4 peer policy")
+        require(value.permitsNativePeerRange("::/0") == !value.nativeIPv6Blocked, "OFF removes every IPv6 peer route")
+        require(value.permitsNativePeerRange("2001:db8::/32") == !value.nativeIPv6Blocked, "Specific peer routes cannot bypass OFF")
+    }
+}
+#if canImport(NetworkExtension)
+for hasAddress in [false, true] {
+    let settings = NEPacketTunnelNetworkSettings(tunnelRemoteAddress: "127.0.0.1")
+    settings.ipv4Settings = NEIPv4Settings(addresses: ["10.8.0.2"], subnetMasks: ["255.255.255.255"])
+    settings.ipv6Settings = NEIPv6Settings(addresses: hasAddress ? ["fd42::2"] : [],
+                                         networkPrefixLengths: hasAddress ? [64] : [])
+    let endpoint = NEIPv6Route(destinationAddress: "2001:db8::1", networkPrefixLength: 128)
+    settings.ipv6Settings?.excludedRoutes = [endpoint]
+    for _ in 0..<2 {
+        WGConfig.retainBlockedIPv6Capture(in: settings)
+        require(settings.ipv6Settings?.addresses.isEmpty == false, "Native OFF always has an IPv6 capture address")
+        require(settings.ipv6Settings?.includedRoutes?.count == 1 &&
+                settings.ipv6Settings?.includedRoutes?.first?.destinationNetworkPrefixLength.intValue == 0,
+                "Native OFF captures the full family on initial and repeated settings")
+        require(settings.ipv6Settings?.excludedRoutes?.first === endpoint, "Native OFF preserves the transport endpoint")
+        require(settings.ipv4Settings?.addresses == ["10.8.0.2"], "Native OFF leaves IPv4 settings intact")
+    }
+}
+#endif
 print("Apple endpoint policy and config tests passed")
 
 var idleHealth = EndpointHealthPolicy(staleMs: 10000)

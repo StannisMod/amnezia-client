@@ -7,3 +7,6 @@ sudo docker run -d \
 --name $CONTAINER_NAME $CONTAINER_NAME
 
 sudo docker network connect amnezia-dns-net $CONTAINER_NAME
+if [ -n "$AMNEZIA_IPV6_NETWORK" ]; then
+    amnezia_attach_ipv6_network "$CONTAINER_NAME" || exit 1
+fi

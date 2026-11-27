@@ -3,6 +3,23 @@
 
 #include "ipc.h"
 #include <QObject>
+#include <memory>
+class OpenVpnDnsSession;
+#if defined(Q_OS_LINUX) && !defined(Q_OS_ANDROID)
+#include "../client/platforms/linux/daemon/linuxopenvpnipv6routes.h"
+#include "../client/platforms/linux/daemon/linuxopenvpndevice.h"
+#include <memory>
+#endif
+#ifdef Q_OS_WIN
+#include "../client/platforms/windows/daemon/windowsopenvpnipv6api.h"
+#include "../client/platforms/windows/daemon/windowsopenvpnipv6routes.h"
+#include <memory>
+#endif
+
+#if defined(Q_OS_MACOS) && !defined(MACOS_NE)
+#include "../client/platforms/macos/daemon/macopenvpnipv6routes.h"
+#include <memory>
+#endif
 
 #ifndef Q_OS_IOS
 #include "rep_ipc_process_interface_source.h"
@@ -18,6 +35,13 @@ public:
     void terminate() override;
     void kill() override;
     void close() override;
+    bool addOpenVpnIpv6Hosts(const QString &localIpv4, const QStringList &hosts, bool throughVpn) override;
+    bool configureManagedOpenVpn() override;
+    bool managedOpenVpnCommand(const QString &command) override;
+    bool managedOpenVpnStopped() override;
+    bool processStopped() override;
+    int confirmedExitCode() override;
+    void freezeForShutdown() { m_shutdownRequested = true; }
 
     void setArguments(const QStringList &arguments) override;
     void setInputChannelMode(QProcess::InputChannelMode mode) override;
@@ -38,8 +62,31 @@ public:
 signals:
 
 private:
+    bool cleanupNativeResources();
+    void finishNativeProcess(int code, QProcess::ExitStatus status);
+    void finishPending();
+    void stopManaged();
+    void reportManagedFailure();
+    std::unique_ptr<OpenVpnDnsSession> m_dnsSession;
+    bool m_exitPending = false, m_tearingDown = false;
+    bool m_shutdownRequested = false;
+    bool m_managedFailureReported = false;
+    bool m_hasProcessResult = false;
+    int m_exitCode = 0;
+    QProcess::ExitStatus m_exitStatus = QProcess::NormalExit;
     amnezia::PermittedProcess m_program = amnezia::PermittedProcess::Invalid;
     QSharedPointer<QProcess> m_process;
+    QStringList m_arguments;
+#if defined(Q_OS_LINUX) && !defined(Q_OS_ANDROID)
+    std::unique_ptr<LinuxOpenVpnIpv6Routes> m_ipv6Routes;
+    std::unique_ptr<LinuxOpenVpnDevice> m_openVpnDevice;
+#endif
+#ifdef Q_OS_WIN
+    std::unique_ptr<WindowsOpenVpnIpv6Routes> m_windowsIpv6Routes;
+#endif
+#if defined(Q_OS_MACOS) && !defined(MACOS_NE)
+    std::unique_ptr<MacOpenVpnIpv6Routes> m_macIpv6Routes;
+#endif
 };
 
 #else

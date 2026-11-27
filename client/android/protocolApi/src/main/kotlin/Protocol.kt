@@ -11,6 +11,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import org.amnezia.vpn.util.Log
 import org.amnezia.vpn.util.net.InetNetwork
 import org.json.JSONObject
+import java.net.Inet6Address
 
 private const val TAG = "Protocol"
 
@@ -19,6 +20,8 @@ const val VPN_SESSION_NAME = "AmneziaVPN"
 private const val SPLIT_TUNNEL_DISABLE = 0
 private const val SPLIT_TUNNEL_INCLUDE = 1
 private const val SPLIT_TUNNEL_EXCLUDE = 2
+
+const val STRICT_PRIVATE_DNS_DOMAIN_RULES = "STRICT_PRIVATE_DNS_DOMAIN_RULES"
 
 abstract class Protocol {
 
@@ -31,10 +34,39 @@ abstract class Protocol {
     protected var endpointResolver: ((String) -> List<java.net.InetAddress>)? = null
     protected var networkDnsSnapshot: (() -> JSONObject)? = null
     protected var networkDnsProtect: ((Int, String) -> Boolean)? = null
-    fun configureNetworkDns(snapshot: () -> JSONObject, protect: (Int, String) -> Boolean) {
+    protected var networkDnsIdentity: (() -> String?)? = null
+    protected var strictPrivateDnsPolicy: (() -> Boolean)? = null
+    fun configureStrictPrivateDnsPolicy(policy: () -> Boolean) { strictPrivateDnsPolicy = policy }
+    /** Service shutdown/replacement must retain this owner until cleanup confirms. */
+    open val hasPendingNativeCleanup: Boolean get() = false
+    protected var policyNoticeChanged: ((Long, String?) -> Unit)? = null
+    fun configurePolicyNotice(callback: (Long, String?) -> Unit) { policyNoticeChanged = callback }
+    open fun recheckNetworkDnsPolicy() {}
+
+    protected var validateNetworkDnsPolicy: ((JSONObject) -> Unit)? = null
+    fun configureNetworkDns(snapshot: () -> JSONObject, protect: (Int, String) -> Boolean, identity: (() -> String?)? = null, validatePolicy: ((JSONObject) -> Unit)? = null) {
         networkDnsSnapshot = snapshot
+        validateNetworkDnsPolicy = validatePolicy
+        networkDnsIdentity = identity
         networkDnsProtect = protect
     }
+
+    protected var underlayIdentity: (() -> String?)? = null
+    protected var underlayProtect: ((Int) -> Boolean)? = null
+    fun configureUnderlay(identity: () -> String?, protect: (Int) -> Boolean) {
+        underlayIdentity = identity
+        underlayProtect = protect
+    }
+    open fun updateApplicationPolicy(policy: JSONObject, expectedSession: Long): JSONObject =
+        throw VpnException("Live application routing is unsupported by this protocol")
+    /** Returns true only when changed OS application membership requires a new VPN session. */
+    open fun refreshApplicationPackages(packageName: String, refreshCapture: Boolean, vpnBuilder: Builder, expectedSession: Long): Boolean = false
+    open fun restartApplicationCapture(vpnBuilder: Builder, protect: (Int) -> Boolean, expectedSession: Long) {
+        throw VpnException("Application capture restart is unsupported by this protocol")
+    }
+    open fun connectionDiagnostics(): JSONObject? = null
+    open val preservesConnections: Boolean get() = false
+    open fun refreshVpn(vpnBuilder: Builder, protect: (Int) -> Boolean, force: Boolean) = reconnectVpn(vpnBuilder, protect)
 
     protected var endpointRecovery: ((() -> Boolean) -> Unit)? = null
     fun configureEndpointRecovery(request: (() -> Boolean) -> Unit) { endpointRecovery = request }
@@ -52,6 +84,19 @@ abstract class Protocol {
         isInitialized = true
     }
 
+    protected fun releaseNetworkHooks() {
+        endpointResolver = null
+        networkDnsSnapshot = null
+        validateNetworkDnsPolicy = null
+        policyNoticeChanged = null
+        networkDnsIdentity = null
+        strictPrivateDnsPolicy = null
+        networkDnsProtect = null
+        endpointRecovery = null
+        underlayIdentity = null
+        underlayProtect = null
+    }
+
     protected abstract fun internalInit()
 
     abstract suspend fun startVpn(config: JSONObject, vpnBuilder: Builder, protect: (Int) -> Boolean)
@@ -61,6 +106,7 @@ abstract class Protocol {
     abstract fun reconnectVpn(vpnBuilder: Builder, protect: (Int) -> Boolean)
 
     protected fun ProtocolConfig.Builder.configSplitTunneling(config: JSONObject) {
+        if (!config.optBoolean("ipv6_enabled", true)) requireFullIpv6Capture()
         if (!allowSplitTunneling) {
             Log.i(TAG, "Global address split tunneling is prohibited, " +
                 "only tunneling from the protocol config is used")
@@ -79,6 +125,7 @@ abstract class Protocol {
 
         for (i in 0 until splitTunnelSites.length()) {
             val address = InetNetwork.parse(splitTunnelSites.getString(i))
+            if (!config.optBoolean("ipv6_enabled", true) && address.address is Inet6Address) continue
             addressHandlerFunc(address)
         }
     }
@@ -119,9 +166,9 @@ abstract class Protocol {
             }
         }
 
-        config.searchDomain?.let {
-            Log.d(TAG, "addSearchDomain: $it")
-            vpnBuilder.addSearchDomain(it)
+        for (domain in config.searchDomains) {
+            Log.d(TAG, "addSearchDomain: $domain")
+            vpnBuilder.addSearchDomain(domain)
         }
 
         for ((inetNetwork, include) in config.routes) {

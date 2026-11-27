@@ -113,7 +113,10 @@ public:
         Default = 0x00,
         CanBeSuspended = 0x01,
         CannotBeStopped = 0x02,
-        NeedsStopOnShutdown = 0x04
+        NeedsStopOnShutdown = 0x04,
+        // Windows service calls quit explicitly after asynchronous cleanup.
+        // SCM remains STOP_PENDING, with progress checkpoints, until then.
+        DeferredStop = 0x08
     };
 
     Q_DECLARE_FLAGS(ServiceFlags, ServiceFlag)

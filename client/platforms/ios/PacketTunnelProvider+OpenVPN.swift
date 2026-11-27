@@ -7,6 +7,7 @@ struct OpenVPNConfig: Decodable {
     let config: String
     let splitTunnelType: Int
     let splitTunnelSites: [String]
+    let ipv6Enabled: Bool?
 }
 
 extension PacketTunnelProvider {
@@ -16,6 +17,10 @@ extension PacketTunnelProvider {
         openVpnLocalAddress = nil
         openVpnLocalMask = nil
         lastOpenVPNSettings = nil
+        openVpnBlocksIPv6 = false
+        openVpnStopping = false
+        setOpenVPNIPv6Blocked(true)
+        startOpenVPNNativeDNS()
 
         guard let protocolConfiguration = self.protocolConfiguration as? NETunnelProviderProtocol,
               let providerConfiguration = protocolConfiguration.providerConfiguration,
@@ -32,6 +37,7 @@ extension PacketTunnelProvider {
             openVpnDnsServers = Self.extractDnsServers(from: openVPNConfig.config)
             openVpnRemoteAddress = Self.extractRemoteHost(from: openVPNConfig.config)
             openVpnRedirectGatewayDef1 = Self.hasRedirectGatewayDef1(in: openVPNConfig.config)
+            openVpnBlocksIPv6 = openVPNConfig.ipv6Enabled == false || OpenVPNIPv6Policy.blocksIPv6(in: openVPNConfig.config)
             if let openVpnRemoteAddress {
                 ovpnLog(.info, title: "Remote", message: "host=\(openVpnRemoteAddress)")
             }
@@ -135,6 +141,7 @@ extension PacketTunnelProvider {
             beginMarkers: ["-----BEGIN OpenVPN Static key V1-----"],
             endMarkers: ["-----END OpenVPN Static key V1-----"]
         )
+        normalizedConfig = OpenVPNIPv6Policy.adapterConfig(normalizedConfig)
         normalizedConfig = Self.stripUnsupportedOptions(forOpenVPNAdapter: normalizedConfig)
         if !normalizedConfig.hasSuffix("\n") {
             normalizedConfig.append("\n")
@@ -239,6 +246,8 @@ extension PacketTunnelProvider {
         ovpnLog(.info, message: "Stopping tunnel: reason: \(reason.amneziaDescription)")
 
         stopHandler = completionHandler
+        openVpnStopping = true
+        setOpenVPNIPv6Blocked(true)
         openVpnGatewayAddress = nil
         openVpnLocalAddress = nil
         openVpnLocalMask = nil
@@ -246,7 +255,7 @@ extension PacketTunnelProvider {
         if vpnReachability.isTracking {
             vpnReachability.stopTracking()
         }
-        ovpnAdapter?.disconnect()
+        stopOpenVPNNativeDNS { [weak self] in self?.ovpnAdapter?.disconnect() }
     }
 }
 
@@ -262,6 +271,10 @@ extension PacketTunnelProvider: OpenVPNAdapterDelegate {
         configureTunnelWithNetworkSettings networkSettings: NEPacketTunnelNetworkSettings?,
         completionHandler: @escaping (Error?) -> Void
     ) {
+        guard !openVpnStopping, self.ovpnAdapter === openVPNAdapter else {
+            completionHandler(NSError(domain: "OpenVPN session is no longer active", code: 1))
+            return
+        }
         guard var effectiveSettings = networkSettings else {
             ovpnLog(.info, title: "SetTunnelNetworkSettings", message: "nil settings; skipping update")
             completionHandler(nil)
@@ -363,7 +376,7 @@ extension PacketTunnelProvider: OpenVPNAdapterDelegate {
             }
 
             for allowedIPString in splitTunnelSites {
-                if let allowedIP = IPAddressRange(from: allowedIPString) {
+                if let allowedIP = IPAddressRange(from: allowedIPString), !"\(allowedIP.address)".contains(":") {
                     ipv4IncludedRoutes.append(NEIPv4Route(
                         destinationAddress: "\(allowedIP.address)",
                         subnetMask: "\(allowedIP.subnetMask())"))
@@ -374,7 +387,6 @@ extension PacketTunnelProvider: OpenVPNAdapterDelegate {
         } else if splitType == 2 {
                 var ipv4ExcludedRoutes = [NEIPv4Route]()
                 var ipv4IncludedRoutes = [NEIPv4Route]()
-                var ipv6IncludedRoutes = [NEIPv6Route]()
 
                 guard let splitTunnelSites else {
                     completionHandler(NSError(domain: "Split tunnel sited not setted up", code: 0))
@@ -382,7 +394,7 @@ extension PacketTunnelProvider: OpenVPNAdapterDelegate {
                 }
 
                 for excludeIPString in splitTunnelSites {
-                    if let excludeIP = IPAddressRange(from: excludeIPString) {
+                    if let excludeIP = IPAddressRange(from: excludeIPString), !"\(excludeIP.address)".contains(":") {
                         ipv4ExcludedRoutes.append(NEIPv4Route(
                             destinationAddress: "\(excludeIP.address)",
                             subnetMask: "\(excludeIP.subnetMask())"))
@@ -394,16 +406,10 @@ extension PacketTunnelProvider: OpenVPNAdapterDelegate {
                         destinationAddress: "\(allIPv4.address)",
                         subnetMask: "\(allIPv4.subnetMask())"))
                 }
-                if let allIPv6 = IPAddressRange(from: "::/0") {
-                    ipv6IncludedRoutes.append(NEIPv6Route(
-                        destinationAddress: "\(allIPv6.address)",
-                        networkPrefixLength: NSNumber(value: allIPv6.networkPrefixLength)))
-                }
                 effectiveSettings.ipv4Settings?.includedRoutes = ipv4IncludedRoutes
-                effectiveSettings.ipv6Settings?.includedRoutes = ipv6IncludedRoutes
                 effectiveSettings.ipv4Settings?.excludedRoutes = ipv4ExcludedRoutes
         } else {
-            // Full tunnel: rely on adapter-provided routes.
+            // IPv4 full tunnel relies on adapter-provided routes.
         }
 
         if let serverEndpoint,
@@ -563,17 +569,41 @@ extension PacketTunnelProvider: OpenVPNAdapterDelegate {
             let prefixes = ipv6Settings.networkPrefixLengths.map { "\($0)" }.joined(separator: ",")
             ovpnLog(.info, title: "IPv6Routes", message: "addresses=[\(addresses)] prefixes=[\(prefixes)] included=\(included) excluded=\(excluded)")
         }
-#if os(macOS)
-        if effectiveSettings.ipv6Settings != nil {
-            effectiveSettings.ipv6Settings = nil
-            ovpnLog(.info, title: "IPv6", message: "cleared ipv6Settings on macOS")
+        var splitRoutes: [OpenVPNRoute] = []
+        if splitType != 0 {
+            guard let sites = splitTunnelSites else {
+                completionHandler(NSError(domain: "Missing split tunnel routes", code: 1))
+                return
+            }
+            for site in sites {
+                guard let subnet = IPAddressRange(from: site) else {
+                    completionHandler(NSError(domain: "Invalid split tunnel route", code: 1))
+                    return
+                }
+                splitRoutes.append(OpenVPNRoute(address: "\(subnet.address)", prefixLength: Int(subnet.networkPrefixLength)))
+            }
         }
-#endif
+        guard let ipv6Policy = OpenVPNIPv6Policy.make(splitType: splitType, routes: splitRoutes,
+                                                     dnsServers: effectiveSettings.dnsSettings?.servers ?? openVpnDnsServers,
+                                                     blockIPv6: openVpnBlocksIPv6) else {
+            completionHandler(NSError(domain: "Invalid split tunnel policy", code: 1))
+            return
+        }
+        setOpenVPNIPv6Blocked(openVpnBlocksIPv6 || effectiveSettings.ipv6Settings?.addresses.isEmpty != false)
+        var remoteIPv6: String?
+        if let remote = serverIP ?? openVpnRemoteAddress,
+           let subnet = IPAddressRange(from: remote), "\(subnet.address)".contains(":") {
+            remoteIPv6 = "\(subnet.address)"
+        }
+        OpenVPNNetworkSettings.apply(ipv6Policy, remoteIPv6: remoteIPv6,
+                                     providerExcluded: effectiveSettings.ipv6Settings?.excludedRoutes ?? [],
+                                      to: effectiveSettings, blockIPv6: openVpnBlocksIPv6)
+        ovpnLog(.info, title: "IPv6Capture", message: "included=\(ipv6Policy.included.count) excluded=\(effectiveSettings.ipv6Settings?.excludedRoutes?.count ?? 0) addresses=\(effectiveSettings.ipv6Settings?.addresses ?? [])")
 
         lastOpenVPNSettings = effectiveSettings
 
         // Set the network settings for the current tunneling session.
-        setTunnelNetworkSettings(effectiveSettings) { error in
+        applyOpenVPNNetworkSettings(effectiveSettings) { error in
             if let error {
                 ovpnLog(.error, title: "SetTunnelNetworkSettings", message: error.localizedDescription)
             } else {
@@ -705,7 +735,6 @@ extension PacketTunnelProvider: OpenVPNAdapterDelegate {
 
     private static func stripUnsupportedOptions(forOpenVPNAdapter config: String) -> String {
         let unsupportedTokens: Set<String> = [
-            "block-ipv6",
             "script-security",
             "up",
             "down",
@@ -832,14 +861,12 @@ extension PacketTunnelProvider: OpenVPNAdapterDelegate {
                 logOpenVPNConnectionInfo()
                 refreshOpenVPNSettingsAfterConnect()
             case .disconnected:
-                guard let stopHandler = stopHandler else { return }
-
                 if vpnReachability.isTracking {
                     vpnReachability.stopTracking()
                 }
-
-                stopHandler()
+                let stopped = stopHandler
                 self.stopHandler = nil
+                stopOpenVPNNativeDNS { stopped?() }
             case .reconnecting:
                 reasserting = true
             default:
@@ -855,6 +882,9 @@ extension PacketTunnelProvider: OpenVPNAdapterDelegate {
         // Handle only fatal errors
         guard let fatal = nsError.userInfo[OpenVPNAdapterErrorFatalKey] as? Bool,
               fatal == true else { return }
+        openVpnStopping = true
+        setOpenVPNIPv6Blocked(true)
+        stopOpenVPNNativeDNS {}
 
         if vpnReachability.isTracking {
             vpnReachability.stopTracking()

@@ -45,6 +45,8 @@
 #include <QFile>
 #include <QLibrary>
 #include <QMutex>
+#include <QMutexLocker>
+#include <QTimer>
 #include <QSemaphore>
 #include <QProcess>
 #include <QSettings>
@@ -581,7 +583,26 @@ void QtServiceSysPrivate::handleCustomEvent(QEvent *e)
         break;
     case SERVICE_CONTROL_STOP:
         QtServiceBase::instance()->stop();
-        QCoreApplication::instance()->quit();
+        if (!(QtServiceBase::instance()->serviceFlags() & QtServiceBase::DeferredStop)) {
+            QCoreApplication::instance()->quit();
+        } else {
+            // Returning from stop() acknowledges the control request, not
+            // completion of durable DNS/native-resource retirement.
+            auto *checkpoint = new QTimer(controllerHandler);
+            checkpoint->setInterval(1000);
+            QObject::connect(checkpoint, &QTimer::timeout, checkpoint, [this, checkpoint] {
+                QMutexLocker lock(&mutex);
+                if (status.dwCurrentState != SERVICE_STOP_PENDING) {
+                    checkpoint->stop();
+                    checkpoint->deleteLater();
+                    return;
+                }
+                ++status.dwCheckPoint;
+                status.dwWaitHint = 5000;
+                pSetServiceStatus(serviceStatus, &status);
+            });
+            checkpoint->start();
+        }
         break;
     case SERVICE_CONTROL_PAUSE:
         QtServiceBase::instance()->pause();
@@ -638,7 +659,7 @@ void WINAPI QtServiceSysPrivate::handler( DWORD code )
         break;
 
     case SERVICE_CONTROL_SHUTDOWN: // 5
-        // Don't waste time with reporting stop pending, just do it
+        instance->setStatus(SERVICE_STOP_PENDING);
         QCoreApplication::postEvent(instance->controllerHandler, new QEvent(QEvent::Type(QEvent::User + SERVICE_CONTROL_STOP)));
         instance->condition.wait(&instance->mutex);
         // status will be reported as stopped by start() when qapp::exec returns
@@ -664,6 +685,10 @@ void QtServiceSysPrivate::setStatus(DWORD state)
     if (!available())
 	return;
     status.dwCurrentState = state;
+    if (state == SERVICE_STOP_PENDING) {
+        status.dwCheckPoint = 1;
+        status.dwWaitHint = 5000;
+    }
     pSetServiceStatus(serviceStatus, &status);
 }
 
@@ -948,5 +973,3 @@ void QtServiceBase::setServiceFlags(QtServiceBase::ServiceFlags flags)
     if (d_ptr->sysd)
         d_ptr->sysd->setServiceFlags(flags);
 }
-
-

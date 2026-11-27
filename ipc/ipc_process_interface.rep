@@ -7,6 +7,12 @@ class IpcProcessInterface
     SLOT( terminate() );
     SLOT( kill() );
     SLOT( close() );
+    SLOT( bool addOpenVpnIpv6Hosts(const QString &localIpv4, const QStringList &hosts, bool throughVpn) );
+    SLOT( bool configureManagedOpenVpn() );
+    SLOT( bool managedOpenVpnCommand(const QString &command) );
+    SLOT( bool managedOpenVpnStopped() );
+    SLOT( bool processStopped() );
+    SLOT( int confirmedExitCode() );
 
     SLOT( setArguments(const QStringList &arguments) );
     SLOT( setInputChannelMode(QProcess::InputChannelMode mode) );
@@ -32,4 +38,6 @@ class IpcProcessInterface
     SIGNAL( readyReadStandardOutput() );
     SIGNAL( started() );
     SIGNAL( stateChanged(QProcess::ProcessState newState) );
+    SIGNAL( managedOpenVpnLine(const QString &line) );
+    SIGNAL( managedOpenVpnFailed() );
 };

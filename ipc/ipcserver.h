@@ -17,6 +17,9 @@ class IpcServer : public IpcInterfaceSource
 {
 public:
     explicit IpcServer(QObject *parent = nullptr);
+    void freezeForShutdown();
+    void setStartupDnsRecoveryReady(bool ready) { m_startupDnsRecoveryReady = ready; }
+    bool shutdownNativeProcesses();
     virtual int createPrivilegedProcess() override;
 
     virtual int routeAddList(const QString &gw, const QStringList &ips) override;
@@ -30,9 +33,11 @@ public:
     virtual void clearLogs() override;
     virtual void setLogsEnabled(bool enabled) override;
     virtual bool createTun(const QString &dev, const QString &subnet) override;
+    bool configureProxyIpv6(const QStringList &included, const QStringList &excluded) override;
     virtual bool deleteTun(const QString &dev) override;
     virtual bool StartRoutingIpv6() override;
     virtual bool StopRoutingIpv6() override;
+    bool setNativeIpv6Blocked(bool blocked, QStringList endpoints) override;
     virtual bool disableAllTraffic() override;
     virtual bool addKillSwitchAllowedRange(QStringList ranges) override;
     virtual bool resetKillSwitchAllowedRange(QStringList ranges) override;
@@ -42,6 +47,13 @@ public:
     virtual bool refreshKillSwitch( bool enabled ) override;
     virtual bool updateResolvers(const QString& ifname, const QList<QHostAddress>& resolvers) override;
     virtual bool restoreResolvers() override;
+    bool updateResolversWithPolicy(const QString& ifname, const QList<QHostAddress>& resolvers,
+                                   bool ipv6Enabled, const QString& owner) override;
+    bool restoreResolversWithOwner(const QString& owner) override;
+    bool startIkev2Dns(const QString &owner, const QByteArray &phonebook, const QStringList &endpoints) override;
+    QString ikev2DnsState(const QString &owner) override;
+    bool stopIkev2Dns(const QString &owner) override;
+    bool acknowledgeIkev2DnsStopped(const QString &owner) override;
     virtual bool xrayStart(const QString& cfg) override;
     virtual bool xrayStop() override;
     virtual qint64 xrayStartOwned(const QString& cfg) override;
@@ -52,6 +64,8 @@ public:
 
 private:
     int m_localpid = 0;
+    bool m_shuttingDown = false;
+    bool m_startupDnsRecoveryReady = false;
 
     struct ProcessDescriptor {
         ProcessDescriptor (QObject *parent = nullptr) {

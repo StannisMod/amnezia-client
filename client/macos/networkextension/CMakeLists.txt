@@ -69,12 +69,22 @@ target_compile_options(${CLIENT_MACOS_NE_TARGET_NAME} PRIVATE -DGROUP_ID=\"${BUI
 target_compile_options(${CLIENT_MACOS_NE_TARGET_NAME} PRIVATE -DNETWORK_EXTENSION=1)
 
 set(WG_APPLE_SOURCE_DIR ${CLIENT_ROOT_DIR}/3rd/amneziawg-apple/Sources)
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+set(WG_ADAPTER_SWIFT ${CMAKE_CURRENT_BINARY_DIR}/WireGuardAdapter.swift)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    ${WG_APPLE_SOURCE_DIR}/WireGuardKit/WireGuardAdapter.swift
+    ${CLIENT_ROOT_DIR}/../scripts/routing/prepare_apple_swift.py)
+execute_process(COMMAND ${Python3_EXECUTABLE}
+    ${CLIENT_ROOT_DIR}/../scripts/routing/prepare_apple_swift.py
+    --source ${WG_APPLE_SOURCE_DIR}/WireGuardKit/WireGuardAdapter.swift
+    --output ${WG_ADAPTER_SWIFT}
+    COMMAND_ERROR_IS_FATAL ANY)
 
 message("WG_APPLE_SOURCE_DIR is: ${WG_APPLE_SOURCE_DIR}")
 message("CLIENT_ROOT_DIR is: ${CLIENT_ROOT_DIR}")
 
 target_sources(${CLIENT_MACOS_NE_TARGET_NAME} PRIVATE
-    ${WG_APPLE_SOURCE_DIR}/WireGuardKit/WireGuardAdapter.swift
+    ${WG_ADAPTER_SWIFT}
     ${WG_APPLE_SOURCE_DIR}/WireGuardKit/PacketTunnelSettingsGenerator.swift
     ${WG_APPLE_SOURCE_DIR}/WireGuardKit/DNSResolver.swift
     ${WG_APPLE_SOURCE_DIR}/WireGuardNetworkExtension/ErrorNotifier.swift
@@ -101,7 +111,18 @@ target_sources(${CLIENT_MACOS_NE_TARGET_NAME} PRIVATE
     ${CLIENT_ROOT_DIR}/platforms/ios/PacketTunnelProvider.swift
     ${CLIENT_ROOT_DIR}/platforms/ios/PacketTunnelProvider+WireGuard.swift
     ${CLIENT_ROOT_DIR}/platforms/ios/RoutingPacketTunnel.swift
+    ${CLIENT_ROOT_DIR}/platforms/ios/NativeDNSGuard.swift
+    ${CLIENT_ROOT_DIR}/platforms/ios/NativeDNSResolver.swift
+    ${CLIENT_ROOT_DIR}/platforms/ios/NativeDNSSettings.swift
+    ${CLIENT_ROOT_DIR}/platforms/ios/NativeDNSRoute.swift
+    ${CLIENT_ROOT_DIR}/platforms/ios/NativeDNSScopedOperation.swift
+    ${CLIENT_ROOT_DIR}/platforms/ios/NativeDNSController.swift
+    ${CLIENT_ROOT_DIR}/platforms/ios/NativeDNSPacketFilter.swift
+    ${CLIENT_ROOT_DIR}/platforms/ios/NativeNetworkSettingsResult.swift
+    ${CLIENT_ROOT_DIR}/platforms/ios/NativeTunnelRunner.swift
+    ${CLIENT_ROOT_DIR}/platforms/ios/NativeXraySockets.swift
     ${CLIENT_ROOT_DIR}/platforms/ios/PacketTunnelProvider+OpenVPN.swift
+    ${CLIENT_ROOT_DIR}/platforms/ios/OpenVPNIPv6Policy.swift
     ${CLIENT_ROOT_DIR}/platforms/ios/PacketTunnelProvider+Xray.swift
     ${CLIENT_ROOT_DIR}/platforms/ios/WGConfig.swift
     ${CLIENT_ROOT_DIR}/platforms/ios/EndpointRefreshPolicy.swift

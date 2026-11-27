@@ -6,12 +6,15 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonDocument>
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QLoggingCategory>
 #include <QPointer>
 #include <QTemporaryFile>
 #include <QThread>
 #include <QTimer>
+#include <QUuid>
+#include <QRegularExpression>
 #include <QtConcurrent>
 
 #include <filesystem>
@@ -42,6 +45,11 @@ SshSession::SshSession(QObject *parent) : QObject(parent)
 SshSession::~SshSession()
 {
     m_sshClient.disconnectFromHost();
+}
+
+QString SshSession::wholeScriptCommand(const QString &script)
+{
+    return QString("printf '%s' '%1' | base64 -d | sh").arg(QString::fromLatin1(script.toUtf8().toBase64()));
 }
 
 ErrorCode SshSession::runScript(const ServerCredentials &credentials, QString script,
@@ -169,6 +177,147 @@ ErrorCode SshSession::uploadTextFileToContainer(DockerContainer container, const
 
     runScript(credentials, replaceVars(QString("sudo shred -u %1").arg(tmpFileName), amnezia::genBaseVars(credentials, container, QString(), QString())));
     return e;
+}
+
+ErrorCode SshSession::protocolConfigTransaction(DockerContainer container, const ServerCredentials &credentials,
+                                                const QJsonObject &input, QJsonObject &response)
+{
+    if (container != DockerContainer::WireGuard && container != DockerContainer::Awg2) return ErrorCode::InternalError;
+    const auto action = input.value("action").toString();
+    if (action != "capabilities" && action != "stage-live" && action != "apply-commit" && action != "status" && action != "rollback-live" && action != "check-live" && action != "discard-stage" && action != "replace-client-table" && action != "check-client-table" && action != "prepare-receipt" && action != "receipt-status" && action != "check-revoked-peer" && action != "ack-receipt" && action != "migrate-client-table") return ErrorCode::InternalError;
+    auto request = input; request["container"] = ContainerUtils::containerToString(container);
+    const auto folder = "/tmp/amnezia-protocol-request-" + QUuid::createUuid().toString(QUuid::Id128);
+    auto error = runScript(credentials, "umask 077 && mkdir '" + folder + "'");
+    if (error != ErrorCode::NoError) return error;
+    error = uploadFileToHost(credentials, QJsonDocument(request).toJson(QJsonDocument::Compact), folder + "/request.json");
+    if (error == ErrorCode::NoError) {
+        QString output;
+        const auto script = QString("chmod 600 '%1/request.json' && container_id=$(sudo docker inspect -f '{{.Id}}' %2) && sudo docker exec -i \"$container_id\" /opt/amnezia/config-helper config-file-transaction < '%1/request.json'")
+                                .arg(folder, ContainerUtils::containerToString(container));
+        error = runScript(credentials, script, [&](const QString &data, libssh::Client &) {
+            if (output.size() + data.size() > 65536) return ErrorCode::InternalError;
+            output += data; return ErrorCode::NoError;
+        });
+        if (error == ErrorCode::NoError) {
+            const auto result = QJsonDocument::fromJson(output.toUtf8()).object();
+            if (result.value("version").toInt() != 1) error = ErrorCode::InternalError;
+            else response = result;
+        }
+    }
+    runScript(credentials, "rm -rf -- '" + folder + "'");
+    return error;
+}
+
+ErrorCode SshSession::inspectProtocolHelper(DockerContainer container, const ServerCredentials &credentials,
+                                            bool &handled, QJsonObject &capabilities)
+{
+    capabilities = {};
+    handled = false;
+    if (container != DockerContainer::WireGuard && container != DockerContainer::Awg2) return ErrorCode::NoError;
+    QString capability;
+    auto error = runScript(credentials,
+        QString("container_id=$(sudo docker inspect -f '{{.Id}}' %1) && sudo docker exec \"$container_id\" sh -c 'if [ -x /opt/amnezia/config-helper ]; then printf transaction; else for marker in %2 /opt/amnezia/config-helper.amnezia-owner /opt/amnezia/config-helper.owner.amnezia-lock; do if [ -e \"$marker\" ] || [ -L \"$marker\" ]; then printf blocked; exit 0; fi; done; printf legacy; fi' && printf '\\namnezia_protocol_helper=ok\\n'")
+            .arg(ContainerUtils::containerToString(container), container == DockerContainer::Awg2
+                ? "/opt/amnezia/awg/awg0.conf.amnezia-journal" : "/opt/amnezia/wireguard/wg0.conf.amnezia-journal"),
+        [&](const QString &data, libssh::Client &) { if (capability.size() + data.size() > 65536) return ErrorCode::InternalError; capability += data; return ErrorCode::NoError; });
+    if (error != ErrorCode::NoError) return error;
+    if (capability.trimmed() == "legacy\namnezia_protocol_helper=ok") return ErrorCode::NoError;
+    if (capability.trimmed() == "blocked\namnezia_protocol_helper=ok") { handled = true; return ErrorCode::InternalError; }
+    if (capability.trimmed() != "transaction\namnezia_protocol_helper=ok") return ErrorCode::InternalError;
+    handled = true; // Every subsequent error stays on the transaction path.
+    capabilities = {};
+    error = protocolConfigTransaction(container, credentials, { {"action", "capabilities"} }, capabilities);
+    if (error != ErrorCode::NoError) return error;
+    return ErrorCode::NoError;
+}
+
+ErrorCode SshSession::replaceLiveProtocolConfig(DockerContainer container, const ServerCredentials &credentials,
+                                               const QString &expected, const QString &candidate, bool &handled, bool reconcileCommitted, const QStringList &requiredFeatures)
+{
+    QJsonObject capabilities;
+    auto error = inspectProtocolHelper(container,credentials,handled,capabilities);
+    if (error != ErrorCode::NoError || !handled) return error;
+    if (!capabilities.value("features").toArray().contains("native-mutation-v1")) return ErrorCode::InternalError;
+    for (const auto &feature : requiredFeatures) {
+        if (!capabilities.value("features").toArray().contains(feature)) return ErrorCode::InternalError;
+    }
+    const auto original = expected.toUtf8(), replacement = candidate.toUtf8();
+    if (original.isEmpty() || original.size() > 4*1024*1024 || replacement.isEmpty() || replacement.size() > 4*1024*1024) return ErrorCode::InternalError;
+    const auto originalHash = QString::fromLatin1(QCryptographicHash::hash(original, QCryptographicHash::Sha256).toHex());
+    const auto candidateHash = QString::fromLatin1(QCryptographicHash::hash(replacement, QCryptographicHash::Sha256).toHex());
+    if (reconcileCommitted) {
+        QJsonObject current;
+        if (protocolConfigTransaction(container, credentials, { {"action", "check-live"},
+            {"expected", QString::fromLatin1(replacement.toBase64())} }, current) == ErrorCode::NoError
+            && current.value("current").toBool() && current.value("candidateHash") == candidateHash) return ErrorCode::NoError;
+    }
+    QJsonObject staged;
+    auto stageOnce=[&]() {
+        staged={};
+        auto result=protocolConfigTransaction(container, credentials, { {"action", "stage-live"},
+            {"expected", QString::fromLatin1(original.toBase64())}, {"candidate", QString::fromLatin1(replacement.toBase64())} }, staged);
+        if (result!=ErrorCode::NoError) {
+            const auto stageError=result;
+            if (protocolConfigTransaction(container,credentials,{{"action","status"}},staged)!=ErrorCode::NoError) return stageError;
+        }
+        return ErrorCode::NoError;
+    };
+    static const QRegularExpression nonce("^[a-f0-9]{64}$");
+    auto validStage=[&]() {
+        return nonce.match(staged.value("operation").toString()).hasMatch() && staged.value("originalHash")==originalHash
+            && staged.value("candidateHash")==candidateHash && staged.value("nativeWriteIntent").isBool()
+            && staged.value("nativeApplied").isBool() && !staged.value("rollbackPending").toBool()
+            && (!staged.value("nativeWriteIntent").toBool() || staged.value("nativeApplied").toBool()
+                || capabilities.value("features").toArray().contains("native-reconcile-v1"));
+    };
+    error=stageOnce();
+    if (error!=ErrorCode::NoError) return error;
+    if (!validStage()) return ErrorCode::InternalError;
+    if (staged.value("state")=="original" && !staged.value("nativeWriteIntent").toBool() && !staged.value("nativeApplied").toBool()) {
+        if (!capabilities.value("features").toArray().contains("native-stage-restart-v1")) return ErrorCode::InternalError;
+        QJsonObject discarded;
+        error=protocolConfigTransaction(container,credentials,{{"action","discard-stage"},{"operation",staged.value("operation")}},discarded);
+        if (error!=ErrorCode::NoError || !discarded.value("discardedStage").toBool()) {
+            QJsonObject current;
+            if (protocolConfigTransaction(container,credentials,{{"action","check-live"},{"expected",QString::fromLatin1(original.toBase64())}},current)!=ErrorCode::NoError
+                || !current.value("current").toBool() || current.value("candidateHash")!=originalHash) return ErrorCode::InternalError;
+        }
+        error=stageOnce(); // Bounded restart, using the same persisted peer key.
+        if (error!=ErrorCode::NoError) return error;
+        if (!validStage() || staged.value("state")=="original") return ErrorCode::InternalError;
+    }
+    const auto operation=staged.value("operation").toString();
+    QJsonObject applied;
+    error = protocolConfigTransaction(container, credentials, { {"action", "apply-commit"}, {"operation", operation} }, applied);
+    if (error == ErrorCode::NoError && applied.value("operation") == operation && applied.value("candidateHash") == candidateHash
+        && applied.value("nativeApplied").toBool()) return ErrorCode::NoError;
+    QJsonObject current;
+    if (protocolConfigTransaction(container, credentials, { {"action", "check-live"},
+        {"expected", QString::fromLatin1(replacement.toBase64())} }, current) == ErrorCode::NoError
+        && current.value("current").toBool() && current.value("candidateHash") == candidateHash) return ErrorCode::NoError;
+    return error == ErrorCode::NoError ? ErrorCode::InternalError : error;
+}
+
+ErrorCode SshSession::replaceClientTable(DockerContainer container, const ServerCredentials &credentials,
+                                       const QByteArray &expected, const QByteArray &candidate, bool &handled, bool migration)
+{
+    QJsonObject capabilities;
+    auto error=inspectProtocolHelper(container,credentials,handled,capabilities);
+    if (error!=ErrorCode::NoError || !handled) return error;
+    if (!capabilities.value("features").toArray().contains("client-table-cas-v1")
+        || (migration && !capabilities.value("features").toArray().contains("client-table-migration-v1"))
+        || expected.size()>4*1024*1024 || candidate.size()>4*1024*1024 || !QJsonDocument::fromJson(candidate).isArray())
+        return ErrorCode::InternalError;
+    const auto hash=QString::fromLatin1(QCryptographicHash::hash(candidate,QCryptographicHash::Sha256).toHex());
+    QJsonObject result;
+    error=protocolConfigTransaction(container,credentials,{{"action",migration?"migrate-client-table":"replace-client-table"},
+        {"expected",QString::fromLatin1(expected.toBase64())},{"candidate",QString::fromLatin1(candidate.toBase64())}},result);
+    if (error==ErrorCode::NoError && result.value("current").toBool() && result.value("candidateHash")==hash) return ErrorCode::NoError;
+    result={};
+    const auto check=protocolConfigTransaction(container,credentials,{{"action","check-client-table"},
+        {"expected",QString::fromLatin1(candidate.toBase64())}},result);
+    if (check==ErrorCode::NoError && result.value("current").toBool() && result.value("candidateHash")==hash) return ErrorCode::NoError;
+    return error==ErrorCode::NoError?ErrorCode::InternalError:error;
 }
 
 QByteArray SshSession::getTextFileFromContainer(DockerContainer container, const ServerCredentials &credentials, const QString &path,

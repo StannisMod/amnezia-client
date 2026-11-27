@@ -15,11 +15,13 @@ class SecureQSettings : public QObject
 
 public:
     explicit SecureQSettings(const QString &organization, const QString &application = QString(),
-                             QObject *parent = nullptr, bool enableEncryption = true);
+                             QObject *parent = nullptr, bool enableEncryption = true, QSettings::Format format = QSettings::NativeFormat);
 
     QVariant value(const QString &key, const QVariant &defaultValue = QVariant()) const;
     void setValue(const QString &key, const QVariant &value);
     void remove(const QString &key);
+    // Comparison is serialized within this settings instance, not across processes.
+    bool compareAndSetDurable(const QString &key, const QVariant &expected, const QVariant &replacement);
 
     QByteArray backupAppConfig() const;
     bool restoreAppConfig(const QByteArray &json);
@@ -50,7 +52,7 @@ private:
     };
 
     QStringList m_fieldsExcludedFromBackup = {
-        "Conf/installationUuid", "Conf/proxyUrls/", "Conf/serverMigration",
+        "Conf/installationUuid", "Conf/proxyUrls/", "Conf/serverMigration", "Conf/pendingPeerExports", "Conf/pendingPeerRevocations",
     };
 
     mutable QByteArray m_key;

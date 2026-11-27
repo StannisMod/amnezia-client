@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"net"
 	"net/netip"
 	"testing"
@@ -32,6 +33,31 @@ func TestSessionCompilerUsesPinnedSingBoxSchema(t *testing.T) {
 		t.Fatal(e)
 	}
 	instance.Close()
+	for _, enabled := range []bool{false, true} {
+		c.IPv6Enabled = &enabled
+		raw, err := c.Compile()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var compiled map[string]any
+		if err = json.Unmarshal(raw, &compiled); err != nil {
+			t.Fatal(err)
+		}
+		first := compiled["route"].(map[string]any)["rules"].([]any)[0].(map[string]any)
+		if (first["ip_version"] == float64(6) && first["action"] == "reject") == enabled {
+			t.Fatal("IPv6 switch did not set the mandatory restriction before app/DNS rules")
+		}
+		dns := compiled["dns"].(map[string]any)
+		if !enabled && dns["strategy"] != "ipv4_only" {
+			t.Fatal("disabled IPv6 retained dual-stack DNS resolution")
+		}
+		instance, err := New(ctx, raw)
+		if err != nil {
+			t.Fatal("IPv6 switch generated invalid pinned sing-box config", err)
+		}
+		instance.Close()
+	}
+	c.IPv6Enabled = nil
 	c.Resolver = netip.MustParseAddrPort("127.0.0.53:53")
 	if _, e = c.Compile(); e == nil {
 		t.Fatal("accepted VPN path for local DNS stub")

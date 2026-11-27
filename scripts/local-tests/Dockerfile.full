@@ -1,14 +1,38 @@
+ARG QT_BASE_IMAGE=amnezia-local-qt-tests-ubuntu22
 FROM golang:1.27.1 AS go
-FROM amnezia-local-qt-tests
+FROM ${QT_BASE_IMAGE} AS qt-sdk
+ARG TARGETARCH
+ARG QT_VERSION=6.10.1
+RUN --mount=type=cache,id=amnezia-full-apt-${TARGETARCH},target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,id=amnezia-full-apt-lists-${TARGETARCH},target=/var/lib/apt/lists,sharing=locked \
+    rm -f /etc/apt/apt.conf.d/docker-clean && apt-get update && \
+    apt-get install -y --no-install-recommends python3-venv
+RUN python3 -m venv /opt/qt-fetch
+RUN --mount=type=cache,id=amnezia-pip-${TARGETARCH},target=/root/.cache/pip,sharing=locked \
+    /opt/qt-fetch/bin/pip install aqtinstall==3.3.0
+COPY aqt_cached.py /opt/aqt_cached.py
+RUN --mount=type=cache,id=amnezia-qt-${QT_VERSION}-${TARGETARCH},target=/var/cache/aqt,sharing=locked \
+    /opt/qt-fetch/bin/python /opt/aqt_cached.py install-qt linux desktop ${QT_VERSION} linux_gcc_64 \
+    -m qtremoteobjects qt5compat qtshadertools qthttpserver qtwebsockets -O /opt/Qt \
+    --keep --archive-dest /var/cache/aqt
+FROM ${QT_BASE_IMAGE}
+ARG TARGETARCH
+ARG QT_VERSION=6.10.1
 COPY --from=go /usr/local/go /usr/local/go
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN --mount=type=cache,id=amnezia-full-apt-${TARGETARCH},target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,id=amnezia-full-apt-lists-${TARGETARCH},target=/var/lib/apt/lists,sharing=locked \
+    rm -f /etc/apt/apt.conf.d/docker-clean && apt-get update && apt-get install -y --no-install-recommends \
     python3-venv libsecret-1-dev libxkbcommon-x11-0 pkg-config \
-    autoconf automake libtool bison flex curl patchelf ccache \
-    && rm -rf /var/lib/apt/lists/*
+    autoconf automake libtool bison flex curl patchelf ccache
 RUN python3 -m venv /opt/build-tools
-ENV PATH=/opt/build-tools/bin:/usr/local/go/bin:/opt/Qt/6.10.1/gcc_64/bin:$PATH
-RUN pip install --no-cache-dir conan==2.28.0 aqtinstall==3.3.0
-RUN aqt install-qt linux desktop 6.10.1 linux_gcc_64 \
-    -m qtremoteobjects qt5compat qtshadertools qthttpserver qtwebsockets -O /opt/Qt
-ENV CMAKE_PREFIX_PATH=/opt/Qt/6.10.1/gcc_64
+ENV PATH=/opt/build-tools/bin:/usr/local/go/bin:/opt/Qt/${QT_VERSION}/gcc_64/bin:$PATH
+RUN --mount=type=cache,id=amnezia-pip-${TARGETARCH},target=/root/.cache/pip,sharing=locked \
+    pip install cmake==3.31.6 conan==2.28.0 aqtinstall==3.3.0
+COPY --from=qt-sdk /opt/Qt /opt/Qt
+ENV CMAKE_PREFIX_PATH=/opt/Qt/${QT_VERSION}/gcc_64
+# Qt's SDK needs desktop OpenGL headers; Jammy's minimal Qt development
+# packages do not pull them in with --no-install-recommends.
+RUN --mount=type=cache,id=amnezia-full-apt-${TARGETARCH},target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,id=amnezia-full-apt-lists-${TARGETARCH},target=/var/lib/apt/lists,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends libgl1-mesa-dev
 WORKDIR /work

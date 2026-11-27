@@ -44,6 +44,25 @@ class Archives(unittest.TestCase):
             with self.subTest(entries=entries), self.assertRaises(agent.Rejected):
                 agent.tar_hash(archive(entries))
 
+    def test_vpn_snapshot_accepts_only_owned_mtu_release_link(self):
+        release = 'a'*64
+        files = [('mtu/'+release+'/'+name, tarfile.REGTYPE, b'fixture')
+                 for name in ('controller.py', 'supervisor.py')]
+        for target in (release, '/opt/amnezia/mtu/'+release):
+            entries = files+[('mtu/current', tarfile.SYMTYPE, target)]
+            self.assertEqual(agent.tar_hash(archive(entries), vpn=True)['mtu/current'],
+                             'symlink:mtu/'+release)
+            with self.assertRaises(agent.Rejected):
+                agent.tar_hash(archive(entries))
+        for target in ('../'+release, '/etc/passwd', release+'/../../etc', 'not-a-release'):
+            with self.subTest(target=target), self.assertRaises(agent.Rejected):
+                agent.tar_hash(archive(files+[('mtu/current', tarfile.SYMTYPE, target)]), vpn=True)
+        for entries in ([('mtu/current', tarfile.SYMTYPE, release)],
+                        files+[('mtu/current', tarfile.SYMTYPE, release),
+                               ('mtu/current/injected', tarfile.REGTYPE, b'bad')]):
+            with self.assertRaises(agent.Rejected):
+                agent.tar_hash(archive(entries), vpn=True)
+
     def test_config_hash_ignores_archive_order_and_timestamps(self):
         first = [('state.json', tarfile.REGTYPE, b'private-state'), ('tls.pem', tarfile.REGTYPE, b'private-cert')]
         self.assertEqual(agent.tar_hash(archive(first)), agent.tar_hash(archive(list(reversed(first)))))

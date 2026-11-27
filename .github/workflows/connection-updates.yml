@@ -12,6 +12,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+      - name: Select reachable Ubuntu mirror
+        run: sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT python3 scripts/routing/ci_apt_mirrors.py
       - uses: actions/setup-go@v5
         with:
           go-version-file: client/server_scripts/connection_updates/go.mod

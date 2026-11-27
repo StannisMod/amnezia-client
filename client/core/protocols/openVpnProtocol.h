@@ -7,14 +7,18 @@
 
 #include "core/utils/managementServer.h"
 #include "vpnProtocol.h"
+#include "openVpnManagementEnvironment.h"
 
 #include "core/utils/ipcClient.h"
 
 class OpenVpnProtocol : public VpnProtocol
 {
     Q_OBJECT
-
+    friend class TestConnection;
 public:
+    void addResolvedIpv6Hosts(const QStringList &hosts, bool throughVpn, std::function<void(bool)> done) override;
+    bool supportsIpv6HostUpdates() const override;
+    bool serverAssignedIpv6() const { return m_serverAssignedIpv6; }
     explicit OpenVpnProtocol(const QJsonObject& configuration, QObject* parent = nullptr);
     virtual ~OpenVpnProtocol() override;
 
@@ -47,6 +51,12 @@ private:
     QString m_configFileName;
     QJsonObject m_configData;
     QTemporaryFile m_configFile;
+    bool m_serverAssignedIpv6 = false;
+    OpenVpnManagementEnvironment m_nativeEnvironment;
+    std::map<std::string, std::string> m_nativeUpEnvironment;
+    bool m_serviceManagement = false, m_managedConfigured = false;
+    quint64 m_processGeneration = 0;
+    QStringList m_managedLines;
 
     uint selectMgmtPort();
 

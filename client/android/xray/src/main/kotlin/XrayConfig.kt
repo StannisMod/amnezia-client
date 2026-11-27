@@ -50,6 +50,7 @@ class XrayConfig protected constructor(
 
     companion object {
         internal val DEFAULT_IPV4_ADDRESS: InetNetwork = InetNetwork("10.0.42.2", 30)
+        internal val DEFAULT_IPV6_ADDRESS: InetNetwork = InetNetwork("fdfe:dcba:9876::2", 126)
 
         inline fun build(block: Builder.() -> Unit): XrayConfig = Builder().apply(block).build()
     }

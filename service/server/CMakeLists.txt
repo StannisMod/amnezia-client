@@ -32,6 +32,11 @@ set(HEADERS
     ${CMAKE_CURRENT_LIST_DIR}/killswitch.h
     ${CMAKE_CURRENT_LIST_DIR}/systemservice.h
     ${CMAKE_CURRENT_LIST_DIR}/xray.h
+    ${CMAKE_CURRENT_LIST_DIR}/nativednsservice.h
+    ${CMAKE_CURRENT_LIST_DIR}/openvpndnssession.h
+    ${CMAKE_CURRENT_LIST_DIR}/openvpndnsselection.h
+    ${CMAKE_CURRENT_LIST_DIR}/../../client/core/utils/managementServer.h
+    ${CMAKE_CURRENT_LIST_DIR}/../../client/daemon/nativeDnsGuard.h
     ${CMAKE_CURRENT_BINARY_DIR}/version.h
 )
 
@@ -49,6 +54,10 @@ set(SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/killswitch.cpp
     ${CMAKE_CURRENT_LIST_DIR}/systemservice.cpp
     ${CMAKE_CURRENT_LIST_DIR}/xray.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/nativednsservice.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/openvpndnssession.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/openvpndnsselection.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/../../client/core/utils/managementServer.cpp
 )
 
 # Mozilla headres
@@ -130,6 +139,8 @@ if(WIN32)
     set(HEADERS ${HEADERS}
         ${CMAKE_CURRENT_LIST_DIR}/tapcontroller_win.h
         ${CMAKE_CURRENT_LIST_DIR}/router_win.h
+        ${CMAKE_CURRENT_LIST_DIR}/windowsikev2dns.h
+        ${CMAKE_CURRENT_LIST_DIR}/ikev2dnssession.h
         ${CMAKE_CURRENT_SOURCE_DIR}/../../client/platforms/windows/daemon/windowsdaemon.h
         ${CMAKE_CURRENT_SOURCE_DIR}/../../client/platforms/windows/daemon/windowsdaemontunnel.h
         ${CMAKE_CURRENT_SOURCE_DIR}/../../client/platforms/windows/daemon/windowsfirewall.h
@@ -150,6 +161,7 @@ if(WIN32)
     set(SOURCES ${SOURCES}
         ${CMAKE_CURRENT_LIST_DIR}/tapcontroller_win.cpp
         ${CMAKE_CURRENT_LIST_DIR}/router_win.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/windowsikev2dns.cpp
 
         ${CMAKE_CURRENT_SOURCE_DIR}/../../client/platforms/windows/daemon/windowsdaemon.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../../client/platforms/windows/daemon/windowsdaemontunnel.cpp
@@ -157,6 +169,9 @@ if(WIN32)
         ${CMAKE_CURRENT_SOURCE_DIR}/../../client/platforms/windows/windowscommons.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../../client/platforms/windows/windowsservicemanager.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../../client/platforms/windows/daemon/dnsutilswindows.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../client/platforms/windows/daemon/windowsdnsrecovery.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../client/platforms/windows/daemon/windowsdnspolicy.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../client/platforms/windows/daemon/nativednsfirewall.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../../client/platforms/windows/daemon/windowssplittunnel.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../../client/platforms/windows/daemon/windowstunnelservice.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../../client/platforms/windows/daemon/wireguardutilswindows.cpp
@@ -180,6 +195,9 @@ if(WIN32)
         iphlpapi
         gdi32
         Advapi32
+        ole32
+        oleaut32
+        wbemuuid
         Kernel32
         qt6keychain
     )
@@ -220,6 +238,7 @@ if(APPLE)
         ${CMAKE_CURRENT_SOURCE_DIR}/../../client/platforms/macos/macospingsender.cpp
 
         ${CMAKE_CURRENT_SOURCE_DIR}/../../client/platforms/macos/daemon/dnsutilsmacos.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../client/platforms/macos/daemon/macosdnsrecovery.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../../client/platforms/macos/daemon/iputilsmacos.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../../client/platforms/macos/daemon/macosdaemon.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../../client/platforms/macos/daemon/macosroutemonitor.cpp
@@ -258,6 +277,7 @@ if(LINUX)
         ${CMAKE_CURRENT_SOURCE_DIR}/../../client/platforms/linux/linuxdependencies.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../../client/platforms/linux/linuxpingsender.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../../client/platforms/linux/daemon/dnsutilslinux.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../client/platforms/linux/daemon/linuxdnsrecovery.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../../client/platforms/linux/daemon/iputilslinux.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../../client/platforms/linux/daemon/linuxdaemon.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../../client/platforms/linux/daemon/wireguardutilslinux.cpp
@@ -293,6 +313,17 @@ target_compile_definitions(${PROJECT} PRIVATE "MZ_$<UPPER_CASE:${MZ_PLATFORM_NAM
 
 find_package(amnezia-xray-bindings REQUIRED)
 target_link_libraries(${PROJECT} PRIVATE amnezia::xray-bindings)
+if(AMNEZIA_BUILD_TESTS AND (WIN32 OR MZ_PLATFORM_NAME STREQUAL "macos"))
+    add_subdirectory(
+        "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/native-dns-desktop-lifecycle"
+        "${CMAKE_CURRENT_BINARY_DIR}/native-dns-desktop-lifecycle")
+endif()
+
+if(AMNEZIA_BUILD_TESTS AND NOT ANDROID AND (WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux"))
+    add_subdirectory(
+        "${CMAKE_CURRENT_SOURCE_DIR}/../../tests/native-dns-transaction"
+        "${CMAKE_CURRENT_BINARY_DIR}/native-dns-transaction")
+endif()
 
 find_package(OpenSSL REQUIRED)
 target_link_libraries(${PROJECT} PRIVATE OpenSSL::SSL OpenSSL::Crypto)
@@ -389,6 +420,9 @@ if(WIN32)
     list(APPEND CONAN_BINS $<TARGET_FILE:zx2c4::wintun>)
 
     list(APPEND CONAN_BINS $<TARGET_FILE:OpenSSL::SSL> $<TARGET_FILE:OpenSSL::Crypto>)
+    # The linked Go DLL is a runtime dependency, not just an import library.
+    # Its actual imported target may live outside Conan's aggregate directories.
+    list(APPEND CONAN_BINS $<TARGET_FILE:amnezia::xray-bindings>)
 else()
     find_package(awg-go REQUIRED)
     list(APPEND CONAN_EXECS $<TARGET_FILE:amnezia::awg-go>)
@@ -403,17 +437,23 @@ list(APPEND CONAN_EXECS $<TARGET_FILE:xjasonlyu::tun2socks>)
 find_package(v2ray-rules-dat REQUIRED)
 list(APPEND CONAN_BINS ${GEOSITE_DAT_PATH} ${GEOIP_DAT_PATH})
 
+set(CONAN_EXECS_BUILD ${CONAN_EXECS})
+if(LINUX)
+    list(REMOVE_ITEM CONAN_EXECS_BUILD "$<TARGET_FILE:openvpn::openvpn>")
+endif()
 add_custom_command(TARGET ${PROJECT} POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        ${CONAN_EXECS} ${CONAN_BINS}
+        ${CONAN_EXECS_BUILD} ${CONAN_BINS}
         "$<TARGET_FILE_DIR:${PROJECT}>"
 )
 
-# prebuilt openvpn carries the rpath of whatever machine baked it; point the
-# build-tree copy at the local conan openssl (install rewrites it to $ORIGIN)
+# Deploy the native executable's own closure in build and install trees; never
+# substitute the service's same-SONAME OpenSSL files for its actual dependencies.
 if(LINUX)
+    set_property(TARGET ${PROJECT} APPEND PROPERTY LINK_DEPENDS
+        "${CMAKE_SOURCE_DIR}/cmake/deploy_openvpn_linux.cmake" "$<TARGET_FILE:openvpn::openvpn>")
     file(GENERATE OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/set_openvpn_rpath.cmake
-        CONTENT "file(RPATH_SET FILE \"$<TARGET_FILE_DIR:${PROJECT}>/openvpn\" NEW_RPATH \"$<TARGET_FILE_DIR:OpenSSL::SSL>\")\n"
+        CONTENT "set(OPENVPN_SOURCE \"$<TARGET_FILE:openvpn::openvpn>\")\nset(OPENVPN_DESTINATION \"$<TARGET_FILE_DIR:${PROJECT}>\")\ninclude(\"${CMAKE_SOURCE_DIR}/cmake/deploy_openvpn_linux.cmake\")\n"
     )
     add_custom_command(TARGET ${PROJECT} POST_BUILD
         COMMAND ${CMAKE_COMMAND} -P ${CMAKE_CURRENT_BINARY_DIR}/set_openvpn_rpath.cmake
@@ -461,21 +501,10 @@ install(FILES ${CONAN_BINS}
 # install openvpn via the service's dep set to ship its openssl, then
 # rewrite conan's absolute build rpath to a relative one for the package
 if(LINUX)
-    install(IMPORTED_RUNTIME_ARTIFACTS openvpn::openvpn
-        RUNTIME_DEPENDENCY_SET service_deps
-        PERMISSIONS
-            OWNER_READ OWNER_EXECUTE
-            GROUP_READ GROUP_EXECUTE
-            WORLD_READ WORLD_EXECUTE
-        COMPONENT AmneziaVPN
-    )
     install(CODE "
-        set(_ovpn \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_BINDIR}/openvpn\")
-        file(CHMOD \"\${_ovpn}\" PERMISSIONS
-            OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
-        file(RPATH_SET FILE \"\${_ovpn}\" NEW_RPATH \"$ORIGIN:$ORIGIN/../lib\")
-        file(CHMOD \"\${_ovpn}\" PERMISSIONS
-            OWNER_READ OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
+        set(OPENVPN_SOURCE \"$<TARGET_FILE:openvpn::openvpn>\")
+        set(OPENVPN_DESTINATION \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_BINDIR}\")
+        include(\"${CMAKE_SOURCE_DIR}/cmake/deploy_openvpn_linux.cmake\")
     "
         COMPONENT AmneziaVPN
     )
@@ -527,6 +556,11 @@ else()
     set(RUNTIME_DEPS_DIR ${CMAKE_INSTALL_BINDIR})
 endif()
 
+set(SERVICE_RUNTIME_SEARCH_DIRS ${CONAN_RUNTIME_LIB_DIRS})
+if(WIN32)
+    list(PREPEND SERVICE_RUNTIME_SEARCH_DIRS
+        "$<TARGET_FILE_DIR:${PROJECT}>" "$<TARGET_FILE_DIR:amnezia::xray-bindings>")
+endif()
 install(RUNTIME_DEPENDENCY_SET service_deps
     PRE_EXCLUDE_REGEXES
         [[api-ms-win-.*]]
@@ -540,7 +574,7 @@ install(RUNTIME_DEPENDENCY_SET service_deps
         [[^.*[\\/]system32[\\/].*\.dll$]]
         [[^/lib.*]]
         [[^/usr/lib.*]]
-    DIRECTORIES ${CONAN_RUNTIME_LIB_DIRS}
+    DIRECTORIES ${SERVICE_RUNTIME_SEARCH_DIRS}
     COMPONENT AmneziaVPN
     DESTINATION "${RUNTIME_DEPS_DIR}"
 )

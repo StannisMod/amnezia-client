@@ -3,6 +3,8 @@
 
 #include <QHostAddress>
 #include <QObject>
+#include <QJsonObject>
+#include <functional>
 #include <QProcessEnvironment>
 
 #include "configuratorBase.h"
@@ -23,10 +25,13 @@ public:
         QString clientPrivKey; // client private key
         QString clientPubKey;  // client public key
         QString clientIP;      // internal client IP address
+        QString pathMtuProbe; // actual server tunnel address read over SSH
+        QString clientIPv6;
         QString serverPubKey;  // tls-auth key
         QString pskKey;        // preshared key
         QString host;          // host ip
         QString port;
+        QStringList pathMtuProbes; // derived from the same persisted server snapshot
     };
 
     amnezia::ProtocolConfig createConfig(const amnezia::ServerCredentials &credentials, amnezia::DockerContainer container,
@@ -39,16 +44,26 @@ public:
     amnezia::ProtocolConfig processConfigWithExportSettings(const amnezia::ExportSettings &settings,
                                                             amnezia::ProtocolConfig protocolConfig) override;
 
+    // The caller must durably own this context before allowing a server write.
+    void setPendingPeerExport(const QJsonObject &state, std::function<bool(const QJsonObject &)> persist);
     static ConnectionData genClientKeys();
+    static QList<QHostAddress> getIpsFromConf(const QString &input);
+    static QStringList pathMtuProbesFromInterfaceConfig(const QString &configuration);
+    static QString pathMtuProbeFromInterfaceConfig(const QString &configuration);
+    static QString serverIPv4CidrFromInterfaceConfig(const QString &configuration);
+    static QString serverIPv6CidrFromInterfaceConfig(const QString &configuration);
+    static QString newServerIPv6Address();
+    static QString clientIPv6FromInterfaceConfig(const QString &configuration, const QString &clientIPv4);
 
 private:
-    QList<QHostAddress> getIpsFromConf(const QString &input);
     ConnectionData prepareWireguardConfig(const amnezia::ServerCredentials &credentials, amnezia::DockerContainer container,
                                           const amnezia::WireGuardServerConfig* serverConfig,
                                           const amnezia::AwgServerConfig* awgServerConfig,
                                           const amnezia::DnsSettings &dnsSettings,
                                           amnezia::ErrorCode &errorCode);
 
+    QJsonObject m_pendingPeerExport;
+    std::function<bool(const QJsonObject &)> m_persistPendingPeerExport;
     bool m_isAwg;
     QString m_serverConfigPath;
     QString m_serverPublicKeyPath;

@@ -297,6 +297,9 @@ qt_generate_deploy_qml_app_script(
 install(SCRIPT ${QT_DEPLOY_SCRIPT}
     COMPONENT AmneziaVPN
 )
+if(LINUX AND NOT ANDROID)
+    include(${CMAKE_SOURCE_DIR}/cmake/linux_network_runtime.cmake)
+endif()
 
 if (APPLE AND NOT IOS AND NOT MACOS_NE)
     list(APPEND OVPN_SCRIPTS "${CMAKE_SOURCE_DIR}/deploy/data/macos/update-resolv-conf.sh")

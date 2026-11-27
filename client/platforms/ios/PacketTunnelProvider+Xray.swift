@@ -9,6 +9,8 @@ enum XrayErrors: Error {
     case cantParseListenAndPort
     case cantAcquireLocalPort
     case cantSaveHevSocksConfig
+    case stopped
+    case nativeStartFailed
 }
 
 extension Constants {
@@ -70,35 +72,51 @@ extension PacketTunnelProvider {
             return
         }
 
-        if splitTunnelType == 1 {
-            var ipv4IncludedRoutes = [NEIPv4Route]()
-
-            for allowedIPString in splitTunnelSites {
-                if let allowedIP = IPAddressRange(from: allowedIPString) {
-                    ipv4IncludedRoutes.append(NEIPv4Route(
-                        destinationAddress: "\(allowedIP.address)",
-                        subnetMask: "\(allowedIP.subnetMask())"))
-                }
-            }
-
-            settings.ipv4Settings?.includedRoutes = ipv4IncludedRoutes
-        } else if splitTunnelType == 2 {
-            var ipv4ExcludedRoutes = [NEIPv4Route]()
-
-            for excludedIPString in splitTunnelSites {
-                if let excludedIP = IPAddressRange(from: excludedIPString) {
-                    ipv4ExcludedRoutes.append(NEIPv4Route(
-                        destinationAddress: "\(excludedIP.address)",
-                        subnetMask: "\(excludedIP.subnetMask())"))
-                }
-            }
-
-            settings.ipv4Settings?.excludedRoutes = ipv4ExcludedRoutes
+        let routes = splitTunnelSites.compactMap { site -> XrayRoute? in
+            guard let range = IPAddressRange(from: site) else { return nil }
+            return XrayRoute(address: "\(range.address)", prefixLength: Int(range.networkPrefixLength))
+        }
+        if !XrayNetworkSettings.applySplit(type: splitTunnelType, routes: routes, to: settings) {
+            xrayLog(.error, message: "Invalid Xray route prefix")
         }
     }
 
     func startXray(completionHandler: @escaping (Error?) -> Void) {
+        enqueueXrayStart(expectedGeneration: nil, completionHandler: completionHandler)
+    }
 
+    private func enqueueXrayStart(expectedGeneration: UInt64?, completionHandler: @escaping (Error?) -> Void) {
+        xrayLifecycleQueue.async {
+            if let expectedGeneration, self.xrayGeneration != expectedGeneration {
+                completionHandler(XrayErrors.stopped)
+                return
+            }
+            guard !self.xrayClosing, !self.xrayActive else {
+                completionHandler(NativeTunnelRunner.RunError.alreadyRunning)
+                return
+            }
+            self.xrayGeneration &+= 1
+            self.xrayActive = true
+            self.xrayReady = false
+            let generation = self.xrayGeneration
+            self.startXraySession(generation: generation) { error in
+                self.xrayLifecycleQueue.async {
+                    guard self.xrayGeneration == generation else {
+                        completionHandler(XrayErrors.stopped)
+                        return
+                    }
+                    if let error {
+                        self.stopXray { completionHandler(error) }
+                    } else {
+                        self.xrayReady = true
+                        completionHandler(nil)
+                    }
+                }
+            }
+        }
+    }
+
+    private func startXraySession(generation: UInt64, completionHandler: @escaping (Error?) -> Void) {
         // Xray configuration
         guard let protocolConfiguration = self.protocolConfiguration as? NETunnelProviderProtocol,
               let providerConfiguration = protocolConfiguration.providerConfiguration,
@@ -108,30 +126,7 @@ extension PacketTunnelProvider {
             return
         }
 
-        // Tunnel settings
-        let ipv6Enabled = false
-        let hideVPNIcon = false
-
-        let settings = NEPacketTunnelNetworkSettings(tunnelRemoteAddress: "254.1.1.1")
-        settings.mtu = 9000
-
-        settings.ipv4Settings = {
-            let settings = NEIPv4Settings(addresses: ["198.18.0.1"], subnetMasks: ["255.255.0.0"])
-            settings.includedRoutes = [NEIPv4Route.default()]
-            return settings
-        }()
-
-        settings.ipv6Settings = {
-            guard ipv6Enabled else {
-                return nil
-            }
-            let settings = NEIPv6Settings(addresses: ["fd6e:a81b:704f:1211::1"], networkPrefixLengths: [64])
-            settings.includedRoutes = [NEIPv6Route.default()]
-            if hideVPNIcon {
-                settings.excludedRoutes = [NEIPv6Route(destinationAddress: "::", networkPrefixLength: 128)]
-            }
-            return settings
-        }()
+        let settings = XrayNetworkSettings.make()
 
         do {
             let xrayConfig = try JSONDecoder().decode(XrayConfig.self,
@@ -149,6 +144,12 @@ extension PacketTunnelProvider {
             ? NEDNSSettings(servers: dnsArray)
             : NEDNSSettings(servers: ["1.1.1.1"])
             applyXraySplitTunnel(xrayConfig, settings: settings)
+            if xrayConfig.ipv6Enabled == false {
+                // Keep capture while the connection-local Xray policy rejects
+                // IPv6. Dropping the routes would leak through the native NIC.
+                settings.ipv6Settings?.includedRoutes = [NEIPv6Route.default()]
+                settings.ipv6Settings?.excludedRoutes = []
+            }
 
             let xrayConfigData = xrayConfig.config.data(using: .utf8)
 
@@ -175,28 +176,72 @@ extension PacketTunnelProvider {
 
             let updatedData = try JSONSerialization.data(withJSONObject: jsonDict, options: [])
 
-            setTunnelNetworkSettings(settings) { [weak self] error in
-                if let error {
-                    completionHandler(error)
-                    return
+            let blocked = xrayConfig.ipv6Enabled == false
+            if blocked {
+                let controller = nativeXrayDNS
+                nativeXrayDNSFilter = try NativeDNSPacketFilter(filter: { controller.intercept($0) })
+                controller.start()
+            }
+            let applySettings: (@escaping (Error?) -> Void) -> Void = { done in
+                if blocked {
+                    self.applyNativeDNS(self.nativeXrayDNS, settings: settings, blocked: true,
+                        publish: { prepared, published in
+                            self.xrayLifecycleQueue.async {
+                                guard self.xrayGeneration == generation, !self.xrayClosing else {
+                                    published(XrayErrors.stopped)
+                                    return
+                                }
+                                self.setTunnelNetworkSettings(prepared, completionHandler: published)
+                            }
+                        }, completion: done)
+                } else {
+                    self.setTunnelNetworkSettings(settings, completionHandler: done)
                 }
-
-                self?.updateActiveInterfaceIndexForCurrentPath()
-
-                // Launch xray
-                self?.setupAndStartXray(configData: updatedData) { xrayError in
-                    if let xrayError {
-                        completionHandler(xrayError)
+            }
+            applySettings { [weak self] error in
+                guard let self else { completionHandler(XrayErrors.stopped); return }
+                self.xrayLifecycleQueue.async {
+                    guard self.xrayGeneration == generation, !self.xrayClosing else {
+                        completionHandler(XrayErrors.stopped)
                         return
                     }
+                    if let error {
+                        completionHandler(error)
+                        return
+                    }
+                    self.updateActiveInterfaceIndexForCurrentPath()
+                    do {
+                        try self.nativeXraySockets.start(index: self.nativeXrayScopeIndex(),
+                                                        blockIPv6: xrayConfig.ipv6Enabled == false)
+                    } catch {
+                        completionHandler(error)
+                        return
+                    }
+                    self.setupAndStartXray(configData: updatedData) { xrayError in
+                        if let xrayError {
+                            completionHandler(xrayError)
+                            return
+                        }
 
-                    // Launch hevSocks
-                    self?.setupAndRunTun2socks(configData: updatedData,
-                                               address: address,
-                                               port: port,
-                                               username: socksCredentials.username,
-                                               password: socksCredentials.password,
-                                               completionHandler: completionHandler)
+                        self.setupAndRunTun2socks(configData: updatedData, address: address, port: port,
+                            filterNativeDNS: blocked,
+                            username: socksCredentials.username, password: socksCredentials.password,
+                            completionHandler: { error in
+                            self.xrayLifecycleQueue.async {
+                                guard self.xrayGeneration == generation, !self.xrayClosing else {
+                                    completionHandler(XrayErrors.stopped)
+                                    return
+                                }
+                                completionHandler(error)
+                            }
+                        }, exited: { error in
+                            self.xrayLifecycleQueue.async {
+                                if let error, self.xrayGeneration == generation, !self.xrayClosing {
+                                    self.stopXray { self.cancelTunnelWithError(error) }
+                                }
+                            }
+                        })
+                    }
                 }
             }
         } catch {
@@ -205,17 +250,46 @@ extension PacketTunnelProvider {
         }
     }
 
-    func stopXray(completionHandler: () -> Void) {
-        Socks5Tunnel.quit()
-        LibXrayStopXray()
-        completionHandler()
+    func stopXray(completionHandler: @escaping () -> Void) {
+        stopXrayRequest(forRestart: false) { _ in completionHandler() }
     }
 
-    func sockCallback(fd: uintptr_t) {
-        if activeIfaceIdx != 0 {
-            withUnsafePointer(to: activeIfaceIdx) { ptr in
-                setsockopt(Int32(fd), IPPROTO_IP, IP_BOUND_IF, ptr, socklen_t(MemoryLayout<UInt32>.size))
-                setsockopt(Int32(fd), IPPROTO_IPV6, IPV6_BOUND_IF, ptr, socklen_t(MemoryLayout<UInt32>.size))
+    func restartXray(completionHandler: @escaping (Error?) -> Void) {
+        stopXrayRequest(forRestart: true) { [weak self] generation in
+            guard let self, let generation else { completionHandler(XrayErrors.stopped); return }
+            self.enqueueXrayStart(expectedGeneration: generation, completionHandler: completionHandler)
+        }
+    }
+
+    private func stopXrayRequest(forRestart: Bool, completionHandler: @escaping (UInt64?) -> Void) {
+        xrayLifecycleQueue.async {
+            if forRestart && (!self.xrayReady || self.xrayClosing) {
+                completionHandler(nil)
+                return
+            }
+            self.xrayGeneration &+= 1
+            self.xrayReady = false
+            let generation = self.xrayGeneration
+            let completed = { completionHandler(generation) }
+            guard self.xrayActive || self.xrayClosing else { completed(); return }
+            self.xrayStopWaiters.append(completed)
+            guard !self.xrayClosing else { return }
+            self.xrayClosing = true
+            self.nativeXrayDNS.stop {
+                Socks5Tunnel.quit {
+                    self.xrayLifecycleQueue.async {
+                        let result = LibXrayStopXray()
+                        free(result)
+                        self.nativeXrayDNSFilter?.stop()
+                        self.nativeXrayDNSFilter = nil
+                        self.nativeXraySockets.stop()
+                        self.xrayActive = false
+                        self.xrayClosing = false
+                        let completions = self.xrayStopWaiters
+                        self.xrayStopWaiters.removeAll()
+                        for completion in completions { completion() }
+                    }
+                }
             }
         }
     }
@@ -287,18 +361,14 @@ extension PacketTunnelProvider {
 
         updateActiveInterfaceIndexForCurrentPath()
 
-        let ctx = Unmanaged.passUnretained(self).toOpaque()
-        let cb: libxray_sockcallback = { (fd, ctx) in
-            guard let ctx = ctx else { return }
-            let instance = Unmanaged<PacketTunnelProvider>.fromOpaque(ctx).takeUnretainedValue()
-
-            instance.sockCallback(fd: fd)
+        // nodep.WrapError returns an owned empty string on success and an
+        // owned error string otherwise. Never report failed startup as ready.
+        let result = LibXrayRunXray(nil, path, Int64.max)
+        defer { free(result) }
+        guard let result, result.pointee == 0 else {
+            completionHandler(XrayErrors.nativeStartFailed)
+            return
         }
-        LibXraySetSockCallback(cb, ctx)
-
-        LibXrayRunXray(nil,
-                       path,
-                       Int64.max)
 
         completionHandler(nil)
         xrayLog(.info, message: "Xray started")
@@ -317,9 +387,11 @@ extension PacketTunnelProvider {
     private func setupAndRunTun2socks(configData: Data,
                                       address: String,
                                       port: Int,
+                                      filterNativeDNS: Bool,
                                       username: String,
-                                      password: String,
-                                      completionHandler: @escaping (Error?) -> Void) {
+                                       password: String,
+                                       completionHandler: @escaping (Error?) -> Void,
+                                       exited: @escaping (Error?) -> Void) {
         let config = """
         tunnel:
           mtu: 9000
@@ -345,10 +417,7 @@ extension PacketTunnelProvider {
             return
         }
 
-        DispatchQueue.global().async {
-            xrayLog(.info, message: "Hev socks started")
-            completionHandler(nil)
-            Socks5Tunnel.run(withConfig: configurationFilePath)
-        }
+        Socks5Tunnel.start(withConfig: configurationFilePath, filterNativeDNS: filterNativeDNS,
+                          started: completionHandler, exited: exited)
     }
 }

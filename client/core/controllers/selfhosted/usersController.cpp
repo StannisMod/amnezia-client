@@ -1,10 +1,14 @@
 #include "usersController.h"
 #include "connectionUpdatesController.h"
+#include "core/utils/connectionUpdates.h"
 
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QDateTime>
+#include <QCryptographicHash>
+#include <QUuid>
+#include <QRegularExpression>
 
 #include "core/utils/containerEnum.h"
 #include "core/utils/containers/containerUtils.h"
@@ -92,9 +96,7 @@ void UsersController::migration(const QByteArray &clientsTableString, QJsonArray
         QJsonObject client;
         client[configKey::clientId] = clientId;
 
-        QJsonObject userData;
-        userData[configKey::clientName] = clientsTableObj.value(clientId).toObject().value(configKey::clientName);
-        client[configKey::userData] = userData;
+        client[configKey::userData] = clientsTableObj.value(clientId).toObject();
 
         clientsTable.push_back(client);
     }
@@ -338,8 +340,206 @@ ErrorCode UsersController::getXrayClients(const DockerContainer container, const
     return error;
 }
 
+ErrorCode UsersController::resumePendingPeerRevocation(const QString &serverId, DockerContainer container)
+{
+    bool handled=false;
+    QJsonObject pending;
+    if ((container==DockerContainer::WireGuard || container==DockerContainer::Awg2)
+        && !m_serversRepository->pendingPeerRevocation(serverId,container,pending)) return ErrorCode::InternalError;
+    const auto key=pending.value("clientPublicKey").toString();
+    const auto row=clientIndexById(key,m_clientsTable);
+    const auto error=revokeManagedPeer(serverId,container,{},handled);
+    if (handled && (error==ErrorCode::NoError || error==ErrorCode::ConnectionUpdateTokenRevocationPending)) {
+        const auto admin=m_serversRepository->selfHostedAdminConfig(serverId);
+        if (admin && !key.isEmpty() && admin->containerConfig(container).protocolConfig.clientId()==key)
+            emit adminConfigRevoked(serverId,container);
+        if (row>=0) emit clientRevoked(row);
+        emit clientsUpdated(m_clientsTable);
+    }
+    return error;
+}
+
+ErrorCode UsersController::revokeManagedPeer(const QString &serverId, DockerContainer container,
+                                           const QString &clientPublicKey, bool &handled)
+{
+    handled=false;
+    if (container!=DockerContainer::WireGuard && container!=DockerContainer::Awg2) return ErrorCode::NoError;
+    QJsonObject operation;
+    if (!m_serversRepository->pendingPeerRevocation(serverId,container,operation)) return ErrorCode::InternalError;
+    if (operation.isEmpty() && clientPublicKey.isEmpty()) return ErrorCode::NoError;
+    const auto admin=m_serversRepository->selfHostedAdminConfig(serverId);
+    if (!admin || !admin->credentials().isValid()) return ErrorCode::InternalError;
+    const auto credentials=admin->credentials();
+    const QJsonObject target{{"host",credentials.hostName},{"port",credentials.port},{"user",credentials.userName},
+        {"secret",credentials.secretData},{"container",ContainerUtils::containerToString(container)},{"updates",admin->connectionUpdates}};
+    const auto binding=QString::fromLatin1(QCryptographicHash::hash(QJsonDocument(target).toJson(QJsonDocument::Compact),QCryptographicHash::Sha256).toHex());
+    // Validate persisted target before contacting a possibly changed server.
+    if (!operation.isEmpty() && (operation.value("binding")!=binding
+        || (!clientPublicKey.isEmpty() && operation.value("clientPublicKey")!=clientPublicKey))) {
+        handled=true; return ErrorCode::InternalError;
+    }
+    SshSession ssh; QJsonObject capabilities; bool managed=false;
+    auto error=ssh.inspectProtocolHelper(container,credentials,managed,capabilities);
+    handled=managed || !operation.isEmpty();
+    if (error!=ErrorCode::NoError) return error;
+    if (!managed) return operation.isEmpty()?ErrorCode::NoError:ErrorCode::InternalError;
+    if (!capabilities.value("features").toArray().contains("native-mutation-v1")
+        || !capabilities.value("features").toArray().contains("client-table-cas-v1")) return ErrorCode::InternalError;
+    const QString path=container==DockerContainer::Awg2?"/opt/amnezia/awg/awg0.conf":"/opt/amnezia/wireguard/wg0.conf";
+    const auto tablePath=QString("/opt/amnezia/%1/clientsTable").arg(ContainerUtils::containerTypeToString(container));
+    auto uniqueRow=[](const QJsonArray &table,const QString &key) {
+        int row=-1;
+        for (int i=0;i<table.size();++i) {
+            if (!table[i].isObject()) return -2;
+            if (table[i].toObject().value(configKey::clientId).toString()!=key) continue;
+            if (row>=0) return -2;
+            row=i;
+        }
+        return row;
+    };
+    if (operation.isEmpty()) {
+        const auto encodedKey=clientPublicKey.toLatin1();
+        const auto decodedKey=QByteArray::fromBase64(encodedKey);
+        if (decodedKey.size()!=32 || decodedKey.toBase64()!=encodedKey) return ErrorCode::InternalError;
+        auto table=ssh.getTextFileFromContainer(container,credentials,tablePath,error);
+        if (error!=ErrorCode::NoError) return error;
+        auto document=QJsonDocument::fromJson(table);
+        if (!document.isArray() || uniqueRow(document.array(),clientPublicKey)==-1) {
+            // The container-profile entry point need not have opened the list.
+            // Migrate or recover a missing metadata row before capturing
+            // revocation state, without recursively calling updateClients or
+            // resuming a different operation.
+            auto migrated=document.isArray()?document.array():QJsonArray{};
+            if (!document.isArray()) migration(table,migrated);
+            int count=0;
+            error=getWireGuardClients(container,credentials,&ssh,count,migrated);
+            if (error!=ErrorCode::NoError) return error;
+            const auto replacement=QJsonDocument(migrated).toJson();
+            bool transactional=false;
+            error=ssh.replaceClientTable(container,credentials,table,replacement,transactional,!document.isArray());
+            if (error!=ErrorCode::NoError || !transactional) return error==ErrorCode::NoError?ErrorCode::InternalError:error;
+            table=replacement; document=QJsonDocument::fromJson(table);
+        }
+        if (!document.isArray() || uniqueRow(document.array(),clientPublicKey)<0) return ErrorCode::InternalError;
+        // Migration may have waited for another writer. Capture the protocol
+        // baseline afterwards so the new durable context never uses an older
+        // configuration paired with a newly migrated table.
+        const auto original=QString::fromUtf8(ssh.getTextFileFromContainer(container,credentials,path,error));
+        if (error!=ErrorCode::NoError) return error;
+        QString candidate;
+        if (!connectionUpdates::removePeerFromServerConfig(original,clientPublicKey,candidate)) return ErrorCode::InternalError;
+        operation={{"version",1},{"binding",binding},{"clientPublicKey",clientPublicKey},
+            {"original",original},{"candidate",candidate},{"table",QString::fromLatin1(table.toBase64())}};
+        if (capabilities.value("features").toArray().contains("native-receipt-v1")) {
+            operation["version"]=2;
+            operation["receipt"]=QUuid::createUuid().toString(QUuid::Id128)+QUuid::createUuid().toString(QUuid::Id128);
+            operation["phase"]="active";
+        }
+        if (!m_serversRepository->compareAndSetPendingPeerRevocation(serverId,container,{},operation)) return ErrorCode::InternalError;
+    }
+    const auto key=operation.value("clientPublicKey").toString();
+    const auto original=operation.value("original").toString();
+    const auto candidate=operation.value("candidate").toString();
+    QString verifiedCandidate;
+    const auto tableEncoded=operation.value("table").toString().toLatin1();
+    const auto originalTable=QByteArray::fromBase64(tableEncoded);
+    const auto originalDocument=QJsonDocument::fromJson(originalTable);
+    const bool withReceipt=operation.value("version")==2;
+    const auto receipt=operation.value("receipt").toString();
+    const auto phase=operation.value("phase").toString();
+    static const QRegularExpression receiptId("^[a-f0-9]{64}$");
+    if ((withReceipt ? operation.size()!=8 || !receiptId.match(receipt).hasMatch() || (phase!="active" && phase!="done")
+                     : operation.size()!=6 || operation.value("version")!=1)
+        || operation.value("binding")!=binding
+        || original.toUtf8().size()>4*1024*1024 || originalTable.size()>4*1024*1024
+        || originalTable.toBase64()!=tableEncoded || !originalDocument.isArray()
+        || uniqueRow(originalDocument.array(),key)<0
+        || !connectionUpdates::removePeerFromServerConfig(original,key,verifiedCandidate) || verifiedCandidate!=candidate)
+        return ErrorCode::InternalError;
+    if (withReceipt && !capabilities.value("features").toArray().contains("native-receipt-v1")) return ErrorCode::InternalError;
+    auto receiptCall=[&](const QString &action,QJsonObject &response) {
+        response={};
+        return ssh.protocolConfigTransaction(container,credentials,{{"action",action},{"operation",receipt},
+            {"expected",QString::fromLatin1(original.toUtf8().toBase64())},
+            {"candidate",QString::fromLatin1(candidate.toUtf8().toBase64())}},response);
+    };
+    auto acknowledge=[&]() {
+        QJsonObject result;
+        const auto acknowledgment=receiptCall("ack-receipt",result);
+        if (acknowledgment!=ErrorCode::NoError || !result.value("acknowledged").toBool() || result.value("operation")!=receipt)
+            return acknowledgment==ErrorCode::NoError?ErrorCode::InternalError:acknowledgment;
+        return m_serversRepository->compareAndSetPendingPeerRevocation(serverId,container,operation,{})
+            ?ErrorCode::NoError:ErrorCode::InternalError;
+    };
+    // Business completion is already durable. A lost ACK may have removed the
+    // server receipt; do not replay native/table/token operations on that retry.
+    if (withReceipt && phase=="done") return acknowledge();
+    bool nativeCompleted=false;
+    if (withReceipt) {
+        QJsonObject prepared;
+        error=receiptCall("prepare-receipt",prepared);
+        const auto originalHash=QString::fromLatin1(QCryptographicHash::hash(original.toUtf8(),QCryptographicHash::Sha256).toHex());
+        const auto candidateHash=QString::fromLatin1(QCryptographicHash::hash(candidate.toUtf8(),QCryptographicHash::Sha256).toHex());
+        if (error!=ErrorCode::NoError || prepared.value("operation")!=receipt || prepared.value("originalHash")!=originalHash
+            || prepared.value("candidateHash")!=candidateHash) return error==ErrorCode::NoError?ErrorCode::InternalError:error;
+        if (prepared.value("state")=="committed") nativeCompleted=true;
+        else if (prepared.value("state")!="pending") return ErrorCode::InternalError;
+    }
+    if (!nativeCompleted) {
+        bool transactional=false;
+        error=ssh.replaceLiveProtocolConfig(container,credentials,original,candidate,transactional,true,{"client-table-cas-v1"});
+        if (error!=ErrorCode::NoError || !transactional) return error==ErrorCode::NoError?ErrorCode::InternalError:error;
+    }
+    if (withReceipt) {
+        QJsonObject verified;
+        error=receiptCall("check-revoked-peer",verified);
+        if (error!=ErrorCode::NoError || !verified.value("committed").toBool() || !verified.value("revoked").toBool()
+            || verified.value("operation")!=receipt || verified.value("clientPublicKey")!=key)
+            return error==ErrorCode::NoError?ErrorCode::InternalError:error;
+    }
+    // Preserve independent metadata edits. A changed target entry is a conflict;
+    // an absent entry already satisfies removal after verified native completion.
+    const auto current=ssh.getTextFileFromContainer(container,credentials,tablePath,error);
+    if (error!=ErrorCode::NoError) return error;
+    const auto document=QJsonDocument::fromJson(current);
+    if (!document.isArray()) return ErrorCode::InternalError;
+    auto table=document.array(); const auto row=uniqueRow(table,key);
+    if (row==-2) return ErrorCode::InternalError;
+    if (row>=0 && table[row]!=originalDocument.array()[uniqueRow(originalDocument.array(),key)]) return ErrorCode::InternalError;
+    QByteArray replacement=current;
+    if (row>=0) {table.removeAt(row);replacement=QJsonDocument(table).toJson();}
+    const auto hash=QString::fromLatin1(QCryptographicHash::hash(replacement,QCryptographicHash::Sha256).toHex());
+    QJsonObject result;
+    error=ssh.protocolConfigTransaction(container,credentials,{{"action","replace-client-table"},
+        {"expected",QString::fromLatin1(current.toBase64())},{"candidate",QString::fromLatin1(replacement.toBase64())}},result);
+    if (error!=ErrorCode::NoError || !result.value("current").toBool() || result.value("candidateHash")!=hash) {
+        result={};
+        error=ssh.protocolConfigTransaction(container,credentials,{{"action","check-client-table"},
+            {"expected",QString::fromLatin1(replacement.toBase64())}},result);
+        if (error!=ErrorCode::NoError || !result.value("current").toBool() || result.value("candidateHash")!=hash)
+            return error==ErrorCode::NoError?ErrorCode::InternalError:error;
+    }
+    m_clientsTable=table;
+    if (!admin->connectionUpdates.isEmpty()) {
+        result={};
+        error=ConnectionUpdatesController::command(credentials,"revoke",{{"container",ContainerUtils::containerToString(container)},
+            {"clientPublicKey",key}},result);
+        if (error!=ErrorCode::NoError || !result.value("ok").toBool()) return ErrorCode::ConnectionUpdateTokenRevocationPending;
+    }
+    if (withReceipt) {
+        auto completed=operation; completed["phase"]="done";
+        if (!m_serversRepository->compareAndSetPendingPeerRevocation(serverId,container,operation,completed)) return ErrorCode::InternalError;
+        operation=completed;
+        return acknowledge();
+    }
+    if (!m_serversRepository->compareAndSetPendingPeerRevocation(serverId,container,operation,{})) return ErrorCode::InternalError;
+    return ErrorCode::NoError;
+}
+
 ErrorCode UsersController::updateClients(const QString &serverId, const DockerContainer container)
 {
+    const auto recovery = resumePendingPeerRevocation(serverId,container);
+    if (recovery != ErrorCode::NoError) return recovery;
     ErrorCode error = ErrorCode::NoError;
     SshSession sshSession;
     auto adminConfig = m_serversRepository->selfHostedAdminConfig(serverId);
@@ -365,6 +565,7 @@ ErrorCode UsersController::updateClients(const QString &serverId, const DockerCo
         return error;
     }
 
+    const auto previousTable=m_clientsTable;
     m_clientsTable = QJsonDocument::fromJson(clientsTableString).array();
 
     const QString xrayVolumeUuid =
@@ -389,9 +590,15 @@ ErrorCode UsersController::updateClients(const QString &serverId, const DockerCo
 
         const QByteArray newClientsTableString = QJsonDocument(m_clientsTable).toJson();
         if (clientsTableString != newClientsTableString) {
-            error = sshSession.uploadTextFileToContainer(container, credentials, newClientsTableString, clientsTableFile);
-            if (error != ErrorCode::NoError) {
-                logger.error() << "Failed to upload the clientsTable file to the server";
+            bool managed=false;
+            error=sshSession.replaceClientTable(container,credentials,clientsTableString,newClientsTableString,managed,
+                !QJsonDocument::fromJson(clientsTableString).isArray());
+            if (error==ErrorCode::NoError && !managed)
+                error=sshSession.uploadTextFileToContainer(container,credentials,newClientsTableString,clientsTableFile);
+            if (error!=ErrorCode::NoError) {
+                m_clientsTable=previousTable; emit clientsUpdated(m_clientsTable);
+                logger.error()<<"Failed to conditionally migrate the clientsTable file";
+                return error;
             }
         }
     }
@@ -446,6 +653,42 @@ ErrorCode UsersController::updateClients(const QString &serverId, const DockerCo
 }
 
 
+ErrorCode UsersController::updateManagedClientMetadata(DockerContainer container, const ServerCredentials &credentials,
+                                                        const QString &clientId, const QJsonObject &patch, bool allowInsert,
+                                                        bool &handled, QJsonObject &client, bool &inserted)
+{
+    SshSession ssh; QJsonObject capabilities;
+    auto error=ssh.inspectProtocolHelper(container,credentials,handled,capabilities);
+    if (error!=ErrorCode::NoError || !handled) return error;
+    inserted=false;
+    if (clientId.isEmpty() || !capabilities.value("features").toArray().contains("client-table-cas-v1")) return ErrorCode::InternalError;
+    const auto path=QString("/opt/amnezia/%1/clientsTable").arg(ContainerUtils::containerTypeToString(container));
+    const auto expected=ssh.getTextFileFromContainer(container,credentials,path,error);
+    if (error!=ErrorCode::NoError) return error;
+    const auto document=QJsonDocument::fromJson(expected);
+    if (!document.isArray()) return ErrorCode::InternalError;
+    auto table=document.array(); int row=-1;
+    for (int i=0;i<table.size();++i) {
+        if (!table[i].isObject()) return ErrorCode::InternalError;
+        if (table[i].toObject().value(configKey::clientId).toString()!=clientId) continue;
+        if (row>=0) return ErrorCode::InternalError;
+        row=i;
+    }
+    if (row<0 && !allowInsert) return ErrorCode::InternalError;
+    client=row<0?QJsonObject{{configKey::clientId,clientId}}:table[row].toObject();
+    if (client.contains(configKey::userData) && !client.value(configKey::userData).isObject()) return ErrorCode::InternalError;
+    auto data=client.value(configKey::userData).toObject();
+    for (auto it=patch.begin();it!=patch.end();++it) data[it.key()]=it.value();
+    client[configKey::userData]=data;
+    inserted=row<0;
+    if (inserted) table.append(client); else table[row]=client;
+    bool transactional=false;
+    error=ssh.replaceClientTable(container,credentials,expected,QJsonDocument(table).toJson(),transactional);
+    if (error!=ErrorCode::NoError || !transactional) return error==ErrorCode::NoError?ErrorCode::InternalError:error;
+    m_clientsTable=table;
+    return ErrorCode::NoError;
+}
+
 ErrorCode UsersController::appendClient(const QString &serverId, const QString &clientId, const QString &clientName, const DockerContainer container)
 {
     ErrorCode error = ErrorCode::NoError;
@@ -471,6 +714,16 @@ ErrorCode UsersController::appendClient(const QString &serverId, const QString &
         }
     }
 
+    bool managed=false,inserted=false; QJsonObject managedClient;
+    error=updateManagedClientMetadata(container,credentials,clientId,{{configKey::clientName,clientName},
+        {configKey::creationDate,QDateTime::currentDateTime().toString()}},true,managed,managedClient,inserted);
+    if (managed || error!=ErrorCode::NoError) {
+        if (error==ErrorCode::NoError) {
+            if (inserted) emit clientAdded(managedClient);
+            emit clientsUpdated(m_clientsTable);
+        }
+        return error;
+    }
     int existingIndex = clientIndexById(clientId, m_clientsTable);
     if (existingIndex >= 0) {
         return renameClient(serverId, existingIndex, clientName, container, true);
@@ -483,9 +736,9 @@ ErrorCode UsersController::appendClient(const QString &serverId, const QString &
     userData[configKey::clientName] = clientName;
     userData[configKey::creationDate] = QDateTime::currentDateTime().toString();
     client[configKey::userData] = userData;
-    m_clientsTable.push_back(client);
+    auto updatedTable=m_clientsTable; updatedTable.push_back(client);
 
-    const QByteArray clientsTableString = QJsonDocument(m_clientsTable).toJson();
+    const QByteArray clientsTableString = QJsonDocument(updatedTable).toJson();
 
     QString clientsTableFile = QString("/opt/amnezia/%1/clientsTable");
     if (container == DockerContainer::OpenVpn) {
@@ -500,6 +753,7 @@ ErrorCode UsersController::appendClient(const QString &serverId, const QString &
         return error;
     }
 
+    m_clientsTable=updatedTable;
     emit clientAdded(client);
     emit clientsUpdated(m_clientsTable);
     return error;
@@ -522,6 +776,15 @@ ErrorCode UsersController::renameClient(const QString &serverId, const int row, 
         return ErrorCode::InternalError;
     }
 
+    const auto key=m_clientsTable.at(row).toObject().value(configKey::clientId).toString();
+    QJsonObject patch{{configKey::clientName,clientName}};
+    if (addTimeStamp) patch[configKey::creationDate]=QDateTime::currentDateTime().toString();
+    bool managed=false,inserted=false; QJsonObject renamed;
+    const auto managedError=updateManagedClientMetadata(container,credentials,key,patch,false,managed,renamed,inserted);
+    if (managed || managedError!=ErrorCode::NoError) {
+        if (managedError==ErrorCode::NoError) emit clientsUpdated(m_clientsTable);
+        return managedError;
+    }
     auto client = m_clientsTable.at(row).toObject();
     auto userData = client[configKey::userData].toObject();
     userData[configKey::clientName] = clientName;
@@ -530,9 +793,9 @@ ErrorCode UsersController::renameClient(const QString &serverId, const int row, 
     }
     client[configKey::userData] = userData;
 
-    m_clientsTable.replace(row, client);
+    auto updatedTable=m_clientsTable; updatedTable.replace(row,client);
 
-    const QByteArray clientsTableString = QJsonDocument(m_clientsTable).toJson();
+    const QByteArray clientsTableString = QJsonDocument(updatedTable).toJson();
 
     QString clientsTableFile = QString("/opt/amnezia/%1/clientsTable");
     if (container == DockerContainer::OpenVpn) {
@@ -547,6 +810,7 @@ ErrorCode UsersController::renameClient(const QString &serverId, const int row, 
         return error;
     }
 
+    m_clientsTable=updatedTable;
     if (addTimeStamp) {
         emit clientsUpdated(m_clientsTable);
     } else {
@@ -621,36 +885,67 @@ ErrorCode UsersController::revokeWireGuard(const int row, const DockerContainer 
     auto client = clientsTable.at(row).toObject();
     QString clientId = client.value(configKey::clientId).toString();
 
-    auto configSections = wireguardConfigString.split("[", Qt::SkipEmptyParts);
-    for (auto &section : configSections) {
-        if (section.contains(clientId)) {
-            configSections.removeOne(section);
-            break;
+    QString newWireGuardConfig;
+    if (!connectionUpdates::removePeerFromServerConfig(wireguardConfigString, clientId, newWireGuardConfig)) {
+        logger.error() << "Cannot identify a unique WireGuard peer in the server configuration";
+        return ErrorCode::InternalError;
+    }
+    const auto clientsTableFile = QString("/opt/amnezia/%1/clientsTable").arg(ContainerUtils::containerTypeToString(container));
+    QByteArray expectedTable;
+    QJsonArray remoteTable;
+    const bool supportsTransactions = container == DockerContainer::WireGuard || container == DockerContainer::Awg2;
+    if (supportsTransactions) {
+        expectedTable = sshSession->getTextFileFromContainer(container, credentials, clientsTableFile, error);
+        if (error != ErrorCode::NoError) return error;
+        const auto document = QJsonDocument::fromJson(expectedTable);
+        if (!document.isArray()) return ErrorCode::InternalError;
+        remoteTable = document.array();
+        int target = -1;
+        for (int i = 0; i < remoteTable.size(); ++i) {
+            if (!remoteTable[i].isObject()) return ErrorCode::InternalError;
+            if (remoteTable[i].toObject().value(configKey::clientId).toString() != clientId) continue;
+            if (target >= 0) return ErrorCode::InternalError;
+            target = i;
+        }
+        if (target < 0) return ErrorCode::InternalError;
+        remoteTable.removeAt(target);
+    }
+    bool transactional = false;
+    error = sshSession->replaceLiveProtocolConfig(container, credentials, wireguardConfigString, newWireGuardConfig, transactional, false, { "client-table-cas-v1" });
+    if (error != ErrorCode::NoError) return error;
+    if (!transactional) {
+        error = sshSession->uploadTextFileToContainer(container, credentials, newWireGuardConfig, configPath);
+        if (error != ErrorCode::NoError) {
+            logger.error() << "Failed to upload the wg conf file to the server";
+            return error;
         }
     }
-    QString newWireGuardConfig = configSections.join("[");
-    newWireGuardConfig.insert(0, "[");
-    error = sshSession->uploadTextFileToContainer(container, credentials, newWireGuardConfig, configPath);
-    if (error != ErrorCode::NoError) {
-        logger.error() << "Failed to upload the wg conf file to the server";
-        return error;
+
+    auto updatedClientsTable = clientsTable;
+    updatedClientsTable.removeAt(row);
+    if (transactional) {
+        const auto replacement = QJsonDocument(remoteTable).toJson();
+        const auto hash = QString::fromLatin1(QCryptographicHash::hash(replacement, QCryptographicHash::Sha256).toHex());
+        QJsonObject result;
+        error = sshSession->protocolConfigTransaction(container, credentials, {
+            { "action", "replace-client-table" }, { "expected", QString::fromLatin1(expectedTable.toBase64()) },
+            { "candidate", QString::fromLatin1(replacement.toBase64()) } }, result);
+        if (error != ErrorCode::NoError || !result.value("current").toBool() || result.value("candidateHash") != hash) {
+            result = {};
+            error = sshSession->protocolConfigTransaction(container, credentials, {
+                { "action", "check-client-table" }, { "expected", QString::fromLatin1(replacement.toBase64()) } }, result);
+            if (error != ErrorCode::NoError || !result.value("current").toBool() || result.value("candidateHash") != hash)
+                return error == ErrorCode::NoError ? ErrorCode::InternalError : error;
+        }
+        clientsTable = remoteTable;
+        return ErrorCode::NoError;
     }
-
-    clientsTable.removeAt(row);
-
-    const QByteArray clientsTableString = QJsonDocument(clientsTable).toJson();
-
-    QString clientsTableFile = QString("/opt/amnezia/%1/clientsTable");
-    if (container == DockerContainer::OpenVpn) {
-        clientsTableFile = clientsTableFile.arg(ContainerUtils::containerTypeToString(DockerContainer::OpenVpn));
-    } else {
-        clientsTableFile = clientsTableFile.arg(ContainerUtils::containerTypeToString(container));
-    }
-    error = sshSession->uploadTextFileToContainer(container, credentials, clientsTableString, clientsTableFile);
+    error = sshSession->uploadTextFileToContainer(container, credentials, QJsonDocument(updatedClientsTable).toJson(), clientsTableFile);
     if (error != ErrorCode::NoError) {
         logger.error() << "Failed to upload the clientsTable file to the server";
         return error;
     }
+    clientsTable = updatedClientsTable;
 
     bool isAwg2 = (container == DockerContainer::Awg2);
     QString command = isAwg2 ? QStringLiteral("awg") : QStringLiteral("wg");
@@ -802,6 +1097,15 @@ ErrorCode UsersController::revokeClient(const QString &serverId, const int index
     }
 
     QString clientId = m_clientsTable.at(index).toObject().value(configKey::clientId).toString();
+    bool managed=false;
+    const auto managedError=revokeManagedPeer(serverId,container,clientId,managed);
+    if (managed || managedError!=ErrorCode::NoError) {
+        if (managedError==ErrorCode::NoError || managedError==ErrorCode::ConnectionUpdateTokenRevocationPending) {
+            if (adminConfig->containerConfig(container).protocolConfig.clientId()==clientId) emit adminConfigRevoked(serverId,container);
+            emit clientRevoked(index);
+        }
+        emit clientsUpdated(m_clientsTable); emit revokeFinished(managedError); return managedError;
+    }
     ErrorCode errorCode = ErrorCode::NoError;
     ErrorCode tokenError = ErrorCode::NoError;
     if (!adminConfig->connectionUpdates.isEmpty() && (container == DockerContainer::WireGuard || container == DockerContainer::Awg2)) {
@@ -841,7 +1145,7 @@ ErrorCode UsersController::revokeClient(const QString &serverId, const int index
         ContainerConfig containerCfg = adminConfig->containerConfig(container);
         QString containerClientId = containerCfg.protocolConfig.clientId();
 
-        const bool isAdminMatch = !clientId.isEmpty() && !containerClientId.isEmpty() && containerClientId.contains(clientId);
+        const bool isAdminMatch = !clientId.isEmpty() && !containerClientId.isEmpty() && containerClientId==clientId;
         if (isAdminMatch) {
             emit adminConfigRevoked(serverId, container);
         }
@@ -871,6 +1175,17 @@ ErrorCode UsersController::revokeClient(const QString &serverId, const Container
         return ErrorCode::InternalError;
     }
 
+    const auto previousRow=clientIndexById(containerConfig.protocolConfig.clientId(),m_clientsTable);
+    bool managed=false;
+    const auto managedError=revokeManagedPeer(serverId,container,containerConfig.protocolConfig.clientId(),managed);
+    if (managed || managedError!=ErrorCode::NoError) {
+        if (managedError==ErrorCode::NoError || managedError==ErrorCode::ConnectionUpdateTokenRevocationPending) {
+            emit adminConfigRevoked(serverId,container);
+            if (previousRow>=0) emit clientRevoked(previousRow);
+            emit clientsUpdated(m_clientsTable);
+        }
+        return managedError;
+    }
     ErrorCode errorCode = ErrorCode::NoError;
     errorCode = updateClients(serverId, container);
     if (errorCode != ErrorCode::NoError) {

@@ -7,6 +7,7 @@ cert /opt/amnezia/openvpn/AmneziaReq.crt
 key /opt/amnezia/openvpn/AmneziaReq.key
 dh /opt/amnezia/openvpn/dh.pem
 server $OPENVPN_SUBNET_IP $OPENVPN_SUBNET_MASK
+server-ipv6 fd6e:a81b:704f:1101::/64
 ifconfig-pool-persist ipp.txt
 duplicate-cn
 keepalive 10 120

@@ -18,15 +18,21 @@ class DnsUtilsLinux final : public DnsUtils {
  public:
   DnsUtilsLinux(QObject* parent);
   ~DnsUtilsLinux();
-  bool updateResolvers(const QString& ifname,
-                       const QList<QHostAddress>& resolvers) override;
-  bool restoreResolvers() override;
+  bool updateResolversNative(const QString& ifname,
+                       const QList<QHostAddress>& resolvers, bool strict) override;
+  bool restoreResolversNative(bool strict) override;
+  bool prepareDnsRecovery(NativeDnsGuard &guard, const QString &ifname,
+                           const QList<QHostAddress> &endpoints) override;
+  bool setLinkPolicy(const QJsonObject &policy) override;
 
  private:
   void setLinkDNS(int ifindex, const QList<QHostAddress>& resolvers);
   void setLinkDomains(int ifindex, const QList<DnsLinkDomain>& domains);
   void setLinkDefaultRoute(int ifindex, bool enable);
   void updateLinkDomains();
+  bool callChecked(const QString &method, const QList<QVariant> &arguments);
+  bool updateResolversChecked(const QList<QHostAddress> &resolvers);
+  bool restoreResolversChecked();
 
  private slots:
   void dnsCallCompleted(QDBusPendingCallWatcher*);
@@ -35,7 +41,11 @@ class DnsUtilsLinux final : public DnsUtils {
  private:
   int m_ifindex = 0;
   QMap<int, DnsLinkDomainList> m_linkDomains;
+  bool m_strictDomainsSaved = false;
+  quint64 m_domainGeneration = 0;
   QDBusInterface* m_resolver = nullptr;
+  QJsonObject m_dnsRecovery;
+  QJsonObject m_linkPolicy;
 };
 
 #endif  // DNSUTILSLINUX_H

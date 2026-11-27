@@ -1,0 +1,6 @@
+cmake_minimum_required(VERSION 3.25)
+project(XrayStopSequenceTests LANGUAGES CXX)
+set(CMAKE_CXX_STANDARD 20)
+enable_testing()
+add_executable(test_xray_stop_sequence main.cpp)
+add_test(NAME xray_stop_sequence COMMAND test_xray_stop_sequence)

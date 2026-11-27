@@ -18,7 +18,6 @@ import (
 	"github.com/StannisMod/amnezia-client/native/routing/awg"
 	"github.com/amnezia-vpn/amneziawg-go/v3/conn"
 	"github.com/amnezia-vpn/amneziawg-go/v3/tun"
-	"gvisor.dev/gvisor/pkg/tcpip/stack"
 )
 
 type stabilityTraceTUN struct {
@@ -93,13 +92,13 @@ func stabilityUserspaceTracedPeer(t *testing.T, config awg.Config) (netip.AddrPo
 		t.Fatal(e)
 	}
 	name := fmt.Sprintf("%s-%d", strings.NewReplacer("/", "_", "[", "", "]", "", " ", "_").Replace(t.Name()), time.Now().UnixNano())
-	if probeStack, ok := any(flowStack).(interface{ StabilityProbe(stack.TCPProbeFunc) }); ok {
+	if probeStack, ok := any(flowStack).(interface{ StabilityProbe(stabilityTCPProbeFunc) }); ok {
 		file, err := os.Create(filepath.Join(directory, name+".probe.jsonl"))
 		if err != nil {
 			t.Fatal(err)
 		}
 		var mu sync.Mutex
-		probeStack.StabilityProbe(func(state *stack.TCPEndpointState) {
+		probeStack.StabilityProbe(func(state *stabilityTCPEndpointState) {
 			s := state.Sender
 			if state.ID.LocalPort != 18443 {
 				return

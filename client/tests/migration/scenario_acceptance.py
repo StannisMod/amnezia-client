@@ -13,6 +13,10 @@ import subprocess
 import tempfile
 import time
 import uuid
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from server_fixture import startup_assets
 
 REPO = Path(__file__).resolve().parents[3]
 SOURCE = REPO/'client/server_scripts'
@@ -126,7 +130,14 @@ def fixture(header_protection=False):
         host('source', 'mkdir', '-p', state+'/'+folder)
         copy('source', config, state+'/'+folder+'/'+iface+'.conf')
         copy('source', '[{"clientId":"migration-synthetic-existing"}]', state+'/'+folder+'/clientsTable')
-        startup = (SOURCE/folder/'start.sh').read_text().replace('$AWG_SUBNET_IP', subnet+'.1').replace('$WIREGUARD_SUBNET_IP', subnet+'.1').replace('$WIREGUARD_SUBNET_CIDR', '24')
+        assets, release = startup_assets(folder)
+        for relative, data in assets.items():
+            target = Path(state) / relative
+            host('source', 'mkdir', '-p', str(target.parent))
+            copy('source', data, str(target))
+        if release:
+            host('source', 'ln', '-s', release, state+'/mtu/current')
+        startup = assets['start.sh'].replace('$AWG_SUBNET_IP', subnet+'.1').replace('$WIREGUARD_SUBNET_IP', subnet+'.1').replace('$WIREGUARD_SUBNET_CIDR', '24')
         copy('source', startup, state+'/start.sh', '755')
         d('source', 'create', '--name', name, '--privileged', '--restart', 'always', '--log-driver', 'none', '-p', f'{port}:{port}/udp', image)
         d('source', 'cp', state+'/.', name+':/opt/amnezia/')

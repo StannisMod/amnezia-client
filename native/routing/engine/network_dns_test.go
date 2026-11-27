@@ -22,6 +22,162 @@ import (
 
 type dnsTestLifetime struct{ closed atomic.Bool }
 
+type applicationUpdateDNSRouter struct{ adapter.DNSRouter }
+
+func (*applicationUpdateDNSRouter) Exchange(_ context.Context, q *dns.Msg, _ adapter.DNSQueryOptions) (*dns.Msg, error) {
+	return new(dns.Msg).SetReply(q), nil
+}
+
+func TestApplicationDNSPreparationRetainsPublishedPolicy(t *testing.T) {
+	for _, outcome := range []string{"publish", "build-failed", "network-suspended"} {
+		t.Run(outcome, func(t *testing.T) {
+			p := newNetworkDNSProxy(context.Background())
+			newGeneration := func() (*dnsGeneration, *dnsTestLifetime) {
+				ctx, cancel := context.WithCancel(context.Background())
+				lifetime := new(dnsTestLifetime)
+				g := &dnsGeneration{box: lifetime, router: new(applicationUpdateDNSRouter),
+					ctx: ctx, cancel: cancel, stopParent: func() bool { return true }}
+				t.Cleanup(g.close)
+				return g, lifetime
+			}
+			old, oldLifetime := newGeneration()
+			if !p.replace(old, 0) {
+				t.Fatal("initial publication failed")
+			}
+			version, err := p.beginApplicationUpdate()
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Exact preparation boundary that used to clear p.current before
+			// building the replacement. No timing/scheduling assumption.
+			if _, err := p.exchange(context.Background(), new(dns.Msg)); err != nil {
+				t.Fatalf("UID-policy preparation interrupted existing DNS: %v", err)
+			}
+			if oldLifetime.closed.Load() {
+				t.Fatal("preparation closed the published generation")
+			}
+			committed := false
+			switch outcome {
+			case "publish":
+				next, _ := newGeneration()
+				if !p.replaceWith(next, version, func() { committed = true }) || !committed {
+					t.Fatal("DNS and membership were not committed together")
+				}
+				if !oldLifetime.closed.Load() {
+					t.Fatal("publication leaked the superseded generation")
+				}
+			case "build-failed":
+				// No candidate is published on a build failure.
+				if p.current != old || committed {
+					t.Fatal("failed preparation altered the current policy")
+				}
+			case "network-suspended":
+				p.freeze()
+				next, nextLifetime := newGeneration()
+				if p.replaceWith(next, version, func() { committed = true }) || committed {
+					t.Fatal("stale application edit reopened suspended DNS/policy")
+				}
+				if !nextLifetime.closed.Load() {
+					t.Fatal("superseded candidate was not closed")
+				}
+				if _, err := p.beginApplicationUpdate(); !errors.Is(err, errNetworkDNSUnavailable) {
+					t.Fatal("application edit can resurrect suspended DNS")
+				}
+			}
+			_, err = p.exchange(context.Background(), new(dns.Msg))
+			if outcome == "network-suspended" {
+				if !errors.Is(err, errNetworkDNSUnavailable) {
+					t.Fatalf("network suspension did not fail closed: %v", err)
+				}
+			} else if err != nil {
+				t.Fatalf("available policy lost DNS: %v", err)
+			}
+		})
+	}
+}
+
+func TestNetworkDNSDiagnosticsTrackPendingAndCompletedWithoutQueryIdentity(t *testing.T) {
+	p := newNetworkDNSProxy(context.Background())
+	router := &delayedGenerationRouter{started: make(chan struct{}), release: make(chan struct{})}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	g := &dnsGeneration{box: &dnsTestLifetime{}, router: router, ctx: ctx, cancel: cancel, stopParent: func() bool { return true }}
+	if !p.replace(g, 0) {
+		t.Fatal("generation rejected")
+	}
+	done := make(chan error, 1)
+	go func() {
+		query := new(dns.Msg)
+		query.SetQuestion("private-query-identity.test.", dns.TypeA)
+		_, err := p.exchange(context.Background(), query)
+		done <- err
+	}()
+	<-router.started
+	var pending DiagnosticSnapshot
+	p.diagnostics(&pending)
+	if !pending.DNSAvailable || pending.DNSVersion != 0 {
+		t.Fatalf("published generation not visible: %+v", pending)
+	}
+	if pending.DNSPending != 1 || pending.DNSCompleted != 0 {
+		t.Fatalf("pending lookup not visible: %+v", pending)
+	}
+	close(router.release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	var completed DiagnosticSnapshot
+	p.diagnostics(&completed)
+	if completed.DNSPending != 0 || completed.DNSCompleted != 1 || completed.DNSFailed != 0 {
+		t.Fatalf("lookup completion not visible: %+v", completed)
+	}
+	p.freeze()
+	if _, err := p.exchange(context.Background(), new(dns.Msg)); err == nil {
+		t.Fatal("suspended DNS accepted query")
+	}
+	var failed DiagnosticSnapshot
+	p.diagnostics(&failed)
+	if failed.DNSAvailable || failed.DNSVersion != 1 {
+		t.Fatalf("suspended generation not visible: %+v", failed)
+	}
+	if failed.DNSPending != 0 || failed.DNSCompleted != 2 || failed.DNSFailed != 1 {
+		t.Fatalf("lookup failure not visible: %+v", failed)
+	}
+	if failed.DNSLastFailure != "generation-unavailable" {
+		t.Fatalf("suspension was misclassified: %s", failed.DNSLastFailure)
+	}
+	nextCtx, nextCancel := context.WithCancel(context.Background())
+	defer nextCancel()
+	next := &dnsGeneration{box: &dnsTestLifetime{}, ctx: nextCtx, cancel: nextCancel, stopParent: func() bool { return true }}
+	defer next.close()
+	if !p.replace(next, 1) {
+		t.Fatal("replacement generation rejected")
+	}
+	var recovered DiagnosticSnapshot
+	p.diagnostics(&recovered)
+	if !recovered.DNSAvailable || recovered.DNSVersion != 1 || recovered.DNSLastFailure != "generation-unavailable" {
+		t.Fatalf("current availability cannot be distinguished from historical failure: %+v", recovered)
+	}
+}
+
+func TestNetworkDNSFailureClassesDoNotRetainErrorContents(t *testing.T) {
+	for _, test := range []struct {
+		err  error
+		want string
+	}{
+		{errNetworkDNSUnavailable, "generation-unavailable"},
+		{errNetworkDNSChanged, "generation-changed"},
+		{context.Canceled, "cancelled"},
+		{context.DeadlineExceeded, "deadline"},
+		{net.ErrClosed, "socket-closed"},
+		{&net.OpError{Op: "dial", Err: errors.New("private-query.invalid")}, "socket-error"},
+		{errors.New("private-query.invalid"), "resolver-error"},
+	} {
+		if got := networkDNSFailureClass(test.err); got != test.want {
+			t.Fatalf("unexpected failure class: %s", got)
+		}
+	}
+}
+
 func (l *dnsTestLifetime) Close() error { l.closed.Store(true); return nil }
 
 type delayedGenerationRouter struct {
@@ -33,6 +189,58 @@ func (r *delayedGenerationRouter) Exchange(context.Context, *dns.Msg, adapter.DN
 	close(r.started)
 	<-r.release
 	return new(dns.Msg), nil
+}
+
+func TestInitialNetworkDNSWaitsForPublicationAndLaterSuspensionFailsClosed(t *testing.T) {
+	p := newNetworkDNSProxy(context.Background())
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { _, err := p.exchange(ctx, new(dns.Msg)); done <- err }()
+	select {
+	case err := <-done:
+		t.Fatalf("initial DNS failed before publication: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	router := &delayedGenerationRouter{started: make(chan struct{}), release: make(chan struct{})}
+	close(router.release)
+	gctx, gcancel := context.WithCancel(ctx)
+	g := &dnsGeneration{box: &dnsTestLifetime{}, router: router, ctx: gctx, cancel: gcancel, stopParent: func() bool { return true }}
+	if !p.replace(g, 0) {
+		t.Fatal("initial generation rejected")
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-ctx.Done():
+		t.Fatal("initial query did not resume")
+	}
+	p.freeze()
+	_, err := p.exchange(ctx, new(dns.Msg))
+	if err == nil || errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("suspended DNS did not fail closed immediately: %v", err)
+	}
+}
+
+func TestInitialNetworkDNSWaitHonorsCallerAndOwnerCancellation(t *testing.T) {
+	for _, cancelOwner := range []bool{false, true} {
+		owner, cancel := context.WithCancel(context.Background())
+		caller, stop := context.WithTimeout(context.Background(), time.Second)
+		p := newNetworkDNSProxy(owner)
+		if cancelOwner {
+			cancel()
+		} else {
+			stop()
+		}
+		_, err := p.exchange(caller, new(dns.Msg))
+		cancel()
+		stop()
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("initial DNS wait ignored cancellation (owner=%v): %v", cancelOwner, err)
+		}
+	}
 }
 
 func TestLateNetworkDNSCannotEscapeGenerationBoundary(t *testing.T) {

@@ -8,6 +8,7 @@
 #include <QMap>
 #include <QStringList>
 #include <QDebug>
+#include <QHostAddress>
 
 // Own only an unused routing table and its lookup rules. The system's original
 // tables and rules remain intact; RTN_THROW exclusions fall through to them.
@@ -19,8 +20,10 @@ public:
     {
         for (auto it = m_priorities.cbegin(); it != m_priorities.cend(); ++it) {
             const QString family = it.key();
-            run({family, "rule", "del", "priority", QString::number(it.value()),
-                 "lookup", QString::number(m_table)});
+            QStringList rule{family, "rule", "del", "priority", QString::number(it.value()),
+                             "lookup", QString::number(m_table)};
+            if (!m_sources.value(family).isEmpty()) rule << "from" << m_sources.value(family);
+            run(rule);
             run({family, "route", "flush", "table", QString::number(m_table)});
         }
     }
@@ -28,9 +31,14 @@ public:
     unsigned int table() const { return m_table; }
     bool hasFamily(const QString &family) const { return m_priorities.contains(family); }
 
-    bool ensureFamily(const QString &family)
+    bool ensureFamily(const QString &family, const QString &source = {})
     {
-        if (hasFamily(family)) return true;
+        if (!source.isEmpty()) {
+            const auto subnet = QHostAddress::parseSubnet(source);
+            if (subnet.first.protocol() != (family == "-6" ? QAbstractSocket::IPv6Protocol : QAbstractSocket::IPv4Protocol)
+                || subnet.second != (family == "-6" ? 128 : 32) || !subnet.first.scopeId().isEmpty()) return false;
+        }
+        if (hasFamily(family)) return m_sources.value(family) == source;
         if (!m_table && !allocate()) return false;
         QJsonArray rules;
         if (!read({family, "-N", "-j", "rule", "show"}, rules)) return false;
@@ -41,7 +49,16 @@ public:
             const int priority = rule.value("priority").toInt(-1);
             occupied.insert(priority);
             const auto table = rule.value("table");
-            if (table.toString() == "main" || table.toString() == "254" || table.toInt() == 254) {
+            bool unconditional = true;
+            for (auto field = rule.begin(); field != rule.end(); ++field) {
+                if (field.key() == "priority" || field.key() == "table" || field.key() == "protocol") continue;
+                if ((field.key() == "src" || field.key() == "dst") && field.value().toString() == "all") continue;
+                if (field.key() == "flags" && field.value().isArray() && field.value().toArray().isEmpty()) continue;
+                unconditional = false;
+            }
+            // A source-, mark- or interface-selected lookup of main is an
+            // administrator policy, not the final unconditional main lookup.
+            if (unconditional && (table.toString() == "main" || table.toString() == "254" || table.toInt() == 254)) {
                 if (mainPriority < 0 || priority < mainPriority) mainPriority = priority;
             }
         }
@@ -53,9 +70,12 @@ public:
             qWarning() << "Cannot place VPN lookup before the main routing rule";
             return false;
         }
-        if (!run({family, "rule", "add", "priority", QString::number(priority),
-                  "lookup", QString::number(m_table)})) return false;
+        QStringList rule{family, "rule", "add", "priority", QString::number(priority),
+                         "lookup", QString::number(m_table)};
+        if (!source.isEmpty()) rule << "from" << source;
+        if (!run(rule)) return false;
         m_priorities.insert(family, priority);
+        m_sources.insert(family, source);
         return true;
     }
 
@@ -119,4 +139,5 @@ private:
 
     unsigned int m_table = 0;
     QMap<QString, int> m_priorities;
+    QMap<QString, QString> m_sources;
 };

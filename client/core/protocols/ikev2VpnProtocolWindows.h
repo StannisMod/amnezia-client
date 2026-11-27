@@ -53,6 +53,17 @@ private:
 
 private:
     QJsonObject m_config;
+    bool m_ipv6Enabled = true;
+    bool m_nativeIpv6PolicyApplied = false;
+    bool setNativeIpv6Blocked(bool blocked);
+    bool startManagedDns();
+    void pollManagedDns();
+    QString m_dnsOwner;
+    QTimer m_dnsWatch;
+    bool m_managedStopRequested = false;
+    bool m_managedPollInProgress = false;
+    bool m_managedAdmissionRefused = false;
+    bool m_managedFailureReported = false;
 
     //RAS functions and parameters
     HRASCONN        hRasConn{nullptr};

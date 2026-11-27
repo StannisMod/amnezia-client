@@ -36,6 +36,10 @@ type Hooks struct {
 	// Desktop hosts provide a static native inventory and no Go interface
 	// monitor. Seed the manager so it recognizes locally owned source sockets.
 	InitializeInterfaces bool
+	// FindConnectionOwner queries the original captured tuple, before a
+	// transport adapter creates replacement sockets. Android API 29+ supplies
+	// this through ConnectivityManager; unsupported hosts leave it unset.
+	FindConnectionOwner func(*adapter.FindConnectionOwnerRequest) (*adapter.ConnectionOwner, error)
 }
 
 type Platform struct {
@@ -45,6 +49,7 @@ type Platform struct {
 	taken     bool
 	closed    bool
 	addresses []netip.Addr
+	capture   tun.Tun
 }
 
 var _ adapter.PlatformInterface = (*Platform)(nil)
@@ -74,6 +79,20 @@ func (p *Platform) Close() error {
 		p.hooks.Release()
 	}
 	return err
+}
+
+// CaptureError distinguishes an unavailable external network (recoverable)
+// from a terminated packet reader, which cannot retain application TCP.
+func (p *Platform) CaptureError() error {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if p.closed {
+		return net.ErrClosed
+	}
+	if state, ok := p.capture.(interface{ CaptureError() error }); ok {
+		return state.CaptureError()
+	}
+	return nil
 }
 
 func (p *Platform) AutoDetectInterfaceControl(fd int) error {
@@ -153,6 +172,7 @@ func (p *Platform) OpenInterface(opts *tun.Options, _ option.TunPlatformOptions)
 	}
 	if err == nil {
 		p.taken = true
+		p.capture = t
 		for _, prefix := range opts.Inet4Address {
 			p.addresses = append(p.addresses, prefix.Addr())
 		}
@@ -172,8 +192,8 @@ func (p *Platform) UsePlatformAutoDetectInterfaceControl() bool            { ret
 func (p *Platform) UsePlatformInterface() bool                             { return true }
 func (p *Platform) ProcessPlatformOptions(option.TunPlatformOptions) error { return nil }
 
-// The existing Amnezia mobile service performs full session restart on native
-// network changes. Do not create a competing Go interface-monitor lifecycle.
+// Native hosts deliver network changes and own recovery of protected sockets.
+// Do not create a competing Go interface-monitor lifecycle.
 func (p *Platform) UsePlatformDefaultInterfaceMonitor() bool { return true }
 func (p *Platform) CreateDefaultInterfaceMonitor(logger.Logger) tun.DefaultInterfaceMonitor {
 	return nil
@@ -184,9 +204,21 @@ func (p *Platform) NetworkExtensionIncludeAllNetworks() bool        { return fal
 func (p *Platform) ClearDNSCache()                                  {}
 func (p *Platform) RequestPermissionForWIFIState() error            { return unsupported }
 func (p *Platform) ReadWIFIState(context.Context) adapter.WIFIState { return adapter.WIFIState{} }
-func (p *Platform) UsePlatformConnectionOwnerFinder() bool          { return false }
-func (p *Platform) FindConnectionOwner(*adapter.FindConnectionOwnerRequest) (*adapter.ConnectionOwner, error) {
-	return nil, unsupported
+func (p *Platform) UsePlatformConnectionOwnerFinder() bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.hooks.FindConnectionOwner != nil
+}
+func (p *Platform) FindConnectionOwner(request *adapter.FindConnectionOwnerRequest) (*adapter.ConnectionOwner, error) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if p.closed {
+		return nil, net.ErrClosed
+	}
+	if p.hooks.FindConnectionOwner == nil {
+		return nil, unsupported
+	}
+	return p.hooks.FindConnectionOwner(request)
 }
 func (p *Platform) UsePlatformWIFIMonitor() bool                 { return false }
 func (p *Platform) UsePlatformNotification() bool                { return false }

@@ -4,6 +4,8 @@
 #include <QObject>
 #include <QNetworkAccessManager>
 #include <QThreadPool>
+#include <QHash>
+#include <QByteArray>
 #include <functional>
 #include "core/repositories/secureServersRepository.h"
 
@@ -15,7 +17,10 @@ class ConnectionUpdatesController : public QObject {
     Q_PROPERTY(QStringList protectionServers READ protectionServers NOTIFY configurationChanged)
     Q_PROPERTY(QStringList updatableServers READ updatableServers NOTIFY configurationChanged)
 public:
-    explicit ConnectionUpdatesController(SecureServersRepository *servers, ConnectionController *connection, QObject *parent = nullptr);
+    using ProbeAddressReader = std::function<ErrorCode(const ServerCredentials &, DockerContainer, QStringList &)>;
+    using PeerIPv6Reader = std::function<ErrorCode(const ServerCredentials &, DockerContainer, QJsonObject &)>;
+    using ProxyIPv6Preparer = std::function<ErrorCode(const ServerCredentials &, DockerContainer, QJsonObject &)>;
+    explicit ConnectionUpdatesController(SecureServersRepository *servers, ConnectionController *connection, QObject *parent = nullptr, ProbeAddressReader probeAddressReader = {}, PeerIPv6Reader peerIPv6Reader = {}, ProxyIPv6Preparer proxyIPv6Preparer = {});
     ~ConnectionUpdatesController() override;
     bool busy() const { return m_busy; }
     QStringList enabledServers() const;
@@ -24,7 +29,12 @@ public:
     Q_INVOKABLE bool canEnableHeaderProtection(const QString &serverId, int container) const;
     Q_INVOKABLE void enableHeaderProtection(const QString &serverId, int container);
     static ErrorCode fetchPublicSettings(const ServerCredentials &credentials, DockerContainer container,
-                                         const QString &host, QJsonObject &settings, QStringList *peers = nullptr);
+                                         const QString &host, QJsonObject &settings, QStringList *peers = nullptr, QString *pathMtuProbe = nullptr, QStringList *pathMtuProbes = nullptr);
+    static ErrorCode fetchPeerIPv6Assignments(const ServerCredentials &credentials, DockerContainer container, QJsonObject &assignments);
+    static ErrorCode fetchPathMtuProbeAddresses(const ServerCredentials &credentials, DockerContainer container, QStringList &addresses);
+    static ErrorCode fetchPathMtuProbeAddress(const ServerCredentials &credentials, DockerContainer container, QString &address);
+    static ErrorCode prepareServerIPv6(const ServerCredentials &credentials, DockerContainer container,
+                                      QJsonObject &outcome, const QJsonObject &deliveryMetadata = {});
     Q_INVOKABLE bool available(const QString &serverId) const;
     Q_INVOKABLE bool enabled(const QString &serverId) const;
     Q_INVOKABLE void refresh(const QString &serverId);
@@ -33,6 +43,8 @@ public:
     Q_INVOKABLE void revoke(const QString &serverId, int container, const QString &clientPublicKey);
     // Static SSH path can be used by the existing export controller.
     static ErrorCode command(const ServerCredentials &credentials, const QString &action, const QJsonObject &request, QJsonObject &response);
+    static ErrorCode issue(const ServerCredentials &credentials, const QJsonObject &request, QJsonObject &response);
+    bool needsRefreshBeforeConnect(const QString &serverId) const;
     void refreshBeforeConnect(const QString &serverId, const std::function<void()> &done);
 signals:
     void busyChanged();
@@ -44,6 +56,10 @@ private:
     void administer(const QString &serverId, const QString &action, int container = -1, const QString &clientPublicKey = {});
     SecureServersRepository *m_servers;
     ConnectionController *m_connection;
+    ProbeAddressReader m_probeAddressReader;
+    PeerIPv6Reader m_peerIPv6Reader;
+    ProxyIPv6Preparer m_proxyIPv6Preparer;
+    QHash<QString, QByteArray> m_proxyIPv6Verified;
     QNetworkAccessManager m_network;
     QThreadPool m_adminPool;
     bool m_busy = false;

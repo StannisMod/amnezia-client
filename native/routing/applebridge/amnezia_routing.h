@@ -13,6 +13,35 @@
 #endif
 typedef int32_t (*AmneziaPacketWriter)(void *, const uint8_t *, int32_t);
 typedef void (*AmneziaHostRelease)(void *);
+// Go-owned socket scope; no borrowed Swift/provider context. Stop joins bind
+// callbacks. Updates with zero suspend dials; stale handles are ignored.
+int64_t AmneziaNativeXraySocketsStart(uint32_t, int32_t);
+void AmneziaNativeXraySocketsUpdate(int64_t, uint32_t);
+void AmneziaNativeXraySocketsStop(int64_t);
+// Synchronous native packet filter: nonzero consumes/rejects, zero preserves
+// native bytes. Never retain the borrowed packet or call FilterStop inline.
+// Start consumes the retained host on success and failure. Stop joins callbacks
+// before releasing it. One registration per packet-tunnel extension process.
+typedef int32_t (*AmneziaPacketFilter)(void *, const uint8_t *, int32_t);
+int64_t AmneziaNativePacketFilterStart(void *, AmneziaPacketFilter, AmneziaHostRelease);
+void AmneziaNativePacketFilterStop(int64_t);
+int32_t AmneziaNativePacketFilterFeed(uint8_t *, int32_t);
+static inline int32_t amnezia_filter_packet(AmneziaPacketFilter fn, void *host, const uint8_t *data, int32_t size) { return fn(host,data,size); }
+// Native DNS callbacks are asynchronous: dispatch/cancel/failure must return
+// promptly, copy borrowed buffers, and never call Stop inline. All callbacks
+// finish before the consumed retained host is released.
+typedef int32_t (*AmneziaDNSDispatch)(void *, int64_t, uint64_t, int32_t, const uint8_t *, int32_t, int32_t);
+typedef void (*AmneziaDNSCancel)(void *, int64_t, uint64_t);
+typedef void (*AmneziaDNSFailure)(void *, int64_t);
+int64_t AmneziaNativeDNSStart(char *, void *, AmneziaPacketWriter, AmneziaDNSDispatch, AmneziaDNSCancel, AmneziaDNSFailure, AmneziaHostRelease);
+void AmneziaNativeDNSStop(int64_t);
+// Feed: 1 consumed DNS, 0 native passthrough, -1 invalid/failed endpoint.
+int32_t AmneziaNativeDNSFeed(int64_t, uint8_t *, int32_t);
+int32_t AmneziaNativeDNSComplete(int64_t, uint64_t, uint8_t *, int32_t);
+int32_t AmneziaNativeDNSReject(int64_t, uint64_t);
+static inline int32_t amnezia_dns_dispatch(AmneziaDNSDispatch fn, void *host, int64_t handle, uint64_t id, int32_t network, const uint8_t *data, int32_t size, int32_t timeout) { return fn(host,handle,id,network,data,size,timeout); }
+static inline void amnezia_dns_cancel(AmneziaDNSCancel fn, void *host, int64_t handle, uint64_t id) { fn(host,handle,id); }
+static inline void amnezia_dns_failure(AmneziaDNSFailure fn, void *host, int64_t handle) { fn(host,handle); }
 // Start consumes the retained host even when it fails. Only packet buffers are
 // borrowed; both sides copy before returning. No config/error text is logged.
 int64_t AmneziaRoutingStart(char *, int32_t, void *, AmneziaPacketWriter, AmneziaHostRelease);
@@ -52,6 +81,18 @@ static inline char *amnezia_system_dns(void) {
     return NULL;
 #endif
 }
+static inline int amnezia_bind_xray_interface(int fd,uint32_t index,int32_t block_ipv6) {
+#ifdef __APPLE__
+    if(!index)return -1;
+    struct sockaddr_storage local;socklen_t length=sizeof(local);
+    if(getsockname(fd,(struct sockaddr *)&local,&length)!=0)return -1;
+    if(local.ss_family==AF_INET)return setsockopt(fd,IPPROTO_IP,IP_BOUND_IF,&index,sizeof(index));
+    if(local.ss_family==AF_INET6 && !block_ipv6)return setsockopt(fd,IPPROTO_IPV6,IPV6_BOUND_IF,&index,sizeof(index));
+#else
+    (void)fd;(void)index;(void)block_ipv6;
+#endif
+    return -1;
+}
 static inline int amnezia_bind_dns_interface(int fd,const char *name) {
 #ifdef __APPLE__
     unsigned int index=if_nametoindex(name);if(!index)return -1;
@@ -59,6 +100,9 @@ static inline int amnezia_bind_dns_interface(int fd,const char *name) {
     if(getsockname(fd,(struct sockaddr *)&local,&length)!=0)return -1;
     if(local.ss_family==AF_INET)return setsockopt(fd,IPPROTO_IP,IP_BOUND_IF,&index,sizeof(index));
     if(local.ss_family==AF_INET6)return setsockopt(fd,IPPROTO_IPV6,IPV6_BOUND_IF,&index,sizeof(index));
+#else
+    (void)fd;
+    (void)name;
 #endif
     return -1;
 }

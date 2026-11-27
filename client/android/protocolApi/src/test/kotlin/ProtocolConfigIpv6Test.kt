@@ -1,0 +1,117 @@
+package org.amnezia.vpn.protocol
+
+import org.amnezia.vpn.util.net.InetNetwork
+import java.math.BigInteger
+import java.net.InetAddress
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+class ProtocolConfigIpv6Test {
+    @Test fun explicitNativeSearchDomainsRetainOrderAndOccurrences() {
+        val domains = mutableListOf("first.example", "second.example", "first.example")
+        val result = config {
+            addRoute(InetNetwork("0.0.0.0", 0))
+            setSearchDomains(domains)
+        }
+        domains.clear()
+        assertEquals(listOf("first.example", "second.example", "first.example"), result.searchDomains)
+        assertEquals("first.example", result.searchDomain)
+    }
+    @Test fun legacySingleSearchDomainRetainsItsOriginalLastValueBehavior() {
+        val result = config {
+            addRoute(InetNetwork("0.0.0.0", 0))
+            setSearchDomain("first.example")
+            setSearchDomain("last.example")
+        }
+        assertEquals(listOf("last.example"), result.searchDomains)
+        assertEquals("last.example", result.searchDomain)
+    }
+    private fun config(block: ProtocolConfig.Builder.() -> Unit): ProtocolConfig = ProtocolConfig.build(false) {
+        addAddress(InetNetwork("10.77.0.2", 32))
+        addAddress(InetNetwork("fd77::2", 128))
+        setMtu(1280)
+        block()
+    }
+
+    private fun ProtocolConfig.captures(address: String): Boolean {
+        val ip = InetAddress.getByName(address).address
+        return routes.any {
+            val prefix = it.inetNetwork.address.address
+            val shift = ip.size * 8 - it.inetNetwork.mask
+            it.include && prefix.size == ip.size &&
+                BigInteger(1, ip).shiftRight(shift) == BigInteger(1, prefix).shiftRight(shift)
+        }
+    }
+
+    @Test fun fullTunnelIncludesGlobalUniqueLocalAndNat64() {
+        val result = config { addRoute(InetNetwork("::", 0)) }
+        for (address in listOf("2001:db8::1", "fd88::1", "64:ff9b::c000:201"))
+            assertTrue(address, result.captures(address))
+    }
+
+    @Test fun excludingIpv4EndpointKeepsAllSelectedIpv6() {
+        // The local JVM Android stub uses the pre-API33 exclusion compiler.
+        val result = config {
+            addRoute(InetNetwork("::", 0))
+            excludeAddress(InetNetwork("198.51.100.1", 32))
+        }
+        for (address in listOf("2001:db8::1", "fd88::1", "64:ff9b::c000:201"))
+            assertTrue(address, result.captures(address))
+        assertFalse(result.captures("198.51.100.1"))
+    }
+
+    @Test fun includingIpv4OnlyDoesNotCaptureIpv6() {
+        val result = config {
+            addRoute(InetNetwork("::", 0))
+            includeAddress(InetNetwork("192.0.2.0", 24))
+        }
+        assertTrue(result.captures("192.0.2.1"))
+        for (address in listOf("2001:db8::1", "fd88::1", "64:ff9b::c000:201"))
+            assertFalse(address, result.captures(address))
+    }
+
+    @Test fun ipv4ExclusionDoesNotFragmentIpv6Default() {
+        val result = config {
+            addRoute(InetNetwork("::", 0))
+            excludeRoute(InetNetwork("198.51.100.1", 32))
+        }
+        // This is the route handed to Android, not just equivalent coverage:
+        // artificial loopback subtraction fragmented capture on old kernels.
+        assertEquals(listOf(InetNetwork("::", 0)), result.routes
+            .filter { it.include && it.inetNetwork.isIpv6 }.map { it.inetNetwork })
+    }
+
+    @Test fun explicitIpv6ExclusionStillRemainsDirect() {
+        val result = config { excludeAddress(InetNetwork("fd99::", 16)) }
+        assertFalse(result.captures("fd99::4"))
+        for (address in listOf("2001:db8::1", "fd88::1", "64:ff9b::c000:201"))
+            assertTrue(address, result.captures(address))
+    }
+
+    @Test fun ipv6OffSurvivesIpv4OnlyIncludes() {
+        val result = config {
+            requireFullIpv6Capture()
+            addRoute(InetNetwork("::", 0))
+            includeAddress(InetNetwork("192.0.2.0", 24))
+        }
+        assertTrue(result.captures("192.0.2.1"))
+        assertFalse(result.captures("198.51.100.1"))
+        for (address in listOf("2001:db8::1", "fd88::1", "64:ff9b::c000:201"))
+            assertTrue(address, result.captures(address))
+    }
+
+    @Test fun ipv6OffOverridesIpv6ExclusionsAndSpecificIncludes() {
+        for (include in listOf(false, true)) {
+            val result = config {
+                requireFullIpv6Capture()
+                if (include) includeAddress(InetNetwork("fd99::", 16))
+                else excludeAddress(InetNetwork("fd99::", 16))
+                excludeRoute(InetNetwork("2001:db8::", 32))
+            }
+            for (address in listOf("2001:db8::1", "fd99::4", "fd88::1", "64:ff9b::c000:201"))
+                assertTrue(address, result.captures(address))
+        }
+    }
+}

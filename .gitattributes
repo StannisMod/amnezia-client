@@ -10,3 +10,6 @@ client/server_scripts/connection_updates/* text eol=lf
 
 # Unified diff context prefixes must retain their leading spaces and tabs.
 native/routing/patches/*.patch text eol=lf -whitespace
+
+# Captured Linux wire output includes an exact successful terminal marker.
+client/tests/connection-updates/interface-addresses.txt text eol=lf

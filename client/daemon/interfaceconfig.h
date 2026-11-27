@@ -26,6 +26,8 @@ class InterfaceConfig {
   QString m_privateKey;
   QString m_deviceIpv4Address;
   QString m_deviceIpv6Address;
+   bool m_ipv6Enabled = true;
+   bool m_ipv6PolicyEnabled = true; // User switch, independent of tunnel capability.
   QString m_serverIpv4Gateway;
   QString m_serverIpv6Gateway;
   QString m_serverPublicKey;

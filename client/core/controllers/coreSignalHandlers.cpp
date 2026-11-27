@@ -315,6 +315,8 @@ void CoreSignalHandlers::initServersModelUpdateHandler()
             m_coreController->m_serversUiController, &ServersUiController::updateModel);
     connect(m_coreController->m_serversRepository, &SecureServersRepository::serverEdited,
             m_coreController->m_serversUiController, &ServersUiController::updateModel);
+    connect(m_coreController->m_serversRepository, &SecureServersRepository::serverCapabilityObserved,
+            m_coreController->m_serversUiController, &ServersUiController::updateModel);
     connect(m_coreController->m_serversRepository, &SecureServersRepository::serverRemoved,
             m_coreController->m_serversUiController, &ServersUiController::updateModel);
     connect(m_coreController->m_serversRepository, &SecureServersRepository::defaultServerChanged,

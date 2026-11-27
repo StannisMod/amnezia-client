@@ -1,7 +1,9 @@
 import HevSocks5Tunnel
 import NetworkExtension
+import Foundation
 
 public enum Socks5Tunnel {
+    private static let runner = NativeTunnelRunner()
 
     private static var tunnelFileDescriptor: Int32? {
         var ctlInfo = ctl_info()
@@ -60,15 +62,29 @@ public enum Socks5Tunnel {
         }
     }
 
-    @discardableResult
-    public static func run(withConfig filePath: String) -> Int32 {
-        guard let fileDescriptor = self.tunnelFileDescriptor else {
-            fatalError("Get tunnel file descriptor failed.")
-        }
-        return hev_socks5_tunnel_main(filePath.cString(using: .utf8), fileDescriptor)
+    public static func quit() {
+        quit(completion: {})
     }
 
-    public static func quit() {
-        hev_socks5_tunnel_quit()
+    public static func start(withConfig path: String, filterNativeDNS: Bool = false,
+                             started: @escaping (Error?) -> Void,
+                             exited: @escaping (Error?) -> Void) {
+        runner.start(run: {
+            amnezia_hev_filter_enable(filterNativeDNS ? 1 : 0)
+            defer { amnezia_hev_filter_enable(0) }
+            guard let fd = tunnelFileDescriptor else { return -1 }
+            return hev_socks5_tunnel_main(path.cString(using: .utf8), fd)
+        }, quit: { hev_socks5_tunnel_quit() }, started: started, exited: exited)
+    }
+
+    public static func quit(completion: @escaping () -> Void) {
+        runner.stop(completion: completion)
+    }
+
+    static func nativeReady() {
+        runner.ready()
     }
 }
+
+@_cdecl("amnezia_hev_ready")
+func amneziaHevReady() { Socks5Tunnel.nativeReady() }

@@ -96,9 +96,10 @@ ErrorCode AwgInstaller::extractConfigFromContainer(DockerContainer container, co
     }
 
     if (auto* awgConfig = config.getAwgProtocolConfig()) {
-        QString addressValue = serverConfigMap.value("Address");
+        QString addressValue = WireguardConfigurator::serverIPv4CidrFromInterfaceConfig(serverConfig);
         QStringList addressParts = addressValue.split("/");
         awgConfig->serverConfig.subnetAddress = addressParts.value(0);
+        awgConfig->serverConfig.ipv6Address = WireguardConfigurator::serverIPv6CidrFromInterfaceConfig(serverConfig);
         if (addressParts.size() > 1) {
             awgConfig->serverConfig.subnetCidr = addressParts.value(1);
         }
