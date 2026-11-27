@@ -13,6 +13,9 @@ MAKE_REPLACEMENT = ("SOURCES := $(wildcard *.go) go.mod go.sum "
 
 def prepare(source, dns_core, bridge):
     source, dns_core = Path(source), Path(dns_core)
+    for path in source.glob("*.go"):
+        if path.name != "amnezia_native_dns.go" and b"//export amnezia_native_dns_" in path.read_bytes():
+            raise RuntimeError("Duplicate native DNS export source retained: " + path.name)
     module = source / "go.mod"
     text = module.read_text()
     if not text.startswith("module xray_binding\n"):

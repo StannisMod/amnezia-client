@@ -70,6 +70,33 @@ static int amneziaAppendData(CFMutableArrayRef array, const void *bytes, CFIndex
 	return 1;
 }
 
+// Read-only, certificate-specific ownership check. An empty settings array is
+// still an explicit trust grant, NOT absence. No trust settings are modified.
+static int amneziaCertificateTrustAbsent(const void *bytes, CFIndex length) {
+#if TARGET_OS_OSX
+	CFDataRef data = CFDataCreate(NULL, bytes, length);
+	if (!data) return -1;
+	SecCertificateRef certificate = SecCertificateCreateWithData(NULL, data);
+	CFRelease(data);
+	if (!certificate) return -1;
+	const SecTrustSettingsDomain domains[] = {kSecTrustSettingsDomainUser, kSecTrustSettingsDomainAdmin};
+	int absent = 1;
+	for (unsigned i = 0; i < sizeof(domains)/sizeof(domains[0]); ++i) {
+		CFArrayRef settings = NULL;
+		OSStatus status = SecTrustSettingsCopyTrustSettings(certificate, domains[i], &settings);
+		if (settings) CFRelease(settings);
+		if (status != errSecItemNotFound) {
+			absent = status == errSecSuccess ? 0 : (status < 0 ? (int)status : -1);
+			break;
+		}
+	}
+	CFRelease(certificate);
+	return absent;
+#else
+	return -1;
+#endif
+}
+
 static int amneziaVerifyCachedSSL(CFArrayRef certificates, const char *name,
 		CFDataRef ocsp, CFArrayRef timestamps) {
 	CFStringRef hostname = CFStringCreateWithCString(NULL, name, kCFStringEncodingUTF8);
@@ -114,6 +141,7 @@ import "C"
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"fmt"
 	"runtime"
 	"strings"
 	"unsafe"
@@ -229,4 +257,20 @@ func darwinRootSnapshot() (*x509.CertPool, error) {
 		return nil, ErrScopeUnavailable
 	}
 	return roots, nil
+}
+
+func darwinCertificateTrustAbsent(der []byte) (bool, error) {
+	if len(der) == 0 || len(der) > 1024*1024 {
+		return false, ErrScopeUnavailable
+	}
+	result := C.amneziaCertificateTrustAbsent(unsafe.Pointer(&der[0]), C.CFIndex(len(der)))
+	runtime.KeepAlive(der)
+	switch result {
+	case 1:
+		return true, nil
+	case 0:
+		return false, nil
+	default:
+		return false, fmt.Errorf("%w: read local Darwin certificate trust settings (%d)", ErrScopeUnavailable, int(result))
+	}
 }

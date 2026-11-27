@@ -39,6 +39,27 @@ class NativeDesktopDNSOverlayTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "native desktop Xray module"):
             OVERLAY.prepare(source, CORE, BRIDGE)
 
+    def test_conan_export_template_is_not_a_second_root_go_source(self):
+        source = self.source()
+        support = source / "native-dns-support"
+        support.mkdir()
+        template = support / "native_dns.go"
+        template.write_bytes(BRIDGE.read_bytes())
+        OVERLAY.prepare(source, CORE, template)
+        OVERLAY.prepare(source, CORE, template)
+        exports = [p for p in source.glob("*.go")
+                   if b"//export amnezia_native_dns_start" in p.read_bytes()]
+        self.assertEqual([p.name for p in exports], ["amnezia_native_dns.go"])
+
+    def test_legacy_duplicate_root_export_is_refused_before_mutation(self):
+        source = self.source()
+        (source / "native_dns.go").write_bytes(BRIDGE.read_bytes())
+        before = (source / "go.mod").read_bytes()
+        with self.assertRaisesRegex(RuntimeError, "Duplicate native DNS export"):
+            OVERLAY.prepare(source, CORE, BRIDGE)
+        self.assertEqual((source / "go.mod").read_bytes(), before)
+        self.assertFalse((source / "amnezia_native_dns.go").exists())
+
     def test_shared_dependency_upgrade_is_rejected(self):
         source = self.source()
         module = source / "go.mod"

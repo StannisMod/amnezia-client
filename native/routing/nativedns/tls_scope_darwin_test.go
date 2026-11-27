@@ -3,6 +3,7 @@
 package nativedns
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -83,6 +84,13 @@ func TestScopedDarwinNativeTrustDenyAndNoFetch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	rootCertificate, err := x509.ParseCertificate(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if absent, err := darwinCertificateTrustAbsent(root); err != nil || !absent {
+		t.Fatal("fixture certificate already has trust settings, or ownership cannot be established:", err)
+	}
 	leaf := &x509.Certificate{SerialNumber: new(big.Int).Add(serial, big.NewInt(1)),
 		DNSNames: []string{"selected.invalid"}, NotBefore: ca.NotBefore, NotAfter: ca.NotAfter,
 		KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
@@ -114,15 +122,28 @@ func TestScopedDarwinNativeTrustDenyAndNoFetch(t *testing.T) {
 		if !owned {
 			return
 		}
-		if err := security("remove-trusted-cert", "-d", caPath); err != nil {
-			t.Error("owned trust settings cleanup failed:", err)
-		}
-		if err := security("delete-certificate", "-Z", fingerprint, keychain); err != nil {
+		// Remove the exact keychain-backed certificate AND its user/admin trust
+		// settings. Standalone remove-trusted-cert hangs on headless runners
+		// (runner-images#12116); never change the global authorization database.
+		if err := security("delete-certificate", "-t", "-Z", fingerprint, keychain); err != nil {
 			t.Error("owned certificate cleanup failed:", err)
 		}
 		output, err := exec.Command("/usr/bin/security", "find-certificate", "-a", "-Z", keychain).CombinedOutput()
 		if err != nil || strings.Contains(strings.ToUpper(string(output)), fingerprint) {
 			t.Error("owned certificate absence not confirmed:", err)
+		}
+		if absent, err := darwinCertificateTrustAbsent(root); err != nil || !absent {
+			t.Error("owned certificate-specific user/admin trust settings remain or cannot be read:", err)
+		}
+		roots, err := darwinRootSnapshot()
+		if err != nil {
+			t.Error("owned trust settings absence not confirmed:", err)
+		} else {
+			for _, subject := range roots.Subjects() {
+				if bytes.Equal(subject, rootCertificate.RawSubject) {
+					t.Error("owned trust candidate remains after certificate/trust-settings retirement")
+				}
+			}
 		}
 	})
 	listener, err := net.Listen("tcp4", "127.0.0.1:0")

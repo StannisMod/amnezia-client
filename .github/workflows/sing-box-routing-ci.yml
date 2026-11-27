@@ -85,6 +85,10 @@ jobs:
         run: |
           python internal/builddeps/verify.py --module . --output tcp-dependency.json
           python internal/builddeps/test_verify.py
+          python ../../scripts/routing/check_workflow_python.py ../../.github/workflows/sing-box-routing-ci.yml
+          python ../../scripts/routing/test_workflow_python.py
+          python -m unittest discover -s ../../scripts/routing -p test_desktop_native_dns_overlay.py
+          python ../../scripts/routing/test_android_xray_native_dns_overlay.py NativeEngineDownloadTest
       - name: Unit and local network integration tests
         shell: bash
         run: |
@@ -105,7 +109,9 @@ jobs:
           race_mod=$(python prepare_race.py --output "$RUNNER_TEMP")
           echo "AMNEZIA_RACE_MOD=$race_mod" >> "$GITHUB_ENV"
           go test -mod=readonly -modfile="$race_mod" -tags with_gvisor,amnezia_race_dependency -race -count=3 "${package_args[@]}" -json ./... | tee test-results.jsonl
-          go test -mod=readonly -modfile="$race_mod" -race -count=3 -json \
+          # Native trust-store retirement must join; the Go test alarm must not
+          # terminate a still-pending external cleanup command.
+          go test -mod=readonly -modfile="$race_mod" -race -count=3 -timeout=0 -json \
             github.com/StannisMod/amnezia-client/native/routing/nativedns | tee native-dns-host-results.jsonl
           go test -mod=readonly -modfile="$race_mod" -tags with_gvisor,amnezia_race_dependency -race -count=3 "${package_args[@]}" -json gvisor.dev/gvisor/pkg/tcpip/transport/tcp gvisor.dev/gvisor/pkg/tcpip/adapters/gonet | tee dependency-test-results.jsonl
       - name: Diagnose retained TCP MTU completion on Intel without relaxing the bound
@@ -818,7 +824,7 @@ jobs:
           candidates = sorted(p for p in Path('deploy/build/client').rglob('gradlew') if (p.parent / 'utils').is_dir())
           assert candidates, 'Generated Android Gradle project missing'
           wrapper = candidates[0].resolve()
-           subprocess.run([str(wrapper), ':utils:testDebugUnitTest', ':protocolApi:testDebugUnitTest', ':openvpn:testDebugUnitTest', ':xray:testDebugUnitTest', '--no-daemon'], cwd=wrapper.parent, check=True, timeout=300)
+          subprocess.run([str(wrapper), ':utils:testDebugUnitTest', ':protocolApi:testDebugUnitTest', ':openvpn:testDebugUnitTest', ':xray:testDebugUnitTest', '--no-daemon'], cwd=wrapper.parent, check=True, timeout=300)
           PYCODE
       - name: Inspect native JNI in the actual APK
         id: payload
@@ -1030,7 +1036,9 @@ jobs:
           mkdir -p "$module"
           cp native/routing/applebridge/module.mod "$module/go.mod"
           cp native/routing/applebridge/module.sum "$module/go.sum"
-          (cd "$module" && go mod edit "-replace=github.com/StannisMod/amnezia-client/native/routing=$GITHUB_WORKSPACE/native/routing")
+          (cd "$module" && go mod edit \
+            "-replace=github.com/StannisMod/amnezia-client/native/routing=$GITHUB_WORKSPACE/native/routing" \
+            "-replace=github.com/StannisMod/amnezia-client/native/routing/nativedns=$GITHUB_WORKSPACE/native/routing/nativedns")
           python3 native/routing/internal/builddeps/verify.py --module "$module" --scope apple --output apple-tcp-dependency.json
           race_mod=$(python3 native/routing/prepare_race.py --module "$module" --output "$RUNNER_TEMP")
           (cd "$module" && go test -mod=readonly -modfile="$race_mod" -race -count=3 -json gvisor.dev/gvisor/pkg/tcpip/transport/tcp gvisor.dev/gvisor/pkg/tcpip/adapters/gonet) | tee apple-dependency-tests.jsonl

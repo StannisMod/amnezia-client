@@ -1,5 +1,6 @@
 """Source-bound overlay checks; these are not Android backend acceptance."""
 import importlib.util
+import json
 import os
 from pathlib import Path
 import shutil
@@ -11,6 +12,26 @@ SPEC = importlib.util.spec_from_file_location(
     "android_xray_native_dns", ROOT / "recipes/amnezia-libxray/native_dns.py")
 OVERLAY = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(OVERLAY)
+
+
+class NativeEngineDownloadTest(unittest.TestCase):
+    def test_empty_or_unmaterialized_selected_module_is_refused(self):
+        for value in ("", "{}", "[]", '{"Dir":"."}', '{"Error":"offline miss"}'):
+            with self.subTest(value=value), self.assertRaises((ValueError, TypeError)):
+                OVERLAY.downloaded_engine(value)
+
+    def test_original_materialized_version_is_required(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "engine").mkdir()
+            (root / "engine/engine.go").write_text("package engine\n")
+            (root / "go.mod").write_text("module github.com/amnezia-vpn/amnezia-tun2socks/v2\n")
+            record = {"Path": "github.com/amnezia-vpn/amnezia-tun2socks/v2",
+                      "Version": "v2.5.6", "Dir": str(root)}
+            self.assertEqual(OVERLAY.downloaded_engine(json.dumps(record)), root)
+            for change in ({"Version": "v2.5.7"}, {"Dir": "."}, {"Path": "another/module"}):
+                with self.subTest(change=change), self.assertRaises(ValueError):
+                    OVERLAY.downloaded_engine(json.dumps({**record, **change}))
 
 
 class AndroidXrayNativeDnsOverlayTest(unittest.TestCase):

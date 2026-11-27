@@ -474,6 +474,51 @@ within its own aggregate limit; the Android emulator remains stopped.
   `253b0ec6e986f254039f5f7d5a7bfe8dd44dc6afd1f7692370d6d192a3d3af3f`.
   Darwin-only sources did not alter the Linux runtime binary. Candidate push
   is for mandatory hosted native/platform verification, not a merge-ready claim.
+  Candidate821e103 was committed/pushed and hosted run45969910172 started;
+  PR18 was already non-draft, but merge readiness remains unestablished.
+  v386 Darwin no-cgo test binaries cross-compiled for amd64/arm64 (exit0/0).
+  This is not native SDK/runtime execution.
+  The hosted Apple TCP lanes on BOTH architectures failed before tests: their
+  temporary module relocated the parent routing replacement but left the new
+  nativedns replacement pointing at a nonexistent relative directory. Raw job
+  logs140407616807/140407616834 are retained. Both routing and connection-recovery
+  workflows now relocate BOTH modules; versions, sums and security assertions
+  are unchanged. v387 showed that go list -m alone does not validate the local
+  replacement directory. v388 reproduced the actual go mod verify failure,
+  then the corrected pair of replacements returned0/all modules verified
+  offline against the original cache. Apple runtime acceptance remains pending.
+  Post-push AST parsing also found an extra indentation in the Android embedded
+  Python unit-test invocation. Corrected locally; the new dependency-free
+  workflow script check parses all3 blocks and its3 regression tests pass.
+  These targeted corrections await the remaining hosted results before the
+  next corrective push; no blind rerun or assertion weakening.
+  Further retained hosted failures identified integration missed by direct
+  cached builds: desktop Conan exports placed native_dns.go at the package root
+  AND the overlay created amnezia_native_dns.go, causing duplicate C ABI exports
+  on Linux/Windows/macOS. The recipe now exports its template beneath
+  native-dns-support/; the overlay refuses legacy duplicate root sources before
+  mutation. v390 exercised the ACTUAL Conan export method, checked overlay and
+  original upstream Makefile offline: build passed, exactly one strong symbol
+  for each of start/alive/quiesce/stop. No SDK/toolchain/dependency copies.
+  All four Android APK lanes failed because go list -m .Dir can be empty before
+  the selected frozen module BODY is downloaded; Path("") accidentally accepted
+  the cwd. The recipe now materializes the original v2.5.6 via go mod download,
+  requires its absolute existing source path/version, and refuses any change
+  to go.mod/go.sum before applying the checked overlay. v389 exercised the real
+  Conan _patch_sources including the original16KiB patch: passed offline,
+  sums/requirements unchanged, only the intended local engine replacement added.
+  Native Darwin ARM compiled and measured unknown-root170/173ms, positive
+  CA324/204ms, deny288/210ms and wrong-name197/185ms; the OVERALL TEST FAILED
+  in standalone security remove-trusted-cert cleanup (retained10m alarm/stack).
+  It is NOT a native acceptance pass. Apple SecurityTool's keychain deletion API
+  supports exact-fingerprint delete-certificate -t, removing both the certificate
+  and its user/admin trust settings. The fixture now uses that owned-object
+  operation, additionally requires certificate-specific read-only trust absence
+  and a fresh root snapshot, and never edits the global authorization database.
+  Native trust retirement has no Go test alarm that can kill pending cleanup.
+  This correction still requires hosted native execution; no claimed result yet.
+  v391 corrected source/package/cache/workflow suite ran62 tests:61 passed,
+  failed0/skipped1 (Windows-only lock); pinned gofmt produced no differences.
 
 Latest local checkpoint (2026-11-24, service-owned OpenVPN source wiring):
 - 2026-11-25 Windows IKEv2 continuation (NOT complete native acceptance):

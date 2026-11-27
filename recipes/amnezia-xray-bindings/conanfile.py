@@ -24,7 +24,7 @@ class AmneziaXrayBindings(ConanFile):
         copy(self, "*", str(root / "native/routing/nativedns"),
              str(Path(self.export_sources_folder) / "native-dns-core"))
         copy(self, "native_dns.go", str(root / "native/routing/desktopbridge"),
-             self.export_sources_folder)
+             str(Path(self.export_sources_folder) / "native-dns-support"))
 
     _arch_map = {
         "x86": "386",
@@ -111,7 +111,7 @@ class AmneziaXrayBindings(ConanFile):
         spec.loader.exec_module(overlay)
         overlay.prepare(self.source_folder,
             Path(self.export_sources_folder) / "native-dns-core",
-            Path(self.export_sources_folder) / "native_dns.go")
+            Path(self.export_sources_folder) / "native-dns-support/native_dns.go")
         with chdir(self, self.source_folder):
             for arch in self._archs:
                 build_dir = os.path.join(self.build_folder, arch) if self._is_multiarch else self.build_folder

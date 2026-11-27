@@ -56,16 +56,18 @@ class AmneziaLibxray(ConanFile):
 
     def _patch_sources(self):
         apply_conandata_patches(self)
+        pinned = {name: (Path(self.build_folder) / name).read_bytes()
+                  for name in ("go.mod", "go.sum")}
         module = io.StringIO()
-        self.run('go list -mod=readonly -m -f "{{.Dir}}" github.com/amnezia-vpn/amnezia-tun2socks/v2',
+        self.run('go mod download -json github.com/amnezia-vpn/amnezia-tun2socks/v2',
                  cwd=self.build_folder, stdout=module)
-        dependency = Path(module.getvalue().strip())
-        if not dependency.is_dir():
-            raise ConanInvalidConfiguration("Existing native tun2socks source is unavailable")
+        if any((Path(self.build_folder) / name).read_bytes() != data for name, data in pinned.items()):
+            raise ConanInvalidConfiguration("Native tun2socks download changed frozen dependency declarations/sums")
         overlay_path = Path(self.export_sources_folder) / "native_dns.py"
         spec = importlib.util.spec_from_file_location("android_xray_native_dns", overlay_path)
         overlay = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(overlay)
+        dependency = overlay.downloaded_engine(module.getvalue())
         overlay.apply(self.build_folder, dependency, self.export_sources_folder,
                       Path(self.export_sources_folder) / "nativedns")
         build_path = os.path.join(self.build_folder, "build.sh")

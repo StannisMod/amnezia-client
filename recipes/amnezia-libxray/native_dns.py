@@ -4,8 +4,26 @@ No requirement versions or sums are changed. The caller supplies the exact
 cached tun2socks source and a private build copy of libXray.
 """
 import hashlib
+import json
 import shutil
 from pathlib import Path
+
+
+def downloaded_engine(output):
+    """Require the actual frozen module body, not an empty go-list .Dir."""
+    record = json.loads(output)
+    if not isinstance(record, dict) or record.get("Error") or (
+        record.get("Path") != "github.com/amnezia-vpn/amnezia-tun2socks/v2"
+        or record.get("Version") != "v2.5.6"
+    ):
+        raise ValueError("Unexpected selected native tun2socks download")
+    directory = record.get("Dir")
+    if not isinstance(directory, str) or not directory or not Path(directory).is_absolute():
+        raise ValueError("Selected native tun2socks download has no absolute source directory")
+    path = Path(directory)
+    if not (path / "engine/engine.go").is_file() or not (path / "go.mod").is_file():
+        raise ValueError("Selected native tun2socks module body is unavailable")
+    return path
 
 
 def checked(path, digest):
