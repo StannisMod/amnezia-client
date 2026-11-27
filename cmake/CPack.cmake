@@ -38,8 +38,30 @@ set(CPACK_WIX_VERSION               4)
 set(CPACK_WIX_UPGRADE_GUID          "{2D55AC62-96D6-4692-8C05-0D85BBF95485}")
 set(CPACK_WIX_PRODUCT_ICON          ${CMAKE_SOURCE_DIR}/client/images/app.ico)
 set(CPACK_WIX_CUSTOM_XMLNS          "util=http://wixtoolset.org/schemas/v4/wxs/util")
-set(_AMNEZIA_WIX_PATCH_SERVICE      ${CMAKE_SOURCE_DIR}/deploy/installer/wix/service_install_patch.xml)
-set(_AMNEZIA_WIX_PATCH_CLOSE_APP    ${CMAKE_SOURCE_DIR}/deploy/installer/wix/close_client_patch.xml)
+# PowerShell's documented UTF-16LE EncodedCommand avoids XML whitespace
+# normalization, MSI property expansion and command-line quoting differences.
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    "${CMAKE_SOURCE_DIR}/deploy/data/windows/stop_native_services.ps1")
+execute_process(COMMAND "${Python3_EXECUTABLE}" -c
+    "import base64,pathlib,sys; print(base64.b64encode(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8').encode('utf-16le')).decode('ascii'))"
+    "${CMAKE_SOURCE_DIR}/deploy/data/windows/stop_native_services.ps1"
+    OUTPUT_VARIABLE AMNEZIA_WINDOWS_STOP_ENCODED OUTPUT_STRIP_TRAILING_WHITESPACE
+    COMMAND_ERROR_IS_FATAL ANY)
+set(_AMNEZIA_WIX_PATCH_SERVICE "${CMAKE_CURRENT_BINARY_DIR}/native-service-install-patch.xml")
+configure_file("${CMAKE_SOURCE_DIR}/deploy/installer/wix/service_install_patch.xml"
+    "${_AMNEZIA_WIX_PATCH_SERVICE}" @ONLY)
+set(_AMNEZIA_IFW_COMPONENT_SCRIPT "${CMAKE_CURRENT_BINARY_DIR}/native-componentscript.js")
+file(READ "${CMAKE_SOURCE_DIR}/deploy/installer/qif/componentscript.js" _AMNEZIA_IFW_SCRIPT)
+# Preserve IFW's own @TargetDir@ substitutions.
+string(REPLACE "@AMNEZIA_WINDOWS_STOP_ENCODED@" "${AMNEZIA_WINDOWS_STOP_ENCODED}"
+    _AMNEZIA_IFW_SCRIPT "${_AMNEZIA_IFW_SCRIPT}")
+file(WRITE "${_AMNEZIA_IFW_COMPONENT_SCRIPT}" "${_AMNEZIA_IFW_SCRIPT}")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    "${CMAKE_SOURCE_DIR}/deploy/installer/qif/componentscript.js")
+set(_AMNEZIA_WIX_PATCH_CLOSE_APP "${CMAKE_CURRENT_BINARY_DIR}/native-close-client-patch.xml")
+configure_file("${CMAKE_SOURCE_DIR}/deploy/installer/wix/close_client_patch.xml"
+    "${_AMNEZIA_WIX_PATCH_CLOSE_APP}" @ONLY)
 file(TO_CMAKE_PATH                  "${_AMNEZIA_WIX_PATCH_SERVICE}" _AMNEZIA_WIX_PATCH_SERVICE_CMAKE)
 file(TO_CMAKE_PATH                  "${_AMNEZIA_WIX_PATCH_CLOSE_APP}" _AMNEZIA_WIX_PATCH_CLOSE_APP_CMAKE)
 list(APPEND CPACK_WIX_PATCH_FILE    "${_AMNEZIA_WIX_PATCH_SERVICE_CMAKE}" "${_AMNEZIA_WIX_PATCH_CLOSE_APP_CMAKE}")
@@ -66,9 +88,13 @@ if(LINUX AND NOT ANDROID)
 endif()
 
 if(WIN32)
+    configure_file("${CMAKE_SOURCE_DIR}/deploy/data/windows/post_install.cmd"
+        "${CMAKE_CURRENT_BINARY_DIR}/post_install.cmd" @ONLY)
+    configure_file("${CMAKE_SOURCE_DIR}/deploy/data/windows/post_uninstall.cmd"
+        "${CMAKE_CURRENT_BINARY_DIR}/post_uninstall.cmd" @ONLY)
     install(FILES
-        ${CMAKE_SOURCE_DIR}/deploy/data/windows/post_install.cmd
-        ${CMAKE_SOURCE_DIR}/deploy/data/windows/post_uninstall.cmd
+        ${CMAKE_CURRENT_BINARY_DIR}/post_install.cmd
+        ${CMAKE_CURRENT_BINARY_DIR}/post_uninstall.cmd
         DESTINATION "."
         COMPONENT AmneziaVPN
     )
@@ -98,7 +124,7 @@ cpack_ifw_configure_component(AmneziaVPN
     RELEASE_DATE ${RELEASE_DATE}
     REQUIRES_ADMIN_RIGHTS
     FORCED_INSTALLATION
-    SCRIPT ${CMAKE_SOURCE_DIR}/deploy/installer/qif/componentscript.js
+    SCRIPT ${_AMNEZIA_IFW_COMPONENT_SCRIPT}
 )
 
 include(CPack)

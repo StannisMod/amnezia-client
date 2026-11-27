@@ -164,13 +164,14 @@ bool RouterMac::configureProxyIpv6(const QStringList &included, const QStringLis
     return true;
 }
 
-bool RouterMac::updateResolvers(const QString& ifname, const QList<QHostAddress>& resolvers)
+bool RouterMac::updateResolvers(const QString& ifname, const QList<QHostAddress>& resolvers,
+                               bool ipv6Enabled, const QString &owner)
 {
-    return m_dnsUtil->updateResolvers(ifname, resolvers);
+    return m_dnsUtil->updateResolvers(ifname, resolvers, ipv6Enabled, owner);
 }
 
-bool RouterMac::restoreResolvers() {
-    return m_dnsUtil->restoreResolvers();
+bool RouterMac::restoreResolvers(const QString &owner) {
+    return m_dnsUtil->restoreResolvers(owner);
 }
 
 bool RouterMac::routeAddXray(const QString& ifname, const QString& gateway)

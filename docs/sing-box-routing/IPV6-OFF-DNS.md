@@ -12,7 +12,10 @@ IPv4 application routing, DNS scope, TLS validation, or ON behavior.
 - Do not migrate all native traffic to a flow proxy just to filter DNS: that
   could change native IPv4 protocols, split scope, and lockdown behavior.
 - A DNS-only packet frontend may own only its configured DNS capture address.
-  Other native packets remain with their original backend.
+  A native-engine upstream exchange is additionally restricted to the selected
+  DNS peer, original tunnel source and exclusively reserved transport ports.
+  This is not an application dialer or permission to migrate other native
+  traffic. Other native packets remain with their original backend.
 - DNS forwarding must use the connection's selected DNS path. Missing or
   unavailable forwarding must fail closed, never fall back to public/underlay
   resolvers.
@@ -27,6 +30,35 @@ IPv4 application routing, DNS scope, TLS validation, or ON behavior.
   certificate validation. Existing strict-DNS compatibility guards remain.
 - A native frontend must start before publishing its DNS settings and stop
   with its connection; failure cannot publish a nonfunctional DNS address.
+
+### Android OpenVPN native-engine upstream integration
+
+The public Android VPN Network socket bind checks whether the calling UID is
+in the VPN's application ranges. In AOSP Android 10, netd's `SELECT_NETWORK`
+calls `checkUserNetworkAccessLocked`, and `VirtualNetwork::appliesToUser`
+tests those UID ranges; being the provider/protectable UID is not a bypass.
+The provider may legitimately be excluded by an include-only app split.
+Do not add its UID or change the user's app scope to make DNS bind succeed.
+
+The current OpenVPN integration instead reuses the existing DNS capture stack
+in libck for these DNS-only upstream connections. Unconnected/non-listening
+IPv4 kernel sockets reserve ports; actual packets use the original native
+tunnel IPv4 source and MTU and are posted onto the existing engine thread.
+Decrypted replies enter only those leased DNS connections in the same stack.
+There is no second stack, TUN reader, process network binding or resolver
+substitution. DIRECT still requires the pinned original public network bind.
+
+Queued engine sends check current capture/strict-DNS admission. A joined gate
+cancels pending payloads and fences late callbacks before native retirement;
+whole policy release still requires native worker return and DNS stop/join.
+Unknown application fragments retain their original native/kernel path.
+Identified leased-DNS first fragments are consumed, preventing duplicate
+kernel TCP reassembly/RST; out-of-order selected-peer fragments may be copied
+for reassembly without consuming unidentified application traffic.
+
+These are implementation constraints, not a claim of Android runtime or
+physical-device acceptance. The chronological host/build measurements are
+recorded in `STATUS.md`; actual VPN/app-split acceptance remains outstanding.
 
 ## Work remaining
 

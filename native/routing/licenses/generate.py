@@ -71,7 +71,10 @@ def generate(module, output, go='go', host_root=None):
         if not row.get('Version'):
             # The local routing module is licensed with the containing app;
             # its direct upstream notices are already in the resolved graph.
-            if original['Path'] != 'github.com/StannisMod/amnezia-client/native/routing':
+            if original['Path'] not in {
+                'github.com/StannisMod/amnezia-client/native/routing',
+                'github.com/StannisMod/amnezia-client/native/routing/nativedns',
+            }:
                 raise ValueError('unrecognized local replacement: ' + original['Path'])
             continue
         print('Notice: ' + row['Path'] + '@' + row['Version'], flush=True, file=sys.stderr)

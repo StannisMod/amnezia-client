@@ -8,6 +8,8 @@ Type=simple
 Restart=always
 RestartSec=1
 ExecStart=/opt/AmneziaVPN/bin/AmneziaVPN-service
+KillMode=mixed
+TimeoutStopSec=infinity
 
 [Install]
 WantedBy=multi-user.target

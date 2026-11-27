@@ -118,5 +118,6 @@ func profileForMain(path string) string {
 		"github.com/StannisMod/amnezia-client/native/routing": routingComponentProfile,
 		"github.com/amnezia-vpn/amneziawg-android":            "desktop_android",
 		"github.com/amnezia-vpn/amneziawg-apple":              "apple",
+		"github.com/cbeuw/Cloak":                              "desktop_android",
 	}[path]
 }

@@ -13,6 +13,7 @@ SCOPES = {
     'github.com/StannisMod/amnezia-client/native/routing': 'desktop_android',
     'github.com/amnezia-vpn/amneziawg-android': 'desktop_android',
     'github.com/amnezia-vpn/amneziawg-apple': 'apple',
+    'github.com/cbeuw/Cloak': 'desktop_android',
 }
 SOURCE_FILES = {
     'pkg/tcpip/transport/tcp/snd.go', 'pkg/tcpip/transport/tcp/rack.go',

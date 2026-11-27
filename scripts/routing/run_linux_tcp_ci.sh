@@ -42,7 +42,7 @@ done
 # Native per-link DNS must reach an endpoint assigned to that link. A loopback
 # service is not a valid substitute for systemd-resolved's interface binding.
 # This is an isolated socket/scope fixture, not installed-adapter acceptance.
-go test -mod=readonly -tags with_gvisor -c -o "$output/dnsguard.test" ./dnsguard
+go test -mod=readonly -tags with_gvisor -c -o "$output/dnsguard.test" github.com/StannisMod/amnezia-client/native/routing/nativedns
 "${privilege[@]}" env AMNEZIA_DNS_LOCAL_INTERFACE_TEST=isolated-namespace \
   unshare --mount --net --fork bash -ec '
     mount --make-rprivate /
@@ -50,7 +50,7 @@ go test -mod=readonly -tags with_gvisor -c -o "$output/dnsguard.test" ./dnsguard
     ip link add dns-fixture type dummy
     ip addr add 192.0.2.10/32 dev dns-fixture
     ip link set dns-fixture up
-    "$1" -test.run "^TestSocketFrontendNativeLinkScope$" -test.count 3 -test.timeout 30s -test.v
+    "$1" -test.run "^Test(SocketFrontendNativeLinkScope|NativeSessionPreparationAndIPv6FailClosed)$" -test.count 3 -test.timeout 30s -test.v
   ' _ "$output/dnsguard.test" 2>&1 | tee "$output/native-dns-local-scope.log"
 
 # Detect the real endpoint route from inside the helper; no test command may

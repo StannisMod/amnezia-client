@@ -1,8 +1,12 @@
 ARG BASE_UBUNTU_VERSION=24.04
 FROM ubuntu:${BASE_UBUNTU_VERSION}
+ARG BASE_UBUNTU_VERSION
+ARG TARGETARCH
 ENV DEBIAN_FRONTEND=noninteractive QT_QPA_PLATFORM=offscreen PYTHONDONTWRITEBYTECODE=1
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN --mount=type=cache,id=amnezia-apt-${BASE_UBUNTU_VERSION}-${TARGETARCH},target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,id=amnezia-apt-lists-${BASE_UBUNTU_VERSION}-${TARGETARCH},target=/var/lib/apt/lists,sharing=locked \
+    rm -f /etc/apt/apt.conf.d/docker-clean && \
+    apt-get update && apt-get install -y --no-install-recommends \
     build-essential cmake ninja-build python3 git ca-certificates \
-    qt6-base-dev qt6-declarative-dev libssl-dev \
-    && rm -rf /var/lib/apt/lists/*
+    qt6-base-dev qt6-declarative-dev libssl-dev
 WORKDIR /src

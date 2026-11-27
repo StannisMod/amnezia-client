@@ -2,22 +2,32 @@ package org.amnezia.vpn.protocol.xray
 
 import android.content.Context
 import android.net.VpnService.Builder
+import android.os.Build
 import java.io.File
 import java.io.IOException
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.util.UUID
 import go.Seq
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import org.amnezia.vpn.protocol.BadConfigException
 import org.amnezia.vpn.protocol.Protocol
+import org.amnezia.vpn.protocol.NativeDnsPlan
+import org.amnezia.vpn.protocol.Route
 import org.amnezia.vpn.protocol.ProtocolState.CONNECTED
 import org.amnezia.vpn.protocol.ProtocolState.DISCONNECTED
+import org.amnezia.vpn.protocol.ProtocolState.DISCONNECTING
 import org.amnezia.vpn.protocol.Statistics
 import org.amnezia.vpn.protocol.VpnStartException
 import org.amnezia.vpn.protocol.xray.libXray.DialerController
 import org.amnezia.vpn.protocol.xray.libXray.LibXray
 import org.amnezia.vpn.protocol.xray.libXray.Logger
 import org.amnezia.vpn.protocol.xray.libXray.Tun2SocksConfig
+import org.amnezia.vpn.protocol.xray.libXray.NativeDNSController
 import org.amnezia.vpn.util.Log
 import org.amnezia.vpn.util.net.InetNetwork
 import org.amnezia.vpn.util.net.ip
@@ -51,6 +61,12 @@ private fun acquireFreeLocalPort(): Int {
 class Xray : Protocol() {
 
     private var isRunning: Boolean = false
+    private val nativeLock = Any()
+    private val failureScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private var dnsPublication: XrayDnsPublication? = null
+    private val nativeLifecycle = XrayNativeLifecycle(
+        LibXray::stopTun2Socks, LibXray::stopXray, LibXray::cancelNativeDNS)
+    override val hasPendingNativeCleanup: Boolean get() = nativeLifecycle.ownsNativeResources
     override val statistics: Statistics = Statistics.EMPTY_STATISTICS
 
     override fun internalInit() {
@@ -72,10 +88,12 @@ class Xray : Protocol() {
     }
 
     override suspend fun startVpn(config: JSONObject, vpnBuilder: Builder, protect: (Int) -> Boolean) {
-        if (isRunning) {
-            Log.w(TAG, "XRay already running")
-            return
-        }
+        synchronized(nativeLock) { startOwned(config, vpnBuilder, protect) }
+    }
+
+    private fun startOwned(config: JSONObject, vpnBuilder: Builder, protect: (Int) -> Boolean) {
+        if (nativeLifecycle.ownsNativeResources)
+            throw VpnStartException("Previous Xray native owner has not retired")
 
         val xrayConfigData = config.optJSONObject("xray_config_data")
             ?: config.optJSONObject("ssxray_config_data")
@@ -84,7 +102,25 @@ class Xray : Protocol() {
 
         // Inject SOCKS5 auth before starting xray. Re-uses existing credentials if present.
         ensureInboundAuth(xrayJsonConfig)
-        val xrayConfig = parseConfig(config, xrayJsonConfig)
+        val ipv6Off = !config.optBoolean("ipv6_enabled", true)
+        val selected = listOf(config.optString("dns1"), config.optString("dns2")).filter { it.isNotBlank() }
+        // Prove numeric syntax BEFORE the legacy config parser can resolve a
+        // hostname. No bootstrap/default DNS is permitted for this selection.
+        if (ipv6Off) NativeDnsPlan.prepare(selected, emptyList())
+        val original = parseConfig(config, xrayJsonConfig)
+        val publication = if (ipv6Off) {
+            val strict = strictPrivateDnsPolicy?.invoke()
+                ?: throw VpnStartException("Missing Android encrypted-DNS policy snapshot")
+            // Account for the existing Samsung OS publication workaround,
+            // which adds DNS host routes outside ProtocolConfig.routes.
+            val originalRoutes = original.routes.toList() + if (Build.BRAND == "samsung")
+                original.dnsServers.map { Route(InetNetwork(it), true) } else emptyList()
+            XrayDnsPublication.prepare(
+                NativeDnsPlan.prepare(selected, originalRoutes, original.addresses),
+                strict, lockdownEnabled(), networkDnsSnapshot, networkDnsIdentity, protect, networkDnsProtect)
+        } else null
+        val xrayConfig = if (publication == null) original
+            else parseConfig(config, xrayJsonConfig, publication.aliases)
 
         var xrayJsonConfigString = xrayJsonConfig.toString()
         config.getString("hostName").let { hostName ->
@@ -94,22 +130,63 @@ class Xray : Protocol() {
             }
         }
 
-        start(xrayConfig, xrayJsonConfigString, vpnBuilder, protect)
-        state.value = CONNECTED
-        isRunning = true
+        nativeLifecycle.begin()
+        dnsPublication = publication
+        try {
+            if (publication != null) {
+                LibXray.registerNativeDNSController(object : NativeDNSController {
+                    override fun bindDNS(fd: Long, token: String) = publication.bindSocket(fd, token)
+                    override fun dnsFailed() { frontendFailed(publication) }
+                }).isNotNullOrBlank { throw VpnStartException("Native DNS controller: $it") }
+            }
+            LibXray.prepareNativeDNS(publication?.raw ?: "").isNotNullOrBlank {
+                throw VpnStartException("Native DNS preparation: $it")
+            }
+            start(xrayConfig, xrayJsonConfigString, vpnBuilder, protect)
+            state.value = CONNECTED
+            isRunning = true
+        } catch (error: Exception) {
+            val pending = nativeLifecycle.cleanup()
+            if (pending == null) {
+                publication?.retire()
+                dnsPublication = null
+            } else {
+                onError("Xray native cleanup pending: $pending")
+            }
+            throw error
+        }
     }
 
-    private fun parseConfig(config: JSONObject, xrayJsonConfig: JSONObject): XrayConfig {
+    private fun frontendFailed(publication: XrayDnsPublication) {
+        // Called from Go. Enqueue and return: synchronous JNI cleanup here
+        // would deadlock the native callback-join barrier.
+        if (!publication.beginFailure()) return
+        val cleanup = XrayDnsFailureCleanup(nativeLifecycle)
+        failureScope.launch {
+            while (true) {
+                val retained = synchronized(nativeLock) {
+                    cleanup.step(dnsPublication === publication,
+                        { state.value = DISCONNECTING }, onError, ::retirementConfirmed)
+                }
+                if (!retained) return@launch
+                delay(250)
+            }
+        }
+    }
+
+    private fun parseConfig(config: JSONObject, xrayJsonConfig: JSONObject,
+                            managedDns: List<InetAddress>? = null): XrayConfig {
         return XrayConfig.build {
             addAddress(XrayConfig.DEFAULT_IPV4_ADDRESS)
             addAddress(XrayConfig.DEFAULT_IPV6_ADDRESS)
 
-            config.optString("dns1").let {
-                if (it.isNotBlank()) addDnsServer(parseInetAddress(it))
-            }
-
-            config.optString("dns2").let {
-                if (it.isNotBlank()) addDnsServer(parseInetAddress(it))
+            if (managedDns != null) setManagedDnsServers(managedDns) else {
+                config.optString("dns1").let {
+                    if (it.isNotBlank()) addDnsServer(parseInetAddress(it))
+                }
+                config.optString("dns2").let {
+                    if (it.isNotBlank()) addDnsServer(parseInetAddress(it))
+                }
             }
 
             addRoute(InetNetwork("0.0.0.0", 0))
@@ -163,6 +240,7 @@ class Xray : Protocol() {
                 throw VpnStartException("Create VPN interface: permission not granted or revoked")
             }
             Log.d(TAG, "Run tun2Socks")
+            nativeLifecycle.admit()
             runTun2Socks(config, tunFd.detachFd())
 
             Log.d(TAG, "Run XRay")
@@ -176,30 +254,39 @@ class Xray : Protocol() {
             try {
                 configPath.writeText(configJson)
             } catch (e: IOException) {
-                LibXray.stopTun2Socks()
                 throw VpnStartException("Failed to write xray config: ${e.message}")
             }
             LibXray.runXray(geoDir, configPath.absolutePath, config.maxMemory).isNotNullOrBlank { err ->
-                LibXray.stopTun2Socks()
                 throw VpnStartException("Failed to start xray: $err")
             }
         }
     }
 
     override fun stopVpn() {
-        LibXray.stopXray().isNotNullOrBlank { err ->
-            Log.e(TAG, "Failed to stop XRay: $err")
+        synchronized(nativeLock) {
+            val pending = nativeLifecycle.cleanup()
+            if (pending != null) {
+                onError("Xray native cleanup pending: $pending")
+                return
+            }
+            retirementConfirmed()
         }
-        LibXray.stopTun2Socks().isNotNullOrBlank { err ->
-            Log.e(TAG, "Failed to stop tun2Socks: $err")
-        }
+    }
 
+    private fun retirementConfirmed() {
+        dnsPublication?.retire()
+        dnsPublication = null
         isRunning = false
+        releaseNetworkHooks()
         state.value = DISCONNECTED
     }
 
     override fun reconnectVpn(vpnBuilder: Builder, protect: (Int) -> Boolean) {
-        state.value = CONNECTED
+        synchronized(nativeLock) {
+            if (!isRunning || !nativeLifecycle.ownsNativeResources)
+                throw VpnStartException("Xray native connection is not active")
+            state.value = CONNECTED
+        }
     }
 
     private fun runTun2Socks(config: XrayConfig, fd: Int) {

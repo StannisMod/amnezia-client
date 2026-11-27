@@ -54,4 +54,34 @@ class OpenVpnPublicationTest {
         assertTrue(state.cancelled)
         assertFalse(state.ready("tun0", addresses, routes))
     }
+    @Test fun ambiguousNativeNetworkCannotAuthorizeDnsSocketBinding() {
+        val state = TunPublicationState(emptyMap())
+        state.publish(100, snapshot("tun0"))
+        state.publish(101, snapshot("tun0"))
+        assertFalse(state.ready("tun0", addresses, routes))
+        state.lost(100)
+        assertTrue(state.ready("tun0", addresses, routes))
+    }
+    @Test fun dnsPublicationMustMatchExactOrderedGenerationAliases() {
+        val state = TunPublicationState(emptyMap())
+        val dns = listOf("198.19.255.1", "198.19.255.2")
+        state.publish(100, snapshot("tun0"))
+        assertFalse(state.current(100, "tun0", addresses, routes, dns))
+        state.publish(100, TunPublicationSnapshot("tun0", addresses, routes, dns.reversed()))
+        assertFalse(state.current(100, "tun0", addresses, routes, dns))
+        state.publish(100, TunPublicationSnapshot("tun0", addresses, routes, dns))
+        assertTrue(state.current(100, "tun0", addresses, routes, dns))
+        state.publish(100, TunPublicationSnapshot("tun0", addresses, routes, dns.take(1)))
+        assertFalse(state.current(100, "tun0", addresses, routes, dns))
+    }
+    @Test fun lostNetworkHandleCannotReviveFromLateCallbacks() {
+        val state = TunPublicationState(emptyMap())
+        state.publish(100, snapshot("tun0"))
+        assertTrue(state.current(100, "tun0", addresses, routes))
+        state.lost(100)
+        state.publish(100, snapshot("tun0"))
+        assertFalse(state.current(100, "tun0", addresses, routes))
+        state.publish(101, snapshot("tun0"))
+        assertTrue(state.current(101, "tun0", addresses, routes))
+    }
 }

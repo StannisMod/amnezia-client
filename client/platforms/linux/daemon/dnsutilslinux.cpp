@@ -3,6 +3,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "dnsutilslinux.h"
+#include "linuxdnsrecovery.h"
 
 #include <cerrno>
 #include <cstring>
@@ -41,38 +42,41 @@ DnsUtilsLinux::DnsUtilsLinux(QObject* parent) : DnsUtils(parent) {
 DnsUtilsLinux::~DnsUtilsLinux() {
   MZ_COUNT_DTOR(DnsUtilsLinux);
 
-  for (auto iterator = m_linkDomains.constBegin();
-       iterator != m_linkDomains.constEnd(); ++iterator) {
-    QList<QVariant> argumentList;
-    argumentList << QVariant::fromValue(iterator.key());
-    argumentList << QVariant::fromValue(iterator.value());
-    m_resolver->asyncCallWithArgumentList(QStringLiteral("SetLinkDomains"),
-                                          argumentList);
-  }
-
-  if (m_ifindex > 0) {
-    m_resolver->asyncCall(QStringLiteral("RevertLink"), m_ifindex);
-  }
+  restoreResolversForCurrentOwner();
 
   logger.debug() << "DnsUtilsLinux destroyed.";
 }
 
-bool DnsUtilsLinux::updateResolvers(const QString& ifname,
-                                    const QList<QHostAddress>& resolvers) {
-  m_ifindex = if_nametoindex(qPrintable(ifname));
+bool DnsUtilsLinux::updateResolversNative(const QString& ifname,
+                                    const QList<QHostAddress>& resolvers, bool strict) {
+  ++m_domainGeneration;
+  const int index = if_nametoindex(qPrintable(ifname));
+  if (strict && m_ifindex > 0 && m_ifindex != index) return false;
+  m_ifindex = index;
   if (m_ifindex <= 0) {
     logger.error() << "Unable to resolve ifindex for" << ifname
                    << QString::fromLocal8Bit(std::strerror(errno));
     return false;
   }
 
+  if (strict) return updateResolversChecked(resolvers);
   setLinkDNS(m_ifindex, resolvers);
   setLinkDefaultRoute(m_ifindex, true);
   updateLinkDomains();
   return true;
 }
 
-bool DnsUtilsLinux::restoreResolvers() {
+bool DnsUtilsLinux::restoreResolversNative(bool strict) {
+  ++m_domainGeneration;
+  if (strict && !m_dnsRecovery.isEmpty()) {
+    if (!LinuxDnsRecovery::restore(m_dnsRecovery, LinuxDnsRecovery::systemBackend())) return false;
+    m_dnsRecovery = {};
+    m_ifindex = 0;
+    m_linkDomains.clear();
+    m_strictDomainsSaved = false;
+    return true;
+  }
+  if (strict || m_strictDomainsSaved) return restoreResolversChecked();
   for (auto iterator = m_linkDomains.constBegin();
        iterator != m_linkDomains.constEnd(); ++iterator) {
     setLinkDomains(iterator.key(), iterator.value());
@@ -94,6 +98,125 @@ bool DnsUtilsLinux::restoreResolvers() {
     m_ifindex = 0;
   }
 
+  return true;
+}
+
+bool DnsUtilsLinux::prepareDnsRecovery(NativeDnsGuard &guard, const QString &ifname,
+                                     const QList<QHostAddress> &endpoints) {
+  const auto snapshot = LinuxDnsRecovery::capture(ifname, endpoints, m_dnsRecovery, m_linkPolicy);
+  if (snapshot.isEmpty() || !guard.storeDnsRecovery(snapshot)) return false;
+  m_dnsRecovery = snapshot;
+  return true;
+}
+
+bool DnsUtilsLinux::setLinkPolicy(const QJsonObject &policy) {
+  // Validation is also performed by capture before any OS mutation. Do not
+  // accept security or per-server fields that resolved's link API cannot express.
+  if (!policy.isEmpty()) {
+    if (policy.size() != 2 || !policy["domains"].isArray()
+        || !policy["default_route"].isBool()) return false;
+    for (const auto &value : policy["domains"].toArray()) {
+      if (!value.isObject()) return false;
+      const auto domain = value.toObject();
+      if (domain.size() != 2 || !domain["name"].isString()
+          || domain["name"].toString().isEmpty()
+          || domain["name"].toString().contains(QChar(0))
+          || !domain["routing_only"].isBool()) return false;
+    }
+  }
+  m_linkPolicy = policy;
+  return true;
+}
+
+bool DnsUtilsLinux::callChecked(const QString &method, const QList<QVariant> &arguments) {
+  QDBusMessage message = QDBusMessage::createMethodCall(
+      DBUS_RESOLVE_SERVICE, DBUS_RESOLVE_PATH, DBUS_RESOLVE_MANAGER, method);
+  message.setArguments(arguments);
+  const auto reply = m_resolver->connection().call(message, QDBus::Block, 4000);
+  if (reply.type() != QDBusMessage::ReplyMessage) {
+    logger.error() << "Confirmed DNS operation failed:" << method << reply.errorName();
+    return false;
+  }
+  return true;
+}
+
+bool DnsUtilsLinux::updateResolversChecked(const QList<QHostAddress> &resolvers) {
+  if (!m_dnsRecovery.isEmpty()) {
+    // Publish exactly the journaled state, including scoped domains and
+    // default-route. This also keeps replacement and crash recovery in sync.
+    const auto backend = LinuxDnsRecovery::systemBackend();
+    const auto links = m_dnsRecovery["links"].toArray();
+    for (const auto &value : links) {
+      const auto link = value.toObject();
+      const auto current = backend.read(link["index"].toInt());
+      if (current["name"] != link["name"] || current["hardware"] != link["hardware"]
+          || (link.contains("native_policy") && current["native_policy"] != link["native_policy"]))
+        return false;
+      const auto after = link["after"].toObject();
+      for (auto it = after.begin(); it != after.end(); ++it) {
+        if (!backend.write(link["index"].toInt(), it.key(), it.value())) return false;
+      }
+    }
+    for (const auto &value : links) {
+      const auto link = value.toObject();
+      const auto current = backend.read(link["index"].toInt());
+      if (current["name"] != link["name"] || current["hardware"] != link["hardware"])
+        return false;
+      if (link.contains("native_policy") && current["native_policy"] != link["native_policy"])
+        return false;
+      const auto after = link["after"].toObject();
+      for (auto it = after.begin(); it != after.end(); ++it)
+        if (current[it.key()] != it.value()) return false;
+    }
+    return true;
+  }
+  if (!m_strictDomainsSaved) {
+    QDBusMessage message = QDBusMessage::createMethodCall(
+        DBUS_RESOLVE_SERVICE, DBUS_RESOLVE_PATH, DBUS_PROPERTY_INTERFACE, "Get");
+    message << QString(DBUS_RESOLVE_MANAGER) << QString("Domains");
+    QDBusReply<QDBusVariant> reply =
+        m_resolver->connection().call(message, QDBus::Block, 4000);
+    if (!reply.isValid()) return false;
+    const auto value = reply.value().variant();
+    if (!value.canConvert<QDBusArgument>() && !value.canConvert<QList<DnsDomain>>()) return false;
+    const auto domains = qdbus_cast<QList<DnsDomain>>(value);
+    QMap<int, DnsLinkDomainList> saved;
+    for (const auto &domain : domains) {
+      if (domain.ifindex != 0)
+        saved[domain.ifindex].append(DnsLinkDomain(domain.domain, domain.search));
+    }
+    m_linkDomains = saved;
+    m_strictDomainsSaved = true;
+  }
+  QList<DnsResolver> servers;
+  for (const auto &server : resolvers) servers.append(server);
+  if (!callChecked("SetLinkDNS", {m_ifindex, QVariant::fromValue(servers)}) ||
+      !callChecked("SetLinkDefaultRoute", {m_ifindex, true})) return false;
+  const DnsLinkDomain root(".", true);
+  for (auto it = m_linkDomains.constBegin(); it != m_linkDomains.constEnd(); ++it) {
+    if (!it.value().contains(root)) continue;
+    auto domains = it.value();
+    domains.removeAll(root);
+    if (!callChecked("SetLinkDomains", {it.key(), QVariant::fromValue(domains)})) return false;
+  }
+  const DnsLinkDomainList domains = {root};
+  return callChecked("SetLinkDomains", {m_ifindex, QVariant::fromValue(domains)});
+}
+
+bool DnsUtilsLinux::restoreResolversChecked() {
+  for (auto it = m_linkDomains.constBegin(); it != m_linkDomains.constEnd(); ++it) {
+    char name[IF_NAMESIZE];
+    if (if_indextoname(it.key(), name) == nullptr) continue; // Removed link has no resolver state.
+    if (!callChecked("SetLinkDomains", {it.key(), QVariant::fromValue(it.value())})) return false;
+  }
+  if (m_ifindex > 0) {
+    char name[IF_NAMESIZE];
+    if (if_indextoname(m_ifindex, name) != nullptr && !callChecked("RevertLink", {m_ifindex}))
+      return false;
+  }
+  m_ifindex = 0;
+  m_linkDomains.clear();
+  m_strictDomainsSaved = false;
   return true;
 }
 
@@ -187,11 +310,16 @@ void DnsUtilsLinux::updateLinkDomains() {
       m_resolver->connection().asyncCall(message);
 
   QDBusPendingCallWatcher* watcher = new QDBusPendingCallWatcher(reply, this);
+  watcher->setProperty("domainGeneration", QVariant::fromValue(m_domainGeneration));
   QObject::connect(watcher, SIGNAL(finished(QDBusPendingCallWatcher*)), this,
-                   SLOT(dnsDomainsReceived(QDBusPendingCallWatcher*)));
+                    SLOT(dnsDomainsReceived(QDBusPendingCallWatcher*)));
 }
 
 void DnsUtilsLinux::dnsDomainsReceived(QDBusPendingCallWatcher* call) {
+  if (call->property("domainGeneration").toULongLong() != m_domainGeneration) {
+    delete call;
+    return;
+  }
   QDBusPendingReply<QVariant> reply = *call;
   if (reply.isError()) {
     logger.error() << "Error retrieving DNS domains from systemd-resolved:"

@@ -6,6 +6,8 @@ from conan.tools.env import Environment
 
 import os
 import stat
+import importlib.util
+import io
 
 from pathlib import Path
 
@@ -16,6 +18,12 @@ class AmneziaLibxray(ConanFile):
 
     def export_sources(self):
         export_conandata_patches(self)
+        copy(self, "native_dns.py", self.recipe_folder, self.export_sources_folder)
+        copy(self, "native_dns_android.go", self.recipe_folder, self.export_sources_folder)
+        copy(self, "native_dns_android_test.go", self.recipe_folder, self.export_sources_folder)
+        copy(self, "native_dns_socks_test.go", self.recipe_folder, self.export_sources_folder)
+        root = Path(self.recipe_folder).parents[1] / "native" / "routing" / "nativedns"
+        copy(self, "*.go", str(root), str(Path(self.export_sources_folder) / "nativedns"))
 
     def configure(self):
         self.settings.rm_safe("compiler.libcxx")
@@ -48,7 +56,25 @@ class AmneziaLibxray(ConanFile):
 
     def _patch_sources(self):
         apply_conandata_patches(self)
+        module = io.StringIO()
+        self.run('go list -mod=readonly -m -f "{{.Dir}}" github.com/amnezia-vpn/amnezia-tun2socks/v2',
+                 cwd=self.build_folder, stdout=module)
+        dependency = Path(module.getvalue().strip())
+        if not dependency.is_dir():
+            raise ConanInvalidConfiguration("Existing native tun2socks source is unavailable")
+        overlay_path = Path(self.export_sources_folder) / "native_dns.py"
+        spec = importlib.util.spec_from_file_location("android_xray_native_dns", overlay_path)
+        overlay = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(overlay)
+        overlay.apply(self.build_folder, dependency, self.export_sources_folder,
+                      Path(self.export_sources_folder) / "nativedns")
         build_path = os.path.join(self.build_folder, "build.sh")
+        # Resolve the pinned graph, never rewrite requirements/sums via tidy.
+        replace = Path(build_path).read_text()
+        if replace.count("    go mod tidy") != 1:
+            raise ConanInvalidConfiguration("Native libXray dependency preparation changed")
+        Path(build_path).write_text(replace.replace(
+            "    go mod tidy", "    go list -mod=readonly -m all >/dev/null", 1))
         build_stat = os.stat(build_path)
         os.chmod(build_path, build_stat.st_mode | stat.S_IEXEC)
 

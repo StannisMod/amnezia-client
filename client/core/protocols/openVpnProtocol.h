@@ -7,6 +7,7 @@
 
 #include "core/utils/managementServer.h"
 #include "vpnProtocol.h"
+#include "openVpnManagementEnvironment.h"
 
 #include "core/utils/ipcClient.h"
 
@@ -51,6 +52,11 @@ private:
     QJsonObject m_configData;
     QTemporaryFile m_configFile;
     bool m_serverAssignedIpv6 = false;
+    OpenVpnManagementEnvironment m_nativeEnvironment;
+    std::map<std::string, std::string> m_nativeUpEnvironment;
+    bool m_serviceManagement = false, m_managedConfigured = false;
+    quint64 m_processGeneration = 0;
+    QStringList m_managedLines;
 
     uint selectMgmtPort();
 

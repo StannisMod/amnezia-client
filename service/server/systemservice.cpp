@@ -18,6 +18,7 @@ SystemService::SystemService(int argc, char **argv)
     setServiceDescription("Service for AmneziaVPN");
 
 #ifdef Q_OS_WIN
+    setServiceFlags(NeedsStopOnShutdown | DeferredStop);
     if(argc > 2){
         s_argc = argc;
         s_argv = argv;
@@ -39,11 +40,15 @@ SystemService::SystemService(int argc, char **argv)
 
 void SystemService::start()
 {
-    QCoreApplication* app = application();
     m_localServer  = new LocalServer();
+    QObject::connect(qApp, &QCoreApplication::aboutToQuit, qApp, [this] {
+        delete m_localServer;
+        m_localServer = nullptr;
+    });
 }
 
 void SystemService::stop()
 {
-    delete m_localServer;
+    if (m_localServer) m_localServer->requestShutdown();
+    else qApp->quit();
 }

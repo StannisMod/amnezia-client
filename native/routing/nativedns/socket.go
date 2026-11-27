@@ -1,4 +1,6 @@
-package dnsguard
+// Package nativedns adds DNS-only socket endpoints to native VPN runtimes,
+// without importing a TUN, flow proxy, gVisor stack or VPN engine.
+package nativedns
 
 import (
 	"context"
@@ -16,14 +18,19 @@ import (
 // The adapter must publish its settings only after NewSocket succeeds, retain
 // original resolver scope in Exchange, and fail closed when Done closes.
 type SocketFrontend struct {
-	ctx      context.Context
-	cancel   context.CancelFunc
-	udp      *dns.Server
-	tcp      *dns.Server
-	packet   net.PacketConn
-	listener net.Listener
-	done     sync.WaitGroup
-	once     sync.Once
+	ctx           context.Context
+	cancel        context.CancelFunc
+	udp           *dns.Server
+	tcp           *dns.Server
+	packet        net.PacketConn
+	listener      net.Listener
+	done          sync.WaitGroup
+	once          sync.Once
+	forwardCtx    context.Context
+	stopForward   context.CancelFunc
+	forwardMu     sync.Mutex
+	forwardClosed bool
+	forwardDone   sync.WaitGroup
 }
 
 // NewSocket consumes both listeners on success and failure. They must be bound
@@ -59,7 +66,8 @@ func NewSocket(parent context.Context, packet net.PacketConn, listener net.Liste
 	}
 	ctx, cancel := context.WithCancel(parent)
 	f := &SocketFrontend{ctx: ctx, cancel: cancel, packet: packet, listener: listener}
-	handler := newSocketHandler(ctx, exchange)
+	f.forwardCtx, f.stopForward = context.WithCancel(ctx)
+	handler := newSocketHandler(ctx, f.scopedExchange(exchange))
 	f.udp = &dns.Server{PacketConn: packet, Handler: handler, UDPSize: 4096,
 		ReadTimeout: 5 * time.Second, WriteTimeout: 5 * time.Second}
 	f.tcp = &dns.Server{Listener: listener, Handler: handler, MaxTCPQueries: 128,
@@ -88,7 +96,7 @@ func NewSocket(parent context.Context, packet net.PacketConn, listener net.Liste
 }
 
 func newSocketHandler(ctx context.Context, exchange Exchange) dns.Handler {
-	policy := newHandler(ctx, exchange)
+	policy := Handler(ctx, exchange)
 	return dns.HandlerFunc(func(w dns.ResponseWriter, request *dns.Msg) {
 		// An address on a native VPN interface must not turn this process into
 		// a recursive service for remote VPN peers. Only local source addresses
@@ -127,11 +135,48 @@ func assignedIPv4(ip net.IP) bool {
 
 func (f *SocketFrontend) Done() <-chan struct{} { return f.ctx.Done() }
 
+func (f *SocketFrontend) scopedExchange(upstream Exchange) Exchange {
+	return func(ctx context.Context, network string, request *dns.Msg) (*dns.Msg, error) {
+		f.forwardMu.Lock()
+		if f.forwardClosed {
+			f.forwardMu.Unlock()
+			return nil, ErrScopeUnavailable
+		}
+		f.forwardDone.Add(1)
+		f.forwardMu.Unlock()
+		defer f.forwardDone.Done()
+		exchangeCtx, cancel := context.WithCancel(ctx)
+		stop := context.AfterFunc(f.forwardCtx, cancel)
+		defer stop()
+		defer cancel()
+		if f.forwardCtx.Err() != nil {
+			return nil, ErrScopeUnavailable
+		}
+		return upstream(exchangeCtx, network, request)
+	}
+}
+
+func (f *SocketFrontend) quiesceBegin() {
+	f.forwardMu.Lock()
+	f.forwardClosed = true
+	f.stopForward()
+	f.forwardMu.Unlock()
+}
+
+// Quiesce cancels and joins only upstream exchanges. Local UDP/TCP listeners
+// remain published for AAAA NODATA and fail-closed SERVFAIL during uncertain
+// OS restoration; no plaintext query may survive a changed security policy.
+func (f *SocketFrontend) Quiesce() {
+	f.quiesceBegin()
+	f.forwardDone.Wait()
+}
+
 // Close cancels scoped exchanges before joining handlers and native listeners.
 // Never call it inline from Exchange; request cancellation instead.
 func (f *SocketFrontend) Close() error {
 	f.once.Do(func() {
 		f.cancel()
+		f.Quiesce()
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = f.udp.ShutdownContext(ctx)

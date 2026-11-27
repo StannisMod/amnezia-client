@@ -19,6 +19,7 @@
 #include "core/utils/errorCodes.h"
 #include "core/utils/routeModes.h"
 #include "core/utils/openVpnIpv6.h"
+#include "core/utils/openVpnDnsScripts.h"
 #include "core/utils/commonStructs.h"
 #include "core/utils/networkUtilities.h"
 #include "core/utils/containerEnum.h"
@@ -236,7 +237,16 @@ ProtocolConfig OpenVpnConfigurator::processConfigWithLocalSettings(const Connect
 #endif
 
 #if (defined(MZ_MACOS) || defined(MZ_LINUX))
-    config.append(QString("\nscript-security 2\n"
+    bool serviceDns = false;
+#if (defined(MZ_LINUX) && !defined(MZ_ANDROID)) || (defined(MZ_MACOS) && !defined(MACOS_NE))
+    serviceDns = !settings.ipv6Enabled;
+#endif
+    const auto resolverScript = qApp->applicationDirPath() + "/update-resolv-conf.sh";
+    if (serviceDns) {
+        // Only remove our exact bundled writer; do not silently rewrite a
+        // provider's unrelated scripts or routing hooks.
+        config = openVpnNativeDns::withoutBundledResolverScript(config, resolverScript);
+    } else config.append(QString("\nscript-security 2\n"
                          "up %1/update-resolv-conf.sh\n"
                          "down %1/update-resolv-conf.sh\n")
                   .arg(qApp->applicationDirPath()));

@@ -174,9 +174,17 @@ bool RouterLinux::createTun(const QString &dev, const QString &subnet) {
 
     QProcess process;
     QStringList commands;
+    const auto startPrivileged = [&process](QStringList arguments) {
+        // The installed service already runs as root. Do not require a second
+        // privilege escalator (or its environment policy) for native iproute2.
+        if (geteuid() == 0) {
+            const auto program = arguments.takeFirst();
+            process.start(program, arguments);
+        } else process.start("sudo", arguments);
+    };
 
     commands << "ip" << "tuntap" << "add" << "mode" << "tun" << "dev" << dev;
-    process.start("sudo", commands);
+    startPrivileged(commands);
     if (!process.waitForStarted(1000))
     {
         qDebug().noquote() << "Could not start adding tun device!\n";
@@ -191,7 +199,7 @@ bool RouterLinux::createTun(const QString &dev, const QString &subnet) {
 
     if (dev == "tun2") m_proxyTunCreated = true;
     commands << "ip" << "addr" << "add" << QString("%1/24").arg(subnet) << "dev" << dev;
-    process.start("sudo", commands);
+    startPrivileged(commands);
     if (!process.waitForStarted(1000))
     {
         qDebug().noquote() << "Could not start adding a subnet for tun device!\n";
@@ -205,7 +213,7 @@ bool RouterLinux::createTun(const QString &dev, const QString &subnet) {
     commands.clear();
 
     commands << "ip" << "link" << "set" << "dev" << dev << "up";
-    process.start("sudo", commands);
+    startPrivileged(commands);
     if (!process.waitForStarted(1000))
     {
         qDebug().noquote() << "Could not start link set for tun device!\n";
@@ -271,13 +279,14 @@ bool RouterLinux::deleteTun(const QString &dev)
     return success;
 }
 
-bool RouterLinux::updateResolvers(const QString& ifname, const QList<QHostAddress>& resolvers)
+bool RouterLinux::updateResolvers(const QString& ifname, const QList<QHostAddress>& resolvers,
+                                 bool ipv6Enabled, const QString &owner)
 {
-    return m_dnsUtil->updateResolvers(ifname, resolvers);
+    return m_dnsUtil->updateResolvers(ifname, resolvers, ipv6Enabled, owner);
 }
 
-bool RouterLinux::restoreResolvers() {
-    return m_dnsUtil->restoreResolvers();
+bool RouterLinux::restoreResolvers(const QString &owner) {
+    return m_dnsUtil->restoreResolvers(owner);
 }
 
 bool RouterLinux::StartRoutingIpv6()

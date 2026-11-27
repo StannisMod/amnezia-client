@@ -539,13 +539,14 @@ BOOL RouterWin::SuspendProcess(BOOL fSuspend, DWORD dwProcessId)
     return ok;
 }
 
-bool RouterWin::updateResolvers(const QString& ifname, const QList<QHostAddress>& resolvers)
+bool RouterWin::updateResolvers(const QString& ifname, const QList<QHostAddress>& resolvers,
+                               bool ipv6Enabled, const QString &owner)
 {
-    return m_dnsUtil->updateResolvers(ifname, resolvers);
+    return m_dnsUtil->updateResolvers(ifname, resolvers, ipv6Enabled, owner);
 }
 
-bool RouterWin::restoreResolvers() {
-    return m_dnsUtil->restoreResolvers();
+bool RouterWin::restoreResolvers(const QString &owner) {
+    return m_dnsUtil->restoreResolvers(owner);
 }
 
 QNetworkInterface RouterWin::findLoopbackIface()

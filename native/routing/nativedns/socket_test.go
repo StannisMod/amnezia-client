@@ -1,4 +1,4 @@
-package dnsguard
+package nativedns
 
 import (
 	"context"
@@ -88,6 +88,114 @@ func TestSocketFrontendRejectsMismatchedListeners(t *testing.T) {
 	}
 	if _, err := udp.WriteTo([]byte{1}, udp.LocalAddr()); !errors.Is(err, net.ErrClosed) {
 		t.Fatal("failed constructor retained UDP listener", err)
+	}
+}
+
+func TestQuiesceJoinsUpstreamButRetainsNodataListeners(t *testing.T) {
+	entered, exited := make(chan struct{}), make(chan struct{})
+	var calls atomic.Int32
+	udp, tcp := socketPair(t)
+	frontend, err := NewSocket(context.Background(), udp, tcp,
+		func(ctx context.Context, _ string, _ *dns.Msg) (*dns.Msg, error) {
+			calls.Add(1)
+			close(entered)
+			<-ctx.Done()
+			close(exited)
+			return nil, ctx.Err()
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer frontend.Close()
+	done := make(chan error, 1)
+	go func() {
+		answer, _, err := (&dns.Client{Net: "udp", Timeout: time.Second}).Exchange(
+			new(dns.Msg).SetQuestion("pending.test.", dns.TypeA), tcp.Addr().String())
+		if err == nil && answer.Rcode != dns.RcodeServerFailure {
+			err = errors.New("canceled upstream escaped as successful DNS")
+		}
+		done <- err
+	}()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("upstream did not enter")
+	}
+	frontend.Quiesce()
+	select {
+	case <-exited:
+	default:
+		t.Fatal("quiesce returned before upstream joined")
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("canceled query did not finish with SERVFAIL")
+	}
+	select {
+	case <-frontend.Done():
+		t.Fatal("quiesce retired a still-published listener")
+	default:
+	}
+	frontend.Quiesce() // Idempotent, without re-opening forwarding admission.
+	for _, network := range []string{"udp", "tcp"} {
+		client := &dns.Client{Net: network, Timeout: time.Second}
+		for _, qtype := range []uint16{dns.TypeAAAA, dns.TypeA} {
+			answer, _, err := client.Exchange(
+				new(dns.Msg).SetQuestion("after-boundary.test.", qtype), tcp.Addr().String())
+			if err != nil || answer == nil {
+				t.Fatal(network, qtype, err)
+			}
+			want := dns.RcodeSuccess
+			if qtype == dns.TypeA {
+				want = dns.RcodeServerFailure
+			}
+			if answer.Rcode != want || len(answer.Answer) != 0 || answer.AuthenticatedData {
+				t.Fatal("invalid quiesced reply", network, qtype, answer)
+			}
+		}
+	}
+	if calls.Load() != 1 {
+		t.Fatal("query forwarded after quiesce", calls.Load())
+	}
+}
+
+func TestQuiesceRacesAdmissionAndClose(t *testing.T) {
+	for iteration := 0; iteration < 20; iteration++ {
+		udp, tcp := socketPair(t)
+		frontend, err := NewSocket(context.Background(), udp, tcp,
+			func(ctx context.Context, _ string, _ *dns.Msg) (*dns.Msg, error) {
+				<-ctx.Done()
+				return nil, ctx.Err()
+			})
+		if err != nil {
+			t.Fatal(err)
+		}
+		exchange := frontend.scopedExchange(func(ctx context.Context, _ string, _ *dns.Msg) (*dns.Msg, error) {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		})
+		done := make(chan struct{}, 18)
+		for worker := 0; worker < 16; worker++ {
+			go func() {
+				_, _ = exchange(context.Background(), "udp", new(dns.Msg).SetQuestion("race.test.", dns.TypeA))
+				done <- struct{}{}
+			}()
+		}
+		go func() { frontend.Quiesce(); done <- struct{}{} }()
+		go func() { _ = frontend.Close(); done <- struct{}{} }()
+		deadline := time.NewTimer(2 * time.Second)
+		for worker := 0; worker < 18; worker++ {
+			select {
+			case <-done:
+			case <-deadline.C:
+				t.Fatal("quiesce/admission/close did not join")
+			}
+		}
+		deadline.Stop()
 	}
 }
 

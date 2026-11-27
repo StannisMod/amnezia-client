@@ -4,6 +4,7 @@ go 1.27.1
 
 require (
 	github.com/StannisMod/amnezia-client/native/routing v0.0.0
+	github.com/StannisMod/amnezia-client/native/routing/nativedns v0.0.0
 	github.com/amnezia-vpn/amnezia-libxray v1.0.3
 	github.com/amnezia-vpn/amneziawg-go/v3 v3.1.20260814
 	github.com/xtls/xray-core v1.260724.0
@@ -87,6 +88,8 @@ require (
 replace github.com/xtls/xray-core => github.com/amnezia-vpn/amnezia-xray-core v1.260728.0
 
 replace github.com/StannisMod/amnezia-client/native/routing => ./amnezia-routing
+
+replace github.com/StannisMod/amnezia-client/native/routing/nativedns => ./amnezia-routing/nativedns
 
 // Immutable Amnezia RACK recovery backport; internal/builddeps/lock.json.
 replace gvisor.dev/gvisor => github.com/StannisMod/gvisor v0.0.0-20261111225907-cb0e626090af

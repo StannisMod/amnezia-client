@@ -622,3 +622,9 @@ both faults to have occurred before accepting the app's successful export. The
 proxy executes only in the disposable fixture and forwards the production binary;
 it does not simulate an actual SSH connection loss. All previous native, signed
 update, Interface-preservation and rollback checks remain enabled.
+# Persistent cache and disk writes
+
+See [CACHE.md](CACHE.md). Reuse installed images and a stable incremental
+workspace; `--rebuild` is explicit. Keep only small results/manifests in
+per-run evidence directories, and never automatically prune preserved failures
+or VM state.

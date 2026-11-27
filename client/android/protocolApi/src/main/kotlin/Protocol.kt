@@ -35,6 +35,10 @@ abstract class Protocol {
     protected var networkDnsSnapshot: (() -> JSONObject)? = null
     protected var networkDnsProtect: ((Int, String) -> Boolean)? = null
     protected var networkDnsIdentity: (() -> String?)? = null
+    protected var strictPrivateDnsPolicy: (() -> Boolean)? = null
+    fun configureStrictPrivateDnsPolicy(policy: () -> Boolean) { strictPrivateDnsPolicy = policy }
+    /** Service shutdown/replacement must retain this owner until cleanup confirms. */
+    open val hasPendingNativeCleanup: Boolean get() = false
     protected var policyNoticeChanged: ((Long, String?) -> Unit)? = null
     fun configurePolicyNotice(callback: (Long, String?) -> Unit) { policyNoticeChanged = callback }
     open fun recheckNetworkDnsPolicy() {}
@@ -86,6 +90,7 @@ abstract class Protocol {
         validateNetworkDnsPolicy = null
         policyNoticeChanged = null
         networkDnsIdentity = null
+        strictPrivateDnsPolicy = null
         networkDnsProtect = null
         endpointRecovery = null
         underlayIdentity = null
@@ -161,9 +166,9 @@ abstract class Protocol {
             }
         }
 
-        config.searchDomain?.let {
-            Log.d(TAG, "addSearchDomain: $it")
-            vpnBuilder.addSearchDomain(it)
+        for (domain in config.searchDomains) {
+            Log.d(TAG, "addSearchDomain: $domain")
+            vpnBuilder.addSearchDomain(domain)
         }
 
         for ((inetNetwork, include) in config.routes) {

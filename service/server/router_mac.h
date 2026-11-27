@@ -35,8 +35,10 @@ public:
     bool createTun(const QString &dev, const QString &subnet);
     bool configureProxyIpv6(const QStringList &included, const QStringList &excluded);
     bool deleteTun(const QString &dev);
-    bool updateResolvers(const QString& ifname, const QList<QHostAddress>& resolvers);
-    bool restoreResolvers();
+    bool updateResolvers(const QString& ifname, const QList<QHostAddress>& resolvers,
+                         bool ipv6Enabled = true, const QString &owner = {});
+    bool restoreResolvers(const QString &owner = {});
+    DnsUtils *nativeDnsUtility() { return m_dnsUtil; }
     bool routeAddXray(const QString& ifname, const QString& gateway);
     bool routeDeleteXray(const QString& ifname, const QString& gateway);
     

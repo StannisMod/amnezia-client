@@ -12,6 +12,9 @@
 #include <QCryptographicHash>
 #include <QJsonDocument>
 #include <QTimer>
+#include <QEventLoop>
+#include <QUuid>
+#include <QPointer>
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QNetworkInterface>
@@ -63,12 +66,27 @@ XrayProtocol::XrayProtocol(const QJsonObject &configuration, QObject *parent) : 
 XrayProtocol::~XrayProtocol()
 {
     qDebug() << "XrayProtocol::~XrayProtocol()";
+    m_destroying = true;
     XrayProtocol::stop();
+    // Like the native service's restore barrier, destruction is not permission
+    // to discard uncertain DNS ownership. Keep the owner alive for retries.
+    while (!m_stopSequence.complete()) {
+        QEventLoop wait;
+        QTimer::singleShot(250, &wait, &QEventLoop::quit);
+        wait.exec();
+        XrayProtocol::stop();
+    }
 }
 
 ErrorCode XrayProtocol::start()
 {
+    if (m_destroying || m_stopRetryScheduled || !m_dnsOwner.isEmpty()
+        || m_xrayToken != 0 || m_tun2socksProcess) return ErrorCode::InternalError;
+    m_stopSequence.reset();
     resetStopGuard();
+    m_dnsOwner = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    m_dnsAttempted = false;
+    m_ipv6PolicyEnabled = m_rawConfig.value("ipv6_enabled").toBool(true);
 
     qDebug() << "XrayProtocol::start()";
 
@@ -95,6 +113,14 @@ ErrorCode XrayProtocol::start()
 
     return IpcClient::withInterface(
             [&](QSharedPointer<IpcInterfaceReplica> iface) {
+                QObject::disconnect(m_dnsFailureConnection);
+                const auto owner = m_dnsOwner;
+                m_dnsFailureConnection = connect(iface.data(), &IpcInterfaceReplica::nativeDnsFailed,
+                    this, [this, owner](const QString &failedOwner) {
+                        if (owner.isEmpty() || owner != m_dnsOwner || failedOwner != owner) return;
+                        stop();
+                        setLastError(ErrorCode::InternalError);
+                    });
                 auto xrayStart = iface->xrayStartOwned(xrayConfigStr);
                 if (!xrayStart.waitForFinished() || xrayStart.returnValue() == 0) {
                     qCritical() << "Failed to start xray";
@@ -113,53 +139,104 @@ void XrayProtocol::stop()
     }
 
     qDebug() << "XrayProtocol::stop()";
-
-    IpcClient::withInterface([this](QSharedPointer<IpcInterfaceReplica> iface) {
-        auto disableKillSwitch = iface->disableKillSwitch();
-        if (!disableKillSwitch.waitForFinished() || !disableKillSwitch.returnValue())
-            qWarning() << "Failed to disable killswitch";
-
-        auto restoreResolvers = iface->restoreResolvers();
-        if (!restoreResolvers.waitForFinished() || !restoreResolvers.returnValue())
-            qWarning() << "Failed to restore resolvers";
-
-        auto deleteTun = iface->deleteTun(tunName);
-        if (!deleteTun.waitForFinished() || !deleteTun.returnValue())
-            qWarning() << "Failed to delete tun";
-        m_tunPrepared = false;
-
-        auto xrayStop = iface->xrayStopOwned(m_xrayToken);
-        if (!xrayStop.waitForFinished() || !xrayStop.returnValue())
-            qWarning() << "Failed to stop xray";
-        m_xrayToken = 0;
-    });
-
-    if (m_tun2socksProcess) {
-        m_tun2socksProcess->blockSignals(true);
-
+    ++m_tunGeneration;
+    m_routingApplied = false;
+    const bool complete = IpcClient::withInterface([this](QSharedPointer<IpcInterfaceReplica> iface) {
+        return m_stopSequence.run({{
+            [this, iface] {
+                if (!m_dnsAttempted) return true;
+                if (m_dnsOwner.isEmpty()) return false;
+                auto restored = iface->restoreResolversWithOwner(m_dnsOwner);
+                if (!restored.waitForFinished() || !restored.returnValue()) return false;
+                m_dnsAttempted = false;
+                return true;
+            },
+            [this] {
+                if (!m_tun2socksProcess) return true;
+                m_tun2socksProcess->blockSignals(true);
+                const auto confirmedStopped = [this] {
+                    auto stopped = m_tun2socksProcess->processStopped();
+                    return stopped.waitForFinished() && stopped.returnValue();
+                };
+                if (confirmedStopped()) {
+                    m_tun2socksProcess->close();
+                    m_tun2socksProcess.reset();
+                    return true;
+                }
 #ifndef Q_OS_WIN
-        m_tun2socksProcess->terminate();
-        auto waitForFinished = m_tun2socksProcess->waitForFinished(1000);
-        if (!waitForFinished.waitForFinished() || !waitForFinished.returnValue()) {
-            qWarning() << "Failed to terminate tun2socks. Killing the process...";
-            m_tun2socksProcess->kill();
-        }
+                m_tun2socksProcess->terminate();
+                auto graceful = m_tun2socksProcess->waitForFinished(1000);
+                const bool stopped = graceful.waitForFinished() && graceful.returnValue();
+                if (!stopped) m_tun2socksProcess->kill();
 #else
-        // terminate does not do anything useful on Windows
-        // so just kill the process
-        m_tun2socksProcess->kill();
+                const bool stopped = false;
+                m_tun2socksProcess->kill();
 #endif
-
-        m_tun2socksProcess->close();
-        m_tun2socksProcess.reset();
+                if (!stopped) {
+                    auto joined = m_tun2socksProcess->waitForFinished(1000);
+                    const bool joinedReply = joined.waitForFinished() && joined.returnValue();
+                    if (!joinedReply && !confirmedStopped()) return false;
+                }
+                m_tun2socksProcess->close();
+                m_tun2socksProcess.reset();
+                return true;
+            },
+            [this, iface] {
+                if (!m_tunPrepared) return true;
+                auto removed = iface->deleteTun(tunName);
+                if (!removed.waitForFinished() || !removed.returnValue()) return false;
+                m_tunPrepared = false;
+                return true;
+            },
+            [this, iface] {
+                if (!m_xrayToken) return true;
+                auto stopped = iface->xrayStopOwned(m_xrayToken);
+                if (!stopped.waitForFinished() || !stopped.returnValue()) return false;
+                m_xrayToken = 0;
+                return true;
+            },
+            [this, iface] {
+                if (m_dnsOwner.isEmpty()) return true;
+                auto disabled = iface->disableKillSwitch();
+                return disabled.waitForFinished() && disabled.returnValue();
+            }
+        }});
+    }, [this] {
+        // An unused object owns nothing and needs no service-side cleanup.
+        if (!m_dnsOwner.isEmpty() || m_xrayToken || m_tunPrepared || m_tun2socksProcess) return false;
+        return m_stopSequence.run({{[] { return true; }, [] { return true; },
+            [] { return true; }, [] { return true; }, [] { return true; }}});
+    });
+    if (!complete) {
+        qWarning() << "Xray cleanup unconfirmed; retaining owner/resources for retry";
+        resetStopGuard();
+        if (!m_destroying && !m_stopRetryScheduled) {
+            m_stopRetryScheduled = true;
+            QTimer::singleShot(250, this, [this] {
+                m_stopRetryScheduled = false;
+                stop();
+            });
+        }
+        return;
     }
-
+    m_dnsOwner.clear();
+    QObject::disconnect(m_dnsFailureConnection);
     setConnectionState(Vpn::ConnectionState::Disconnected);
 }
 
 ErrorCode XrayProtocol::startTun2Socks()
 {
+    const auto owner = m_dnsOwner;
+    if (owner.isEmpty()) return ErrorCode::InternalError;
+    const auto generation = ++m_tunGeneration;
+    m_routingApplied = false;
+    if (m_tun2socksProcess) {
+        m_tun2socksProcess->blockSignals(true);
+        m_tun2socksProcess->close();
+        m_tun2socksProcess.reset();
+    }
     m_tun2socksProcess = IpcClient::CreatePrivilegedProcess();
+    const QPointer<IpcProcessInterfaceReplica> process(m_tun2socksProcess.data());
     if (!m_tun2socksProcess->waitForSource()) {
         return ErrorCode::AmneziaServiceConnectionFailed;
     }
@@ -190,22 +267,29 @@ ErrorCode XrayProtocol::startTun2Socks()
 
     connect(
             m_tun2socksProcess.data(), &IpcProcessInterfaceReplica::readyReadStandardError, this, 
-            [this]() {
-                auto readAllStandardError = m_tun2socksProcess->readAllStandardError();
+            [this, process, generation, owner]() {
+                if (!process || process != m_tun2socksProcess.data() ||
+                    generation != m_tunGeneration || owner != m_dnsOwner) return;
+                auto readAllStandardError = process->readAllStandardError();
                 if (!readAllStandardError.waitForFinished()) {
                     qWarning() << "Failed to read output from tun2socks";
                     return;
                 }
 
                 const QString line = readAllStandardError.returnValue();
+                if (!process || process != m_tun2socksProcess.data() ||
+                    generation != m_tunGeneration || owner != m_dnsOwner) return;
 
                 if (!line.contains("[TCP]") && !line.contains("[UDP]"))
                     qDebug() << "[tun2socks]:" << line;
 
-                if (line.contains("[STACK] tun://") && line.contains("<-> socks5://")) {
+                if (!m_routingApplied && line.contains("[STACK] tun://") && line.contains("<-> socks5://")) {
+                    m_routingApplied = true;
                     disconnect(m_tun2socksProcess.data(), &IpcProcessInterfaceReplica::readyReadStandardOutput, this, nullptr);
 
-                    if (ErrorCode res = setupRouting(); res != ErrorCode::NoError) {
+                    const auto res = setupRouting(generation, owner);
+                    if (generation != m_tunGeneration || owner != m_dnsOwner) return;
+                    if (res != ErrorCode::NoError) {
                         stop();
                         setLastError(res);
                     } else {
@@ -217,7 +301,9 @@ ErrorCode XrayProtocol::startTun2Socks()
 
     connect(
             m_tun2socksProcess.data(), &IpcProcessInterfaceReplica::finished, this,
-            [this](int exitCode, QProcess::ExitStatus exitStatus) {
+            [this, process, generation, owner](int exitCode, QProcess::ExitStatus exitStatus) {
+                if (!process || process != m_tun2socksProcess.data() ||
+                    generation != m_tunGeneration || owner != m_dnsOwner) return;
                 // Check stdout for "resource busy" — the TUN device was not yet released
                 // by the previous tun2socks instance. Retry after a short delay.
                 bool resourceBusy = false;
@@ -228,13 +314,15 @@ ErrorCode XrayProtocol::startTun2Socks()
                     }
                 }
 
+                if (generation != m_tunGeneration || owner != m_dnsOwner) return;
                 if (resourceBusy && m_tun2socksRetryCount < maxTun2SocksRetries) {
                     m_tun2socksRetryCount++;
                     qWarning() << QString("Tun2socks: TUN resource busy, retrying (%1/%2) in %3ms...")
                                       .arg(m_tun2socksRetryCount)
                                       .arg(maxTun2SocksRetries)
                                       .arg(tun2socksRetryDelayMs);
-                    QTimer::singleShot(tun2socksRetryDelayMs, this, [this]() {
+                    QTimer::singleShot(tun2socksRetryDelayMs, this, [this, generation, owner]() {
+                        if (generation != m_tunGeneration || owner != m_dnsOwner) return;
                         if (ErrorCode err = startTun2Socks(); err != ErrorCode::NoError) {
                             stop();
                             setLastError(err);
@@ -259,10 +347,13 @@ ErrorCode XrayProtocol::startTun2Socks()
     return ErrorCode::NoError;
 }
 
-ErrorCode XrayProtocol::setupRouting()
+ErrorCode XrayProtocol::setupRouting(quint64 generation, const QString &owner)
 {
     return IpcClient::withInterface(
-            [this](QSharedPointer<IpcInterfaceReplica> iface) -> ErrorCode {
+            [this, generation, owner](QSharedPointer<IpcInterfaceReplica> iface) -> ErrorCode {
+                const auto current = [&] { return !owner.isEmpty() && owner == m_dnsOwner
+                    && generation == m_tunGeneration; };
+                if (!current()) return ErrorCode::InternalError;
 #ifdef Q_OS_WIN
                 const int inetAdapterIndex = NetworkUtilities::AdapterIndexTo(QHostAddress(m_remoteAddress));
 #endif
@@ -276,11 +367,14 @@ ErrorCode XrayProtocol::setupRouting()
                 }
 #endif
 
-                auto updateResolvers = iface->updateResolvers(tunName, m_dnsServers);
-                if (!updateResolvers.waitForFinished() || !updateResolvers.returnValue()) {
-                    qCritical() << "Failed to set DNS resolvers for TUN";
-                    return ErrorCode::InternalError;
-                }
+                const auto publishDns = [&]() -> bool {
+                    if (!current()) return false;
+                    m_dnsAttempted = true;
+                    auto update = iface->updateResolversWithPolicy(
+                        tunName, m_dnsServers, m_ipv6PolicyEnabled, owner);
+                    return update.waitForFinished() && update.returnValue() && current();
+                };
+                if (m_ipv6PolicyEnabled && !publishDns()) return ErrorCode::InternalError;
 
 #ifdef Q_OS_WIN
                 int vpnAdapterIndex = -1;
@@ -325,7 +419,7 @@ ErrorCode XrayProtocol::setupRouting()
 
 #if (defined(Q_OS_LINUX) || defined(Q_OS_MACOS) || defined(Q_OS_WIN)) && !defined(Q_OS_ANDROID)
                 QStringList includedIpv6, excludedIpv6;
-                const bool ipv6Enabled = m_rawConfig.value("ipv6_enabled").toBool(true);
+                const bool ipv6Enabled = m_ipv6PolicyEnabled;
                 if (!ipv6Enabled || m_routeMode != amnezia::RouteMode::VpnOnlyForwardSites) includedIpv6 << "::/0";
                 const auto sites = m_rawConfig.value(configKey::splitTunnelSites).toArray();
                 for (const auto &site : sites) {
@@ -363,6 +457,9 @@ ErrorCode XrayProtocol::setupRouting()
                 } else
                     qWarning() << "Failed to get adapter indexes. Split-tunneling disabled";
 #endif
+                // OFF must plan from the final native split routes and prepare
+                // the DNS-only listeners before any managed settings are visible.
+                if (!m_ipv6PolicyEnabled && !publishDns()) return ErrorCode::InternalError;
                 return ErrorCode::NoError;
             },
             []() { return ErrorCode::AmneziaServiceConnectionFailed; });

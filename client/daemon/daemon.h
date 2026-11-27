@@ -35,6 +35,7 @@ class Daemon : public QObject {
   virtual bool activate(const InterfaceConfig& config);
   virtual bool deactivate(bool emitSignals = true);
   virtual QJsonObject getStatus();
+  virtual bool ownsNativeLifecycle() const { return false; }
 
   // Callback before any Activating measure is done
   virtual void prepareActivation(const InterfaceConfig& config, int inetAdapterIndex = 0) {
@@ -59,6 +60,7 @@ class Daemon : public QObject {
   bool maybeUpdateResolvers(const InterfaceConfig& config);
   bool addExclusionRoute(const IPAddress& address);
   bool delExclusionRoute(const IPAddress& address);
+  void nativeDnsFailure();
 
  protected:
   virtual bool run(Op op, const InterfaceConfig& config) {

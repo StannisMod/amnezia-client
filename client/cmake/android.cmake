@@ -60,28 +60,36 @@ set_property(TARGET ${PROJECT} APPEND PROPERTY QT_ANDROID_EXTRA_LIBS ${OPENVPN_P
 
 # Use a private package tree for every build/ABI; never add generated notices
 # or alter manifests in the source checkout.
-set(APP_ANDROID_PACKAGE_SOURCE_DIR ${CMAKE_CURRENT_BINARY_DIR}/android-package-source)
-file(REMOVE_RECURSE ${APP_ANDROID_PACKAGE_SOURCE_DIR})
-file(COPY ${CMAKE_CURRENT_SOURCE_DIR}/android/ DESTINATION ${APP_ANDROID_PACKAGE_SOURCE_DIR})
-file(COPY ${AMNEZIA_LIBXRAY_PATH} DESTINATION ${APP_ANDROID_PACKAGE_SOURCE_DIR}/xray/libXray)
-file(COPY "${AMNEZIA_ROUTING_LICENSE_DIR}/" DESTINATION "${APP_ANDROID_PACKAGE_SOURCE_DIR}/assets/routing-licenses")
-
-if(APP_ANDROID_MAX_SDK)
-
-    set(manifest_path ${APP_ANDROID_PACKAGE_SOURCE_DIR}/AndroidManifest.xml)
-    set(manifest_anchor "android:installLocation=\"auto\">")
-    file(READ ${manifest_path} manifest_contents)
-    string(REPLACE
-        "${manifest_anchor}"
-        "${manifest_anchor}\n\n    <uses-sdk android:maxSdkVersion=\"${APP_ANDROID_MAX_SDK}\" />"
-        patched_contents "${manifest_contents}")
-    if(patched_contents STREQUAL manifest_contents)
-        message(FATAL_ERROR
-            "Failed to set maxSdkVersion=${APP_ANDROID_MAX_SDK}: anchor '${manifest_anchor}' "
-            "not found in ${CMAKE_CURRENT_SOURCE_DIR}/android/AndroidManifest.xml")
-    endif()
-    file(WRITE ${manifest_path} "${patched_contents}")
+# One stable ownership-format migration; retain the old unmanifested staging
+# directory rather than deleting it or adopting possibly edited inputs.
+set(APP_ANDROID_PACKAGE_SOURCE_DIR ${CMAKE_CURRENT_BINARY_DIR}/android-package-source-v2)
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
+if(NOT IS_DIRECTORY "${OPENVPN_PT_ANDROID_JAVA_PATH}")
+    message(FATAL_ERROR "Native OpenVPN package does not supply its generated Java bindings")
 endif()
+if(NOT EXISTS "${OPENVPN_PT_ANDROID_NOTICE_PATH}/native-cloak-provenance.json")
+    message(FATAL_ERROR "Native OpenVPN package does not supply original Cloak license/provenance")
+endif()
+set(_android_stage_args
+    --source "${CMAKE_CURRENT_SOURCE_DIR}/android"
+    --target "${APP_ANDROID_PACKAGE_SOURCE_DIR}"
+    --java "${OPENVPN_PT_ANDROID_JAVA_PATH}"
+    --aar "${AMNEZIA_LIBXRAY_PATH}"
+    --openvpn-notices "${OPENVPN_PT_ANDROID_NOTICE_PATH}"
+    --notices "${AMNEZIA_ROUTING_LICENSE_DIR}")
+if(APP_ANDROID_MAX_SDK)
+    list(APPEND _android_stage_args --max-sdk "${APP_ANDROID_MAX_SDK}")
+endif()
+execute_process(
+    COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/cmake/stage_android.py"
+        ${_android_stage_args}
+    RESULT_VARIABLE _android_stage_result
+    OUTPUT_VARIABLE _android_stage_output
+    ERROR_VARIABLE _android_stage_error)
+if(NOT _android_stage_result EQUAL 0)
+    message(FATAL_ERROR "Android package staging refused: ${_android_stage_error}")
+endif()
+message(STATUS "Incremental Android package inputs: ${_android_stage_output}")
 
 set_property(TARGET ${PROJECT} PROPERTY QT_ANDROID_PACKAGE_SOURCE_DIR ${APP_ANDROID_PACKAGE_SOURCE_DIR})
 

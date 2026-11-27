@@ -25,7 +25,8 @@ internal class OpenVpnPublication(private val manager: ConnectivityManager) : Au
                 state.publish(network.networkHandle, TunPublicationSnapshot(
                     links.interfaceName,
                     links.linkAddresses.map { prefix(it.address, it.prefixLength) }.toSet(),
-                    links.routes.map { prefix(it.destination.address, it.destination.prefixLength) }.toSet()
+                    links.routes.map { prefix(it.destination.address, it.destination.prefixLength) }.toSet(),
+                    links.dnsServers.map { it.hostAddress?.substringBefore('%').orEmpty() }
                 ))
                 lock.notifyAll()
             }
@@ -42,7 +43,8 @@ internal class OpenVpnPublication(private val manager: ConnectivityManager) : Au
             .addTransportType(NetworkCapabilities.TRANSPORT_VPN).build(), callback)
     }
 
-    fun await(fd: ParcelFileDescriptor, config: OpenVpnConfig) {
+    fun await(fd: ParcelFileDescriptor, config: OpenVpnConfig,
+              managedDns: List<InetAddress>? = null): PublishedOpenVpnTun {
         val name = File("/proc/self/fdinfo/${fd.fd}").useLines { lines ->
             lines.firstOrNull { it.startsWith("iff:") }?.substringAfter(':')?.trim()?.takeIf { it.isNotEmpty() }
         } ?: throw VpnStartException("Cannot identify the final OpenVPN capture interface")
@@ -50,8 +52,14 @@ internal class OpenVpnPublication(private val manager: ConnectivityManager) : Au
         val routes = config.routes.filter { it.include }
             .map { prefix(it.inetNetwork.address, it.inetNetwork.mask) }.toSet()
         val until = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
+        val selectedDns = managedDns?.map { it.hostAddress?.substringBefore('%').orEmpty() }
         synchronized(lock) {
-            while (!state.ready(name, addresses, routes)) {
+            while (true) {
+                state.readyNetwork(name, addresses, routes, selectedDns)?.let { handle ->
+                    return PublishedOpenVpnTun(Network.fromNetworkHandle(handle), name) {
+                        synchronized(lock) { state.current(handle, name, addresses, routes, selectedDns) }
+                    }
+                }
                 if (state.cancelled) throw VpnStartException("OpenVPN capture publication cancelled")
                 val remaining = until - System.nanoTime()
                 if (remaining <= 0)
@@ -69,6 +77,7 @@ internal class OpenVpnPublication(private val manager: ConnectivityManager) : Au
     }
 
     override fun close() {
+        cancel()
         try { manager.unregisterNetworkCallback(callback) }
         catch (_: IllegalArgumentException) { /* Already removed by the framework. */ }
     }
@@ -80,21 +89,40 @@ internal class OpenVpnPublication(private val manager: ConnectivityManager) : Au
 internal data class TunPublicationSnapshot(
     val interfaceName: String?,
     val addresses: Set<String>,
-    val routes: Set<String>
+    val routes: Set<String>,
+    val dnsServers: List<String> = emptyList()
+)
+
+internal class PublishedOpenVpnTun(
+    val network: Network,
+    val interfaceName: String,
+    val current: () -> Boolean
 )
 
 internal class TunPublicationState(private val previousInterfaces: Map<Long, String?>) {
     private val updates = mutableMapOf<Long, TunPublicationSnapshot>()
+    private val lost = mutableSetOf<Long>()
     var cancelled = false
         private set
 
-    fun publish(network: Long, snapshot: TunPublicationSnapshot) { updates[network] = snapshot }
-    fun lost(network: Long) { updates.remove(network) }
+    fun publish(network: Long, snapshot: TunPublicationSnapshot) {
+        if (network !in lost) updates[network] = snapshot
+    }
+    fun lost(network: Long) { updates.remove(network); lost += network }
     fun cancel() { cancelled = true }
 
     fun ready(name: String, addresses: Set<String>, routes: Set<String>): Boolean =
-        !cancelled && updates.any { (network, snapshot) ->
-            previousInterfaces[network] != name && snapshot.interfaceName == name &&
-                snapshot.addresses.containsAll(addresses) && snapshot.routes.containsAll(routes)
-        }
+        readyNetwork(name, addresses, routes) != null
+
+    fun readyNetwork(name: String, addresses: Set<String>, routes: Set<String>,
+                     dnsServers: List<String>? = null): Long? =
+        if (cancelled) null else updates.keys.filter { current(it, name, addresses, routes, dnsServers) }.singleOrNull()
+
+    fun current(network: Long, name: String, addresses: Set<String>, routes: Set<String>,
+                dnsServers: List<String>? = null): Boolean {
+        val snapshot = updates[network] ?: return false
+        return !cancelled && network !in lost && previousInterfaces[network] != name &&
+            snapshot.interfaceName == name && snapshot.addresses.containsAll(addresses) &&
+            snapshot.routes.containsAll(routes) && (dnsServers == null || snapshot.dnsServers == dnsServers)
+    }
 }

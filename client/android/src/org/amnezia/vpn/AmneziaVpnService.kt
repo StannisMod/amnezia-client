@@ -134,7 +134,9 @@ open class AmneziaVpnService : VpnService() {
         connectionJob = null
         disconnectionJob?.cancel()
         disconnectionJob = null
-        protocolState.value = DISCONNECTED
+        val retainedNativeOwner = vpnProto?.existingProtocol?.hasPendingNativeCleanup == true
+        protocolState.value = if (retainedNativeOwner) DISCONNECTING else DISCONNECTED
+        if (retainedNativeOwner) mainScope.launch { disconnect() }
         when (e) {
             is IllegalArgumentException,
             is VpnStartException,
@@ -351,10 +353,16 @@ open class AmneziaVpnService : VpnService() {
     }
 
     private fun stopService() {
+        if (vpnProto?.existingProtocol?.hasPendingNativeCleanup == true) {
+            Log.w(TAG, "Retaining service until native cleanup confirms")
+            disconnect()
+            return
+        }
         Log.d(TAG, "Stop service")
         // the coroutine below will be canceled during the onDestroy call
         mainScope.launch {
             delay(STOP_SERVICE_TIMEOUT)
+            if (vpnProto?.existingProtocol?.hasPendingNativeCleanup == true) return@launch
             Log.w(TAG, "Stop service timeout, kill process")
             Process.killProcess(Process.myPid())
         }
@@ -626,6 +634,10 @@ open class AmneziaVpnService : VpnService() {
     @MainThread
     private fun connectToVpn(vpnConfig: String) {
         if (isConnected || protocolState.value == CONNECTING) return
+        if (vpnProto?.existingProtocol?.hasPendingNativeCleanup == true) {
+            onError("Previous native VPN cleanup is pending")
+            return
+        }
 
         Log.d(TAG, "Start VPN connection")
 
@@ -686,6 +698,7 @@ open class AmneziaVpnService : VpnService() {
                     Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && this@AmneziaVpnService.isLockdownEnabled
                 }
                 protocol.configureEndpointResolver(networkState::resolveEndpoint)
+                protocol.configureStrictPrivateDnsPolicy(networkState::hasStrictPrivateDns)
                 protocol.configureNetworkDns(networkState::dnsSnapshot, networkState::bindDnsSocket, networkState::dnsIdentity) { candidate ->
                     if (networkState.hasStrictPrivateDns() && org.amnezia.vpn.util.net.AwgCorePolicy.requiresDomainVisibility(candidate))
                         throw VpnException(STRICT_PRIVATE_DNS_DOMAIN_RULES)
@@ -705,7 +718,9 @@ open class AmneziaVpnService : VpnService() {
 
     @MainThread
     private fun disconnect() {
-        if (isUnknown || isDisconnected || protocolState.value == DISCONNECTING) return
+        val retainedNativeOwner = vpnProto?.existingProtocol?.hasPendingNativeCleanup == true
+        if (((isUnknown || isDisconnected) && !retainedNativeOwner) ||
+            (protocolState.value == DISCONNECTING && disconnectionJob?.isActive == true)) return
 
         Log.d(TAG, "Stop VPN connection")
 
@@ -715,7 +730,16 @@ open class AmneziaVpnService : VpnService() {
             connectionJob?.cancelAndJoin()
             connectionJob = null
 
-            vpnProto?.protocol?.stopVpn()
+            val owner = vpnProto?.existingProtocol
+            do {
+                try {
+                    owner?.stopVpn()
+                } catch (e: Exception) {
+                    if (owner?.hasPendingNativeCleanup != true) throw e
+                    onError("Native VPN cleanup pending: ${e.message}")
+                }
+                if (owner?.hasPendingNativeCleanup == true) delay(250)
+            } while (owner?.hasPendingNativeCleanup == true)
 
             try {
                 withTimeout(DISCONNECT_TIMEOUT) {

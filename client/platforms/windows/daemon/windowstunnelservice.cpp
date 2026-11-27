@@ -42,8 +42,8 @@ WindowsTunnelService::WindowsTunnelService(QObject* parent) : QObject(parent) {
       OpenService((SC_HANDLE)m_scm, TUNNEL_SERVICE_NAME, SERVICE_ALL_ACCESS);
   if (service != nullptr) {
     logger.info() << "Tunnel already exists. Terminating it.";
-    stopAndDeleteTunnelService(service);
-    CloseServiceHandle(service);
+    m_service = service;
+    if (!stop()) logger.warning() << "Retaining orphaned native worker until confirmed process join";
   }
 
   connect(&m_timer, &QTimer::timeout, this, &WindowsTunnelService::timeout);
@@ -55,10 +55,26 @@ WindowsTunnelService::~WindowsTunnelService() {
   CloseServiceHandle((SC_HANDLE)m_scm);
 }
 
-void WindowsTunnelService::stop() {
+bool WindowsTunnelService::stop() {
   SC_HANDLE service = (SC_HANDLE)m_service;
   if (service) {
-    stopAndDeleteTunnelService(service);
+    m_timer.stop();
+    if (!m_process) {
+      SERVICE_STATUS_PROCESS status{};
+      DWORD size = 0;
+      if (!QueryServiceStatusEx(service, SC_STATUS_PROCESS_INFO,
+                               reinterpret_cast<LPBYTE>(&status), sizeof(status), &size)
+          || !status.dwProcessId) return false;
+      m_process = OpenProcess(SYNCHRONIZE, FALSE, status.dwProcessId);
+      if (!m_process) return false;
+    }
+    if (!stopAndDeleteTunnelService(service)) return false;
+    // SERVICE_STOPPED is not process join: the DLL may have returned while
+    // its host still executes. Keep ownership/protection until the pinned
+    // worker itself is signaled, without terminating it.
+    if (WaitForSingleObject((HANDLE)m_process, 0) != WAIT_OBJECT_0) return false;
+    CloseHandle((HANDLE)m_process);
+    m_process = nullptr;
     CloseServiceHandle(service);
     m_service = nullptr;
   }
@@ -70,6 +86,7 @@ void WindowsTunnelService::stop() {
     m_logthread.wait();
     m_logworker = nullptr;
   }
+  return true;
 }
 
 bool WindowsTunnelService::isRunning() {
@@ -110,6 +127,7 @@ void WindowsTunnelService::timeout() {
 
 bool WindowsTunnelService::start(const QString& configData) {
   logger.debug() << "Starting the tunnel service";
+  if (!stop()) return false; // Never replace an unjoined prior native owner.
 
   m_logworker = new WindowsTunnelLogger(WindowsCommons::tunnelLogFile());
   m_logworker->moveToThread(&m_logthread);
@@ -183,6 +201,13 @@ bool WindowsTunnelService::start(const QString& configData) {
     logger.debug() << "The tunnel service is up and running";
     guard.dismiss();
     m_service = service;
+    SERVICE_STATUS_PROCESS status{};
+    DWORD size = 0;
+    if (!QueryServiceStatusEx(service, SC_STATUS_PROCESS_INFO,
+                             reinterpret_cast<LPBYTE>(&status), sizeof(status), &size)
+        || !status.dwProcessId) return false;
+    m_process = OpenProcess(SYNCHRONIZE, FALSE, status.dwProcessId);
+    if (!m_process) return false;
     m_timer.start(WINDOWS_TUNNEL_MONITOR_TIMEOUT_MSEC);
     return true;
   }
@@ -214,7 +239,8 @@ static bool stopAndDeleteTunnelService(SC_HANDLE service) {
 
   if (status.dwCurrentState != SERVICE_STOPPED) {
     logger.debug() << "The service is not stopped yet.";
-    if (!ControlService(service, SERVICE_CONTROL_STOP, &status)) {
+    if (status.dwCurrentState != SERVICE_STOP_PENDING
+        && !ControlService(service, SERVICE_CONTROL_STOP, &status)) {
       WindowsUtils::windowsLog("Failed to control the service");
       return false;
     }
@@ -228,8 +254,13 @@ static bool stopAndDeleteTunnelService(SC_HANDLE service) {
   logger.debug() << "Proceeding with the deletion";
 
   if (!DeleteService(service)) {
-    WindowsUtils::windowsLog("Failed to delete the service");
-    return false;
+    // A prior cleanup attempt (or the installer) may already have marked
+    // this stopped definition for deletion while our owned handle is open.
+    // Closing that handle below is required to finish its retirement.
+    if (GetLastError() != ERROR_SERVICE_MARKED_FOR_DELETE) {
+      WindowsUtils::windowsLog("Failed to delete the service");
+      return false;
+    }
   }
 
   return true;

@@ -89,10 +89,13 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          if [ "$RUNNER_OS" = Linux ]; then
-            command -v dbus-daemon
-            export AMNEZIA_RESOLVED_RECOVERY_TEST=1
-          fi
+           if [ "$RUNNER_OS" = Linux ]; then
+             command -v dbus-daemon
+             export AMNEZIA_RESOLVED_RECOVERY_TEST=1
+           fi
+           if [ "$RUNNER_OS" = macOS ]; then
+             export AMNEZIA_DARWIN_NATIVE_TRUST_TEST=isolated-fixture
+           fi
           package_args=()
           if [ "$RUNNER_OS" = macOS ]; then
             # Avoid multiplying the race-instrumented VPN fixtures across
@@ -102,6 +105,8 @@ jobs:
           race_mod=$(python prepare_race.py --output "$RUNNER_TEMP")
           echo "AMNEZIA_RACE_MOD=$race_mod" >> "$GITHUB_ENV"
           go test -mod=readonly -modfile="$race_mod" -tags with_gvisor,amnezia_race_dependency -race -count=3 "${package_args[@]}" -json ./... | tee test-results.jsonl
+          go test -mod=readonly -modfile="$race_mod" -race -count=3 -json \
+            github.com/StannisMod/amnezia-client/native/routing/nativedns | tee native-dns-host-results.jsonl
           go test -mod=readonly -modfile="$race_mod" -tags with_gvisor,amnezia_race_dependency -race -count=3 "${package_args[@]}" -json gvisor.dev/gvisor/pkg/tcpip/transport/tcp gvisor.dev/gvisor/pkg/tcpip/adapters/gonet | tee dependency-test-results.jsonl
       - name: Diagnose retained TCP MTU completion on Intel without relaxing the bound
         if: ${{ always() && matrix.os == 'macos-15-intel' && env.AMNEZIA_RACE_MOD != '' }}
@@ -129,9 +134,11 @@ jobs:
           path: |
             native/routing/test-results.jsonl
             native/routing/dependency-test-results.jsonl
+            native/routing/native-dns-host-results.jsonl
             native/routing/mtu-focused-results.jsonl
             native/routing/native-ipv6-scope.log
             native-ipv6-scope.json
+            ${{ runner.temp }}/amnezia-scoped-dns-trust-*/ca.pem
           if-no-files-found: error
 
   core-cross-compile:
@@ -227,6 +234,91 @@ jobs:
         run: |
           set -o pipefail
           deploy/build.sh --generator Ninja --installer all 2>&1 | tee client-build.log
+      - name: OpenVPN native management DNS transaction prerequisites
+        run: |
+          set -o pipefail
+          cmake -S tests/openvpn-management-environment -B openvpn-management-build \
+            -DCMAKE_BUILD_TYPE=Release -DOPENVPN_TEST_IPC_ARGUMENTS=ON \
+            -DCMAKE_PREFIX_PATH="${{ runner.temp }}/Qt/6.10.1/gcc_64"
+          cmake --build openvpn-management-build --parallel 2
+          ctest --test-dir openvpn-management-build -V --output-on-failure \
+            --output-junit openvpn-management.xml
+          source_dir="$(conan cache path openvpn/2.7.0 --folder=source)"
+          python scripts/routing/test_openvpn_native_dns_overlay.py --source "$source_dir" \
+            2>&1 | tee openvpn-native-dns-overlay.log
+          python scripts/routing/test_openvpn_dns_handoff.py \
+            2>&1 | tee openvpn-native-dns-handoff.log
+          cmake -S tests/openvpn-dns-session -B openvpn-session-build \
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="${{ runner.temp }}/Qt/6.10.1/gcc_64"
+          cmake --build openvpn-session-build --parallel 2
+          ctest --test-dir openvpn-session-build -V --output-on-failure --output-junit openvpn-session.xml
+          cmake -S tests/xray-stop-sequence -B xray-stop-build -DCMAKE_BUILD_TYPE=Release
+          cmake --build xray-stop-build --parallel 2
+          ctest --test-dir xray-stop-build -V --output-on-failure --output-junit xray-stop.xml
+          python scripts/routing/test_xray_stop.py
+      - name: Production OpenVPN package closure and relocation
+        run: |
+          set -o pipefail
+          python scripts/routing/test_openvpn_linux_packaging.py \
+            --cmake-deps deploy/build/conan \
+            --service deploy/build/service/server/AmneziaVPN-service \
+            --output openvpn-packaging-regression 2>&1 | tee openvpn-packaging-regression.log
+          cmake --install deploy/build --prefix "${{ runner.temp }}/openvpn-installed-audit" \
+            2>&1 | tee openvpn-installed-audit.log
+          python scripts/routing/audit_installed_openvpn.py \
+            --native openvpn-packaging-regression/package/openvpn \
+            --prefix "${{ runner.temp }}/openvpn-installed-audit" \
+            --output openvpn-installed-audit.json
+      - name: Service-owned OpenVPN DNS transaction with real isolated resolved
+        run: |
+          set -o pipefail
+          sudo unshare --mount --net --propagation private sh -eu -c '
+            mkdir -p /host/usr /run/systemd/resolve /run/amnezia-private-resolved
+            mount --bind /usr /host/usr
+            mount -o remount,bind,ro /host/usr
+            mount -t tmpfs tmpfs /run/systemd/resolve
+            mount -t tmpfs tmpfs /run/amnezia-private-resolved
+            ip link add dns-fixture type dummy
+            ip addr add 192.0.2.10/32 dev dns-fixture
+            ip link set dns-fixture up
+            AMNEZIA_NATIVE_DNS_SERVICE_TEST=isolated-namespace \
+              sh tests/native-dns-transaction/run-private-resolved.sh \
+              ctest --test-dir deploy/build/service/server/native-dns-transaction \
+              -V --output-on-failure --output-junit native-dns-transaction.xml
+          ' 2>&1 | tee openvpn-service-native-dns.log
+      - name: Actual XrayProtocol QML disconnect and automatic DNS restore retry
+        run: |
+          set -o pipefail
+          sudo systemd-run --wait --pipe --collect \
+            -p CPUQuota=200% -p MemoryMax=4G -p MemorySwapMax=0 \
+            --setenv=AMNEZIA_NATIVE_DNS_SERVICE_TEST=isolated-namespace \
+            --setenv=QT_QPA_PLATFORM=offscreen --setenv=QT_QUICK_BACKEND=software \
+            --setenv=XDG_CONFIG_HOME=/run/amnezia-private-resolved/xray-config \
+            unshare --mount --net --propagation private sh -eu -c '
+              cd "$1"
+              mkdir -p /host/usr /run/systemd/resolve /run/amnezia-private-resolved /run/amneziavpn
+              mount --bind /usr /host/usr
+              mount -o remount,bind,ro /host/usr
+              mount -t tmpfs tmpfs /tmp
+              mount -t tmpfs tmpfs /run/systemd/resolve
+              mount -t tmpfs tmpfs /run/amnezia-private-resolved
+              mount -t tmpfs tmpfs /run/amneziavpn
+              sh tests/native-dns-transaction/run-private-resolved.sh \
+                python3 scripts/routing/run_xray_service_stop.py \
+                --service "$1/deploy/build/service/server/AmneziaVPN-service" \
+                --output "$1/xray-gui-acceptance" \
+                --peer "$1/deploy/build/client/tests/test_xray_gui_stop"
+              # Fresh socket namespace; installation must not alter runner /opt.
+              mount -t tmpfs tmpfs /tmp
+              mkdir -p /opt/AmneziaVPN
+              mount -t tmpfs tmpfs /opt/AmneziaVPN
+              sh tests/native-dns-transaction/run-private-resolved.sh \
+                python3 scripts/routing/run_xray_service_stop.py \
+                --install-build "$1/deploy/build" \
+                --service /opt/AmneziaVPN/bin/AmneziaVPN-service \
+                --output "$1/xray-shipped-gui-acceptance" \
+                --peer "$1/deploy/build/client/tests/test_shipped_gui_xray_stop"
+            ' sh "$PWD" 2>&1 | tee xray-gui-acceptance.log
       - name: Record baseline result
         if: always()
         env:
@@ -284,6 +376,25 @@ jobs:
           name: routing-client-linux-baseline
           path: |
             client-build.log
+            openvpn-management-build/openvpn-management.xml
+            openvpn-management-build/Testing/Temporary/LastTest.log
+            openvpn-native-dns-overlay.log
+            openvpn-native-dns-handoff.log
+            openvpn-session-build/openvpn-session.xml
+            openvpn-session-build/Testing/Temporary/LastTest.log
+            openvpn-service-native-dns.log
+            openvpn-packaging-regression.log
+            openvpn-packaging-regression/report.json
+            openvpn-packaging-regression/*-deployment.log
+            openvpn-installed-audit.log
+            openvpn-installed-audit.json
+            xray-stop-build/xray-stop.xml
+            xray-gui-acceptance.log
+            xray-gui-acceptance/*.log
+            xray-shipped-gui-acceptance/*.log
+            xray-shipped-gui-acceptance/installed-provenance.json
+            deploy/build/service/server/native-dns-transaction/native-dns-transaction.xml
+            deploy/build/service/server/native-dns-transaction/Testing/Temporary/LastTest.log
             ipsec-update-ssh.log
             path-probe-ssh.log
             ipv6-activation.log
@@ -410,11 +521,63 @@ jobs:
           set BUILD_RESULT=%ERRORLEVEL%
           type client-build.log
           exit /b %BUILD_RESULT%
+      - name: Native Windows DNS snapshot and abrupt-termination recovery
+        timeout-minutes: 10
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cmake -S tests/native-dns-settings-recovery -B native-dns-settings-build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$env:RUNNER_TEMP/Qt/6.10.1/msvc2022_64"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build native-dns-settings-build --parallel 2
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $dll = Get-ChildItem deploy/build -Filter wintun.dll -Recurse | Select-Object -First 1
+          if (-not $dll) {
+            $source = conan cache path wintun/0.14.1 --folder=source
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            $dll = Get-Item (Join-Path $source 'bin/amd64/wintun.dll')
+          }
+          Get-FileHash -Algorithm SHA256 $dll.FullName
+          $env:AMNEZIA_NATIVE_DNS_SETTINGS_TEST = 'isolated-fixture'
+          $env:AMNEZIA_DNS_RECOVERY_WINTUN_DLL = $dll.FullName
+          ctest --test-dir native-dns-settings-build -V --output-on-failure --output-junit native-dns-settings.xml
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:AMNEZIA_NATIVE_DNS_DESKTOP_TEST = 'isolated-fixture'
+           ctest --test-dir deploy/build/service/server/native-dns-desktop-lifecycle -V --output-on-failure --output-junit native-dns-lifecycle.xml
+           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+           # Exercise the exact production import, without copying its DLL.
+           # No CTest deadline may force-kill a pending native cleanup.
+           $native = 'deploy/build/service/server/native-dns-transaction'
+           cmake --build deploy/build --target test_native_dns_windows_service --parallel 2
+           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+           $runtime = Get-Item ((Get-Content "$native/native-dns-runtime-Release.txt" -Raw).Trim())
+           Get-FileHash -Algorithm SHA256 $runtime.FullName |
+             Format-List | Out-File "$native/native-dns-runtime-sha256.txt"
+           $env:PATH = "$($runtime.DirectoryName);$env:PATH"
+           & "$native/test_native_dns_windows_service.exe" -o "$native/native-dns-windows-service.xml,junitxml" -o -,txt
+           exit $LASTEXITCODE
+      - name: Native IKEv2 ownership, DNS fence and SCM prerequisites
+        timeout-minutes: 10
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cmake -S tests/ikev2-dns-session -B ikev2-dns-owner-build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$env:RUNNER_TEMP/Qt/6.10.1/msvc2022_64"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build ikev2-dns-owner-build --parallel 2
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:AMNEZIA_IKEV2_DNS_NATIVE_TEST = 'isolated-fixture'
+          ctest --test-dir ikev2-dns-owner-build -V --output-on-failure --output-junit ikev2-dns-owner.xml
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          windeployqt --no-translations ikev2-dns-owner-build/test_deferred_service.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ./tests/ikev2-dns-session/run_scm.ps1 -Build "$env:GITHUB_WORKSPACE/ikev2-dns-owner-build" | Tee-Object ikev2-scm-stop.log
+          exit $LASTEXITCODE
       - name: Windows settings and application-scope regression tests
         env:
           QT_QPA_PLATFORM: offscreen
         run: |
-          ctest --test-dir deploy/build/client/tests -C Release -V --timeout 120 --output-junit qt-regression.xml
+          # Certificate-authenticated native RAS uses the separately owned
+          # Windows/Libreswan fixture, not this settings-only invocation.
+          ctest --test-dir deploy/build/client/tests -C Release -V --timeout 120 -LE requires-native-ikev2-fixture --output-junit qt-regression.xml
           $testResult = $LASTEXITCODE
           $report = 'deploy/build/client/tests/server-edit-test.txt'
           if (Test-Path $report) { Get-Content $report }
@@ -478,6 +641,16 @@ jobs:
         with:
           name: routing-client-windows-baseline
           path: |
+            deploy/build/service/server/native-dns-desktop-lifecycle/native-dns-lifecycle.xml
+             deploy/build/service/server/native-dns-desktop-lifecycle/Testing/Temporary/LastTest.log
+            deploy/build/service/server/native-dns-transaction/native-dns-windows-service.xml
+            deploy/build/service/server/native-dns-transaction/native-dns-runtime-*.txt
+            native-dns-settings-build/native-dns-settings.xml
+            native-dns-settings-build/Testing/Temporary/LastTest.log
+            ikev2-dns-owner-build/ikev2-dns-owner.xml
+            ikev2-dns-owner-build/Testing/Temporary/LastTest.log
+            ikev2-dns-owner-build/fixture-state.json
+            ikev2-scm-stop.log
             client-build.log
             routing-build-manifest.json
             deploy/build/client/tests/server-edit-test.txt
@@ -489,6 +662,67 @@ jobs:
             windows-installed-service.json
             windows-exe-installed-service.json
             routing-msi-install.log
+
+  client-macos:
+    needs: cancel-superseded
+    runs-on: macos-15-intel
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with: {submodules: recursive}
+      - uses: maxim-lobanov/setup-xcode@v1
+        with: {xcode-version: '26.0'}
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: native/routing/go.mod
+          cache-dependency-path: native/routing/go.sum
+      - uses: actions/setup-python@v6
+        with: {python-version: '3.14'}
+      - uses: jurplel/install-qt-action@v4.3.1
+        with:
+          version: '6.10.1'
+          host: mac
+          target: desktop
+          arch: clang_64
+          modules: qtremoteobjects qt5compat qtshadertools qthttpserver qtwebsockets
+          dir: ${{ runner.temp }}
+      - name: Prepare ordinary native build dependencies
+        run: |
+          pip install conan==2.28.0
+          conan profile detect --force
+      - uses: actions/cache@v4
+        with:
+          path: ~/.conan2
+          key: current-macos-universal-qt6101-${{ runner.arch }}-${{ hashFiles('conanfile.py', 'recipes/**', 'native/routing/nativedns/**', 'native/routing/desktopbridge/native_dns.go') }}
+          restore-keys: |
+            current-macos-universal-qt6101-${{ runner.arch }}-
+            macos-test-universal-qt6101-${{ runner.arch }}-
+      - name: Build current classic application, service and real DNS lifecycle fixture
+        env:
+          QT_INSTALL_DIR: ${{ runner.temp }}
+          MACOS_UNSIGNED_BUILD: '1'
+          AMNEZIA_BUILD_TESTS: 'ON'
+          AMNEZIA_CONAN_PREBUILTS: 'OFF'
+        run: |
+          set -euo pipefail
+          deploy/build.sh --generator Ninja 2>&1 | tee macos-current-build.log
+      - name: Production service startup recovery with real macOS aliases
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          sudo env AMNEZIA_NATIVE_DNS_DESKTOP_TEST=isolated-fixture \
+            ctest --test-dir deploy/build/service/server/native-dns-desktop-lifecycle \
+            -V --output-on-failure --output-junit native-dns-lifecycle.xml \
+            2>&1 | tee macos-native-dns-lifecycle.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: routing-client-macos-current
+          path: |
+            macos-current-build.log
+            macos-native-dns-lifecycle.log
+            deploy/build/service/server/native-dns-desktop-lifecycle/native-dns-lifecycle.xml
+            deploy/build/service/server/native-dns-desktop-lifecycle/Testing/Temporary/LastTest.log
 
   client-android:
     needs: cancel-superseded
@@ -575,7 +809,7 @@ jobs:
         run: |
           set -o pipefail
           deploy/build.sh -t android --abi "$ABI" --apk 2>&1 | tee client-build.log
-      - name: Android network callback lifecycle unit tests
+      - name: Android network and native DNS lifecycle unit tests
         if: matrix.abi == 'x86_64'
         run: |
           python3 - <<'PYCODE'
@@ -584,7 +818,7 @@ jobs:
           candidates = sorted(p for p in Path('deploy/build/client').rglob('gradlew') if (p.parent / 'utils').is_dir())
           assert candidates, 'Generated Android Gradle project missing'
           wrapper = candidates[0].resolve()
-          subprocess.run([str(wrapper), ':utils:testDebugUnitTest', ':protocolApi:testDebugUnitTest', ':openvpn:testDebugUnitTest', '--no-daemon'], cwd=wrapper.parent, check=True, timeout=300)
+           subprocess.run([str(wrapper), ':utils:testDebugUnitTest', ':protocolApi:testDebugUnitTest', ':openvpn:testDebugUnitTest', ':xray:testDebugUnitTest', '--no-daemon'], cwd=wrapper.parent, check=True, timeout=300)
           PYCODE
       - name: Inspect native JNI in the actual APK
         id: payload
@@ -704,6 +938,22 @@ jobs:
           arch: clang_64
           modules: qtremoteobjects qt5compat qtshadertools qtmultimedia
           dir: ${{ runner.temp }}
+      - name: Native macOS DNS snapshot and abrupt-termination recovery
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          set -euo pipefail
+          host_qt="$RUNNER_TEMP/Qt/6.10.1/macos"
+          if test ! -d "$host_qt/lib/cmake/Qt6"; then
+            host_qt="$RUNNER_TEMP/Qt/6.10.1/clang_64"
+          fi
+          test -d "$host_qt/lib/cmake/Qt6"
+          cmake -S tests/native-dns-settings-recovery -B native-dns-settings-build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$host_qt"
+          cmake --build native-dns-settings-build --parallel 2
+          sudo env AMNEZIA_NATIVE_DNS_SETTINGS_TEST=isolated-fixture \
+            ctest --test-dir native-dns-settings-build -V --output-on-failure \
+            --output-junit native-dns-settings.xml 2>&1 | tee native-dns-settings.log
       - uses: jurplel/install-qt-action@v4.3.1
         with:
           version: '6.10.1'
@@ -744,6 +994,9 @@ jobs:
         with:
           name: routing-client-ios-unsigned-baseline
           path: |
+            native-dns-settings.log
+            native-dns-settings-build/native-dns-settings.xml
+            native-dns-settings-build/Testing/Temporary/LastTest.log
             client-build.log
             native-hev-reader.log
             routing-build-manifest.json
@@ -825,7 +1078,7 @@ jobs:
 
   build-gate:
     if: always()
-    needs: [cancel-superseded, core-tests, core-cross-compile, client-linux, linux-tcp-stability, client-windows, client-android, client-ios, apple-tcp-recovery, linux-dns-regression]
+    needs: [cancel-superseded, core-tests, core-cross-compile, client-linux, linux-tcp-stability, client-windows, client-macos, client-android, client-ios, apple-tcp-recovery, linux-dns-regression]
     runs-on: ubuntu-22.04
     steps:
       - name: Fail for any failed, cancelled or skipped required lane

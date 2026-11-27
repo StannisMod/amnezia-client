@@ -1,3 +1,4 @@
+@echo off
 set AmneziaPath=%~dp0
 echo %AmneziaPath%
 
@@ -9,13 +10,22 @@ set "SYS_APP_DIR=%ProgramData%\AmneziaVPN"
 set "SYS_LOG_DIR=%SYS_APP_DIR%\log"
 set "SYS_LOG_FILE=%SYS_LOG_DIR%\AmneziaVPN-service.log"
 
-timeout /t 1
-sc stop AmneziaVPN-service
-sc delete AmneziaVPN-service
-sc stop AmneziaWGTunnel$AmneziaVPN
-sc delete AmneziaWGTunnel$AmneziaVPN
-taskkill /IM "AmneziaVPN-service.exe" /F
 taskkill /IM "AmneziaVPN.exe" /F
+rem Restore DNS and join the main service before retiring its native WG link.
+powershell -NoProfile -NonInteractive -EncodedCommand @AMNEZIA_WINDOWS_STOP_ENCODED@
+if errorlevel 1 exit /b 1
+powershell -NoProfile -NonInteractive -Command "$ErrorActionPreference='Stop'; if(Get-Process -Name 'AmneziaVPN-service' -ErrorAction SilentlyContinue){throw 'Unmanaged service process remains; refusing forced termination'}"
+if errorlevel 1 exit /b 1
+sc query "AmneziaVPN-service" >nul 2>&1
+if not errorlevel 1 (
+    sc delete "AmneziaVPN-service"
+    if errorlevel 1 exit /b 1
+)
+sc query "AmneziaWGTunnel$AmneziaVPN" >nul 2>&1
+if not errorlevel 1 (
+    sc delete "AmneziaWGTunnel$AmneziaVPN"
+    if errorlevel 1 exit /b 1
+)
 
 rem Delete the service log file under ProgramData
 if exist "%SYS_LOG_FILE%" del /F /Q "%SYS_LOG_FILE%"

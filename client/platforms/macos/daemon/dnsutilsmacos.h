@@ -21,9 +21,11 @@ class DnsUtilsMacos final : public DnsUtils {
  public:
   explicit DnsUtilsMacos(QObject* parent);
   virtual ~DnsUtilsMacos();
-  bool updateResolvers(const QString& ifname,
-                       const QList<QHostAddress>& resolvers) override;
-  bool restoreResolvers() override;
+  bool updateResolversNative(const QString& ifname,
+                       const QList<QHostAddress>& resolvers, bool strict) override;
+  bool restoreResolversNative(bool strict) override;
+  bool prepareDnsRecovery(NativeDnsGuard &guard, const QString &ifname,
+                          const QList<QHostAddress> &endpoints) override;
 
  private:
   void backupResolvers();
@@ -46,6 +48,7 @@ class DnsUtilsMacos final : public DnsUtils {
 
   SCDynamicStoreRef m_scStore = nullptr;
   QMap<QString, DnsBackup> m_prevServices;
+  QJsonObject m_dnsRecovery;
 };
 
 #endif  // DNSUTILSMACOS_H

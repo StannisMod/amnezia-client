@@ -1,6 +1,15 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <CPackWiXPatch>
     <CPackWiXFragment Id="#PRODUCT">
+        <!-- Restart Manager must not terminate the owner ahead of our barrier. -->
+        <Property Id="MSIRESTARTMANAGERCONTROL" Value="Disable" />
+        <CustomAction Id="AmneziaConfirmNativeStop"
+                      Directory="SystemFolder"
+                      ExeCommand="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -NonInteractive -EncodedCommand @AMNEZIA_WINDOWS_STOP_ENCODED@"
+                      Execute="deferred" Impersonate="no" Return="check" />
+        <InstallExecuteSequence>
+            <Custom Action="AmneziaConfirmNativeStop" Before="StopServices" Condition="1" />
+        </InstallExecuteSequence>
         <!-- Требует расширение WixToolset.Util.wixext и xmlns util -->
         <util:CloseApplication
                 Id="CloseAmneziaClient"
@@ -10,4 +19,3 @@
                 RebootPrompt="no" />
     </CPackWiXFragment>
 </CPackWiXPatch>
-

@@ -1,5 +1,9 @@
 #!/bin/bash
 
+if [ "$(id -u)" -eq 0 ]; then
+        sudo() { command "$@"; }
+fi
+
 APP_NAME=AmneziaVPN
 ORG_NAME=AmneziaVPN.ORG
 LOG_FOLDER=/var/log/$APP_NAME
@@ -19,21 +23,24 @@ if command -v steamos-readonly &> /dev/null; then
 	echo "steamos-readonly disabled" >> $LOG_FILE
 fi
 
-ls /opt/AmneziaVPN/client/lib/* | while IFS=: read -r dir; do
-	sudo unlink $dir  >> $LOG_FILE
-done
-
-if sudo systemctl is-active --quiet $APP_NAME; then
-	sudo systemctl stop $APP_NAME >> $LOG_FILE
+# IFW runs this undo operation before removing payload files. Keep all files
+# and the unit intact until the service confirms DNS/native-child retirement,
+# including when another caller has already requested stop.
+UNIT_STATE=$(sudo systemctl show "$APP_NAME" -p LoadState --value) || exit 1
+if [ "$UNIT_STATE" != "not-found" ]; then
+	sudo systemctl stop "$APP_NAME" >> "$LOG_FILE" || exit 1
+	ACTIVE_STATE=$(sudo systemctl show "$APP_NAME" -p ActiveState --value) || exit 1
+	[ "$ACTIVE_STATE" = "inactive" ] || exit 1
 fi
 
 if sudo systemctl is-enabled --quiet $APP_NAME; then
-	sudo systemctl disable $APP_NAME >> $LOG_FILE
+	sudo systemctl disable $APP_NAME >> $LOG_FILE || exit 1
 fi
 
 if test -f /etc/systemd/system/$APP_NAME.service; then
-	sudo rm -rf /etc/systemd/system/$APP_NAME.service >> $LOG_FILE
+	sudo rm -f /etc/systemd/system/$APP_NAME.service >> $LOG_FILE || exit 1
 fi
+sudo systemctl daemon-reload >> $LOG_FILE || exit 1
 
 if test -f $APP_PATH; then
         sudo rm -rf $APP_PATH >> $LOG_FILE

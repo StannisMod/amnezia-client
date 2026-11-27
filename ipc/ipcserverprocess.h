@@ -3,6 +3,8 @@
 
 #include "ipc.h"
 #include <QObject>
+#include <memory>
+class OpenVpnDnsSession;
 #if defined(Q_OS_LINUX) && !defined(Q_OS_ANDROID)
 #include "../client/platforms/linux/daemon/linuxopenvpnipv6routes.h"
 #include "../client/platforms/linux/daemon/linuxopenvpndevice.h"
@@ -34,6 +36,12 @@ public:
     void kill() override;
     void close() override;
     bool addOpenVpnIpv6Hosts(const QString &localIpv4, const QStringList &hosts, bool throughVpn) override;
+    bool configureManagedOpenVpn() override;
+    bool managedOpenVpnCommand(const QString &command) override;
+    bool managedOpenVpnStopped() override;
+    bool processStopped() override;
+    int confirmedExitCode() override;
+    void freezeForShutdown() { m_shutdownRequested = true; }
 
     void setArguments(const QStringList &arguments) override;
     void setInputChannelMode(QProcess::InputChannelMode mode) override;
@@ -54,6 +62,18 @@ public:
 signals:
 
 private:
+    bool cleanupNativeResources();
+    void finishNativeProcess(int code, QProcess::ExitStatus status);
+    void finishPending();
+    void stopManaged();
+    void reportManagedFailure();
+    std::unique_ptr<OpenVpnDnsSession> m_dnsSession;
+    bool m_exitPending = false, m_tearingDown = false;
+    bool m_shutdownRequested = false;
+    bool m_managedFailureReported = false;
+    bool m_hasProcessResult = false;
+    int m_exitCode = 0;
+    QProcess::ExitStatus m_exitStatus = QProcess::NormalExit;
     amnezia::PermittedProcess m_program = amnezia::PermittedProcess::Invalid;
     QSharedPointer<QProcess> m_process;
     QStringList m_arguments;

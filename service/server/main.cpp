@@ -5,6 +5,9 @@
 #include "logger.h"
 #include "systemservice.h"
 #include "core/utils/utilities.h"
+#ifdef Q_OS_UNIX
+#include "signalhandler.h"
+#endif
 
 #ifdef Q_OS_WIN
 #include "platforms/windows/daemon/windowsdaemontunnel.h"
@@ -30,13 +33,19 @@ int runApplication(int argc, char** argv)
         }
 
         if (!tokens.empty() && tokens[0] == "tunneldaemon") {
-            WindowsDaemonTunnel *daemon = new WindowsDaemonTunnel();
-            daemon->run(tokens);
+            WindowsDaemonTunnel daemon;
+            // The native service call returns only after tunnel shutdown.
+            // Never turn its retired worker into another privileged server.
+            return daemon.run(tokens);
         }
     }
 #endif
 
     LocalServer localServer;
+#ifdef Q_OS_UNIX
+    SignalHandler signalHandler;
+    QObject::connect(&signalHandler, &SignalHandler::quitRequested, &localServer, &LocalServer::requestShutdown);
+#endif
     return app.exec();
 
 }

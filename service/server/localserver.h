@@ -7,6 +7,7 @@
 #include <QSharedPointer>
 #include <QStringList>
 #include <QVector>
+#include <memory>
 
 #include "ipcserver.h"
 
@@ -36,10 +37,16 @@ class LocalServer : public QObject
 public:
     explicit LocalServer(QObject* parent = nullptr);
     ~LocalServer();
+    void requestShutdown();
     QSharedPointer<QLocalServer> m_server;
     IpcServer m_ipcServer;
     QRemoteObjectHost m_serverNode;
     bool m_isRemotingEnabled = false;
+    bool m_shuttingDown = false;
+    bool m_startupDnsPrepared = false;
+    bool m_startupDnsRestored = false;
+    bool m_startupDnsCompleted = false;
+    bool recoverStartupDns();
 
     NetworkWatcher m_networkWatcher;
 #ifdef Q_OS_LINUX
@@ -48,7 +55,7 @@ public:
 #endif
 #ifdef Q_OS_WIN
     DaemonLocalServer server{qApp};
-    WindowsDaemon daemon;
+    std::unique_ptr<WindowsDaemon> daemon;
 #endif
 #ifdef Q_OS_MAC
     DaemonLocalServer server{qApp};

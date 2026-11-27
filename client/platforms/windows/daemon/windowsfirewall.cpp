@@ -3,6 +3,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "windowsfirewall.h"
+#include "nativednsfirewall.h"
 
 #include <comdef.h>
 #include <fwpmu.h>
@@ -22,6 +23,7 @@
 #include <QHostAddress>
 #include <QNetworkInterface>
 #include <QObject>
+#include <cstring>
 #include <QScopeGuard>
 #include <QtEndian>
 
@@ -35,12 +37,15 @@
 #define IPV6_ADDRESS_SIZE 16
 
 // ID for the Firewall Sublayer
-DEFINE_GUID(ST_FW_WINFW_BASELINE_SUBLAYER_KEY, 0xc78056ff, 0x2bc1, 0x4211, 0xaa,
-            0xdd, 0x7f, 0x35, 0x8d, 0xef, 0x20, 0x2d);
+const GUID ST_FW_WINFW_BASELINE_SUBLAYER_KEY = NativeDnsFirewall::baselineSublayer;
 DEFINE_GUID(ST_FW_WINFW_DNS_SUBLAYER_KEY, 0x60090787, 0xcca1, 0x4937, 0xaa,
             0xce, 0x51, 0x25, 0x6e, 0xf4, 0x81, 0xf3);
 DEFINE_GUID(ST_FW_WINFW_IPV6_POLICY_SUBLAYER_KEY, 0x79112af0, 0x3d0b, 0x4bb0, 0x99,
             0x1e, 0xb7, 0x7c, 0x32, 0x68, 0x66, 0x20);
+DEFINE_GUID(ST_FW_WINFW_IPV6_CONNECT_BLOCK_KEY, 0xe4260d36, 0x20ce, 0x4bae, 0xa4,
+            0x61, 0x70, 0x41, 0xd5, 0xca, 0xc1, 0x3a);
+DEFINE_GUID(ST_FW_WINFW_IPV6_RECEIVE_BLOCK_KEY, 0x6bf747d8, 0x68de, 0x4b18, 0xb0,
+            0x64, 0x3d, 0x76, 0xe8, 0x1b, 0x86, 0xea);
 // ID for the Mullvad Split-Tunnel Sublayer Provider
 DEFINE_GUID(ST_FW_PROVIDER_KEY, 0xe2c114ee, 0xf32a, 0x4264, 0xa6, 0xcb, 0x3f,
             0xa7, 0x99, 0x63, 0x56, 0xd9);
@@ -181,54 +186,69 @@ bool WindowsFirewall::initSublayer() {
 }
 
 bool WindowsFirewall::setNativeIpv6Blocked(bool blocked, const QList<QHostAddress>& endpoints) {
-  if (!blocked) {
-    if (!m_ipv6PolicySession) return true;
-    if (FwpmEngineClose0(m_ipv6PolicySession) != ERROR_SUCCESS) return false;
-    m_ipv6PolicySession = nullptr;
-    return true;
-  }
   if (endpoints.size() > 64) return false;
   for (const auto& endpoint : endpoints)
     if (endpoint.isNull() || !endpoint.scopeId().isEmpty() || endpoint.isMulticast()) return false;
   FWPM_SESSION0 session{};
-  session.flags = FWPM_SESSION_FLAG_DYNAMIC;
+  // Non-dynamic kernel policy survives an unexpected service-process exit.
+  // It is explicitly retired only by confirmed native cleanup, not by closing
+  // an engine handle. It does not create a new runtime or alter IPv4 routing.
   HANDLE next = nullptr;
-  if (FwpmEngineOpen0(nullptr, RPC_C_AUTHN_WINNT, nullptr, &session, &next) != ERROR_SUCCESS)
+  const auto checked = [](DWORD result, const char* stage) {
+    if (result != ERROR_SUCCESS) qWarning() << "Native IPv6 kernel policy" << stage << "failed:" << result;
+    return result == ERROR_SUCCESS;
+  };
+  if (!checked(FwpmEngineOpen0(nullptr, RPC_C_AUTHN_WINNT, nullptr, &session, &next), "engine"))
     return false;
   auto cleanup = qScopeGuard([&] { if (next) FwpmEngineClose0(next); });
-  if (FwpmTransactionBegin0(next, 0) != ERROR_SUCCESS) return false;
+  if (!checked(FwpmTransactionBegin0(next, 0), "transaction")) return false;
   auto abort = qScopeGuard([&] { FwpmTransactionAbort0(next); });
-  for (const auto& layer : {FWPM_LAYER_ALE_AUTH_CONNECT_V6, FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V6}) {
+  const GUID keys[] = {ST_FW_WINFW_IPV6_CONNECT_BLOCK_KEY, ST_FW_WINFW_IPV6_RECEIVE_BLOCK_KEY};
+  const GUID layers[] = {FWPM_LAYER_ALE_AUTH_CONNECT_V6, FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V6};
+  constexpr UINT8 policyMarker[] = {'A', 'M', 'N', 'Z', 'I', 'P', '6', 1};
+  for (int index = 0; index < 2; ++index) {
+    FWPM_FILTER0* existing = nullptr;
+    const auto found = FwpmFilterGetByKey0(next, &keys[index], &existing);
+    if (found == ERROR_SUCCESS) {
+      const bool owned = existing && IsEqualGUID(existing->layerKey, layers[index])
+          && IsEqualGUID(existing->subLayerKey, ST_FW_WINFW_IPV6_POLICY_SUBLAYER_KEY)
+          && existing->action.type == FWP_ACTION_BLOCK && existing->numFilterConditions == 0
+          && !existing->providerKey && existing->flags == 0
+          && existing->weight.type == FWP_UINT8 && existing->weight.uint8 == HIGH_WEIGHT
+          && existing->rawContext == 0
+          && existing->providerData.size == sizeof(policyMarker) && existing->providerData.data
+          && std::memcmp(existing->providerData.data, policyMarker, sizeof(policyMarker)) == 0;
+      if (existing) FwpmFreeMemory0(reinterpret_cast<void**>(&existing));
+      if (!owned) {
+        qWarning() << "Native IPv6 kernel policy ownership differs at filter" << index;
+        return false;
+      }
+      if (!blocked && !checked(FwpmFilterDeleteByKey0(next, &keys[index]), "delete")) return false;
+      continue;
+    }
+    if (found != FWP_E_FILTER_NOT_FOUND) {
+      checked(found, "lookup");
+      return false;
+    }
+    if (!blocked) continue;
     FWPM_FILTER0 filter{};
+    filter.filterKey = keys[index];
     filter.subLayerKey = ST_FW_WINFW_IPV6_POLICY_SUBLAYER_KEY;
-    filter.layerKey = layer;
+    filter.layerKey = layers[index];
     filter.displayData.name = const_cast<wchar_t*>(L"Amnezia native IPv6 disabled");
     filter.action.type = FWP_ACTION_BLOCK;
     filter.weight.type = FWP_UINT8;
     filter.weight.uint8 = HIGH_WEIGHT;
-    if (FwpmFilterAdd0(next, &filter, nullptr, nullptr) != ERROR_SUCCESS) return false;
-    for (const auto& endpoint : endpoints) {
-      if (endpoint.protocol() != QAbstractSocket::IPv6Protocol) continue;
-      FWPM_FILTER_CONDITION0 condition{};
-      condition.fieldKey = FWPM_CONDITION_IP_REMOTE_ADDRESS;
-      condition.matchType = FWP_MATCH_EQUAL;
-      QByteArray buffer;
-      importAddress(endpoint, condition.conditionValue, &buffer);
-      filter.action.type = FWP_ACTION_PERMIT;
-      filter.flags = FWPM_FILTER_FLAG_CLEAR_ACTION_RIGHT;
-      filter.weight.uint8 = MAX_WEIGHT;
-      filter.numFilterConditions = 1;
-      filter.filterCondition = &condition;
-      filter.displayData.name = const_cast<wchar_t*>(L"Amnezia IPv6 encrypted endpoint");
-      if (FwpmFilterAdd0(next, &filter, nullptr, nullptr) != ERROR_SUCCESS) return false;
-    }
+    filter.providerData = {sizeof(policyMarker), const_cast<UINT8*>(policyMarker)};
+    if (!checked(FwpmFilterAdd0(next, &filter, nullptr, nullptr), "add")) return false;
+    // Strict OFF has no privileged IPv6 endpoint exception.
   }
-  if (FwpmTransactionCommit0(next) != ERROR_SUCCESS) return false;
+  if (!checked(FwpmTransactionCommit0(next), "commit")) return false;
   abort.dismiss();
   // Keep the old guard until the complete replacement is committed.
   if (m_ipv6PolicySession && FwpmEngineClose0(m_ipv6PolicySession) != ERROR_SUCCESS) return false;
-  m_ipv6PolicySession = next;
-  next = nullptr;
+  m_ipv6PolicySession = blocked ? next : nullptr;
+  if (blocked) next = nullptr;
   return true;
 }
 

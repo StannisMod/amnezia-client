@@ -37,8 +37,10 @@ public:
     bool configureProxyIpv6(const QStringList &included, const QStringList &excluded);
     bool StartRoutingIpv6();
     bool StopRoutingIpv6();
-    bool updateResolvers(const QString& ifname, const QList<QHostAddress>& resolvers);
-    bool restoreResolvers();
+    bool updateResolvers(const QString& ifname, const QList<QHostAddress>& resolvers,
+                         bool ipv6Enabled = true, const QString &owner = {});
+    bool restoreResolvers(const QString &owner = {});
+    DnsUtils *nativeDnsUtility() { return m_dnsUtil; }
 public slots:
 
 private:
@@ -53,4 +55,3 @@ private:
 };
 
 #endif // ROUTERLINUX_H
-

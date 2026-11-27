@@ -89,6 +89,11 @@ QList<WireguardUtils::PeerStatus> WireguardUtilsWindows::getPeerStatus() {
 }
 
 bool WireguardUtilsWindows::addInterface(const InterfaceConfig& config) {
+  if (!m_tunnel.stop()) return false; // Includes startup-recovered native workers.
+  // Enforce the user's raw switch independently of tunnel IPv6 capability
+  // and the optional general KillSwitch. No IPv6 outer-endpoint exceptions.
+  if (!m_firewall->setNativeIpv6Blocked(!config.m_ipv6PolicyEnabled, {})) return false;
+
   QStringList addresses;
   for (const IPAddress& ip : config.m_allowedIPAddressRanges) {
     addresses.append(ip.toString());
@@ -96,6 +101,7 @@ bool WireguardUtilsWindows::addInterface(const InterfaceConfig& config) {
 
   QMap<QString, QString> extraConfig;
   extraConfig["Table"] = "off";
+  if (!config.m_ipv6PolicyEnabled) extraConfig["AmneziaNativeDNS"] = "true";
   QString configString = config.toWgConf(extraConfig);
   if (configString.isEmpty()) {
     logger.error() << "Failed to create a config file";
@@ -139,13 +145,14 @@ bool WireguardUtilsWindows::addInterface(const InterfaceConfig& config) {
 }
 
 bool WireguardUtilsWindows::deleteInterface() {
+  if (!m_tunnel.stop()) return false;
   if (m_routeMonitor) {
     m_routeMonitor->deleteLater();
+    m_routeMonitor = nullptr;
   }
 
   m_firewall->disableKillSwitch();
-  m_tunnel.stop();
-  return true;
+  return m_firewall->setNativeIpv6Blocked(false, {});
 }
 
 bool WireguardUtilsWindows::updatePeer(const InterfaceConfig& config) {

@@ -1,5 +1,2074 @@
 # Implementation checkpoint — automated validation
 
+## Active native runtime integration — local work, no intermediate CI
+
+2026-11-27 resource-scope clarification: owner confirmed that aggregate local
+2 CPU / 4 GiB / zero extra swap applies to this PR's verification workloads.
+Unrelated parallel two-hop session containers are not owned by this task and
+must not be stopped or modified. Continue this PR's builds/VM sequentially
+within its own aggregate limit; the Android emulator remains stopped.
+
+2026-11-26 Android OpenVPN continuation (v223–v233; NOT device acceptance):
+- v223 SDK compilation rejected `Os.getsockoptInt`. The unused Kotlin socket
+  helper was removed, not replaced with reflection/hidden APIs. Selected-scope
+  socket I/O remains in existing libck/Go; Java only uses public Network binding.
+- v224/v225 measured joined scoped exchanges, no IPv6 socket exception, and
+  UDP4/TCP4 refusal before connect when original scope binding is unavailable.
+  v226 shared-publication/OpenVPN Kotlin baseline passed 92 tests.
+- Controller wiring now retains the native owner until connect-worker return,
+  DNS callback join and transport-policy release. Fresh native generations retain
+  ordered resolver/search occurrences; tunnel binds pin the published Network,
+  DNS aliases and interface state. Preparation is a separate cleanup barrier.
+- v227 passed 23 dnsguard race tests including quiesce, local AAAA NODATA,
+  no forwarding while quiesced, and refusal to resume an unjoined old bind.
+- v228 failed before compilation because Android Gradle used read-only
+  `/root/.android`; failure evidence retained. v229 passed compilation and
+  102 Kotlin/JUnit tests, 14 executed / 48 up-to-date in 32s. Writable
+  ANDROID_USER_HOME points into existing cache, not a copied SDK.
+- v230 actual libck C ABI + C++ ASan/UBSan, four Cloak race cases, Android
+  ovpncli/director syntax and SWIG API passed. v231 additionally passed real
+  loopback UDP/TCP selected-resolver forwarding with pre-connect AF_INET bind
+  admission; native product cache hit, source bytes rewritten 0.
+- v232 current controller partial-preparation retention compiled and passed
+  102 tests, 5 executed / 57 up-to-date in 16s; source delta 13,313 bytes.
+- v233 current arm64 Android c-shared libck linked with frozen source/binary
+  dependency verification; SHA256
+  `79b64ad65e81cd595fa1e02791441ec58a1d9b7560c640fac88ae61cc4d910cd`.
+  It is not a production libovpn3 link or VPN/device runtime result.
+- Production recipe/CMake/Java staging edits are IN PROGRESS, not accepted yet.
+  Same-build generated Java replaces checked-in wrappers. Incremental package
+  staging replaces whole-tree deletion; 6 staging and 4 source-isolation tests
+  executed successfully. Full native recipe/build/package integration, aggregate
+  all-ABI checks, blocked-bind C ABI retirement, service compile and device/
+  hosted acceptance remained required at that checkpoint.
+- v234 production build FAILED at final link: Base64 in the SWIG director
+  exposed duplicate OpenVPN globals. The director now declares them extern;
+  v235 linked with 3 incremental actions, without rebuilding archives.
+  v236 exercised the actual package method, JNI exports and DT_NEEDED to libck.
+  v237 compiled same-build generated Java, not a fixture, and passed 102 tests.
+- v238 deployment adoption refused unowned OpenVPN inputs before writing.
+  Measured hashes matched retained v226 inputs; explicit baseline adoption
+  enabled v239 full service/app compilation: 12 executed/54 up-to-date, 47s.
+- v240's blocked-bind fixture incorrectly expected DNS stop to release policy.
+  v241 measured the distinct barriers: owner retained during blocked callback,
+  late success sent no UDP after quiesce, stop joined, then policy released.
+  Actual C ABI/ASan/UBSan and Android syntax passed.
+- v242–v244 linked frozen libck for armv7/x86/x86_64 (arm64 v233), with
+  source/binary provenance, source rewrite 0. v245 packaged original Cloak
+  licenses/source graph/provenance; Ninja reported no work. v246 passed 102
+  tests with native terminal errors deferred until confirmed retirement.
+  v247 actual package staging wrote 14,752,295 bytes once; identical second
+  staging wrote 0 bytes, with unchanged file hashes AND mtimes.
+- v248–v250 linked production libraries for remaining ABIs. These and v253–v256
+  are NOT evidence of the later metadata guard everywhere: a newly added shadow
+  header was absent from old compiler depfiles. Explicit owned-overlay
+  OBJECT_DEPENDS fixed incremental invalidation. v257–v260 linked all four ABIs
+  and measured that the real ovpncli TU consumed EVERY required overlay
+  (base/client/tunprop/resolver). Arm64 libovpn3 SHA256:
+  `aa75b860b68929ea936f4f63ba5a873824abbf9e69c8f2c3df5a4c968db9ee8e`.
+- Stock OpenVPN3 flattens modern transport/SNI/DNSSEC/ports/domain groups.
+  OFF now refuses unrepresentable final DnsOptions BEFORE that callback boundary;
+  complete ordered modern search domains are retained, explicit adapter suffix
+  is refused rather than erased. This is a safety barrier, NOT full support.
+  v251 host metadata fixture failed for missing Asio/log preamble; v252 fixed
+  the fixture and passed actual-struct policy cases, C ABI/ASan/UBSan and Android
+  syntax/SWIG. Production staging now ships original Cloak notices/provenance.
+- v261 current controller/generated-Java compile and 104 tests passed:
+  5 executed/58 up-to-date, 17s. Added exact ordered-alias and lost-handle tests.
+  v262 current full service/app compile passed: 4 executed/62 up-to-date, 27s.
+  Still unfinished: faithful modern metadata/platform adapters, actual Android
+  VPN/runtime acceptance, complete packaging/CI integration and remaining
+  cross-platform acceptance. No push, hosted dispatch or merge.
+- v263/v264 current arm64 packaging and explicit unchanged-content cache check
+  passed: both Ninja runs reported no work; second packaging reused the SAME
+  immutable content-addressed package. Package identity now follows actual
+  libraries/Java/headers/notices, not a recipe-only edit or run/workspace name.
+  Existing products/evidence were retained. Public headers are limited to the
+  generated libck ABI and its native DNS declarations.
+  Local package/source/cache suite: first combined invocation had an import-path
+  harness error; corrected PYTHONPATH invocation passed all 28 tests.
+  v265 native port-aware callback, actual DnsOptions/ASan/C ABI and Android
+  syntax/SWIG passed; v266 compilation and 106 Kotlin tests passed (35s,
+  16 executed/47 up-to-date). Exact per-occurrence custom ports and IPv6-only
+  unavailable ports are retained; mismatched/invalid port lists fail closed.
+- v267 existing-runtime encrypted exchange primitive passed race tests:
+  authenticated selected-scope DoT for UDP/TCP clients, DoH POST/GET, rejected
+  redirects/types/oversized/mismatched replies, CA/name failures, no IPv6
+  transport and joined cancellation of a blocked scope dial. Full nativedns
+  suite passed with two existing owned-interface fixture skips; this is not
+  platform/private-network acceptance. A subsequent SelectedResolver/session
+  metadata hook and its additional negative case await the next measured run.
+  Primitive TLS trust configuration has no insecure/custom-validation bypass
+  and no HTTP proxy, redirect or background dialing pool. Native metadata
+  export, original platform trust/profile semantics and full policy integration
+  remain unfinished; encrypted support is NOT declared complete.
+- v269 current arm64 production recipe linked with the selected-port callback
+  and encrypted primitive, 5 incremental actions. Packaged libovpn3 SHA256
+  `e2c42953580da2586937209d5c47aa2ce52b240b38a0e2ae5ed2c79f8bc0d545`;
+  existing libck SHA256
+  `709dea8ac63686ba324a9882fe4f17c65d311015ceac50e3a0178f05ff139f85`.
+  v270 actual same-build Java/Kotlin passed 106 tests (19s, 6 executed/57
+  up-to-date); v271 full service/app compile passed (43s, 11 executed/55
+  up-to-date). These precede the subsequent selected-TLS callback wiring.
+- v272 SelectedResolver/session transport hook and additional metadata-negative
+  case passed the nativedns race suite with the same two owned-interface skips.
+  v273/v274 selected encrypted libck C ABI, AF_INET TCP-only bind refusal,
+  IPv6-only NODATA/SERVFAIL, actual DnsOptions policy and Android syntax/SWIG
+  passed. System trust remains normal x509 verification, no insecure flag.
+  Kotlin/native source now carries final selected DoT port/SNI to the same
+  resolver occurrence; DoH without an authoritative URI, DNSSEC settings and
+  multiple domain/priority groups still refuse rather than flatten.
+- v275 failed a new shared-publication JSON assertion on Android's mocked
+  JSONObject. The shared test target now uses the SAME already-cached
+  `org.json:json:20240303` test dependency as Xray, not a production dependency
+  or version upgrade. v276 compiled and passed 108 tests (26s, 10 executed/53
+  up-to-date). Actual production link/service compile after selected-TLS wiring
+  remains pending. v277 adds a test-only TLS upstream/CA to measure positive
+  DoT/DoH through the REAL libck C ABI, including TLS name failure; result
+  passed: real libck C ABI with host ASan/UBSan measured positive DoT/DoH
+  forwarding for UDP/TCP clients, local AAAA NODATA without upstream bind and
+  actual TLS name-mismatch SERVFAIL without fallback. The process-local test CA
+  uses the normal system trust loader. This is NOT Android trust/device
+  acceptance. This fixture is never exported or packaged into the application.
+- v278 current selected-TLS arm64 production link passed (5 incremental
+  actions), including consumed-overlay dependency audit and JNI symbols;
+  v279 same-build generated Java/Kotlin passed 108 tests (18s, 6 executed/57
+  up-to-date); v280 full service/app compile passed (44s, 10 executed/56
+  up-to-date). Other ABI builds and actual VPN runtime remain outstanding.
+- v281 nativedns and dnsguard race suites passed (1.172s/1.116s), with the same
+  two caller-owned-interface skips. Native proxy Flows now uses
+  SelectedResolver too: typed encrypted metadata cannot silently become
+  plaintext in that adapter. The new flow test measures TCP4-only original
+  resolver targeting, no AAAA dial and no failure fallback.
+- v282–v285 current production native recipe builds passed for arm64-v8a,
+  armeabi-v7a, x86 and x86_64, with consumed-overlay dependency and JNI-symbol
+  checks on every ABI. Existing workspaces/dependency sources were reused;
+  no SDK/build-tree copies or device execution. These include the v281
+  SelectedResolver flow change, unlike v278.
+- v286 measured UDP/TCP DNS origination with the original tunnel IPv4 source
+  using the SAME existing capture stack. v287/v288 dnsguard race suites passed
+  (1.125s/1.121s), including kernel-exclusive ports without listen/connect,
+  capture UDP/TCP AAAA NODATA without engine I/O, original selected A forwarding
+  and confirmed port release. These are host measurements, not Android UID/VPN
+  runtime acceptance.
+- v289/v290 actual libck C ABI + host C++ ASan/UBSan passed new tunnel DNS A and
+  NODATA without any OS Network bind callback, unchanged unowned native packets,
+  policy/host retirement, queued native engine cancellation and executing
+  callback join. v290 Android compiler syntax/SWIG passed the current existing
+  engine injection overlay and new tunnel preparation API. Kotlin/native
+  production wiring is being checked in v291–v293; results pending.
+  Native engine admission must still retain strict-private-DNS/current-capture
+  checks before actual queued sends; the earlier OS bind did those checks.
+  Fragment mirroring/classification, cancellation and encrypted native-engine
+  forwarding need additional targeted measurements before acceptance.
+- v291 production arm64 native-engine link passed. v292 new Kotlin test failed
+  to compile because its InetNetwork constructor used a String instead of the
+  existing InetAddress/prefix API; corrected without changing assertions.
+  v293 was NOT executed. v294 native C ABI/ASan/SWIG and v295 production arm64
+  link passed the queued-send strict-DNS/current-capture admission hook.
+  v296 new test then exposed mocked JSONObject in OpenVPN's JVM test target.
+  Added the same already-cached test-only JSON dependency used by Xray/shared
+  tests. v297 was NOT executed. v299 passed 109 Kotlin tests (14s, 2 executed/61
+  up-to-date), and v300 full service/app compile passed (30s, 5 executed/61
+  up-to-date). These do not measure actual Android include-only VPN behavior.
+- v298 host race suite passed original-MTU 576-byte engine output, fragmented
+  large UDP query and 4-KiB response. Review identified that mirroring ALL
+  fragments to the kernel could duplicate TCP reassembly and cause a kernel
+  RST; therefore v298 alone is NOT fragment ownership acceptance.
+  v301 race suite passed exclusive leased-DNS first-fragment ownership,
+  out-of-order unidentified mirroring, cancelled-flow fragment fencing and
+  unchanged application-owned first-fragment routing (1.121s). Additional
+  native/kernel runtime acceptance remains outstanding.
+  v302/v303 now check authenticated DoT over the same engine, zero-allocation
+  unowned Go input and borrowed C-ABI input plus immutable native owner
+  snapshots (no per-application-packet map copy); results pending.
+- v302 passed authenticated same-stack DoT for UDP/TCP DNS clients, wrong
+  CA/name refusal and 0 Go allocations/call over 1000 unowned native packet
+  admissions (race suite 1.142s). v303 actual libck C ABI/ASan/UBSan and
+  Android syntax/SWIG passed borrowed packet input and immutable owner snapshots.
+- Review found that a single native engine mutex could block quiesce and
+  reentrant stop behind an executing engine send. Separate pending-post and
+  executing-send gates now cancel every scope before joining a callback.
+  Go Resume additionally waits for pending engine writers, not just completed
+  resolver handlers. v304 race suite passed the blocked writer retirement
+  barrier (1.169s); v305 native ASan/UBSan measured prompt quiesce/enqueue while
+  an engine callback was held, cancelled late payloads and confirmed close/join.
+  v306–v309 current production builds passed all four Android ABIs, including
+  owner/engine/options/bootstrap consumed-header checks, selected/tunnel JNI
+  and exact existing-libck C ABI exports. Actual Android runtime remains pending.
+- Desktop single-group OpenVPN custom-port/DoT/SNI policy now has an ordered
+  typed handoff into the existing resolver runtime. Guards must accept it BEFORE
+  preparation; a changed TLS identity cannot reuse plaintext/previous forwarders.
+  Resolver policy is journalled before alias mutation and checked on recovery.
+  v310 current Qt selection/session test and transaction/lifecycle tests passed
+  3/3 CTest targets; current service C++ compiled/linked using a retained OLD Go
+  archive solely as an ABI scaffold, NOT encrypted runtime acceptance.
+  Current-runtime/private-resolved TLS acceptance is being added.
+- v311/v312 offline desktop runtime preparation exposed disjoint existing module
+  caches; no dependency versions/downloads were changed. A persistent symlink
+  union now references their sources/download metadata with 0 module bytes
+  copied. v313 still lacked metadata for two UNUSED Docker/mobile modules
+  requested by `go list -m all`. The check now compares actual compiled module
+  versions/replacements before/after against the original locked Xray binding,
+  rather than fetching unrelated inactive platforms. v314 runtime build and
+  parent-graph DNS race tests are pending; earlier failures are retained.
+- v314 current existing Xray-runtime archive built offline, SHA256
+  `7fc27c2d353a33dc13aa9842dce1d6b411534bfc7978a35d0b14741dd600cff1`.
+  Measured compiled versions/replacements before/after are identical except the
+  one local DNS module; parent-graph race tests passed with the same two
+  caller-owned-interface skips (1.151s). Stable source writes were 0 bytes.
+- v315 current C ABI + real private-resolved service suite passed16/failed0/
+  skipped1 (the existing child-only crash fixture), including a child process
+  using a process-local test CA through the normal system trust loader:
+  UDP/TCP client AAAA NODATA, DoT A, TLS-name refusal, journalled resolver policy,
+  changed-identity replacement and confirmed OS/alias restoration.
+  v316 additionally measured original custom plaintext UDP/TCP ports and
+  explicit transport changes. Fixture observed plain UDP1/TCP1, DoT2, DoH0;
+  all 16 service cases passed with the same one child-only skip (676ms).
+  The fixture remains test-only and is never packaged into production.
+  A CMake custom target/output name collision produced circular-dependency
+  warnings in v316; target name is corrected rather than suppressing warnings.
+  v317 passed18/failed0/skipped1 (687ms), including malformed typed-policy
+  refusal/recovery; fixture hash/mtime were unchanged, with no helper
+  recompilation or circular-dependency warning.
+  v318 repeated offline runtime/dependency/race checks passed (1.150s, the
+  same two caller-owned-interface skips). Immutable archive was a cache hit;
+  persistent source writes were 0 bytes, temporary overlay 130237 bytes.
+  These measurements do not replace actual VPN/device/platform acceptance.
+- v319 production-link harness refused the new immutable product because it
+  expected legacy in-product dependency evidence. The linker now accepts the
+  cache builder's separate measured graph, checks exact archive/header hashes
+  and permits only its recorded added module. v320 then failed configuration
+  because the wrong existing Conan volume was mounted; failure retained.
+  The exact missing OpenSSL package was located in the existing
+  `amnezia-local-full-build-ubuntu22` volume, with no fetch/copy/substitution.
+  v321 configuration and all55 production compile/link steps passed against
+  that original read-only closure, including Router, typed selection and
+  native DNS service with the current v314 archive. Existing logger unchecked
+  QFile::open warning remains; this is not installed-service/VPN acceptance.
+  v322 desktop overlay/provenance regressions passed6/6, including refusal of
+  altered archive/header bytes, changed dependency versions and an unrelated
+  added module before build metadata mutation.
+  v323 current production-generated Android Java/JVM incremental check passed:
+  109 cached test results, all63 Gradle tasks up-to-date, 0 source bytes written
+  (not a fresh test execution). v324 full Android service/app Kotlin compile
+  passed (1 executed/65 up-to-date,10s). v325 actual current Java/license/AAR
+  package staging passed; first incremental write569578 bytes, repeated staging
+  0 bytes. These checks do not establish Android device/VPN acceptance.
+- v326 expanded desktop runtime-import/provenance regression passed7/7.
+  Source review against systemd's primary resolve1 API found that legacy `DNS`
+  snapshots omit original endpoint ports/SNI. New snapshots now use `DNSEx`
+  and `SetLinkDNSEx` when exposed, including metadata-only edit comparison.
+  v327 measured successful custom IPv4/IPv6 port/name roundtrip and refusal to
+  overwrite an SNI-only external edit, but the full suite failed its partial
+  crash fixture: that fixture still filtered publication to the old `dns` key
+  and therefore had not published the alias. Failure retained. Its predicate
+  now includes `dns_ex`, without changing the alias/crash assertions.
+  v328 corrected-fixture real private-resolved suite passed19/failed0/skipped1
+  (715ms); v329 current production service recompiled/linked all12 steps.
+  v330 source-integration invocation passed the 4 isolation,8 staging and4
+  Windows overlay tests, but its aggregate failed because two executable
+  harnesses are not unittest suites. v331 refused ambiguous cached source
+  selection (two existing OpenVPN2.7 source trees). v332 invoked the real
+  entrypoints against both existing trees: helper branches, real route/up/down/
+  teardown functions and ASan/UBSan metadata-export checks passed.
+  No assertion was weakened and no cache/source tree was discarded.
+- v333 real private-resolved suite passed20/failed0/skipped1 (727ms).
+  Recovery now records unchanged native/global DNSSEC/DoT modes, link multicast
+  modes and negative trust anchors; publication/replacement/restore cannot
+  silently adopt changed security policy. Enforced OS TLS/DNSSEC remains
+  explicitly refused rather than disabled for the plaintext local frontend.
+  This is safety coverage, not full native DNSSEC/OS encrypted-policy support.
+- Windows selected native known-server DoH now has a pre-prepare typed-policy
+  hook: exact original URI, numeric selected peer, port, TLS identity, ordered
+  duplicate occurrences and native no-fallback policy are retained. Plaintext
+  GPO prohibition is respected; unsupported fallback, per-interface properties,
+  effective NRPT and unknown policies remain refused.
+  The v2 durable policy reader is distinct from the retained v1 journal reader.
+  v334 portable model/transaction/lifecycle CTest targets passed3/3;
+  the service target outside its owned namespace is not OS acceptance.
+  v335 VM harness failed before boot due to a Python http module/local-variable
+  collision. v336 reuses its existing ownership/resource/shutdown functions in
+  a corrected runner, preserving the historical script, VM and both disks.
+  v337 native invocation failed before WinRM because system Python lacked winrm;
+  the already-installed `/opt/winvm-venv` was used in v338.
+  The incremental native source bundle is130937 bytes, with no SDK, toolchain,
+  build-tree or VM copies. v338 actual MSVC adapter objects compiled and the
+  transaction/lifecycle targets passed2/2. Native Windows known-server policy
+  tests passed4/4 in each baseline, strict selected-DoH, unrepresented-fallback
+  and inactive-mapping phase; the original URI/order/identity were retained and
+  owned mapping removal was confirmed. This is not encrypted service traffic.
+- v339/v340 inspected the actual cached Windows Xray source/toolchain.
+  v341 current native Windows DLL/import library built offline with unchanged
+  compiled dependencies/replacements plus the one local DNS module; parent-
+  graph race suite passed (1.577s). DLL SHA256:
+  `fbad01a11a27838597c388cac4f5bcb98036be3889d43f5abf503cfaab202dbd`.
+  Native cross-process Windows cache locking was measured (1 test passed).
+  Module bytes copied0;210 persistent links reference the existing cache;
+  source staging130343 bytes. No SDK/toolchain/VM/build tree was copied.
+  The test-only TLS fixture now uses P-256 certificates so the ordinary Windows
+  chain verifier can be exercised; this is not a production trust-policy change.
+  v342/v343 are retained, unexecuted small source bundles superseded before use.
+  v344 native service fixture compile failed on missing netioapi declarations;
+  v345 added the proper headers and the current-runtime service linked, then its
+  runner failed before execution because CTest was outside the vcvars PATH.
+  Both failures are preserved. v346 uses that existing tool environment and
+  runs native service acceptance directly, with no forced-cleanup timeout.
+  It also checks immediate quiesce when an active native-policy read refuses;
+  v346 native transaction/lifecycle passed2/2, including immediate refusal
+  quiesce; native service execution failed at CurrentUser ROOT fixture setup.
+  v347 diagnostic invocation failed on PowerShell native-argument quoting;
+  v348 measured valid DER/context but CurrentUser ROOT add error0x32.
+  v349 measured successful LocalMachine ROOT add/delete of that exact fixture
+  certificate and confirmed its thumbprint absent afterwards. The fixture uses
+  this ordinary machine trust scope, not custom Go roots or TLS bypass.
+  v350 reached real service traffic but failed the inherited1s wire-client wait.
+  v351 isolated the normal Windows system verifier: unknown fixture root refusal
+  took12056ms offline, without any trust/policy change.
+  v352 observes that slow negative result to completion while retaining all
+  security/wire/fallback assertions, original1s positive/name/NODATA client
+  waits and the unchanged production exchange deadline. Actual service passed
+  3/3 Qt cases (25945ms), with unknown-root UDP refusal12075ms/TCP24ms,
+  authenticated DoH A18/35ms, wrong-name refusal17/10ms; fixture observed DoH2,
+  DoT0, plaintext UDP0/TCP0. Policy-edit refusal, retained local NODATA/SERVFAIL,
+  original-policy restore, alias/journal retirement and owned trust/mapping
+  cleanup were confirmed.
+  Its trace nevertheless shows extra TLS handshakes during system trust work.
+  v353 is inspecting the pinned native verifier/API contract before closing the
+  scoped-TLS invariant; v352 is not proof that implicit trust-fetch networking
+  is absent, nor actual VPN or complete native-metadata acceptance.
+- v353 read the pinned Go Windows verifier and public CryptoAPI contract.
+  Its default chain builder permits CTL/root/AIA retrieval outside our selected
+  dialer. The Windows scoped path now retains normal Go TLS CA/signature/name
+  verification, with a per-request local OS-root snapshot, AND requires native
+  Windows chain/SSL policy (including native chain-edge signature checks).
+  Native calls are cache-only: no implicit root/issuer/CTL/revocation URL fetch,
+  no ignored trust errors and no InsecureSkipVerify. TLS peers must provide
+  their intermediate chain and the original trust anchor must be locally
+  available; missing trust material fails closed, never downloaded/substituted.
+  Explicit original closed test-root policies remain unchanged.
+  v354 compile failed on the pinned x/sys Handle-typed CRYPT_E_NOT_FOUND constant;
+  v355 uses its proper syscall.Errno conversion. Actual native parent-graph
+  race tests passed (1.629s), including default-verification/bypass guards;
+  compiled versions/replacements remained unchanged. New current DLL SHA256:
+  `a0215dc1b416a792c3c2e242a987c5b21068f05ed757260372b603e0611aef07`.
+  Source writes7112 bytes; module-cache bytes/links added0/0.
+  v356 restored the strict1s client wait for ALL cases and passed native service
+  3/3 (13722ms total). Unknown-root refusal13/24ms, trusted A17/38ms, native
+  Windows Disallowed CA refusal8/12ms, wrong-name refusal9/32ms; local NODATA,
+  refusal ownership and confirmed recovery/owned-store cleanup passed.
+  Exactly8 TLS connections matched the8 explicit A requests, with DoH2,
+  DoT0 and plaintext UDP0/TCP0: the earlier extra-handshake recursion is absent
+  in this measured fixture. No TLS/system-policy checks were disabled.
+  v357 now additionally tests the original native GET URI template, alongside
+  POST, with exact method/connection accounting: native service passed3/3,
+  failed0/skipped0 (17857ms). All ten explicit A attempts completed14/30,
+  23/14,9/21,11/21,15/12ms (UDP/TCP pairs); exactly10 TLS connections,
+  POST2/GET2 accepted queries, DoT0/plaintext0. This is selected native DNS
+  service coverage, not actual VPN or complete metadata acceptance.
+  v358 reads pinned Darwin verifier sources only; it is NOT local macOS
+  native/runtime acceptance.
+  Inspection found that pinned Go's Darwin systemVerify invokes native
+  SecTrustEvaluateWithError without setting SecTrustSetNetworkFetchAllowed.
+  The current non-Windows scoped helper is still a no-op: absence of implicit
+  Apple trust networking is NOT established. Apple scoped trust requires a
+  native no-network policy implementation and hosted native/runtime checks;
+  exporting an anchor list alone must not drop user/admin deny or SSL policy.
+  v359 production-input discovery failed on an assumed build/generators path;
+  failure is retained. Corrected read-only v360 found the existing conan/
+  imports still reference the historical runtime and production source lacks
+  windowsdnsselection.h. Production integration remains unfinished; v356/v357
+  test executables must not be presented as the production application.
+  v361 inventoried existing production source hashes without copying its tree.
+  v362 applied only the measured differing source delta (compressed45678 bytes)
+  and replaced the existing Xray import with the measured v355 DLL/header/lib.
+  Offline cached production configure/build completed successfully, including
+  current Windows DNS policy/recovery/service objects and service link; the
+  application target was also requested and remained incremental.
+  Service SHA256:
+  `42c5eec506ff43c562c512d2e61f57dbe9868cda6b0db55fec4541395eb6acdb`;
+  client SHA256:
+  `82966e46b18218f21ec528e16e12a9432042673de13013de5f51457fe1bc61e9`.
+  This establishes production compile/link, not installation or VPN runtime.
+  v363 normal guest shutdown (shutdown /s /t0, no /f) succeeded; the VM lifetime
+  runner and docker wait returned0. Disks/evidence retained, no forced cleanup.
+  v364 Linux common-source rebuild stopped before build because the selected
+  read-only Conan volume lacks the expected historical module-cache path.
+  Failure retained; rediscovering the original cache mount, no download/copy.
+  v365 identified the second wrong default cache path before build; retained.
+  v366 explicitly reused the original stability Conan cache, integration
+  modules and recovery go/modules (no downloads). Actual parent-graph comparison
+  passed without changing any existing compiled dependency; fresh native DNS
+  race tests passed1.157s (two privileged-interface cases skipped, not accepted).
+  Current Linux archive SHA256:
+  `253b0ec6e986f254039f5f7d5a7bfe8dd44dc6afd1f7692370d6d192a3d3af3f`.
+  This includes the new common scoped-TLS call. v367 current Linux production
+  service configure/compile/link passed (66 incremental actions); license
+  generation reported62 modules/58 unique notices/missing0.
+  v368 Android build stopped before compilation on the wrong upstream mount;
+  v369 uses the original Android work volume and recovery Conan cache.
+  Reusable mount identities (not interchangeable):
+  Linux runtime work=`amnezia-connection-recovery-full-build`, Conan cache=
+  `amnezia-connection-stability-full-build`, extra modules=`/work/go/modules`.
+  Linux production Conan closure=`amnezia-local-full-build-ubuntu22`.
+  Android work/NDK=`amnezia-android-primary-core-build`, Android upstream/SWIG
+  cache=`amnezia-connection-recovery-full-build`; integration modules=
+  `amnezia-connection-stability-integration`. Keep all caches/evidence.
+  v369–v372 current common TLS-hook Android OpenVPN production builds passed
+  for arm64/armv7/x86/x86_64, including JNI/C ABI exports, actual overlay depfiles
+  and same-build Java/package provenance. Two incremental actions per ABI;
+  no native-engine or SDK/tree copies. v373 Xray parent/socks race tests passed
+  (1.088s/1.207s) and actual arm64 JNI/AAR binding passed, bootstrap/tools
+  copied0/0, source delta23616 bytes. AAR SHA256:
+  `7669f72f54738854f5598634e11fcb3199398627f4ac5bd6f72e7314dc2efc06`.
+  v374 service harness failed on a retained CMake Go path; v375 corrected that
+  explicit path and compiled, then stopped because the chosen image lacks ip.
+  Failures retained. v376 reused the cached openvpn-qt-lab image with ip:
+  actual current native service/private resolved passed20/failed0/skipped1
+  (3224ms; only child-only fixture skipped). DoT2/plainUDP1/plainTCP1,
+  trust-failure refusal, DNSEx/security-policy and confirmed recovery passed.
+  The shared CMake TLS-fixture builder now also wires the Windows test to the
+  production import. Hosted Windows execution reads its exact generated DLL
+  path rather than searching/copying a possibly stale runtime; no dispatch yet.
+  Darwin scoped-trust implementation is now in progress: macOS snapshots local
+  system/user/admin trust candidates, retains normal Go TLS verification AND
+  requires native SSL/trust policy with issuer and revocation networking
+  forbidden. It does not replace native deny/usage constraints with an anchor
+  list. Unsupported iOS anchor enumeration and non-cgo system trust fail closed
+  before dial; original explicit closed test policies remain representable.
+  New hosted-only native trust/deny/name/no-fetch fixture is implemented but
+  NOT executed yet; no Apple native/runtime acceptance is claimed.
+  v378 production-imported Windows test compiled but failed to link: inherited
+  production logger includes took precedence over the isolated test stub.
+  Failure retained. The test targets now explicitly prioritize their stub
+  includes and pin their executable output directory instead of inheriting
+  the production service output directory.
+  v379 production configure/build and actual native service test passed3/3,
+  failed0/skipped0 (21462ms). Unknown CA14/30ms, trusted POST26/36ms,
+  native Disallowed15/16ms, trusted GET17/36ms, wrong-name15/28ms.
+  Exactly10 TLS connections, accepted POST2/GET2, DoT0/plainUDP0/plainTCP0;
+  policy-edit quiesce, local NODATA and confirmed owned-state cleanup passed.
+  Generated runtime provenance selected the measured v355 DLL directly,
+  without searching/copying another runtime. Production service SHA256 remained
+  `42c5eec506ff43c562c512d2e61f57dbe9868cda6b0db55fec4541395eb6acdb`.
+  v377 VM also completed normal shutdown with runner exit0; no forced cleanup.
+  v380 current Android full service/app compile against the measured v373 AAR
+  and v369 same-build Java passed:66 tasks,1 executed/65 up-to-date (19s).
+  This is compilation, not fresh JVM or device execution.
+  v381 consolidated Python invocation incorrectly included CLI-only modules;
+  v382 exposed missing cached-source environment and an invalid /src Git
+  worktree reference in the container cwd. Both harness failures are retained.
+  v383 supplied the actual immutable caches and ran outside that worktree:
+  55 tests ran,54 passed/failed0/skipped1 (Windows-only lock; previously measured
+  natively). Android/Desktop/Windows overlays, Apple/Swift/HEV preparation,
+  package provenance/refusal and cache ownership checks passed.
+  v384 actual current Android package-input staging passed; first delta
+ 13698811 bytes, identical second staging0 bytes with unchanged hashes/mtimes.
+  Retained notice inventory is reused; dependency versions/licenses unchanged.
+  Current Darwin sources passed pinned gofmt; native SDK/runtime verification
+  remains required on hosted macOS. Hosted CI has not yet been dispatched.
+  v385 final current-source Linux parent-graph/race/build passed (1.197s;
+  two privileged-interface cases skipped here and covered by the v376 native
+  service fixture). Compiled existing dependency graph unchanged. Archive
+  SHA256 remained byte-identical to v366:
+  `253b0ec6e986f254039f5f7d5a7bfe8dd44dc6afd1f7692370d6d192a3d3af3f`.
+  Darwin-only sources did not alter the Linux runtime binary. Candidate push
+  is for mandatory hosted native/platform verification, not a merge-ready claim.
+
+Latest local checkpoint (2026-11-24, service-owned OpenVPN source wiring):
+- 2026-11-25 Windows IKEv2 continuation (NOT complete native acceptance):
+  Source now routes OFF dial/DNS/stop through the existing service and native
+  RAS backend, with an immutable, owner-only snapshot of the original PBK bytes.
+  Negotiated DNS comes from the unique connected PPP interface matched to the
+  RAS projection; IKE server/MOBIKE addresses are not DNS fallback candidates.
+  The service fences IPv4 DNS during dial, independently blocks IPv6, prepares
+  the existing Go-runtime guard, and publishes only before reporting Connected.
+  Stop retains ownership until DNS/aliases restore, RasHangUp joins by its
+  documented invalid-handle proof, and protection retires. Durable RAS records
+  and explicit completion receipts preserve uncertain/lost-reply boundaries;
+  an ambiguous crash inside RasDial before its returned handle is committed
+  remains fail closed, not relabeled as recovered.
+  `windows-ikev2-dns-native-20261125-v6.log`: actual MSVC/Windows SDK production
+  native adapter compilation, 7 lifecycle cases, 3 real UDP/TCP WFP fence cases,
+  and real SCM STOP_PENDING/checkpoint 1→2/same-PID→normal stop all passed.
+  The SCM fixture measures the real deferred-stop framework, NOT a RAS tunnel.
+  `windows-ikev2-production-link-20261125-v1.log`: full normal Windows client
+  and service linked offline, 310 build actions, frozen existing packages and
+  measured DNS-enabled Xray runtime. It predates the subsequently added
+  confirmed certificate-import result RPC and strong-profile error checking.
+  A new normal-build actual-client IKEv2 target and v2 full build/install are
+  in progress. The certificate-authenticated cached Libreswan fixture is ready,
+  but no real negotiated IKEv2 acceptance result is claimed yet.
+  Preserved failures: guest pre-login WinRM HTTP 500 (v1), manual MSVC Qt flag
+  omissions (v2/v3), future ZIP wall-clock timestamps (v4), and SCM driver parse
+  failure after successful compile/model tests (v5). Guest UTC matched host;
+  only future extracted-source mtimes were normalized, with native source hash
+  equality measured. No package downloads or acceptance assertion weakening.
+  Windows installer CMD force-kill removal is currently source-only; MSI/IFW
+  pre-payload restore gating and actual installer acceptance remain unfinished.
+  Additional shutdown review item still open: a failed generic startup DNS
+  recovery must remain an explicit LocalServer shutdown barrier, even when no
+  new in-memory DnsUtils guard was admitted. An empty new utility is not proof
+  that the old durable journal/aliases retired. Cover crash + external edit +
+  fresh-service stop before declaring all platform lifecycle work complete.
+  Active VM/peer limits are aggregate 2 CPU / 4 GiB / zero extra swap.
+  `windows-ikev2-production-link-20261125-v2.log` linked the updated normal
+  client/service and actual-client target (492 actions), then standard install
+  failed resolving amnezia_xray.dll. Production CMake now explicitly deploys
+  the actual imported Go DLL and searches its target/build directories.
+  `windows-ikev2-production-deployment-20261125-v4.log` records successful
+  standard install into a fresh prefix, with no post-install DLL repairs.
+  Source ZIP v2, before binaries and measured deployment delta are retained;
+  v3's driver-only incorrect test executable path failure is also preserved.
+  Actual LocalSystem/Libreswan attempt v2 passed service/QtRO and real
+  certificate-utility result probes, but FAILED certificate import in the
+  production IKEv2 caller before native dial. No RAS acceptance is claimed.
+  `windows-ikev2-credential-20261125-v7.log` then measured Qt 6.10.1's retained
+  QTemporaryFile write handle producing native ERROR_SHARING_VIOLATION (32).
+  Four credential tests passed, including real read-only Win32 access to the
+  new closed QFile in an owner/System-only RAII directory and final removal.
+  The production import now uses that ownership model and redacts secret
+  process arguments. Its updated full build/install and next native attempt
+  are in progress, not yet accepted. Original failed native logs remain.
+  The credential production rebuild/standard install v5 subsequently passed;
+  actual RAS reached Connected. UDP/TCP A forwarding initially failed because
+  the isolated peer's loopback data path bypassed outbound XFRM (measured
+  outbound SA 0 packets). A /32-only repair v5 was insufficient: lo had
+  disable_policy=1/disable_xfrm=1 and the container sysctls are read-only.
+  An owned dummy data link and checked Libreswan updown route now preserve
+  native ESP without adding host/underlay networking. Attempt v6 passed direct
+  UDP/TCP AAAA NODATA and A forwarding, then failed system lookup latency.
+  v9 retained DNS ETW proves the alias returned native DNS_INFO_NO_RECORDS
+  within about 4.5 ms, but WinDNS's parallel Ethernet query timed out after
+  about 12 seconds. Qt 6.10.1 maps that documented NODATA status to ResolverError.
+  The actual-client assertion now uses exact DnsQueryEx DNS_INFO_NO_RECORDS,
+  no records, bypass-cache and the original <5s latency bound; generic errors
+  and timeouts are not accepted. Existing OS resolver scopes are being guarded
+  separately on their original interfaces, never substituted for PPP DNS.
+  The v10 production build/native acceptance for this integration is pending.
+  Startup recovery now retains prepared/restored/completed phases and gates
+  service shutdown on the durable recovery result, not empty new DnsUtils.
+  Its Windows normal link/install v9 passed; the added actual PID-1 crash +
+  external-edit + fresh-service-stop regression still needs execution.
+  `windows-ikev2-os-scopes-link-20261125-v11.log` passed the corrected normal
+  Windows build/standard install (v10's missing explicit QObject parent
+  compile failure is retained). `windows-ikev2-production-acceptance-20261125-v11.log`
+  then passed 4 actual-client tests against installed LocalSystem and real
+  certificate-authenticated Libreswan: both selected OS scopes return UDP/TCP
+  NODATA, negotiated PPP A forwarding works over UDP/TCP, uncached native
+  system AAAA returns exact DNS_INFO_NO_RECORDS in 6 ms, and a foreign DNS edit
+  holds native RAS/aliases until exact repair and confirmed restore-before-join.
+  Peer DNS witnesses show 0 forwarded owned AAAA; all owned A sources are the
+  negotiated 10.70.0.2 (both UDP and TCP). This is basic IKEv2-OFF acceptance,
+  not ON/default, encrypted-DNS/NRPT, restart/crash or other-platform acceptance.
+  `systemd-installed-startup-20261125-v22-startup-conflict.json` now passes
+  the actual fresh-service recovery failure regression: crash after external
+  DNS edit, automatic new PID, stop holds that PID in deactivating, exact
+  repair, confirmed DNS/alias restore and successful exit with no journals.
+  Windows installer pre-payload barriers now share one reviewed PowerShell
+  source embedded into CMD/IFW/MSI at configure time (no new runtime helper).
+  MSI disables Restart Manager and schedules a deferred checked stop/join
+  before StopServices/RemoveFiles; IFW queues it before default Extract.
+  Normal Windows build/install v12 and v15 passed. Production MSI packaging
+  v13 failed because CPack forbids duplicate #PRODUCT fragments; that failure
+  is retained and the fragment was consolidated with the existing close-app
+  patch. Corrected production packaging and >30s actual-installer SCM join
+  acceptance are pending, not claimed as native RAS installer acceptance.
+  `windows-installer-stop-packaging-20261125-v15.log` built both actual MSI
+  (62bf12e2d18650f1a005a2c3e8423fa2aa1c80abafd23cfab2b9eb449e111232)
+  and IFW (f44f04d91105dd75b2e40aec34f7a30b6eb0a563ed38b707353d121de8a46c84).
+  Actual MSI uninstall v17 and IFW purge v19 retained the same pending SCM PID
+  and unchanged production service/Go DLL bytes for 35 seconds, then completed
+  after the test-only external join release. These are installer/SCM sequencing
+  cases, not invented native RAS or physical-device results. v16's existing
+  empty default-directory refusal and v18's driver ExitCode-null failure remain.
+  The v18 actual install log also exposed concurrent IFW Extract preceding
+  queued Execute. The pre-payload gate is now synchronous in createOperations;
+  its new package/pre-extract runtime acceptance remains pending.
+  Actual native defaults v20 passed 6 cases: missing legacy setting and
+  explicit ON retain original negotiated DNS and positive upstream UDP/TCP
+  AAAA, while OFF returns local NODATA (system native lookup 3 ms) and never
+  forwards the owned OFF AAAA. Cleanup logs revealed the legacy ON stop's
+  stale handle/blind 3s sleep; it now awaits documented invalid-handle join,
+  clears the handle, and has an explicit repeated-stop assertion. v22 is pending.
+  Native v22 then passed 6 cases with joined/idempotent ON stop and no stale
+  handle errors. Actual IFW pre-extract v25 retained 0 extracted binaries and
+  the same pending PID for 35s; after the owned old-definition transition it
+  installed normally and completed normal maintenance purge. v24's driver
+  race (deleting the SCM definition during the gate's final query) is retained.
+  `windows-dns-policy-security-20261125-v31.log` passed seven actual native
+  reader states (21 QtTest assertions including setup/cleanup): plain defaults,
+  selected global DoH auto-upgrade refusal/repair, effective NRPT DNSSEC
+  refusal/repair, Require-DoH refusal/repair, without changing adapter DNS.
+  This reader is now in production durable capture/restore and guard health,
+  with original resolver/alias policy metadata retained and no plaintext
+  downgrade of unsupported DoH/profile/namespace policy. It is not encrypted
+  DNS forwarding support. Normal build/install v32 and v33 passed; actual
+  LocalSystem/client/Libreswan v33 passed 7 cases (system NODATA 32ms).
+  Actual-client DoH and NRPT refusal v34 each passed 3 cases, with native IKE
+  establishment count unchanged at 13 before/after both refused attempts.
+  IPv6-only OS-scope attempt v35 failed in driver preflight reading an absent
+  registry value, before DNS mutation/service registration; no acceptance.
+  Review additionally found that pending restore must quiesce upstream DNS
+  while retaining NODATA listeners. The existing Go runtime/C ABI now has a
+  separate cancel/join quiesce boundary (no new helper/dependencies).
+  Portable race v36 passed 12 cases with 2 explicit interface-fixture skips;
+  owned Linux native-interface race v37 passed all 14 with no skips, including
+  active-exchange join, retained UDP/TCP NODATA and post-quiesce SERVFAIL.
+  Actual archive/C ABI rebuild v37 failed before compile because the selected
+  module-cache root lacked the frozen Xray core. Cached-source discovery and
+  Linux/Windows runtime rebuilds are pending; new quiesce ABI is not yet
+  accepted in production backend runtime. Windows VM/peer were shut down only
+  after confirmed service/native cleanup, freeing aggregate local resources.
+  Corrected-cache v38 then rebuilt the existing Xray archive offline with
+  unchanged compiled dependency versions and passed the actual C ABI fixture
+  (including repeated quiesce, retained UDP/TCP listeners and stale handles).
+  C++ transaction v38 built and passed CTest 1/1 (0.28s), including a new
+  exact quiesce-before-restore/failure/foreign-owner regression. Production
+  Linux service relink against that measured archive is running; this is not
+  yet backend acceptance of the new boundary.
+  Production Linux service v38 subsequently linked successfully (54 Ninja
+  steps, current archive/header). Service fixture v39 compiled successfully
+  but its first driver invocation omitted the required read-only `/host/usr`
+  mount and stopped before starting private resolved. Corrected v40 passed
+  2/2 CTest suites against actual private systemd-resolved: 15 transaction
+  cases and 15 service cases, with one explicit child-only fixture skip.
+  Full Xray/QtRO and Windows production acceptance of quiesce remain open.
+  Installed-layout Linux Xray/QtRO v43 then passed actual failed-restore
+  retention and repair/retry cleanup (service SHA256
+  `02348b1a99b5dc0525e3a9378f6e378b4271e1672d79efb9c7d9d619feaaccc8`).
+  v42 is retained as a driver-path failure before service startup: installed
+  binaries are under `bin/`, not the install prefix itself. Go native race
+  v41 passed all 15 cases, including concurrent admission/quiesce/Close.
+  Additional immediate-quiesce handling for reused failed publication and
+  guard-watch failure passed C++ transaction v44 (16 cases). Windows v45
+  rebuilt/export-checked the actual DLL offline; production link failed
+  because its driver leaked the Xray-only module cache into the independent
+  frozen routing build. Corrected-environment link v47 is running; no package
+  download or dependency version change is authorized. A test-only selected
+  DoH mutation branch has been added but is not yet built/executed.
+  Windows v47 full normal build/install passed with the existing default
+  routing module cache; actual quiesce DLL SHA256 is
+  `1f718e4d3d83f4390f499b540b0c7b91b623911a83ac0bc2f91914cf951c9ed2`.
+  The v20 peer intentionally refuses restart into its existing evidence path;
+  that failed preflight is retained. A fresh isolated v50 peer generated new
+  explicitly named certificates/source manifest, staged only under v50 names.
+  v48 compiled the test-only policy-mutation branch. Aggregate native v46
+  FAILED (6 passed, 1 failed): its first OFF admission disconnected before
+  Connected, whereas both ON/default rows and the later native OFF lifecycle
+  passed (system NODATA 11ms). It is not accepted as a successful aggregate.
+  Exact RAS events report a first failure with error 0 and the peer records no
+  first IKE SA; its subsequent three IKE sessions are separately witnessed.
+  Numeric RAS callback/terminal diagnostics were added, without changing native
+  admission, assertions or timeout. v52 diagnostic rebuild is pending; policy
+  mutation v49 and IPv6-only side-scope execution have not run.
+  v52 diagnostic full build/install passed. v53 targeted diagnostic reproduced
+  the first-admission failure (2 passed, 1 failed); actual callback transitions
+  0..5 end at RAS state8193/error628, whereas the RAS event log misleadingly
+  reports error0. Current/baseline Windows DLL compiled dependency/version/
+  checksum lines compare exactly equal. IKE/RAS channel inspection is retained.
+  Admission-reply and explicit-stop ordering diagnostics are now added; the
+  instrumented v55 build/v56 run are in progress, not an acceptance rerun.
+  v55 normal build/install and v56 diagnostic then passed (3 QtTest cases);
+  the admission ACK had `stop already requested=false`, followed by Connected
+  and a requested joined stop. This does not causally resolve v46/v53's
+  first-admission failures: diagnostics changed timing, not native behavior.
+  Policy-mutation v49 and IPv6-only side-scope v40 are now executing against
+  the explicitly recorded installed v52 candidate and v50 peer.
+  Mutation v49 FAILED after successful native connect/NODATA (5ms): one
+  still-published OS-scope A query timed out instead of returning SERVFAIL.
+  Cleanup repaired the exact owned DoH mapping and confirmed Disconnected;
+  the sequential driver stopped, so IPv6-only scope v40 did not execute.
+  The production cause is in WindowsIkev2Dns::restoreDns: refusal restoring
+  PPP returned before quiescing the separate existing OS scopes. An explicit
+  owner-checked DnsUtils quiesce operation now allows all scopes to cancel/join
+  before any restoration is attempted. v57 current normal build/install is
+  running, v58 retains the identical failed mutation assertions, and a new
+  portable two-scope transaction regression awaits execution.
+  v57 normal build/install passed; identical actual policy-mutation v58
+  passed all 3 cases (system NODATA 8ms): PPP and existing OS aliases retain
+  UDP/TCP NODATA and return A SERVFAIL while policy blocks restoration, then
+  exact DoH repair allows confirmed native join/retirement. The cumulative
+  peer witness has one pre-observation polling A query for the mutation label
+  and zero owned OFF AAAA; it is not evidence of zero queries before quiesce.
+  IPv6-only v40 refused its actual OS precondition before service start:
+  setting a v6 DNS server did not remove DHCP's v4 DNS. Exact baseline reset
+  was attempted in its cleanup. v60 explicitly clears the owned IPv4 DNS list
+  with native netsh before selecting v6 and rechecks both families; it is
+  running. Diagnostic v59 retained a separate unsupported PowerShell parameter
+  failure. Additional continue-on-quiesce-error handling and two portable
+  transaction regressions are newer than the v57 installed source and still
+  await build/execution.
+  v60's recorded OS selection still contained DHCP IPv4 `10.0.2.3` together
+  with v6 `2001:db8::53`; exact reset matched its baseline. No IPv6-only
+  acceptance was inferred. Rather than disabling DHCP/changing the VM control
+  link, the native client fixture now creates an owned Wintun data link with
+  a checked v6-only DNS list, retaining the original Ethernet scope unchanged.
+  Native transaction v61 passed all 18 cases under actual MSVC/Qt (318ms),
+  including all-scopes quiesce and continue-on-failure across generations;
+  normal full production build/install v61 also passed.
+  The new test-only Wintun branch initially failed MSVC compilation in v62/v64
+  due to missing ordered Windows networking headers. Source now uses the
+  established winsock2/ws2tcpip/iphlpapi/netioapi ordering; v65 build and v63
+  owned-link acceptance are running. No production dependency/helper added.
+  v65 MSVC test compile/link passed. Owned-link v63 then correctly refused
+  its precondition before native dial, revealing that the test helper itself
+  enumerated AF_INET-only DNS. It now enumerates AF_UNSPEC and decodes checked
+  IPv4/IPv6 socket addresses, including native IPv6 scope IDs; the exact
+  v6-only expected list is unchanged. v66 compile and v67 owned-link run are
+  in progress. v63 failure evidence and exact source deltas are retained.
+  v66 test compilation passed; v67 satisfied the real v6-only OS-link
+  precondition but reproduced the native admission failure. Its service trace
+  gives the causal boundary: `RasGetConnectStatus` returned INVALID_HANDLE at
+  callback state0, then RAS continued states1..6. That early invalid handle
+  caused premature service cleanup, not a remote rejection. The adapter now
+  uses instance-scoped RasDialFunc2 terminal notifications and retains Pending
+  before a settled dial; no sleeps or timeout relaxation. A durable
+  `dial-returned` phase preserves crash uncertainty before native-handle proof.
+  Cancellation/normal stop still require native invalid-handle join after
+  observed handle/terminal failure, not the pre-registration window.
+  v69 stopped on a source-hash guard (header baseline came from v10, not v2),
+  after applying the checked .cpp; no native test ran. The retained v71 header
+  delta resumes that exact partial state, then full build/install and v70
+  owned-link acceptance. Further conservative post-notification invalid-handle
+  checks are newer than that staged delta and still require rebuild/measurement.
+  v71 normal full build/install passed. Actual owned v6-only Wintun DNS
+  scope v70 passed all 3 cases: checked native selected DNS list, UDP/TCP
+  NODATA and non-AAAA SERVFAIL without PPP substitution, PPP A forwarding,
+  system NODATA 9ms, foreign-edit retention and exact retirement. Cumulative
+  peer witness records zero v6-scope A queries and zero owned OFF AAAA.
+  v72 compiled the additional join proof changes, but aggregate v73 FAILED
+  (3 passed, 4 failed): first OFF connected, then stop remained pending.
+  The added repeated RasHangUp after invalid status returned 668 instead of
+  success/invalid-handle and prevented the already-joined lifecycle retiring.
+  Current source skips that duplicate call after a successful hangup.
+  Exact native MSVC probe v76 measured saved handle720896 status6
+  (ERROR_INVALID_HANDLE), native enumeration success/count0, original Ethernet
+  DNS `[10.0.2.3]`/empty v6, with no native PPP/managed aliases observed.
+  Old candidate v72 PID512 remains SCM STOP_PENDING, retained with journals,
+  VM and peer; it is not killed or reported as a successful service stop.
+  Corrected candidate v77 is building/installing into a separate prefix.
+  Native acceptance of v77 cannot replace that live pending old definition
+  without resolving its immutable in-process join loop. The prepared v74/v75
+  GUI-process-loss fixture has not run; Windows Go race v68 did not execute
+  because the sequential driver stopped on failed v73.
+  Corrected full build/install v77 passed offline into its separate prefix;
+  old v72 PID512 and its payload remain untouched. Runtime v77 acceptance is
+  concretely blocked by the retained old STOP_PENDING process: its immutable
+  duplicate-hangup loop cannot consume the already-measured native join proof.
+  A scoped user decision is required before any exception to the prohibition
+  on terminating pending cleanup. No force-kill, reboot, journal deletion,
+  protection bypass, intermediate push, CI dispatch or merge was performed.
+  2026-11-26: user explicitly approved the one-time exact old PID512 exception.
+  v78 rechecked executable/SCM/owner identity, exact saved-handle status6,
+  native count0 and restored underlay DNS, archived old journals/logs, then
+  terminated only that held process handle. Corrected production v77 startup
+  recovered the preserved hangup-requested journal into a completed receipt;
+  its subsequent normal SCM stop and process join passed. Old journals were
+  not manually deleted or relabeled as a successful v72 stop. v79 full native
+  suite, compiled v74 lifecycle gate/v75 GUI loss, and Windows race v68 are
+  now queued sequentially. Aggregate active fixture limits were measured again:
+  Windows wrapper 1.5CPU/3.5GiB plus peer 0.5CPU/512MiB, zero extra swap.
+  v79 current production native suite passed 7/7 (system NODATA 16ms);
+  v75 actual test-GUI process loss retained the same LocalSystem/RAS owner
+  and UDP/TCP NODATA, then normal SCM stop restored original DNS and joined
+  native cleanup. Windows Go race v68 passed 13 portable/socket cases with
+  no skips (1.747s); Linux-only native-link fixtures are not in that build.
+  v80 intentional crash of the checked Running service preserved journals;
+  fresh production startup restored DNS/aliases, joined RAS, delivered caller
+  Disconnected, and completed a subsequent normal SCM/process join (3 cases,
+  system NODATA 4ms). This is recovery acceptance, not continuous protection
+  during downtime. Review found dynamic WFP policy lifetime warrants an actual
+  traffic check: v81 adds a real IPv6 positive control, active-OFF block and
+  pre-restart crash-downtime witness, while still completing recovery before
+  reporting any enforcement failure. That experiment is running.
+  v81 completed native recovery but FAILED continuous OFF enforcement:
+  the real IPv6 UDP positive control was blocked during the live connection
+  and delivered again after the service crash, before recovery. The dynamic
+  IPv6 WFP session lifetime is the measured cause. The policy now uses two
+  stable-key non-dynamic kernel filters, validates owned definitions before
+  adoption/removal, and has no privileged IPv6 endpoint permits. It is not a
+  new runtime/helper and is not yet a reboot-persistence claim.
+  v82/v84 normal full builds passed; v83/v85 refused native admission.
+  Exact native status2150760494 (0x8032002e) is Microsoft's documented
+  FWP_E_CONTEXT_INCOMPATIBLE_WITH_LAYER: the ownership marker used rawContext,
+  which this ALE layer rejects. The marker is now opaque providerData instead;
+  lookup/ownership checks remain strict. Integration also denies IPC policy
+  release before confirmed startup recovery and explicitly retires kernel
+  policy after all native resources/processes join on normal service shutdown.
+  v86 build/v87 traffic/crash/cleanup acceptance are in progress. The new
+  strict IPv6 endpoint-exception positive/negative control test is not yet
+  staged or executed; no new pass claim for these pending changes.
+  v86 normal full build/install passed. v87 actual crash-fence acceptance
+  passed all 3 native-client cases plus four real traffic phases: IPv6 UDP
+  positive control, active OFF block, crash-downtime block with the service
+  absent, and restored IPv6 delivery after confirmed recovery/SCM cleanup.
+  Native DNS/caller/journal retirement and original underlay DNS restoration
+  also passed (system NODATA 8ms). This closes the measured service-process
+  lifetime leak for the exercised Windows IKEv2/UDP witness, not reboot or
+  other-platform acceptance. v88 stages the new explicit IPv6-endpoint
+  exception test, followed by the changed-policy full native suite v89.
+  v88 compiled the explicit IPv6 endpoint-exception test; v89 current native
+  suite passed 8/8, no skips, including that traffic positive/negative control
+  (system NODATA 7ms). v90 generated current production MSI and IFW packages.
+  v91 MSI and v92 IFW actual installed LocalSystem/native-RAS acceptance both
+  passed: external PPP DNS mutation held the same service PID and unchanged
+  service/runtime payload for 35 seconds, with UDP/TCP AAAA NODATA and A
+  SERVFAIL throughout refused restore. Exact DNS repair then allowed native
+  process join and uninstall/purge with no owned RAS/alias state remaining.
+  These used production payloads, not the earlier test-only SCM fixture.
+  MSI SHA256 9888d4d7a30f6228180f0a1cdb908956c1eec9e66e1aad3f1069e56c6fd3f14c;
+  IFW SHA256 2595044509bca4cae24057b4cbe1de5925562a1101bf42817515c34471a1a46c.
+  Current service SHA256 d4b8a6223026c89aec44862d68a7f0693410b719b8028a1359761bad9ac1d7e2.
+  v93 repeats actual DoH mutation/quiesce acceptance on this kernel-policy
+  candidate passed 3/3, no skips (system NODATA 10ms); the injected policy
+  mutation produced the expected helper error and confirmed native cleanup.
+  Platform/backend gaps and final CI remain open.
+  v94 current owned IPv6-only DNS scope acceptance passed 3/3, no skips,
+  system NODATA 5ms.
+  Additional Windows WG shutdown ordering review remains open: generic kernel
+  policy retirement currently precedes the aboutToQuit daemon deactivation,
+  and WindowsTunnelService::stop discards stopAndDeleteTunnelService failure.
+  IKEv2 package acceptance above does not establish WG native join ordering;
+  this path needs failure propagation and measured acceptance before closure.
+  Pending WG implementation now preserves a failed tunnel-service stop for
+  retry, avoids repeated STOP controls while STOP_PENDING, restores DNS before
+  retiring peers/interfaces, and gates generic Windows kernel-policy release
+  on daemon deactivation. v95 build is running; a follow-up removes the
+  interface-absent fallback as Windows worker-join evidence and is not yet
+  staged. These changes are not covered by prior IKEv2 acceptance.
+  v95 and v96 actual MSVC full client/service builds and normal installs
+  completed. v96 includes the Windows-specific removal of interface-absent
+  fallback; v97 runs the native IKEv2 regression suite on that candidate.
+  Actual WG stop-failure/SCM-worker join acceptance remains outstanding;
+  successful compilation is not evidence of that lifecycle behavior.
+  v97 native IKEv2 regression passed 8/8, no skips, system NODATA 35ms.
+  v98 exercises actual WG native tunnel-service creation/publication, refused
+  DNS restoration for 35 seconds and subsequent service/worker process join.
+  It deliberately does not assert a WG handshake or peer data-plane delivery;
+  v98 FAILED before the hold boundary: WG address/managed DNS publication did
+  not appear within 30 seconds. Normal service cleanup completed, and v99
+  inventory found no remaining Amnezia SCM definitions. Captured log contained
+  earlier IKEv2 entries rather than this activation. v100 adds explicit
+  service logging initialization and captures the activation pipe response
+  to diagnose the failure, preserving the same lifecycle assertions.
+  v100 established the admission cause: deployed tunnel.dll rejects
+  "amnezianativedns" as an unknown Interface key (native error1066).
+  The recipe already contains a checked native-DNS ownership overlay, but
+  this deployed cached binary does not implement it. Do not remove the key
+  or treat that binary as current WG acceptance. v104 found cached AWG
+  v3.1.20260814 sources and dependency module cache; offline toolchain/build
+  discovery is in progress. Local overlay regression ran 4 tests, all passed;
+  these source-transform tests are not native WG runtime acceptance.
+  v105 located cached MinGW and Go toolchains. v106 is building a new DLL
+  from a preserved copy of cached native AWG sources with the current checked
+  overlay, GOPROXY=off/GOTOOLCHAIN=local and two Go workers. Existing source,
+  binaries and failed evidence are not overwritten. Deployment/provenance,
+  actual WG lifecycle and package closure remain pending this build.
+  v106 offline DLL build passed, SHA256
+  29dccaf27a107b0aeb567327e6bad9070ea47e3b14f4e34a39eca17feb471615.
+  Compiled module versions/checksums and source-before/after manifests are
+  retained. v109 selects the new artifact through a separate frozen AWG
+  CMake target and normal build/install into a new prefix; it does not mutate
+  old Conan cache binaries or copy over an already installed payload.
+  This is a checked-overlay cached-source build, not a new Conan recipe-run
+  claim. v110 is prepared to exercise the unchanged WG lifecycle assertions
+  only after installed DLL identity matches that new artifact.
+  v109 normal CMake configure/build/install completed; installed tunnel.dll
+  matched v106 exactly. Service SHA256
+  d9f9c12fcab3602f6c0b5bacec78cc146a4347d0095f0405c159c04c6047cf5c.
+  v110 actual WG lifecycle acceptance is running on this prefix. v90 package
+  evidence remains valid only for its recorded payload/IKEv2 scope, not for
+  current native-DNS WG support; new package generation/audit is required.
+  v110 FAILED: final cleanup timed out and left exact main service PID3960
+  STOP_PENDING. v111/v112 measured the WG child service Stopped/PID0, only the
+  main AmneziaVPN-service.exe process remaining, original Ethernet DNS
+  10.0.2.3, no WG/managed alias addresses and no native-dns journal files.
+  The main process loops on DeleteService ERROR_SERVICE_MARKED_FOR_DELETE
+  for the already-stopped child definition. Full log and ownership/network/
+  journal inventory are preserved under windows-wg-pending-preserved-v112.
+  Repeated deletion is now idempotent for that exact native error after a
+  confirmed stopped service status; other errors still retain ownership.
+  v113 builds/installs this candidate into a separate prefix, leaving PID3960
+  and its original payload untouched. Runtime deployment is blocked by this
+  old pending owner. No process has been force-killed; the earlier PID512
+  exception is exhausted and does not authorize terminating PID3960.
+  v113 actual MSVC build and normal install completed successfully. Runtime
+  verification of idempotent retirement remains blocked pending permission
+  to retire only the preserved old PID3960; build completion is not a
+  response granting that permission.
+  External host/server restart then stopped the Windows wrapper (exit137)
+  and peer v50 (exit0). No agent force-kill was performed or authorized.
+  Wrapper restarted with its existing 1.5CPU/3.5GiB/no-extra-swap limits;
+  peer remains stopped (its existing evidence directory must not be reused).
+  v114 measured new Windows boot, main service Stopped/PID0, no remaining
+  native worker, original 10.0.2.3 DNS and intact v113 candidate hashes.
+  This is an external crash/reboot boundary, not a normal-cleanup pass.
+  v115 now exercises normal candidate startup/stop/join against that retained
+  SCM definition, followed by v116 actual WG lifecycle acceptance. v116 waits
+  for OS DNS publication, not merely prepared aliases, and saves a primary
+  failure before finally cleanup can mask it. Results pending.
+  v115 normal startup/SCM stop/process join passed without force-kill.
+  v116 reached actual WG DNS publication and retained main PID1780/worker1908
+  behind the external DNS conflict for 35s, but FAILED worker WaitForExit.
+  v117 subsequently measured service Stopped/PID0, no Amnezia service
+  processes, original DNS and no WG/alias addresses. This later inventory is
+  not evidence that the original bounded worker wait passed. v118 retains
+  that assertion and adds an independently pinned Win32 process handle with
+  an active-worker WAIT_TIMEOUT positive control plus terminal wait/exit-code
+  measurements to diagnose the discrepancy. No assertions/timeouts relaxed.
+  v118 FAILED with direct native evidence: main joined, worker PID1560 still
+  present, pinned process WAIT_TIMEOUT(258), exit STILL_ACTIVE(259).
+  This is a real process-lifetime gap, not a managed WaitForExit discrepancy.
+  Entrypoint inspection found tunneldaemon falls through into LocalServer/
+  app.exec after the native DLL service returns. It now returns the native
+  result immediately. WindowsTunnelService also pins the worker process
+  after running admission and retains its service/process handles until an
+  actual WAIT_OBJECT_0, so SCM Stopped alone cannot release protection.
+  v119 preserves log/network/witness evidence; its final read failed because
+  no process rows produced processes.json. v120 inventories that later state
+  explicitly; v121 builds the terminal-entrypoint/native-join candidate.
+  No force-kill or acceptance rerun of an unchanged candidate was performed.
+  v120 later inventory measured zero service executable processes; no forced
+  recovery is needed. v121 source admission refused a header hash mismatch
+  after staging main.cpp but before compiling. v122 captured exact current
+  guest source bytes; mismatch was whitespace in the reconstructed baseline.
+  v123 uses those measured baseline hashes and preflights all source entries
+  before staging any change; its build/install is running. v118 remains a
+  preserved failure, not a pass inferred from the later zero-process state.
+  v123 actual MSVC client/service build and normal install completed.
+  v124 runs the same 35s actual-WG DNS-conflict/native-handle experiment on
+  the terminal-entrypoint/process-join candidate; original managed join and
+  independent native WAIT_OBJECT_0 assertions both remain required.
+  v124 PASSED actual WG lifecycle: same native resources retained for 35s
+  behind refused DNS restore; after exact repair both managed process joins
+  passed, native process wait returned0/WAIT_OBJECT_0, native exit0 and worker
+  absent. No force-kill. This closes the exercised terminal-worker/SCM join
+  gap, not WG handshake/data-plane acceptance. v125 generates fresh MSI/IFW
+  from this configured payload (including the rebuilt native-DNS tunnel.dll).
+  v126 adds UDP/TCP AAAA NODATA and A SERVFAIL on every owned alias during
+  the held WG restore boundary; prepared, not yet executed.
+  v125 generated both fresh production packages successfully:
+  MSI af056d4cccfe3eae655d74651f367686c555f7f9d08187d8ba24685681d76105,
+  IFW 12a496c053850e11c306a252a319d2995ddb2e126ee1b560daec9b48b67a84be.
+  Packaged service SHA256
+  28aff0b5fb52d017542a24552212e751772e803c43b2da65213f51bafc51353a.
+  v126 held-WG UDP/TCP DNS acceptance is now running. v127 is prepared to
+  check exact WG/Xray/service hashes in both CPack payload trees; new actual
+  installer runtime acceptance remains outstanding.
+  v126 PASSED held native-WG DNS acceptance: UDP/TCP AAAA NODATA101/76ms,
+  A SERVFAIL3/10ms, then both managed joins and native wait0/exit0.
+  v127 checked all three exact service/WG-DLL/Xray-DLL hashes in both CPack
+  payload trees, all matched. v128 actual production MSI/WG uninstall PASSED:
+  same PID/service+WG DLL payload retained35s, UDP/TCP NODATA66/48ms and
+  SERVFAIL4/4ms, followed by main/worker native join and payload/SCM removal.
+  v129 actual production IFW/WG purge is running with the same ownership,
+  DNS wire and native process-handle checks. No handshake/data-plane claim.
+  v129 actual production IFW/WG purge PASSED: retained PID/payload35s,
+  UDP/TCP NODATA127/70ms and SERVFAIL5/6ms, managed joins true and native
+  wait0/exit0, worker absent, payload/SCM retired. v130 measured idle Windows
+  guest with no native processes/active services/owned addresses and original
+  underlay DNS. Current Windows WG lifecycle/package scope is closed; full
+  handshake/data plane and other platform/backend requirements remain open.
+  After v130 idle checks, Windows wrapper stopped gracefully with no kill
+  timeout; peer remained stopped. v131 offline current Linux production
+  service build passed, including common daemon.cpp and IPC/lifecycle TUs.
+  Only the Linux regression container was active, measured configured limits
+  2CPU/4GiB/zero-extra-swap. v132 now builds/runs current native transaction
+  and real private-resolved service tests against the preserved v38 archive;
+  this is not yet native Linux WG backend acceptance.
+  v132 current native transaction tests passed18/18, no skips; compilation
+  targets (including common WG daemon TU) passed. Service launch failed on
+  non-executable wrapper permissions in the read-only source mount.
+  v133 invoked the wrapper through sh, started real private resolved/D-Bus,
+  but service init failed because the required dns-fixture/192.0.2.10 native
+  link was missing. Both harness failures are preserved, not backend passes.
+  v134 supplies that owned dummy link before running only the outstanding
+  service suite; completed transaction tests/builds are not repeated.
+  v134 real private-resolved service suite passed15, failed0, skipped1
+  (expected child-only fixture; parent crash-recovery cases passed).
+  Common teardown review found run(Down), including application-split
+  retirement, still preceded DNS restore. v135 focused fake-adapter tests
+  measured two ordering failures (3passed/2failed). DNS confirmation now
+  precedes platform Down, peer/routes/interface retirement and acknowledgment.
+  v136 green focused suite passed6/6, no skips, including refused-DNS and
+  platform/interface failure retention/retry; v137 current Linux production
+  service compiled/linked successfully. These tests are not native backend
+  acceptance. Windows v138 production build/install and v139 actual-MSVC
+  focused regression are next; earlier v125 packages predate this ordering
+  change and cannot be relabeled as the final current-source artifacts.
+  v138 actual Windows production build/install passed. v139 focused MSVC
+  test build FAILED before compilation: Ninja's manifest remained dirty after
+  100 CMake regenerations. v140 measured extracted CMakeLists timestamp
+  13:46UTC versus guest10:53UTC/build.ninja10:52UTC (ZIP metadata/time-zone
+  mismatch). v141 uses the same hash-checked archive in a new staging prefix,
+  normalizes only source timestamps to guest time and rechecks every file's
+  bytes; regeneration remains enabled. Focused Windows test result pending.
+  v141 actual-MSVC focused lifecycle suite passed6/6, no skips. Together with
+  v135 red/v136 green this measures common teardown ordering without claiming
+  native application-split driver acceptance. v142 runs current real WG
+  publication/35s-held UDP+TCP DNS/native-join regression on v138, followed by
+  v143 fresh current-source MSI/IFW generation if acceptance succeeds.
+  v142 current real WG regression PASSED:35s refused restore, UDP/TCP
+  NODATA76/57ms and SERVFAIL4/6ms, then managed/native worker joins with
+  wait0/exit0. v143 current production MSI/IFW generation succeeded:
+  MSI efe8ac23028a8e4ee9ce3d777bcacfb8f89762d4036693a7c5ab2afffb96495d,
+  IFW be16c33302a0b5226fee6e1cd328e3287e7e4aa39949a833fd244ff5d5faa27f,
+  service6619ab1bc98036870069ac95909c417bf9004e2271d00fd6f3ae504486e052e9.
+  v144/v145 execute actual MSI/IFW native-WG retained-cleanup acceptance
+  on these exact payloads. Earlier package evidence remains historical.
+  v144 MSI and v145 IFW actual current-source native-WG installer acceptance
+  both PASSED35s retained PID/payload plus managed/native worker joins:
+  MSI UDP/TCP NODATA130/93ms, SERVFAIL9/7ms;
+  IFW UDP/TCP NODATA63/53ms, SERVFAIL3/5ms; wait0/exit0, worker absent.
+  v146 discovered existing cached disposable WG peer support. v148 runs
+  that fixture (binary SHA256
+  e41328f921f91c856115ce93b1d293bba120bc65660e43411f3a51132e8fe92f)
+  in the Windows wrapper's isolated network namespace,0.5CPU/512MiB/no
+  extra swap, aggregate with Windows1.5CPU/3.5GiB remains2CPU/4GiB.
+  Disposable client keys stay private and v147 transfers them only through
+  authenticated encrypted WinRM, never source/evidence/public HTTP.
+  v149 now checks real native WG TCP/UDP peer delivery and an actual IPv6
+  positive-control/OFF-block witness before the held-cleanup assertions.
+  Result pending; earlier no-handshake lifecycle passes are not relabeled.
+  v149 FAILED strict OFF while real native WG handshake/TCP/UDP delivery
+  passed: actual IPv6 witness delivered before AND during OFF. Native Windows
+  WG adapter never applied the independent kernel policy from the raw switch.
+  It now applies it before interface creation and releases only after joined
+  tunnel-worker cleanup; KillSwitch remains optional and IPv4 unaffected.
+  Route-monitor retirement also follows joined worker cleanup.
+  v150 actual production build/install passed. v151 real native WG acceptance
+  PASSED: IPv6 positive before, blocked during OFF, restored after join;
+  authenticated native TCP/UDP peer echoes, actual IPv4 DNS forwarding,
+  active UDP/TCP AAAA NODATA,35s held restore with NODATA24/6ms and
+  SERVFAIL4/6ms, managed/native wait0/exit0 and policy retirement.
+  v152 tests missing/default ON and explicit ON on this candidate with native
+  IPv4+IPv6 peer TCP, positive UDP AAAA and unchanged native DNS/no aliases.
+  Earlier v143 package acceptance predates the native-WG OFF enforcement fix.
+  v152 ON/default TCP connect FAILED; cleanup joined. v153 retained error
+  context but logging was still historical. v154 enabled current logging,
+  required native status/handshake and IPv6 Preferred, and measured actual
+  cause: IPv4 remained Tentative and connect to10.77.0.2 failed unreachable
+  while both final routes were present. v155 requires Preferred for both
+  families within the unchanged30s readiness deadline. DAD is not disabled,
+  test assertions are not weakened; ON/default acceptance remains pending.
+  v155 missing-setting ON passed native IPv4/IPv6 TCP, positive UDP AAAA
+  and unchanged native DNS/no aliases, but FAILED the final executable-name
+  process-absence guard after successful main join. v156 later CIM inventory
+  measured zero live processes; that later absence is not an acceptance pass.
+  v157 pins/joins the actual WG worker separately, records executable-name
+  observers with Id/HasExited, rejects any live row, releases joined observer
+  handles and retains the zero-process assertion before SCM retirement.
+  This diagnoses observer-held exited-process objects without force-kill or
+  weakening native join; both ON variants remain pending this experiment.
+  v157 both missing/default ON and explicit ON passed native IPv4/IPv6 TCP,
+  positive AAAA/native DNS/no aliases and separate managed worker joins, but
+  final name-only guard still failed. v158 read saved rows: Id1848 and3812,
+  each HasExited=true; current CIM live count0. v159 adds pinned Win32
+  WAIT_TIMEOUT active-worker control and WAIT_OBJECT_0 for owner/worker,
+  accepting only known already-joined exited observer objects while rejecting
+  any unknown/live process. This corrects observer semantics, not the native
+  join contract; final ON/default acceptance remains pending v159.
+  v159 PASSED both missing/default ON and explicit ON: native DNS10.77.0.2,
+  no aliases, positive UDP AAAA, authenticated native IPv4+IPv6 TCP delivery,
+  pinned owner/worker WAIT_OBJECT_0 and zero live native processes after stop.
+  v160 generates new current-source MSI/IFW packages including strict native
+  WG OFF enforcement; final package identity/runtime acceptance is pending.
+  v160 generated current strict-WG packages:
+  MSI d1a2e07de1253f28a4c162e6ad991e67ee6d98a91bf32ed94935a0796560cd46,
+  IFW 66bd844938ce2182356aa8d48d6e596398b72ebd5b4731166a306e960ad5b82c,
+  service e398fa17758fac78e83825106d79d281d43bf3571336f1d6f670ef7f918e6a62.
+  v161/v162 actual MSI/IFW35s-held native-WG cleanup acceptance is running
+  against those exact hashes. Earlier pre-enforcement package results remain
+  historical; no final CI, push or merge has been performed.
+  v161 current MSI and v162 current IFW actual native-WG installer acceptance
+  PASSED35s retained PID/payload and managed/native wait0/exit0:
+  MSI UDP/TCP NODATA112/97ms,SERVFAIL3/5ms;
+  IFW UDP/TCP NODATA84/71ms,SERVFAIL4/15ms; no remaining worker.
+  v163 now exercises deliberate ACTIVE-service crash (not pending cleanup)
+  during a real WG peer connection, preserving the pre-crash journal and
+  measuring worker retention/IPv6 block while the main service is absent.
+  Recovery runs even if enforcement fails, and must restore DNS/aliases,
+  join the old native worker and complete normal fresh-owner SCM stop.
+  v163 FAILED recovery and preserved fresh main PID3616 STOP_PENDING.
+  Crash witness measured old main3816 gone, native worker3820 survived and
+  IPv6 stayed blocked during downtime. v164 measured only main3616 remaining,
+  original underlay DNS10.0.2.3 and no WG/alias addresses, but durable owner
+  431830bf-7291-41fa-8c3d-1ca91a18b329 still unresolved (adapter GUID
+  05b44401-f55a-1be5-94c3-7fa54bb2d33e). Recovery cannot confirm OS DNS after
+  that native adapter was removed. No force-kill or journal deletion.
+  Root cause: LocalServer's WindowsDaemon value member constructs BEFORE
+  the constructor body, and WindowsTunnelService stops/deletes the old WG
+  worker/adapter before recoverStartupDns. WindowsDaemon is now deferred
+  until durable DNS/RAS recovery confirms; unresolved startup exposes no IPC.
+  Orphan worker handles are retained until native join, new WG starts first
+  join any old owner, and IPC kernel-policy changes are gated on BOTH WG and
+  IKEv2 ownership. v165 captured exact guest baselines; v166 builds/installs
+  the checked delta into a separate prefix, leaving PID3616 untouched.
+  Runtime verification is blocked by the preserved missing-adapter journal;
+  it must not be bypassed by deleting/relabeling state or killing cleanup.
+  v166 actual MSVC client/service build and normal install completed.
+  Runtime acceptance remains blocked by old PID3616 and its missing-adapter
+  journal. Next proposed fixture repair is to restore only the original
+  test-owned WG adapter from the preserved private configuration, retaining
+  GUID/security/DNS comparison and the journal until normal recovery confirms.
+  This repair has NOT been executed; no permission to force-kill pending
+  cleanup has been inferred from the active-crash experiment.
+  User explicitly approved restoring only the original test-owned WG adapter
+  from preserved private configuration, with GUID/DNS checks and without
+  journal deletion or force-kill. v167 rechecks exact PID3616/executable,
+  durable owner/GUID and private fixture hash, then starts only that original
+  native adapter without peers/DNS publication. Its own service recovery must
+  retire the journal and join PID3616; only then may the repair worker stop
+  and join. On uncertainty the repair link/owner is retained. v167 running.
+  v167 did not create a service: sc.exe rejected multiline binPath arguments.
+  v168 used the SCM-backed New-Service API instead; definition creation
+  succeeded but Start-Service failed. Neither attempt edited the DNS journal
+  or terminated PID3616. v170 reads native exit codes and redacted DLL ring
+  messages to diagnose admission; exact candidate hashes are captured by169.
+  v170 measured original main SCM Stopped/PID0/exit0: the briefly recreated
+  adapter enabled its normal pending recovery, although the repair child then
+  failed native firewall setup1066/specific6 (missing service-SID group).
+  v168 remains a startup failure. Independent v171 postconditions PASSED:
+  original PID3616 normal exit0, zero live native processes/active journals/
+  WG addresses/aliases, empty static NameServer in BOTH original GUID registry
+  keys, original underlay DNS10.0.2.3. No manual journal edits or force-kill.
+  Confirmed stopped test SCM definitions were retired normally.
+  Current v166 service SHA256
+  b8a797bbc115f5abff27737cfbe9d162fdb4fbd82ce1843919b6aedc25b679ac;
+  WG DLL29dccaf2...b471615 and Xray DLL1f718e4d...51c9ed2 unchanged.
+  v172 now executes the same real-WG active-crash/fence/recovery assertions
+  on the deferred-startup/native-ownership candidate, with primary failures
+  preserved before finally cleanup. Runtime result pending.
+  v172 PASSED actual native WG active-crash/recovery on v166: old main3208
+  crashed while worker3836 survived; IPv6 delivery during service downtime
+  remained false. Fresh startup restored DNS/aliases before retiring the
+  adapter, joined the old native worker, and completed normal SCM cleanup.
+  Raw/log evidence: windows-wg-startup-order-crash-20261126-v172.
+  v173 stopped before build: production staging does not contain lifecycle
+  tests. Failure retained. v174 transfers current focused tests/daemon/shared
+  sources separately (archive SHA256
+  66cb408482a538aa885ddf8c0b8ca5e8e97878d31df0bd2dd6e45e2c13bb5546),
+  checks the archive, normalizes only extracted timestamps with byte checks,
+  and builds/runs MSVC lifecycle plus DNS transaction regressions. No change
+  to production payload; result pending, not native backend acceptance.
+  v174 actual MSVC19.44 current-source build and ctest PASSED2/2:
+  NativeDnsTransaction0.41s, DaemonLifecycle0.08s; total0.50s.
+  This is focused regression evidence, separate from v172 native acceptance.
+  v175 now builds current production MSI/IFW using cached tools, after
+  requiring the packaging build service hash to match accepted v166.
+  Earlier v160 installer acceptance does not cover the later startup-order
+  fix; new packages require their own held-cleanup installer acceptance.
+  v175 MSI/IFW generated successfully, both staged service hashes match v166.
+  MSI SHA2560e89a5473a94317e014cdcd9359d3cea3f6b35dace8fce3c074b5a57776db926;
+  IFW SHA256188e55148d29d51dd15fb296849085dd01fcb277558a7cbfae2227d31b9f9cfb.
+  Deployment warnings (dxcompiler/dxil lookup and VCINSTALLDIR) are retained
+  in the log, not treated as proof of runtime completeness.
+  v176 current MSI held-DNS/native-join acceptance running; v177 IFW driver
+  prepared with exact new package/service hashes, to execute sequentially.
+  v176 actual current MSI/WG held-cleanup acceptance PASSED: same PID/payload
+  retained35s, UDP/TCP AAAA NODATA226/160ms, A SERVFAIL6/7ms; managed owner
+  and native worker3984 joined, native wait0/exit0, no remaining worker before
+  removal. This installer fixture makes no handshake/data-plane claim.
+  Expected DNS-conflict restore warnings and route deletion error87 are
+  retained in the log; later normal cleanup/join completed. v177 IFW running.
+  v177 current IFW/WG installer acceptance PASSED: retained PID/payload35s,
+  UDP/TCP AAAA NODATA95/80ms and A SERVFAIL2/7ms; managed owner and native
+  worker2744 joined, native wait0/exit0, worker absent before purge.
+  Current v175 MSI and IFW both cover the accepted v166 startup-order fix.
+  v178 Android source discovery recovered existing OpenVPN3 and libXray
+  sources from read-only amnezia-connection-recovery-full-build Conan cache,
+  using a CREATED/never-started audit container (no added running resources,
+  downloads or emulator). Source hashes recorded in
+  android-native-source-audit-20261126-v178.json.
+  Android OpenVPN transfers the published final TUN fd directly to native
+  OpenVPN3; existing TunIO owns its reader and must remain sole reader.
+  Android Xray uses existing libXray/amnezia-tun2socks engine, not desktop
+  bindings. Its frozen go.mod/go.sum are preserved as audit baselines.
+  Next integration work must target these actual native owners, not install
+  a parallel TUN reader/runtime or treat Kotlin DNS builder changes as packet
+  interception. No Android native DNS completion/runtime acceptance claimed.
+  Android continuation v180 implements nativedns.Flows: DNS-only native flow
+  admission, no TUN reader/device, one prepared UDP/TCP endpoint per resolver
+  occurrence, immutable UDP destination, original scoped Dial forwarding,
+  IPv6 fail-closed, quiesce-before-retirement and joined client closure.
+  Actual cached Windows Go race run PASSED16/16 (2.094s), including three new
+  flow tests and all thirteen existing resolver/socket/session tests.
+  This is portable behavior evidence, NOT Android backend acceptance.
+  v181 checked libXray/tun2socks overlay now decorates the existing native
+  proxy (no new reader/stack/full-flow migration), exports prepare/cancel
+  ownership, keeps the socket IPv6 fence until next connection, and adds
+  contextual SOCKS UDP-associate/TCP-handshake cancellation. Native DNS
+  upstreams use the original native proxy, never an OS/default dialer.
+  The Conan recipe exports/applies this overlay and uses readonly module
+  resolution instead of tidy. Native requirement declarations/go.sum are
+  unchanged; only a private patched copy of the SAME tun2socks version is
+  locally replaced. Three actual-source overlay tests PASSED; Python syntax
+  compilation passed. Runtime adapter tests added, not yet executed.
+  v182 Android arm64 parent-graph compile FAILED with CGO disabled because
+  x/mobile/asset requires openAsset. Failure retained; v183 retries the same
+  source with CGO and cached NDK27/API24, network none. No downloads/emulator.
+  WG fixture peer was gracefully stopped (not killed) to free0.5CPU/512MiB
+  for this compile; wrapper remains1.5CPU/3.5GiB, aggregate2CPU/4GiB/no swap.
+  Kotlin publication/split-scope mapping and OpenVPN3 packet ingress/egress
+  remain unfinished: native upstream proxy scope must not replace an original
+  OS-bypassed split-DNS path. No Android support completion claim; no final
+  push/CI/merge.
+  v183 actual Android arm64 parent-graph Go+CGO/NDK27/API24 compilation
+  PASSED exit0/OOMKilled=false, network none/-mod=readonly. This compiles the
+  initial Flows/native adapter; it is not gomobile/AAR/device acceptance.
+  v184 host executable/race harness is running against the actual adapter
+  bytes (filename-only enablement on Linux) plus checked native SOCKS
+  TCP/UDP-associate cancellation tests. It must not be labeled Android runtime.
+  Follow-up borrowed-client close review made transport close idempotent across
+  native owner/client races. v185 current portable Go race suite PASSED17/17
+  (2.237s), including20 concurrent owner/borrower-close iterations.
+  v186 current actual-source overlay suite PASSED3/3 (0.117s); Python syntax
+  compilation and git diff --check passed. Native adapter tests/recipe exports
+  are present; current borrowed-close implementation still needs parent-graph
+  recompile after v184. No Kotlin publication changes have been enabled.
+  v184 host adapter and actual SOCKS cancellation race tests PASSED.
+  v187 then PASSED current borrowed-close Android arm64 compile3.125s and
+  host adapter/forwarding/SOCKS race checks12.266s, including real UDP/TCP A
+  wire responses through the supplied native-proxy fixture.
+  Admission review closed a generation-replacement window before native
+  device creation: ownership is now pinned INSIDE the engine proxy callback,
+  not a later success callback. Partial starts cannot cancel/replace owners
+  before confirmed stop. v188 current source PASSED Android CGO compile3.093s,
+  three host adapter race tests and SOCKS TCP/UDP cancellation subtests
+  (10.010s host command). Dependency declarations/sums unchanged after each
+  command, recorded alongside exact source hashes.
+  v190 latest actual-source overlay suite PASSED3/3 (0.168s), Python syntax
+  and git diff --check passed. v189 now builds an explicitly arm64-only
+  JNI/API-probe AAR from cached tools/NDK/modules, network none. It must check
+  generated PrepareNativeDNS/CancelNativeDNS Java methods and exactly one
+  existing libgojni.so, without pretending it is a production multi-ABI/geo
+  resource package. Android runtime, Kotlin split/publication and OpenVPN3
+  integrations remain unfinished; no emulator started, no final CI/push/merge.
+  v189 JNI bind FAILED: gobind signal-killed; Docker measured OOMKilled=true
+  at512MiB/no swap. Cached gomobile/gobind builds themselves passed
+  (62.495s/5.043s); their artifacts/evidence are preserved for reuse.
+  v191 WinRM measured zero services/workers/owned journals/aliases and restored
+  DNS10.0.2.3 before requesting guest ACPI powerdown. No force-stop or cleanup
+  kill is authorized. Full2CPU/4GiB may be reassigned to v192 ONLY after the
+  wrapper has exited normally. v192 will reuse hash-checked built tools,
+  retain network-none/frozen dependencies and preserve the failed v189 run.
+  ACPI powerdown was acknowledged but did not stop Windows. v193 rechecked
+  zero native ownership/restored DNS and requested Windows shutdown /s /t0
+  WITHOUT /f. Original wrapper waiter then measured normal exit0; no terminate,
+  force-stop or pending-cleanup kill was used.
+  v192 PASSED arm64-only JNI/API probe with full2CPU/4GiB/no swap/network-none:
+  bind80.910s, javap0.156s; generated prepareNativeDNS(String)/cancelNativeDNS()
+  and exactly jni/arm64-v8a/libgojni.so. AAR SHA256
+  31a5c9ad2046a5824b1e6c01e1b5500490dbe2c796f21dabbd5c1adbcaeadf89.
+  This is NOT a production multi-ABI/resource package or runtime acceptance.
+  Kotlin NativeDnsPlan now snapshots ORIGINAL final native route scope before
+  alias capture, retains duplicate resolver occurrences, handles longest-prefix
+  include/exclude, represents IPv6-only as unavailable under OFF, and refuses
+  hostname/bootstrap, mapped IPv6 ambiguity, alias collisions and conflicting
+  routes. It does not open sockets/select an underlay or enable publication.
+  DIRECT scope still requires a pinned original-network binding adapter;
+  it MUST NOT be silently forwarded through the existing tunnel proxy.
+  v194 runs actual protocolApi/utils Kotlin/JUnit checks offline in2CPU/4GiB,
+  including six new scope-planner tests. Result pending.
+  v194 actual offline Kotlin/JUnit PASSED63/63: six NativeDnsPlan tests and
+  57 existing protocolApi/utils tests, zero failures/errors/skips; build47s.
+  Existing AGP8.6.1/compileSdk36 and Kotlin copy/deprecation warnings retained,
+  not suppressed or treated as platform compatibility acceptance.
+  Native runtime now adds explicit DIRECT scopes with a generation-pinned
+  NativeDNSController socket-binding callback, required before connect.
+  Missing/rejected controller, unknown scope/security, conflicting per-resolver
+  scopes and lost original binding fail closed; there is no tunnel/default
+  network fallback. IPv6 transport remains blocked before socket admission.
+  v195 compiles current Android CGO and executes host race/no-fallback scope
+  tests offline at2CPU/4GiB/no swap. Kotlin controller/lifecycle publication
+  and device binding acceptance remain to integrate; current JNI probe v192
+  predates the new DIRECT-controller export and is not proof for that API.
+  v195 PASSED current Android CGO compile3.061s and host race command22.093s:
+  five native adapter tests, including rejected original-network binding
+  producing UDP/TCP SERVFAIL with ZERO tunnel fallback, plus actual SOCKS
+  TCP/UDP-handshake cancellation. These are not Android Network.bindSocket
+  device measurements.
+  v196 current DIRECT-controller JNI/API probe PASSED: bind17.130s,
+  generated registerNativeDNSController plus NativeDNSController.bindDNS(long,
+  String), exactly one existing libgojni.so. Arm64 probe AAR SHA256
+  093a27832444ac49edf0cd1cbc65142197ca292ffd70aae368a185426d7ea184.
+  ProtocolConfig now has opt-in managed DNS publication/capture: IPv4-only
+  ordered aliases are added AFTER destination split processing, without
+  replacing other native routes or changing legacy ON DNS behavior.
+  v197 executes Kotlin tests for include-only alias capture, preserved DIRECT
+  resolver scope and publication order/admission, plus existing regressions.
+  Caller wiring must still account for the actual OS route footprint
+  (including Samsung's existing forced DNS host routes) before choosing scope;
+  it must pin the original Network identity and honor native cleanup failure.
+  Xray lifecycle/publication and OpenVPN3 interception are not yet enabled.
+  v197 actual offline Kotlin/JUnit PASSED65/65 (49s): eight native DNS
+  plan/capture tests and57 existing tests, zero failures/errors/skips.
+  Include-only DNS alias capture preserves the original DIRECT upstream
+  decision and all other native IPv4 routes; ordered alias publication and
+  rejection of duplicate/non-IPv4 managed endpoints are executable checks.
+  Next: wire Xray Kotlin preparation/controller/publication and confirmed
+  cleanup using the verified v196 JNI API, including original-network
+  identity and OS encrypted-DNS compatibility; then OpenVPN3 sole-reader
+  ingress/egress. No native Android runtime/device acceptance is implied by
+  these compile/host/JUnit tests. PR remains unready/unpublished, no merge.
+  Android Xray Kotlin continuation now wires original-route planning (including
+  Samsung DNS host routes), numeric-only prevalidation, strict encrypted-DNS
+  refusal before snapshot/bootstrap, generation-pinned DIRECT controller,
+  prepared managed DNS listeners before Builder.establish and IPv4 alias-only
+  publication. Missing/ambiguous/changed original network, lockdown DIRECT and
+  encrypted DIRECT metadata fail closed, never selecting another resolver/path.
+  XrayNativeLifecycle now reserves ownership before preparation/admission,
+  confirms tunnel join BEFORE engine stop and DNS release, retries only
+  unconfirmed boundaries and retains ownership across native errors/exceptions.
+  No CONNECTED on replacement and no DISCONNECTED before confirmed cleanup.
+  Protocol/service now preserve pending ownership through exception handling,
+  replacement admission, disconnect retries, service timeout and process-kill
+  guards. This service integration requires its own compile/runtime evidence.
+  v198 actual current Xray Kotlin compilation against hash-checked v196 JNI
+  API fixture and offline JUnit PASSED78/78 (13 new Xray lifecycle/publication
+  cases plus65 existing), zero failures/errors/skips. This is not service/app
+  compilation, JNI invocation or Android VPN/runtime acceptance.
+  v199 located cached full arm64 Android deployment. v200 now compiles the
+  actual current service/app Gradle graph in an isolated copy against the
+  explicitly named JNI/API-probe AAR; no native payload rebuild, downloads,
+   emulator or APK/resource-completeness claim. v200 PASSED current service/app
+   :compileOssDebugKotlin in90s; this predates the frontend-failure callback.
+   Frontend-failure continuation: v204 Android compilation passed but host
+   binaries could not execute on noexec tmpfs (harness failure retained).
+   With executable RAM tmpfs, v205 PASSED nine native adapter race tests and
+   SOCKS TCP/UDP handshake cancellation. Failure callback joins before owner
+   retirement; intentional close suppresses notification; dead preparation and
+   stale nil retirement cannot admit/drop another generation. Actual generated
+   JNI exposes bindDNS(long,String) and dnsFailed(); arm64 API-only AAR SHA256
+   366be6999f06ae5957bbbf7b80db7ba0ec1dac72959488c189269500084ce3fd.
+   v206 current Kotlin consumer compilation/JUnit PASSED81/81, with42 of47
+   Gradle tasks up-to-date; measured source delta31026bytes and workspace
+   2419051→2530782bytes. No Android JNI invocation is implied.
+   Test-only tagged x86_64 fault fixture (not exported by production recipe):
+   v207 native race checks passed but JNI linker failed with Bus error.
+   Instrumented same-input v208 link PASSED; measured memory peak1425846272
+   bytes, minimum free tmpfs444805120 of536870912bytes, zero OOM events.
+   The original linker failure remains unexplained, not declared resolved.
+   v209 probe APK compilation failed on non-exported JNI compile dependency;
+   explicit test-module-only dependency fixed it. v210 test-only APK assembled
+   in23s (8 executed/86 up-to-date), SHA256
+   a72e5be0ee85d96882d3acb6d708f246019027115f654ee03375a1ad47c78a4c.
+   This is NOT device/runtime acceptance; emulator remains stopped.
+   v211–v213 full-service harness failures are retained: init-script leakage
+   into included plugin build, read-only Android analytics home, and too-late
+   artifact mutation. The corrected v214 selects an owned JNI build override
+   before project configuration and PASSED current service/app
+   :compileOssDebugKotlin in34s (4 executed/62 up-to-date), offline within
+   2CPU/4GiB/no extra swap. Existing v200 deployment tree is reused; historical
+   logs/manifests and original JNI recipe remain unchanged, mutable sources are
+   tracked separately by the cache ownership manifest.
+   Full device lifecycle, Network.bindSocket/UDP/TCP/split acceptance and
+   OpenVPN3 remain unfinished.
+   OpenVPN3 preparation now separates the DNS-only gVisor packet endpoint from
+   AWG's application-flow/path-recovery machinery. It uses the same pinned
+   packet dependency, owns only its capture address and has no dialer, OS TUN
+   or independent native reader. v215 PASSED all16 dnsguard cases in ten
+   race-instrumented repetitions, including existing IPv4/IPv6 UDP/TCP NODATA,
+   forwarding/cancellation, native byte/headroom preservation and three new
+   packet-owner validation/join/isolation tests. This remains a portable
+   primitive measurement, not an OpenVPN3 adapter/runtime acceptance result.
+   v216 shared PacketSession PASSED20 dnsguard race cases, including callback-
+   joined release, intentional-close suppression and scoped UDP/TCP forwarding.
+   OpenVPN3 continuation extends the EXISTING Cloak shared Go runtime, not a new
+   production runtime/library. Its original dependency source closure is import-
+   namespaced, retaining every old version/source hash/license while DNS uses
+   the already locked routing graph. v217 actual host c-shared build and source/
+   binary TCP-provenance verification PASSED; bootstrap wrote12632199 source
+   bytes once in the stable workspace. Subsequent v218/v221/v222 reuse wrote0
+   source bytes; no SDK/toolchain/full OpenVPN tree was copied.
+   v218–v220 native owner fixtures passed real libck C ABI checks with C++
+   ASan/UBSan. v220 additionally PASSED four actual Cloak policy race tests:
+   default/missing ON, generation ownership, hostname/IPv6 refusal before
+   resolver/socket admission and policy retention during an in-flight dial.
+   Its SWIG stage FAILED because the relocated tool lacked SWIG_LIB; failure
+   retained, corrected to the existing installed bin/swiglib, no download.
+   v221/v222 PASSED native UDP AND raw TCP DNS through the real C ABI, including
+   split two-byte length prefix, two queries on one TCP stream, preserved A/AD,
+   local unauthenticated AAAA NODATA, no IPv6 exception, distinct capture aliases,
+   stale handles, retained output-descriptor ownership and concurrent stop.
+   v222 measures per-frontend retired callbacks while the full policy owner
+   remains retained until explicit confirmed retirement. The detached native
+   resolver lease barrier is exercised as a native-owner fixture; actual
+   resolver/VPN lifecycle acceptance is not yet claimed.
+   Both original ovpncli.cpp and current generated SWIG director compile with
+   the actual Android NDK27/API24 compiler and checked include overlay. Platform
+   detection is tested without a manual Android platform define. Existing
+   upstream Cloak ambiguous-base warning remains visible, not suppressed.
+   Current compile-only SWIG fixture JAR SHA256
+   92d79a3d958d36f7e4bf734170ed1e7123eb4be0d98984433bf0e6223bf9e192.
+   This is not linked Android libovpn3/JNI invocation or VPN runtime evidence.
+   Shared Kotlin NativeDnsPublication and explicit AF_INET DNS socket helper
+   are now being compiled in v223. Production OpenVPN3 recipe/export wiring,
+   Kotlin connection lifecycle/relay and device acceptance remain unfinished.
+- 2026-11-25 production Linux OpenVPN packaging continuation:
+  The production recipe now preserves the native ELF's private library bytes
+  with a checksummed source manifest. Build/install deployment uses that closure,
+  not the service's same-SONAME OpenSSL, and changes only executable RPATH.
+  `openvpn-production-packaging-20261125-v3/report.json` records actual recipe
+  and CMake execution: exact closure, relocated producer RPATH, corrupt-library
+  rejection, unchanged service crypto, immutable source and self-copy refusal.
+  `openvpn-production-installed-audit-20261125-v1.json` records all four native
+  dependency hashes unchanged after standard cmake install; native and service
+  libcrypto resolve independently. No post-install library repair was used.
+  `systemd-installed-startup-20261125-v17-actual-ifw.json` records installation
+  of the actual offline CPack IFW .run into disposable PID-1 systemd, installed
+  manifest/ldd audit, active Xray teardown and authenticated TLS OpenVPN restart.
+  `systemd-installed-startup-20261125-v18-ifw-purge.json` additionally records
+  actual maintenance purge, removed executables and LoadState=not-found.
+  `systemd-installed-startup-20261125-v21-ifw-blocked-purge.json` executes
+  maintenance purge while the service is already deactivating behind a foreign
+  DNS edit: the same service PID, live NODATA listeners, unit and payload files
+  remain until confirmed restore, then DNS/aliases retire and purge completes.
+  Both hooks now wait for stop even in deactivating state and refuse to proceed
+  on failed stop or unconfirmed inactivity. Observer failures v19 (removed Qt)
+  and v20 (noexec fixture storage) are retained separately; v21's final observer
+  uses its measured dependency copies outside the installed payload.
+  Installer hooks now support already-root execution without sudo and require
+  daemon reload, successful service start/enable and active/enabled checks.
+  IFW discovery failure v1 and missing guest OS library failure v16 remain
+  preserved; the latter was addressed with measured cached OS libraries only.
+  Final hosted CI, reboot and remaining platform/backend acceptance remain
+  outstanding. No push or merge occurred.
+- 2026-11-25 active systemd children continuation:
+  `systemd-installed-startup-20261125-v14.json` records real PID-1 systemd,
+  active Xray/tun2socks stop and real TLS OpenVPN restart. Failed DNS restore
+  retains the same native child PID, TUN, routes and live AAAA NODATA listeners;
+  fixing the external DNS edit permits joined worker/process exit, engine/
+  TUN/capture retirement, baseline routes/rules and a fresh service PID.
+  OpenVPN uses the production IPv6 blocking directives and authenticated TLS/
+  EKU checks; its replica records 0/NormalExit and native restore ACK precedes
+  TUN closure. The raw DNS crash-recovery and pending-stop cases also execute.
+  v10 separately completed the active Xray case.
+  The test exposed a production orphaned persistent tun2 after service quit:
+  shutdown now freezes native starts, joins process descriptors, stops the
+  service Xray engine and deletes only its owned proxy TUN before quitting.
+  It no longer relies on QProcess destruction or process exit for that cleanup.
+  Worker fixtures now wait for actual STACK readiness before DNS publication.
+  v8's earlier pre-readiness ownership wait and v9's captured orphaned TUN
+  failure remain preserved, not counted as passes.
+  Native v11 was deployed with an explicitly recorded RPATH-only change and
+  its exact frozen OpenSSL files in a private dependency directory:
+  `systemd-install-stage-20261125-v5/openvpn-deployment.json`.
+  An earlier standard-prefix staging check found a different service
+  libcrypto being selected; that failed closure report is retained as
+  `openvpn-systemd-deployment-check-20261125-v1.json`. This fixture isolation is
+  NOT a completed production installer dependency/provenance audit.
+  v11-v13 fixture failures (systemd HOME/config path, Type=simple IPC-readiness
+  timing and root-owned state-file enrichment) remain distinct. Readiness now
+  uses a non-mutating QtRO probe, and journals are checked in both actual
+  possible systemd config roots before teardown. Diagnostic state is captured
+  before terminating the replica; v12's pre-TLS diagnostic native-log field is
+  historical content and is not a native acceptance result.
+  `systemd-active-shutdown-build-20261125-v1.log` records current production
+  service link/install. `systemd-active-children-regression-20261125-v1.log`:
+  session 10 passed, transaction 14 passed, service 15 passed / one child-only
+  skip, nine production TUs compiled plus native overlay/helper regressions.
+  All execution remains offline, aggregate 2 CPU / 4 GiB / zero swap.
+  Reboot, other backend/platform integrations, packaging audit and final
+  hosted CI/PR publication are still outstanding; no push/merge occurred.
+- 2026-11-25 real systemd continuation:
+  `systemd-installed-startup-20261125-v7.json` passes with systemd as actual PID 1
+  (manager running), current installed service and shipped unit. Startup and
+  restart produce active/running processes; SIGKILL triggers Restart=always
+  and durable DNS snapshot recovery, alias retirement and working new IPC.
+  A second guarded publication plus external DNS edit leaves systemctl stop
+  deactivating with the same main PID and live AAAA NODATA listeners. After
+  resolving the edit, stop confirms restored OS DNS, retired aliases/journals,
+  inactive state and Result=success. This uses a real native link/DNS owner;
+  active OpenVPN/Xray/WG child teardown under systemd and reboot acceptance
+  are separate remaining cases.
+  The experiment found a production failure in v5: SIGTERM previously exited
+  without restoring published DNS. Existing Unix SignalHandler now routes
+  shutdown through LocalServer: stop accepting IPC/publications, retain owner/
+  listeners while restore is uncertain, then quit only after confirmation.
+  Linux unit uses KillMode=mixed and TimeoutStopSec=infinity so systemd does not
+  kill native children before the service completes that barrier. A foreign DNS
+  edit can deliberately hold stop pending; administrator SIGKILL remains a
+  forced-crash boundary and is tested via durable startup recovery.
+  Cached systemd image was booted in private PID/cgroup/network namespaces
+  with a writable private cgroup mount (no host cgroup bind), parent limits
+  measured 2 CPU / 4 GiB / swap 0. SYS_ADMIN/NET_ADMIN and container-local
+  AppArmor/seccomp relaxation permit nested systemd, without --privileged.
+  Minimal guest OS libraries missing glib were supplied from the measured
+  existing Ubuntu build-image closure, not downloaded; manifest:
+  `systemd-guest-os-libs-20261125-v1/manifest.json`. Private resolved/bus are
+  real systemd fixture units; the application unit drop-in changes only their
+  dependency/environment, not shutdown/restart semantics. All earlier boot,
+  fixture and failing shutdown reports remain preserved (v1-v5).
+  `systemd-shutdown-service-link-20261125-v1.log` records current service link/
+  install. `systemd-shutdown-regression-20261125-v1.log`: session 10 passed,
+  transaction 14 passed, service 15 passed / one child-only skip, nine production
+  TUs compiled and native overlay/helper regressions passed. No hosted CI,
+  push or merge. Cross-platform lifecycle/backend completion remains required.
+- 2026-11-25 shipped GUI + installed-layout continuation:
+  `xray-shipped-gui-20261125-v6.log`: 3 passed, 0 failed, 0 skipped. Current
+  client/service are installed by real `cmake --install` into disposable
+  `/opt/AmneziaVPN`; service runs at the shipped unit's exact ExecStart path.
+  The test instantiates the real AmneziaApplication, loads the shipped QML
+  entrypoint with real repositories/controllers and imports through the normal
+  --import path. Mouse input targets the shipped PageHome ConnectButton for
+  both connect and disconnect. Refused DNS restore retains TUN/journal owner/
+  engine token across automatic retries; resolving the edit confirms TUN and
+  journal deletion, engine token retirement and the final GUI state.
+  `xray-shipped-gui-20261125-v6/installed-provenance.json` records installed
+  client/service/worker hashes, resolved dependencies and the shipped unit.
+  Static tun2socks is identified by measured ELF program headers, not treated
+  as an unresolved dynamic dependency.
+  The executable is the normal project test target with actual application
+  objects and shipped resources, using a test main for offscreen mouse
+  automation, not the production executable's main. This is installed-layout
+  runtime, NOT systemd unit restart/reboot/privilege-boundary acceptance.
+  Normal target compile/link is in
+  `xray-shipped-gui-normal-target-20261125-v3.log`.
+  Failures remain separate: v2 was a static-ELF dependency-checker assumption;
+  v3 exposed missing transitive OBJECT-library QML registration in the test
+  target; v4 and v5-debug diagnosed a dangling QJsonValueRef in the fixture's
+  journal-owner assertion. The fixture now stores a QJsonValue, with the same
+  owner-retention assertion; no production check was weakened.
+  Required final Linux CI also runs the shipped GUI test in a private installed
+  prefix; no hosted dispatch/push/merge occurred.
+- 2026-11-25 full-client/actual-class GUI continuation:
+  `desktop-client-full-link-20261125-v1.log` records 232/232 and full
+  AmneziaVPN executable linking offline. `desktop-client-full-smoke-20261125-v1.json`
+  records actual --version exit 0, resolved loaded libraries and binary SHA256.
+  Existing temporary-file/named-enum compile warnings and CLI thread-storage
+  diagnostics remain in the logs; none was silenced.
+  `xray-full-client-gui-20261125-v3.log` runs actual production XrayProtocol,
+  VpnConnection and IpcClient objects from that client, not an extracted stop
+  body. Offscreen QML mouse input initiates disconnect against the real service/
+  Xray/tun2socks/private resolved. Four failed automatic retries preserve
+  protocol identity, journal owner, worker PID, engine token, TUN index and IPv6
+  capture. After the fixture resolves the external DNS edit, only the production
+  timer retries: Disconnected, VpnConnection release, worker/engine stop, TUN/
+  journal deletion and baseline IPv6 routes/rules are confirmed.
+  `xray-gui-normal-test-target-20261125-v1.log` additionally compiles/links the
+  normal project test target (181/181). Its real execution is
+  `xray-full-client-gui-20261125-v4.log`: 3 passed, 0 failed, 0 skipped.
+  The earlier v1 GUI test failed because mouse input preceded initial scene
+  exposure; it is preserved. The corrected fixture asserts scene readiness,
+  actual QML action delivery and Disconnecting before testing retries.
+  This is a minimal QML control plus real client classes, not the shipped
+  application's complete page/controller/repository flow or installed service.
+  Repository-not-initialized diagnostics from the deliberately minimal
+  VpnConnection fixture remain visible. Required final Linux CI now invokes
+  the normal test target in a bounded private service/resolved namespace;
+  hosted execution is deferred until implementation is complete.
+- 2026-11-25 real Xray/QtRO stop continuation:
+  `xray-real-stop-20261125-v4.log` passes with the actual linked service,
+  DNS-enabled Xray archive, real Xray SOCKS negotiation, real tun2socks process,
+  service-created TUN, native Linux IPv6 capture and private resolved.
+  The fixture executes the verbatim production stop body in a minimal QtRO
+  caller context (not the full XrayProtocol object or GUI).
+  An external DNS edit refuses restore: owner/TUN/worker/engine/native capture
+  remain; the external DNS selection is not overwritten. Real UDP/TCP AAAA
+  NODATA and IPv6-only A SERVFAIL still pass against retained aliases. After
+  resolving the edit, retry confirms worker join, TUN deletion, Xray stop,
+  journal retirement and baseline IPv6 routes/rules. This measures native
+  capture protection, not a separately enabled KillSwitch policy.
+  Cgroup measured 2 CPU / 4 GiB / zero swap, network disabled.
+  v1 failure found root-service createTun unnecessarily depended on sudo;
+  root now executes the same iproute2 commands directly, while the non-root
+  path retains sudo. Service relink:
+  `desktop-service-root-tun-link-20261125-v1.log`.
+  v2 was a fixture platform mismatch (Windows/macOS-only setNativeIpv6Blocked);
+  Linux fixture now follows production configureProxyIpv6. Both failure logs
+  are preserved. v3 passed before adding real DNS queries/baseline-rule checks.
+  Remaining scope includes full GUI/caller lifetime, installed-service,
+  separately enabled KillSwitch, other platforms and final hosted acceptance.
+- 2026-11-25 desktop Xray stop continuation:
+  failed/unconfirmed DNS restore or absent IPC no longer clears the DNS owner,
+  disables protection, deletes the TUN or stops native resources. Cleanup uses
+  retryable confirmed phases: DNS restore, worker join, TUN deletion, owned
+  engine stop, protection disable, then owner release/Disconnected. Late setup
+  callbacks are generation-invalidated. Destruction retains the owner and
+  retries instead of authorizing teardown on a timeout; unavailable IPC can
+  therefore hold destruction pending. Full GUI/service-loss recovery remains
+  required before merge.
+  `xray-production-stop-failure-retry-20261125-v1.log` executes the actual
+  production stop body with injected refused/lost restore replies and missing
+  IPC: all resource/owner retention, retry ordering and Disconnected assertions
+  pass in isolated Linux and Windows preprocessor branches. This is NOT native
+  Windows or real Xray/QtRO backend acceptance.
+  `xray-stop-restore-retry-20261125-v2.log`: sequence runtime tests cover all five
+  failure/retry boundaries, exact ordering, no repeated confirmed phases and
+  reentrancy; current XrayProtocol and IpcServerProcess compile with regenerated
+  RPC headers. `processStopped()` confirms an already stopped/joined worker
+  without relying on QProcess::waitForFinished on NotRunning.
+  `desktop-service-xray-stop-rpc-link-20261125-v1.log` records successful current
+  service relinking with that RPC. Required final Linux CI includes both new
+  lifecycle tests; no hosted CI was dispatched.
+- 2026-11-25 reconnect continuation:
+  `openvpn-tls-reconnect-20261125-v2.log` passes actual native SIGUSR1/
+  persist-tun TLS reconnect after SIGKILL of the QtRO replica. Same service,
+  native PID, DNS owner, native interface index and aliases survive; actual
+  UDP/TCP NODATA/SERVFAIL still pass. Reattached stop confirms restore ACK
+  before TUN teardown and aliases/journal retirement.
+  The first attempt (`...-v1.log`) correctly refused a preserved frame missing
+  `dev`: c2.es is recreated on restart. Native export now takes the actual
+  retained c1.tuntap name, never configured --dev or stale service metadata.
+  `openvpn-native-preserved-interface-20261125-v11.log` records the new helper
+  regression, checked overlay tests and full offline native rebuild with the
+  unchanged cached dependency closure. Native v11 SHA256:
+  `bcf2fec4c9799e8b2468e772566746abc56850961da633ecb04db7ddb3237b00`.
+  Service bytes remain the v9 measured service below. Cgroup: 2 CPU / 4 GiB /
+  zero swap; network disabled. This does not measure retained TCP, full GUI,
+  installed-service startup or other-platform runtime.
+- Full current Linux service linking and real TLS/QtRO process-loss checkpoint:
+  `desktop-service-link-20261124-v7.log` records the final service relink;
+  `openvpn-tls-qtro-20261124-v9.log` passes with service SHA256
+  `265dd9913d5feeb7450a3787085a3a279c7bf64cfb36916f834a06ef28a48654`
+  and native OpenVPN SHA256
+  `a793cbc7fa6ce722fef30f3047e632a418eb8004455574b8381eccb6ed03dfb2`.
+  Native v10 was rebuilt offline because its management restore-query changed;
+  its manifest confirms the existing dependency closure is unchanged.
+  Actual CA/server EKU checks and TLS 1.3 precede CONNECTED; server-pushed
+  search/resolve domains reach the production service and private resolved.
+  Real UDP/TCP NODATA/SERVFAIL pass both before and after SIGKILL of the QtRO
+  replica process. A new replica attaches and stops the same native owner;
+  native restore ACK precedes TUN teardown and finished is 0/NormalExit with
+  aliases/journal retired. This uses a small QtRO client, not the full GUI,
+  and a console service, not systemd/SCM/launchd installation acceptance.
+- Causal fixes from this measurement: native DNS recovery/factory initialization
+  moved to LocalServer before IPC opens (Linux/console previously bypassed
+  SystemService::start); native restore queries can wait for ACK despite a
+  pending shutdown signal, without clearing or replacing that signal; QtRO
+  process sources register once after the first transport connects; native
+  management disconnect gets a bounded restore-gated grace rather than killing
+  an otherwise normally exiting process. Ordinary credential queries are
+  unchanged. Failed TLS fixture logs v1-v8 remain separate: compile include-path
+  failure, DNS factory failure/diagnostics, native shutdown-signal failure,
+  premature QtRO registration, and normal-disconnect/kill race are not passes.
+- `openvpn-post-tls-regression-20261124-v1.log`: session 10 passed,
+  transaction 14 passed, actual service 15 passed / one child-only skip;
+  eight production TUs compiled, native checked/idempotent overlays/helper
+  tests passed. Measured 2 CPU / 4 GiB / zero swap, network disabled.
+  Full GUI/application linking, installed-service acceptance, restart/error/
+  retained-TCP/split cases, remaining platform/metadata/backend integrations
+  and final hosted CI/publication remain outstanding.
+- Linux scoped publication is now wired from Router's OpenVPN selection through
+  DnsUtils to the durable resolved snapshot. One modern plaintext resolver group
+  supports ordered search domains and resolve domains; legacy DOMAIN and
+  DOMAIN-SEARCH retain global selection. Other platform adapters still reject
+  scoped input. Multiple groups, DNSSEC/SNI/encrypted transport and unrecognized
+  legacy domain contracts remain explicitly refused.
+  `openvpn-scoped-publication-20261124-v3.log`: actual DNS-enabled guard,
+  aliases and private resolved publication/restore passed, including distinct
+  endpoints for duplicate IPv6-only upstreams, UDP/TCP AAAA NODATA and A
+  SERVFAIL, scoped-to-global replacement, newly affected peer root-domain
+  snapshot/restore, and alias/journal retirement. Security downgrade refusals
+  are asserted. Session 10 passed; transaction 14 passed; service 15 passed
+  with one child-only skip; eight production TUs compiled. Limits measured:
+  2 CPU / 4 GiB / zero swap, no network or native rebuild.
+  This remains direct production-adapter testing, not native TLS/QtRO or
+  installed-service acceptance. Next: remaining metadata/platform adapters
+  and full current service linking/native TLS hand-off.
+- Scoped adapter groundwork: Linux recovery capture now accepts an explicit
+  ordered search/routing-domain list and default-route value. Scoped snapshots
+  do not displace another interface's root domain. The selector still refuses
+  scoped inputs until publication wiring is implemented; this is not scoped
+  OpenVPN backend acceptance.
+  `openvpn-scoped-recovery-20261124-v1.log`: actual private resolved writes,
+  reads and confirmed restoration of mixed search/routing domains passed.
+  Session 10 passed, transaction 14 passed, real-service 14 passed / one
+  child-only skip; eight production TUs compiled. Measured 2 CPU / 4 GiB /
+  zero swap, network disabled, unchanged native binary not rebuilt.
+- Added OpenVpnDnsSession in the existing service and configure/command/stopped
+  process IPC. Desktop explicit OFF now uses the service's management socket;
+  the GUI only receives ordinary management lines. Publication checks complete
+  native route evidence and fresh request serials; preserved routes need the
+  active owner/interface. Native metadata is included in the durable DNS journal.
+- The bundled resolver script is omitted only for classic desktop OFF; exact
+  omission tests retain unrelated/malformed caller input. The native opt-in
+  refuses caller scripts rather than executing a competing writer.
+  `openvpn-inline-credentials-session-20261124-v5.log` additionally executes
+  literal/single-/double-quoted inline credential-block cases: their contents
+  are byte-for-byte retained. Session suite: 10 passed; production configurator
+  compilation passed. `openvpn-production-owner-gate-20261124-v5.log` records the
+  final process-owner admission-gate compile.
+- close/terminate/kill requests use the checked DNS stop path. Source routing/
+  DCO cleanup and finished notification wait for DNS cleanup. Graceful-stop
+  fallback killing is armed only after restoration; a reentrant stop during
+  publication cannot send success. Legacy ON native processes also reserve the
+  service's native-process owner so they cannot race a managed DNS publisher.
+- `openvpn-service-real-dns-20261124-v6.log`: session/selection/script suite
+  10 passed; generic transaction suite 14 passed; real service suite 13 passed,
+  0 failed and one child-only skipped slot (executed by the crash tests).
+  Includes actual UDP/TCP NODATA, IPv6-only A SERVFAIL on duplicate endpoints,
+  real resolved publication, preserved replacement, journaled native metadata,
+  GUI-observer loss, external DNS edit refusal and confirmed restore/alias removal.
+  The native management peer is modeled; this is NOT native TLS/QtRO GUI-loss
+  or installed-service acceptance. Imported production-runtime consumer CMake
+  was exercised, not a stub DNS library.
+- Refused policy/failed prepare/unsupported metadata no longer triggers a
+  platform DNS reset when no publication was attempted. The same executed
+  regression checks protect a legacy ON publication from a foreign owner.
+- The same log records current production compilation of eight service/client/
+  router/protocol/configurator TUs against regenerated RPC headers and native
+  function/helper tests. Cgroup measurement: 200000/100000 CPU, 4294967296 bytes
+  memory, zero swap. No network, package fetch, VM or Android emulator.
+- Current native source was fully rebuilt in v7. Its first competing-script
+  assertion used non-executable /dev/null and measured an earlier X_OK refusal.
+  The binary and failed manifest are preserved unchanged. With executable
+  /bin/true, `openvpn-native-service-activation-20261124-v9.{log,json}` measures
+  the intended ownership refusal on that same v7 binary and confirms all four
+  loaded-library paths/hashes unchanged. v8 was a driver quoting failure, not
+  a native acceptance attempt; all failure logs remain separate.
+- Important incomplete scope: scoped/search-domain/DNSSEC/multiple-priority
+  native DNS policies are currently refused, not flattened. Their OS metadata
+  adapter remains required for merge. Current service/full-client linking,
+  actual TLS/OpenVPN + QtRO GUI disappearance, Windows/macOS runtime,
+  IKEv2/Android and final full builds/CI/PR publication are still outstanding.
+  Required final Linux CI now includes the session suite and isolated real
+  resolved transaction suite using the service's actual linked runtime.
+  No intermediate push/CI dispatch or merge was performed.
+- Resumption point: finish policy-aware DNS metadata publication, then link/run
+  the current classic service and exercise real TLS OpenVPN plus QtRO GUI loss
+  (not the observer model). Continue remaining IKEv2/Android integrations before
+  final hosted platform/installed-service acceptance and PR publication.
+
+Earlier local checkpoint (2026-11-23, superseded in part by the continuation below):
+- Windows external-DNS overlay now covers both the shipped root DLL and tunnel
+  address configuration paths. Checked-overlay tests pass on pinned source.
+  Production Go packages cross-compile with unchanged upstream go.mod.
+  Upstream winipcfg test vet errors (`Errorf` with `%w`) are retained separately
+  in `native-wg-dns-local-integration-20261123.log`; no test assertion was weakened.
+- Managed Windows DNS has an independent dynamic WFP lease restricted to local
+  IPv4 alias UDP/TCP port 53. Windows runtime behavior remains unverified.
+- Resolver transactions reject stale owners. IPC carries user IPv6 policy,
+  owner identity, and DNS failure notification. Desktop Xray now requests OFF
+  publication after native routing and uses generation-checked callbacks.
+- Linux transaction/service tests with real isolated aliases pass:
+  `native-dns-owner-transaction-20261123.log`. Xray production translation unit
+  compiles against freshly generated IPC replica headers:
+  `native-dns-xray-ipc-compile-20261123-v2.log`. This is not full app/service
+  linking or backend runtime acceptance.
+- Automatic crash recovery, remaining native OpenVPN/IKEv2/Android integration,
+  full platform builds and final hosted acceptance are still outstanding.
+  No intermediate CI dispatch or push has been performed.
+
+2026-11-24 continuation (still uncommitted, no intermediate CI):
+- Production Linux `ipcserver.cpp`, `router.cpp`, and `router_linux.cpp` compile
+  against freshly generated IPC source headers:
+  `native-dns-service-ipc-compile-20261124.log`.
+- Failed guard preparation now retains cleanup ownership if alias retirement
+  fails. Regression coverage checks that stale owners cannot clean it up and
+  that cleanup is retried before another generation is admitted.
+- Service health now checks the captured resolver interfaces, not just the
+  native listener interface. An isolated real-alias test takes the resolver
+  loopback interface down while the VPN fixture stays up and verifies failure.
+- `native-dns-scope-health-20261124.log`: NativeDnsTransaction and NativeDnsService
+  both pass (2/2 CTest targets, 0 failed). Checks stay within 2 CPU / 4 GiB,
+  no swap, offline namespace; no host interface changes or Android emulator.
+  This does not resolve the remaining integration/runtime acceptance items above.
+
+Owned-alias crash recovery layer (2026-11-24, not production activation):
+- New journals use schema 2, canonical serialization and a payload checksum;
+  each live guard holds a process lock. Recovery rejects legacy/corrupt/unknown
+  records, live owners, changed native identity, moved aliases, and addresses
+  whose installation was never confirmed.
+- `recoverNativeDnsServiceGuards` requires an explicit successful OS-DNS restore
+  callback before removing aliases; it rechecks journal and interface identity
+  after that callback. Failure preserves the record for retry.
+- Real namespace test launches a child with the existing Go listener and assigned
+  alias, then exits via `_Exit(77)` without destructors. It verifies refused DNS
+  restore, modified record/interface, late journal edit, successful ordered cleanup
+  and idempotent retry. `native-dns-crash-recovery-20261124-v2.log`:
+  2/2 CTest targets pass; service suite 7 passed, 0 failed, 1 child-only slot
+  skipped in the parent (the child slot executes in the crash subprocess).
+- IMPORTANT: the test supplies the DNS confirmation callback. Durable platform
+  OS-DNS snapshots/compare-and-restore and startup wiring were unimplemented at
+  this checkpoint (Linux continuation below supersedes that limitation on Linux).
+  There is deliberately no unconditional-success production callback. This
+  layer alone is not complete OS-DNS crash recovery or merge readiness.
+
+Linux durable OS-DNS recovery continuation (2026-11-24):
+- OFF now captures the affected systemd-resolved link DNS, ordered domains and
+  effective DefaultRoute values before publishing managed DNS. The original
+  snapshot survives listener reuse/replacement. It is saved in the owned journal
+  by QSaveFile; Linux also fsyncs the directory entry before any OS mutation.
+- Both normal strict teardown and service startup use compare-and-restore.
+  Fields must match either their original or intended managed value, allowing
+  interrupted publication/restoration without adopting external edits. Every
+  affected link is checked before mutation and after restoration. Native aliases
+  are removed only after restoration confirms; uncertain/unknown state stays.
+- SystemService runs recovery before LocalServer and disables new OFF guards if
+  unresolved journals remain. Multiple retained generations share validated
+  alias ownership during identity checks; startup makes another pass only when
+  journal cleanup made progress.
+- Real private systemd-resolved + D-Bus tests run without host sockets/network,
+  using the existing host binaries/libraries mounted read-only (no downloads).
+  Tests cover `_Exit(77)` before/partial/complete publication, two generations,
+  an external DNS edit, interrupted restore, repeat startup, and graceful
+  reuse/replacement/restore. Original DNS includes IPv4 and IPv6; a second link's
+  root and scoped domains are restored too. This is real Linux OS-DNS testing,
+  not a substituted confirmation callback.
+- Final evidence: `native-dns-real-os-crash-recovery-20261124-v4.log`:
+  2/2 CTest targets pass; transaction suite 12 passed, service suite 12 passed,
+  0 failed (one child-only slot is skipped in the parent, executed by subprocess).
+- Production SystemService, Linux DNS utility and recovery-adapter translation
+  units compile: `native-dns-linux-startup-compile-20261124.log`.
+- Windows/macOS durable snapshots and startup recovery remain outstanding.
+  Full platform linking/acceptance, other native adapters and final CI remain
+  required; no intermediate push/CI or merge has been performed.
+
+Windows/macOS recovery implementation and native-fixture preparation (2026-11-24):
+- Both desktop utilities now capture durable recovery state through the guard
+  before managed publication and use compare-and-restore on strict teardown.
+  SystemService startup dispatches to the platform adapter; unresolved state
+  disables new managed DNS instead of deleting aliases on assumed success.
+- macOS stores the complete DNS property-list dictionary (including absence),
+  preserves non-server metadata during managed publication, and uses CFEqual
+  rather than binary serialization order for comparisons. Service enumeration
+  is anchored to parent keys, not DNS child dictionaries.
+- Windows records per-GUID IPv4/IPv6 static-server configuration separately
+  from DHCP mode and changes only nameserver flags, leaving suffix and
+  registration metadata untouched. Native API/runtime semantics still require
+  verification; this source implementation is not a Windows acceptance claim.
+- The portable comparison suite passes: `native-dns-settings-recovery-portable-20261124-v2.log`
+  (7 passed, 0 failed, 7 explicitly skipped native/child-only cases).
+- Native fixtures now cover absent/automatic and static configurations at
+  before/partial/complete publication boundaries, abrupt child `_Exit(77)`,
+  external edits, and idempotent restore. macOS uses two owned synthetic service
+  dictionaries, never publishes over real host network services. Windows creates
+  and closes its own disposable Wintun adapter using the existing pinned DLL.
+- Final hosted workflow steps have been added, but not dispatched for current
+  changes. Local Windows reused the existing VM, under 2 CPU / 4 GiB container
+  limits with host swap disabled; WinRM returned empty HTTP 500 before compilation.
+  Preserve `windows-dns-recovery-native-20261124.log` and
+  `windows-dns-recovery-vm-diagnostic-20261124.log`: neither is a test pass.
+- Native platform compilation/runtime, actual platform alias cleanup after OS
+  restore, remaining adapters, final current-source CI and publication remain
+  outstanding. No merge is authorized.
+
+Separate requested historical macOS installer:
+- The requested application source remains exactly `9d1a3ae`, not this working
+  tree. Run 45368204615 never acquired an ARM runner (zero build steps).
+  Only the dedicated package-builder branch was updated (`fb4ad24`) to use an
+  Intel host/Xcode 26.0 while retaining universal arm64+x86_64 checks.
+  Run 45371592002 is the replacement installer build; its result does not verify
+  the uncommitted PR changes or close current-source acceptance.
+
+Native Windows recovery result / historical macOS package completion (2026-11-24):
+- Reused the same owned Windows VM at 2 CPU / 3 GiB guest RAM inside the
+  2 CPU / 4 GiB, no-host-swap container. GUI diagnostics confirmed a healthy
+  boot; a local WinRM service restart restored remote execution without changing
+  authentication, quotas, or test assertions. Original HTTP-500 failures remain.
+- First native builds exposed future ZIP mtimes (source/guest timezone mismatch)
+  and WinSock header ordering errors. Only future extracted timestamps were
+  normalized; winsock2/ws2tcpip includes were corrected in production sources.
+  Failed build evidence is retained, not relabeled.
+- `windows-dns-recovery-native-msvc-20261124-v4.log`: native MSVC compilation of
+  WindowsDnsRecovery, DnsUtilsWindows and the fixture passed; 13 tests passed,
+  0 failed, one child-only slot skipped by the parent and executed by the six
+  crash subprocess scenarios. Actual SetInterfaceDnsSettings/registry state on
+  owned disposable Wintun adapters covered DHCP/static, before/partial/complete
+  publication, external DNS edits and repeat restore. This does not yet prove
+  full-service startup or actual Windows service alias retirement.
+- Test DLL SHA256: `e5da8447dc2c320edc0fc52fa01885c103de8c118481f683643cacc3220dafce`.
+  Current-source transfer ZIP SHA256:
+  `2c743797eb7ae118421ef2ff85b8652b90783c8c06829b3d1dc483be3a426c6f`.
+  No dependency versions/downloads changed. The VM was shut down afterwards.
+- Historical macOS installer run 45371592002 succeeded. Its verified manifest
+  identifies application source `9d1a3ae54290cc43715a55b16d26d94b6f84914d`,
+  universal app/service, ad-hoc application signing, unsigned/non-notarized
+  installer and no Network Extension. Artifact 14910903290 contains
+  `AmneziaVPN_5.1.0.0_macos_universal_9d1a3ae_TEST.pkg` (115647421 bytes),
+  SHA256 `0a930c4b6bad7f7281901255014aaca657135455fe0cc40b981eb3b1a3bb25d1`.
+  This old-source installer is NOT current PR recovery acceptance.
+
+Production Windows guard/startup/alias lifecycle (2026-11-24):
+- Earlier native OpenVPN protocol-only stage (superseded by service/caller source
+  wiring at the top of this file): the opt-in suppression/restore barrier was
+  added to the checked recipe overlay but was not yet enabled by the client.
+  Full contract and current scope are in `OPENVPN-DNS-HANDOFF.md`.
+- `openvpn-native-dns-full-build-20261124-v5.log`: actual overlaid do_route,
+  run_dns_up_down, do_close_tun and metadata-export tests pass under instrumented
+  OS boundaries, including failure/cleanup, persist-tun, original options,
+  priorities and stale SNI/server/search removal (ASan/UBSan). Native helper
+  Linux/Windows-branch tests pass, including exact ACK, serial exhaustion,
+  failed query, retry/block and zeroization. A complete Linux OpenVPN 2.7.0
+  binary was rebuilt and --version executed offline from existing sources.
+  Loaded native dependency paths/SHA256 values match the cached baseline in
+  `openvpn-native-dns-20261124-v5/manifest.json`; no packages were downloaded.
+  Both down-pre modes and the early untyped DCO close path are included.
+  The actual binary also rejects missing/nonlocal/non-client management options.
+- Initial native link failure (full-build v1: unavailable openvpn_snprintf and
+  private static DNS serializer) was fixed using snprintf and a narrow wrapper
+  of the upstream serializer. The isolated helper v1 had an incorrectly
+  acknowledging "forever-failing" fixture; it was corrected to keep returning
+  cancel. The v3 extraction build hit upstream's unused Windows duri parameter;
+  that harness now matches the existing production -Wno-unused-parameter flag.
+  Failure logs remain separate; behavioural assertions/timeouts were not relaxed.
+  Full-build v2/v3/v4 are historical intermediate candidates, not current v5.
+  The first CLI-smoke harness incorrectly expected --help exit 0; the diagnostic
+  and cached baseline both measured upstream exit 1. The corrected test compares
+  against that measured baseline and still requires all invalid modes to fail
+  at the specific external-DNS validation boundary (logs preserved separately).
+- These measurements do not establish a native TLS tunnel, installed service,
+  macOS/Windows runtime, or service-guard publication/restore end-to-end.
+  The service-owned ACK handler, platform metadata publication and atomic caller
+  activation (including omitting the competing bundled script) remain unfinished.
+- OpenVPN integration prerequisite: IPv6-OFF now requests native management
+  UPDOWN environment frames and retains the completed UP environment verbatim,
+  including negotiated DNS metadata. Reconnect/start invalidate old frames;
+  malformed/duplicate/oversized frames invalidate the snapshot and report an
+  error. Full environment values are not logged. ON launch arguments are unchanged.
+  Cached 2.7.0 `init.c:do_route` sends UP even if add_routes fails: this event
+  must NOT alone authorize DNS publication. Cached `dns.c:run_dns_up_down`
+  also applies DNS before this event, so disabling/replacing native DNS
+  publication and coordinating service-owned pre-teardown restore remain
+  necessary; this collection is not the completed OpenVPN guard integration.
+  Standalone `tests/openvpn-management-environment` Release CMake/CTest:
+  1/1 passed in offline 2-CPU/4-GiB container; separate ASan/UBSan parser run
+  passed. Host CMake was unavailable; cached container CMake was used.
+- Follow-up found/fixed two real transport gaps: IPC argument sanitization
+  discarded `--management-up-down`, and ManagementServer consumed incomplete
+  TCP lines. The real sanitizer and real Qt ManagementServer now have native
+  socket/fragmentation tests, retaining OFF flags and exact DNS/SNI values while
+  rejecting unrelated privileged options. The new suite is required in final
+  client-linux CI; no dispatch has been performed.
+- `recipes/openvpn/native_dns.py` is a checked/idempotent source overlay exported
+  and applied by the existing recipe. Immediately before UP it reports the
+  actual native add_routes result as `amnezia_native_routes` (success/failed/
+  unmanaged), without changing route execution, scripts, or native return values.
+  The client parser accepts route proof only from a complete UP frame with
+  exact success; historical runtimes, failed/noexec routes, DOWN and incomplete
+  frames provide no proof. This is necessary because native macOS
+  CONNECTED,SUCCESS can omit ISC_ROUTE_ERRORS.
+- `openvpn-native-route-evidence-overlay-20261124-v1.log` exercises the actual
+  do_route function extracted from the complete cached pinned source under
+  instrumented OS boundaries: success/failure/noexec/no-routes/no-management,
+  checked anchor rejection and idempotence pass. This is isolated native-function
+  evidence, NOT an installed OpenVPN runtime/full-protocol acceptance result.
+- The first Qt stream-test build failed because its standalone CMake target
+  omitted the production client include directory; that target was corrected,
+  without changing assertions. `openvpn-management-native-stream-20261124-v4.log`
+  records 3/3 passing tests (real Qt server, real service argument sanitizer,
+  portable parser). Native DNS suppression/publication and pre-teardown
+  restore acknowledgement are still outstanding; this is not transaction
+  completion and no production DNS publication was enabled by these changes.
+- DNS WFP lease code was separated from the general WindowsFirewall manager.
+  It retains the same baseline GUID and priority, local-loopback flag, exact
+  IPv4 endpoint and UDP/TCP port-53 conditions. No IPv6 rule was added.
+  `windows-dns-recovery-native-wfp-20261124-v2.log`: 14 passed, 0 failed,
+  including enumeration of the actual four owned WFP filters.
+- Added `tests/native-dns-desktop-lifecycle`, requiring the real service Xray
+  runtime/generated header (no C ABI stub). The production service build also
+  builds this target with AMNEZIA_BUILD_TESTS on Windows/macOS.
+- Existing pinned Windows Xray 1.4.0 source, Go 1.27.1, MinGW and module cache
+  were reused offline to build the DNS-enabled DLL. Native MSVC compiled and
+  linked ServiceGuard, Windows OS-DNS recovery and the WFP lease against it.
+- Initial failure evidence is retained. An incorrectly SkipAsSource-marked
+  fixture primary was corrected. A real production readiness defect then
+  reproduced: DAD stayed tentative at the hard-coded 2-second deadline while
+  GetIpInterfaceEntry reported DadTransmits=3 / RetransmitTime=1000.
+  `windows-dns-service-lifecycle-native-20261124-v6-diagnostic.log` contains
+  that evidence, matching Microsoft's MIB_IPINTERFACE_ROW documentation.
+- Production preparation now creates/journals aliases as a batch and waits
+  for every address to be Preferred under one deadline derived from native DAD
+  policy, capped at 10 seconds for the whole set. DAD is not disabled; unknown,
+  duplicate or over-budget policy fails closed. DNS reply assertions/timeouts
+  were not relaxed. This is unrelated to the earlier Mac TCP MTU timing failure.
+- `windows-dns-service-lifecycle-native-20261124-v8.log`: all three publication
+  crash boundaries pass (5 passed, 0 failed; one parent-skipped child-only slot
+  executes in subprocesses). Each uses two distinct aliases for duplicate
+  IPv6-only resolvers, real UDP/TCP AAAA NODATA and A SERVFAIL, `_Exit(77)`,
+  production startup recovery, modified-journal/external-DNS refusal,
+  confirmed restoration before removing both aliases, and repeat startup.
+- `windows-dns-service-native-dependencies-20261124-v2.json` compares the actual
+  cached and candidate DLL build info: every existing compiled module/version/
+  checksum and Go version is unchanged; only first-party nativedns was added.
+- After the batch change, real private resolved/D-Bus Linux regression passes:
+  `native-dns-linux-after-batch-readiness-20261124.log`.
+- These crash boundaries are after a durable DNS snapshot exists. Missing,
+  invalid, legacy or unconfirmed ownership/snapshot state remains fail-closed,
+  not permission to remove ambiguous aliases.
+- Current macOS native guard testing is wired into a new required classic
+  macOS build lane for final hosted validation, not executed yet. No local Mac
+  runtime testing or current-source CI dispatch/push was performed.
+  Installed-service/whole-protocol teardown, OpenVPN/IKEv2/Android integrations
+  and final full builds/acceptance remain outstanding; this is not merge ready.
+- Global IPv6-OFF packet containment across a service crash and the scope of
+  encrypted-endpoint WFP exceptions require separate whole-backend validation;
+  DNS startup/alias recovery tests do not establish those guarantees.
+
+User steering: continue all remaining backends, including macOS; unavailable
+Apple runners do not block implementation. Do not dispatch/push intermediate
+CI runs. Hosted testing is deferred until the backend integration is finished.
+
+The desktop service already links `amnezia-xray-bindings` and therefore already
+owns a Go runtime, including when a native WG/OpenVPN/IKEv2 connection is active.
+The DNS socket implementation is being integrated into that same archive rather
+than a new service helper/runtime. It is split into the small source module
+`native/routing/nativedns`; packet dnsguard delegates its unchanged wire policy
+there. The isolated module has only the existing DNS codec/x/sys dependencies,
+not the routing engine or either gVisor TCP stack.
+
+Local implementation now includes original-interface IPv4 UDP/TCP forwarding,
+same-socket UDP retries (three attempts, one-second spacing), slow/spurious reply
+handling, cancellation/read join, strict IPv6-upstream rejection, and transactional
+preparation of a resolver endpoint set. Missing/broken scope has no default
+dialer. The original IPv6-only resolver remains represented and answers local
+AAAA NODATA; other questions fail closed.
+
+The checked native desktop Xray recipe overlay adds DNS C exports to the existing
+archive and rejects shared-dependency version changes. The actual cached 1.4.0
+source compiled offline; an executable C client passed real UDP/TCP NODATA,
+IPv6-only SERVFAIL, duplicate admission, joined Stop and stale-handle tests.
+Compiled native Xray dependency versions were compared before/after and unchanged.
+Evidence: `native-desktop-dns-cabi-client-20261123-v4.log`.
+Ten isolated local race repetitions of the new module/session and packet frontend
+passed; Windows amd64 and Darwin arm64 Go cross-compilation passed (not local Mac
+execution or physical acceptance). Evidence: `native-dns-module-session-20261123-v3.log`.
+
+Remaining immediate integration is the C++ service/OS-settings transaction,
+per-resolver assigned-address ownership/recovery, and native adapter callers.
+Android native OpenVPN/Xray and Windows IKEv2 lifecycle wiring also remain.
+These source/runtime changes are not yet universal product activation.
+
+The full local parent race suite subsequently passed (AWG/WG, engine, mobile,
+desktop, DNS, socket policy and the new DNS module), along with dependency
+provenance and four checked Apple overlays:
+`native-dns-module-parent-full-20261123.log`.
+
+The C++ DNS utility now has a guarded prepare/publish/retire transaction.
+Uncertain publication blocks further updates until confirmed restoration;
+retirement failures remain owned for retry. An unchanged verified scope can
+retain DNS sessions. Linux OFF operations use checked synchronous D-Bus replies
+and preserve the original domain snapshot; stale async domain callbacks are
+generation-rejected. macOS OFF checks native publication/restoration results and
+retains its original service snapshot across updates. Windows retains its
+checked native DNS API path. ON uses the legacy platform path.
+Six local Qt transaction cases passed, and the production Linux DNS utility
+compiled: `native-dns-qt-transaction-20261123-v3.log`. New macOS/Windows C++ SDK
+compilation remains pending for final hosted verification, not claimed locally.
+The actual service guard factory/assigned-address recovery and adapter call sites
+are still to connect; there is no claim that these wrappers are already enabled.
+The Go C ABI now supports coexisting prepared/published generations, so a new
+endpoint set can become ready without stopping the old published one.
+Five checked-overlay Python cases and the real native-archive C client passed
+again, including independent retirement/stale handles across both generations:
+`native-desktop-dns-cabi-client-20261123-v5.log`.
+
+## Current hosted resource blocker — 2026-11-23
+
+Run `45181826367` at `9d1a3ae` passed every acquired lane, including the new
+native DNS assigned-interface fixture. Both required macOS ARM lanes were
+cancelled without acquiring a runner, so the aggregate gate is FAIL, not PASS.
+One targeted failed-job rerun on the identical source had the same result:
+jobs `137750488708` and `137750489268` were not acquired. GitHub explicitly
+reports hosted ARM capacity constraints. Annotations for both attempts are
+preserved under `ci-9d1a3ae-*-arm-capacity*.json` in the external evidence folder.
+No further automatic retry is scheduled, no ARM lane is made optional, and no
+local Apple runtime result is substituted. This resource blocker does not close
+the outstanding native backend integration work below.
+
 ## Native desktop DNS-only socket frontend preparation — 2026-11-23
 
 Native desktop kernel/process backends cannot use a second TUN reader. A

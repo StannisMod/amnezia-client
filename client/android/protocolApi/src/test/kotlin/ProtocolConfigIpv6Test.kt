@@ -9,6 +9,25 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ProtocolConfigIpv6Test {
+    @Test fun explicitNativeSearchDomainsRetainOrderAndOccurrences() {
+        val domains = mutableListOf("first.example", "second.example", "first.example")
+        val result = config {
+            addRoute(InetNetwork("0.0.0.0", 0))
+            setSearchDomains(domains)
+        }
+        domains.clear()
+        assertEquals(listOf("first.example", "second.example", "first.example"), result.searchDomains)
+        assertEquals("first.example", result.searchDomain)
+    }
+    @Test fun legacySingleSearchDomainRetainsItsOriginalLastValueBehavior() {
+        val result = config {
+            addRoute(InetNetwork("0.0.0.0", 0))
+            setSearchDomain("first.example")
+            setSearchDomain("last.example")
+        }
+        assertEquals(listOf("last.example"), result.searchDomains)
+        assertEquals("last.example", result.searchDomain)
+    }
     private fun config(block: ProtocolConfig.Builder.() -> Unit): ProtocolConfig = ProtocolConfig.build(false) {
         addAddress(InetNetwork("10.77.0.2", 32))
         addAddress(InetNetwork("fd77::2", 128))

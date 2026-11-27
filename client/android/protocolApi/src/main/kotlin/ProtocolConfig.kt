@@ -4,6 +4,7 @@ import android.net.ProxyInfo
 import android.os.Build
 import androidx.annotation.RequiresApi
 import java.net.InetAddress
+import java.net.Inet4Address
 import org.amnezia.vpn.util.net.InetNetwork
 import org.amnezia.vpn.util.net.IpRange
 import org.amnezia.vpn.util.net.IpRangeSet
@@ -20,12 +21,13 @@ open class ProtocolConfig protected constructor(
     val httpProxy: ProxyInfo?,
     val allowAllAF: Boolean,
     val blockingMode: Boolean,
-    val mtu: Int
+    val mtu: Int,
+    val searchDomains: List<String> = listOfNotNull(searchDomain)
 ) {
 
     protected constructor(builder: Builder) : this(
         builder.addresses,
-        builder.dnsServers,
+        builder.publishedDnsServers,
         builder.searchDomain,
         builder.routes,
         builder.includedAddresses,
@@ -35,12 +37,16 @@ open class ProtocolConfig protected constructor(
         builder.httpProxy,
         builder.allowAllAF,
         builder.blockingMode,
-        builder.mtu
+        builder.mtu,
+        builder.publishedSearchDomains.toList()
     )
 
     open class Builder(blockingMode: Boolean) {
         internal val addresses: MutableSet<InetNetwork> = hashSetOf()
         internal val dnsServers: MutableSet<InetAddress> = hashSetOf()
+        private var managedDnsServers: Set<InetAddress>? = null
+        internal val publishedDnsServers: Set<InetAddress>
+            get() = managedDnsServers ?: dnsServers
         internal val routes: MutableSet<Route> = mutableSetOf()
         internal val includedAddresses: MutableSet<InetNetwork> = hashSetOf()
         internal val excludedAddresses: MutableSet<InetNetwork> = hashSetOf()
@@ -49,6 +55,9 @@ open class ProtocolConfig protected constructor(
 
         internal var searchDomain: String? = null
             private set
+        private var managedSearchDomains: List<String>? = null
+        internal val publishedSearchDomains: List<String>
+            get() = managedSearchDomains ?: listOfNotNull(searchDomain)
 
         internal var httpProxy: ProxyInfo? = null
             private set
@@ -76,7 +85,23 @@ open class ProtocolConfig protected constructor(
         fun addDnsServer(dnsServer: InetAddress) = apply { this.dnsServers += dnsServer }
         fun addDnsServers(dnsServers: Collection<InetAddress>) = apply { this.dnsServers += dnsServers }
 
-        fun setSearchDomain(domain: String) = apply { this.searchDomain = domain }
+        /** Call only after a native DNS owner has prepared these endpoints. */
+        fun setManagedDnsServers(servers: Collection<InetAddress>) = apply {
+            if (servers.isEmpty() || servers.size > 16 || servers.toSet().size != servers.size ||
+                servers.any { it !is Inet4Address || it.isAnyLocalAddress ||
+                    it.isLoopbackAddress || it.isMulticastAddress })
+                throw BadConfigException("Invalid managed native DNS capture endpoints")
+            managedDnsServers = servers.toCollection(linkedSetOf())
+        }
+
+        fun setSearchDomain(domain: String) = apply {
+            this.searchDomain = domain
+            managedSearchDomains = null
+        }
+        fun setSearchDomains(domains: Collection<String>) = apply {
+            managedSearchDomains = domains.toList()
+            searchDomain = domains.lastOrNull()
+        }
 
         fun addRoute(route: InetNetwork) = apply { this.routes += Route(route, true) }
         fun addRoutes(routes: Collection<InetNetwork>) = apply { this.routes += routes.map { Route(it, true) } }
@@ -179,6 +204,14 @@ open class ProtocolConfig protected constructor(
 
         protected fun configBuild() {
             processSplitTunneling()
+            // DNS-only capture must survive include-only routing and explicit
+            // exclusions of the reserved endpoints. Never replace other native
+            // routes or infer upstream scope from these newly added routes.
+            managedDnsServers?.forEach { endpoint ->
+                val route = InetNetwork(endpoint)
+                removeRoute(route)
+                addRoute(route)
+            }
             if (fullIpv6CaptureRequired) {
                 // OFF is an enforcement policy, not a destination include
                 // rule. Install it after split processing removes defaults.

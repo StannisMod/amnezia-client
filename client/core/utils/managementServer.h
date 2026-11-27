@@ -20,6 +20,7 @@ public:
     bool start(const QString& host, unsigned int port);
     void stop();
     bool isOpen() const;
+    quint16 port() const;
 
     QString readLine();
     qint64 writeCommand(const QString& message);
@@ -29,6 +30,7 @@ public:
 signals:
     void readyRead();
     void serverStarted();
+    void disconnected();
 
 protected slots:
     void onAcceptError(QAbstractSocket::SocketError socketError);
